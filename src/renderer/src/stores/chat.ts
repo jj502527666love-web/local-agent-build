@@ -1,0 +1,226 @@
+import { defineStore } from 'pinia'
+import { ref, computed } from 'vue'
+
+export interface Conversation {
+  id: string
+  bot_id: string
+  title: string
+  created_at: string
+  updated_at: string
+}
+
+export interface Message {
+  id: string
+  conversation_id: string
+  role: string
+  content: string
+  attachments: any[]
+  tool_calls: any[]
+  created_at: string
+  _toolLogs?: string[]
+  _toolActive?: boolean
+  _collapsed?: boolean
+}
+
+export const useChatStore = defineStore('chat', () => {
+  const conversations = ref<Conversation[]>([])
+  const messages = ref<Message[]>([])
+  const currentConversationId = ref<string | null>(null)
+  const currentBotId = ref<string | null>(null)
+  const streamingConvIds = ref<Set<string>>(new Set())
+  const streamContent = ref('')
+
+  const streaming = computed(() =>
+    currentConversationId.value ? streamingConvIds.value.has(currentConversationId.value) : false
+  )
+
+  const currentConversation = computed(() =>
+    conversations.value.find((c) => c.id === currentConversationId.value) || null
+  )
+
+  async function fetchConversations(botId: string) {
+    currentBotId.value = botId
+    conversations.value = (await window.api.chat.invoke('listConversations', botId)) as Conversation[]
+  }
+
+  async function createConversation(botId: string, title?: string) {
+    const result = (await window.api.chat.invoke('createConversation', botId, title)) as Conversation
+    conversations.value.unshift(result)
+    return result
+  }
+
+  async function selectConversation(id: string) {
+    currentConversationId.value = id
+    messages.value = (await window.api.chat.invoke('getMessages', id)) as Message[]
+  }
+
+  async function deleteConversation(id: string) {
+    await window.api.chat.invoke('deleteConversation', id)
+    conversations.value = conversations.value.filter((c) => c.id !== id)
+    if (currentConversationId.value === id) {
+      currentConversationId.value = null
+      messages.value = []
+    }
+  }
+
+  async function updateTitle(id: string, title: string) {
+    await window.api.chat.invoke('updateTitle', id, title)
+    const conv = conversations.value.find((c) => c.id === id)
+    if (conv) conv.title = title
+  }
+
+  function listenTitleUpdates() {
+    window.api.chat.onTitleUpdated((data: any) => {
+      const conv = conversations.value.find((c) => c.id === data.conversationId)
+      if (conv) conv.title = data.title
+    })
+  }
+
+  function stopListenTitleUpdates() {
+    window.api.chat.offTitleUpdated()
+  }
+
+  async function sendMessage(content: string, attachments?: any[], overrides?: {
+    kbCategoryIds?: string[]
+    skillIds?: string[]
+    mcpIds?: string[]
+    promptSkillDirs?: string[]
+  }) {
+    if (!currentConversationId.value || !currentBotId.value) return
+
+    const convId = currentConversationId.value!
+    const botId = currentBotId.value!
+    streamingConvIds.value.add(convId)
+    streamingConvIds.value = new Set(streamingConvIds.value)
+    streamContent.value = ''
+
+    // Add user message locally
+    messages.value.push({
+      id: 'temp-user-' + Date.now(),
+      conversation_id: currentConversationId.value,
+      role: 'user',
+      content,
+      attachments: attachments || [],
+      tool_calls: [],
+      created_at: new Date().toISOString()
+    })
+
+    // Add placeholder assistant message
+    const tempId = 'temp-assistant-' + Date.now()
+    messages.value.push({
+      id: tempId,
+      conversation_id: currentConversationId.value,
+      role: 'assistant',
+      content: '',
+      attachments: [],
+      tool_calls: [],
+      created_at: new Date().toISOString()
+    })
+
+    // Listen for stream events
+    const toolLogs: string[] = []
+    window.api.chat.onStream((data: any) => {
+      if (data.type === 'content') {
+        streamContent.value += data.content
+        const msg = messages.value.find((m) => m.id === tempId)
+        if (msg) msg.content = streamContent.value
+      } else if (data.type === 'tool_start') {
+        streamContent.value = ''
+        const names = (data.tools as string[])?.join(', ') || ''
+        if (names) toolLogs.push(`> calling: ${names}`)
+        const msg = messages.value.find((m) => m.id === tempId)
+        if (msg) {
+          msg.content = ''
+          msg._toolLogs = [...toolLogs]
+          msg._toolActive = true
+          msg._collapsed = false
+        }
+      } else if (data.type === 'tool_result') {
+        const line = `  ${data.tool}: ${data.summary || 'done'}`
+        toolLogs.push(line)
+        const msg = messages.value.find((m) => m.id === tempId)
+        if (msg) msg._toolLogs = [...toolLogs]
+      } else if (data.type === 'tool_done') {
+        streamContent.value = ''
+        const msg = messages.value.find((m) => m.id === tempId)
+        if (msg) msg.content = ''
+      } else if (data.type === 'error') {
+        const msg = messages.value.find((m) => m.id === tempId)
+        if (msg) msg.content = `[Error] ${data.error}`
+      }
+      // Don't handle 'done' here - cleanup after IPC resolves
+    })
+
+    try {
+      await window.api.chat.invoke('sendMessage', {
+        conversationId: convId,
+        botId,
+        content,
+        attachments,
+        ...(overrides?.kbCategoryIds?.length ? { overrideKbCategoryIds: overrides.kbCategoryIds } : {}),
+        ...(overrides?.skillIds?.length ? { overrideSkillIds: overrides.skillIds } : {}),
+        ...(overrides?.mcpIds?.length ? { overrideMcpIds: overrides.mcpIds } : {}),
+        ...(overrides?.promptSkillDirs?.length ? { overridePromptSkillDirs: overrides.promptSkillDirs } : {})
+      })
+    } catch (err: any) {
+      console.error('[chat] sendMessage error:', err)
+    } finally {
+      // Collapse tool logs after response completes
+      const msg = messages.value.find((m) => m.id === tempId)
+      if (msg) {
+        msg._toolActive = false
+        msg._collapsed = true
+      }
+      streamingConvIds.value.delete(convId)
+      streamingConvIds.value = new Set(streamingConvIds.value)
+      window.api.chat.offStream()
+    }
+
+    // Refresh messages from DB - preserve streamed content to avoid flash
+    if (currentConversationId.value === convId) {
+      const lastContent = streamContent.value
+      const dbMessages = (await window.api.chat.invoke('getMessages', convId)) as Message[]
+      // If the last DB assistant message matches streamed content, swap seamlessly
+      if (dbMessages.length > 0) {
+        const lastDb = dbMessages[dbMessages.length - 1]
+        if (lastDb.role === 'assistant' && !lastDb.content && lastContent) {
+          lastDb.content = lastContent
+        }
+      }
+      messages.value = dbMessages
+    }
+  }
+
+  function reset() {
+    conversations.value = []
+    messages.value = []
+    currentConversationId.value = null
+    currentBotId.value = null
+    streamingConvIds.value = new Set()
+    streamContent.value = ''
+  }
+
+  function isConversationStreaming(convId: string): boolean {
+    return streamingConvIds.value.has(convId)
+  }
+
+  return {
+    conversations,
+    messages,
+    currentConversationId,
+    currentBotId,
+    streaming,
+    streamContent,
+    isConversationStreaming,
+    currentConversation,
+    fetchConversations,
+    createConversation,
+    selectConversation,
+    deleteConversation,
+    updateTitle,
+    listenTitleUpdates,
+    stopListenTitleUpdates,
+    sendMessage,
+    reset
+  }
+})

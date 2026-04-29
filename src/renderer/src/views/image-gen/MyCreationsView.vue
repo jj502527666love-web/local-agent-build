@@ -1,0 +1,327 @@
+<template>
+  <div class="h-full flex flex-col">
+    <header class="page-header justify-between">
+      <div class="flex items-center gap-3">
+        <span class="text-sm font-medium text-text-secondary">我的创作</span>
+        <div class="flex items-center gap-1 ml-2">
+          <button
+            v-for="p in periodOptions"
+            :key="p.value"
+            @click="selectedPeriod = p.value; customStart = ''; customEnd = ''; page = 1; fetchData()"
+            :class="['px-2.5 py-1 text-[11px] rounded-md transition-colors', selectedPeriod === p.value && !customStart ? 'bg-primary-100 text-primary-700 font-medium' : 'text-text-tertiary hover:text-text-secondary hover:bg-surface-2']"
+          >{{ p.label }}</button>
+        </div>
+        <div class="flex items-center gap-1.5 ml-2">
+          <input type="date" v-model="customStart" @change="onCustomDateChange" class="px-2 py-1 text-[11px] border border-surface-3 rounded-md bg-surface-0 outline-none focus:ring-1 focus:ring-primary-500" />
+          <span class="text-[10px] text-text-tertiary">~</span>
+          <input type="date" v-model="customEnd" @change="onCustomDateChange" class="px-2 py-1 text-[11px] border border-surface-3 rounded-md bg-surface-0 outline-none focus:ring-1 focus:ring-primary-500" />
+        </div>
+      </div>
+      <div class="flex items-center gap-2">
+        <div class="relative">
+          <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-tertiary" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z" /></svg>
+          <input
+            v-model="search"
+            @input="debouncedFetch"
+            placeholder="搜索创作..."
+            class="pl-9 pr-3 py-2 text-xs border border-surface-3 rounded-lg bg-surface-0 outline-none focus:ring-2 focus:ring-primary-500 w-56"
+          />
+        </div>
+      </div>
+    </header>
+    <div class="page-body">
+      <!-- Empty state -->
+      <div v-if="!loading && !items.length" class="empty-state">
+        <div class="w-16 h-16 rounded-2xl bg-surface-2 flex items-center justify-center mb-4">
+          <svg class="w-8 h-8 text-text-disabled" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909M3.75 21h16.5A2.25 2.25 0 0 0 22.5 18.75V5.25A2.25 2.25 0 0 0 20.25 3H3.75A2.25 2.25 0 0 0 1.5 5.25v13.5A2.25 2.25 0 0 0 3.75 21Z" /></svg>
+        </div>
+        <p class="text-sm font-medium text-text-secondary mb-1">暂无创作</p>
+        <p class="text-xs text-text-tertiary">前往生图工作台开始创作</p>
+      </div>
+
+      <!-- Grid -->
+      <div v-else class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
+        <div
+          v-for="item in items"
+          :key="item.id"
+          @click="openDetail(item)"
+          class="cursor-pointer rounded-xl overflow-hidden border border-surface-3 bg-surface-0 shadow-sm hover:shadow-md transition-shadow group"
+        >
+          <div class="aspect-square bg-surface-2 overflow-hidden relative">
+            <img v-if="item.result_path" :src="localFileUrl(item.result_path)" class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
+            <div v-else class="w-full h-full flex items-center justify-center">
+              <svg class="w-10 h-10 text-text-disabled" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909M3.75 21h16.5A2.25 2.25 0 0 0 22.5 18.75V5.25A2.25 2.25 0 0 0 20.25 3H3.75A2.25 2.25 0 0 0 1.5 5.25v13.5A2.25 2.25 0 0 0 3.75 21Z" /></svg>
+            </div>
+            <div v-if="item.result_path" class="absolute bottom-1.5 right-1.5 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+              <button @click.stop="copyImage(item.result_path)" class="w-7 h-7 rounded-lg bg-black/50 hover:bg-black/70 text-white flex items-center justify-center" title="复制图片">
+                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.666 3.888A2.25 2.25 0 0 0 13.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 0 1-.75.75H9.75a.75.75 0 0 1-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 0 1-2.25 2.25H6.75A2.25 2.25 0 0 1 4.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 0 1 1.927-.184" /></svg>
+              </button>
+              <button @click.stop="editImage" class="w-7 h-7 rounded-lg bg-black/50 hover:bg-black/70 text-white flex items-center justify-center" title="编辑">
+                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Z" /></svg>
+              </button>
+            </div>
+          </div>
+          <div class="p-2.5">
+            <p class="text-[11px] text-text-secondary line-clamp-2">{{ item.prompt }}</p>
+            <div class="flex items-center justify-between mt-1.5">
+              <span class="text-[10px] text-text-tertiary">{{ item.model_id }} / {{ item.size }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Pagination -->
+      <div v-if="totalPages > 1" class="flex items-center justify-center gap-2 mt-6">
+        <button @click="page > 1 && (page--, fetchData())" :disabled="page <= 1" class="px-3 py-1.5 text-xs border border-surface-3 rounded-lg disabled:opacity-40 hover:bg-surface-2 transition-colors">上一页</button>
+        <span class="text-xs text-text-tertiary">{{ page }} / {{ totalPages }}</span>
+        <button @click="page < totalPages && (page++, fetchData())" :disabled="page >= totalPages" class="px-3 py-1.5 text-xs border border-surface-3 rounded-lg disabled:opacity-40 hover:bg-surface-2 transition-colors">下一页</button>
+      </div>
+    </div>
+
+    <!-- Toast -->
+    <div v-if="copyToast" class="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-lg bg-surface-0 shadow-lg border border-surface-3 text-xs text-text-primary">{{ copyToast }}</div>
+
+    <!-- Detail Modal -->
+    <div v-if="detailItem" class="fixed inset-0 z-50 flex items-center justify-center" @click.self="detailItem = null">
+      <div class="bg-white rounded-2xl shadow-[0_0_30px_rgba(0,0,0,0.12)] w-[640px] max-h-[85vh] flex flex-col overflow-hidden">
+        <!-- Image -->
+        <div class="aspect-square max-h-[50vh] bg-surface-2 flex-shrink-0 overflow-hidden relative group">
+          <img v-if="detailItem.result_path" :src="localFileUrl(detailItem.result_path)" class="w-full h-full object-contain" />
+          <div v-if="detailItem.result_path" class="absolute bottom-3 right-3 flex gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+            <button @click.stop="copyImage(detailItem.result_path)" class="w-8 h-8 rounded-lg bg-black/50 hover:bg-black/70 text-white flex items-center justify-center" title="复制图片">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.666 3.888A2.25 2.25 0 0 0 13.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 0 1-.75.75H9.75a.75.75 0 0 1-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 0 1-2.25 2.25H6.75A2.25 2.25 0 0 1 4.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 0 1 1.927-.184" /></svg>
+            </button>
+            <button @click.stop="editImage" class="w-8 h-8 rounded-lg bg-black/50 hover:bg-black/70 text-white flex items-center justify-center" title="编辑">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Z" /></svg>
+            </button>
+          </div>
+        </div>
+        <div class="p-5 overflow-y-auto flex-1">
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="text-sm font-semibold text-text-primary">创作详情</h3>
+            <button @click="detailItem = null" class="text-text-tertiary hover:text-text-primary">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
+            </button>
+          </div>
+
+          <!-- Prompt -->
+          <div class="mb-4">
+            <label class="text-xs font-medium text-text-secondary mb-1.5 block">提示词</label>
+            <div class="text-xs text-text-primary bg-surface-1 rounded-lg p-3 whitespace-pre-wrap leading-relaxed">{{ detailItem.prompt }}</div>
+          </div>
+
+          <!-- Revised prompt -->
+          <div v-if="detailItem.revised_prompt" class="mb-4">
+            <label class="text-xs font-medium text-text-secondary mb-1.5 block">优化后的提示词</label>
+            <div class="text-xs text-text-primary bg-surface-1 rounded-lg p-3 whitespace-pre-wrap leading-relaxed">{{ detailItem.revised_prompt }}</div>
+          </div>
+
+          <!-- Reference images -->
+          <div v-if="detailItem.ref_images?.length" class="mb-4">
+            <label class="text-xs font-medium text-text-secondary mb-1.5 block">参考图片</label>
+            <div class="flex gap-2 flex-wrap">
+              <img v-for="(img, i) in detailItem.ref_images" :key="i" :src="img" class="w-16 h-16 object-cover rounded-lg border border-surface-3" />
+            </div>
+          </div>
+
+          <!-- Info -->
+          <div class="flex flex-wrap gap-x-6 gap-y-2 text-xs text-text-tertiary mb-4">
+            <span>模型: {{ detailItem.model_id }}</span>
+            <span>尺寸: {{ detailItem.size }}</span>
+            <span>时间: {{ formatDate(detailItem.created_at) }}</span>
+          </div>
+
+          <!-- Actions -->
+          <div class="flex gap-2 flex-wrap">
+            <button v-if="detailItem.result_path" @click="openFolder(detailItem.result_path)" class="btn-secondary text-xs flex items-center gap-1.5">
+              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 0 0-1.883 2.542l.857 6a2.25 2.25 0 0 0 2.227 1.932H19.05a2.25 2.25 0 0 0 2.227-1.932l.857-6a2.25 2.25 0 0 0-1.883-2.542m-16.5 0V6A2.25 2.25 0 0 1 6 3.75h3.879a1.5 1.5 0 0 1 1.06.44l2.122 2.12a1.5 1.5 0 0 0 1.06.44H18A2.25 2.25 0 0 1 20.25 9v.776" /></svg>
+              打开所在目录
+            </button>
+            <button @click="useAsInspiration" class="btn-secondary text-xs flex items-center gap-1.5">
+              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.5 6H5.25A2.25 2.25 0 0 0 3 8.25v10.5A2.25 2.25 0 0 0 5.25 21h10.5A2.25 2.25 0 0 0 18 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" /></svg>
+              再次使用此提示词
+            </button>
+            <button v-if="detailItem.revised_prompt" @click="useRevisedPrompt" class="btn-secondary text-xs flex items-center gap-1.5">
+              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 0 0-2.455 2.456Z" /></svg>
+              使用优化后的提示词
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref, computed, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
+
+interface ImageGeneration {
+  id: string
+  session_id: string
+  prompt: string
+  revised_prompt: string
+  ref_images: string[]
+  model_provider_id: string
+  model_id: string
+  size: string
+  quality: string
+  result_path: string
+  result_url: string
+  status: string
+  error: string
+  created_at: string
+}
+
+function localFileUrl(path: string): string {
+  // 兼容旧绝对路径数据：以盘符或 / 开头视为绝对路径
+  const isAbsolute = /^[A-Za-z]:|^\//.test(path)
+  const param = isAbsolute ? 'p' : 'rel'
+  return 'local-file://img?' + param + '=' + encodeURIComponent(path)
+}
+
+const router = useRouter()
+const api = () => (window as any).api
+
+const items = ref<ImageGeneration[]>([])
+const search = ref('')
+const page = ref(1)
+const pageSize = 20
+const total = ref(0)
+const loading = ref(false)
+const detailItem = ref<ImageGeneration | null>(null)
+
+const periodOptions = [
+  { label: '周', value: 'week' },
+  { label: '月', value: 'month' },
+  { label: '年', value: 'year' },
+  { label: '全部', value: 'all' }
+]
+const selectedPeriod = ref('week')
+const customStart = ref('')
+const customEnd = ref('')
+
+function getDateRange(): { startDate?: string; endDate?: string } {
+  if (customStart.value) {
+    const start = customStart.value + 'T00:00:00.000Z'
+    const end = customEnd.value ? customEnd.value + 'T23:59:59.999Z' : undefined
+    return { startDate: start, endDate: end }
+  }
+  const now = new Date()
+  switch (selectedPeriod.value) {
+    case 'week': {
+      const d = new Date(now)
+      d.setDate(d.getDate() - 7)
+      return { startDate: d.toISOString() }
+    }
+    case 'month': {
+      const d = new Date(now)
+      d.setMonth(d.getMonth() - 1)
+      return { startDate: d.toISOString() }
+    }
+    case 'year': {
+      const d = new Date(now)
+      d.setFullYear(d.getFullYear() - 1)
+      return { startDate: d.toISOString() }
+    }
+    default:
+      return {}
+  }
+}
+
+function onCustomDateChange() {
+  if (customStart.value) {
+    page.value = 1
+    fetchData()
+  }
+}
+
+const totalPages = computed(() => Math.ceil(total.value / pageSize))
+
+let debounceTimer: any = null
+function debouncedFetch() {
+  clearTimeout(debounceTimer)
+  debounceTimer = setTimeout(() => {
+    page.value = 1
+    fetchData()
+  }, 300)
+}
+
+async function fetchData() {
+  loading.value = true
+  try {
+    const { startDate, endDate } = getDateRange()
+    const result = await api().imageGen.invoke('listAllGenerations', page.value, pageSize, search.value || undefined, startDate, endDate)
+    items.value = result.items
+    total.value = result.total
+  } catch (e) {
+    console.error('Failed to fetch creations:', e)
+  } finally {
+    loading.value = false
+  }
+}
+
+function openDetail(item: ImageGeneration) {
+  detailItem.value = item
+}
+
+const copyToast = ref('')
+
+async function copyImage(path: string) {
+  try {
+    const res = await window.api.clipboard.writeImage(path)
+    if (res.success) {
+      copyToast.value = '已复制到剪贴板'
+    } else {
+      copyToast.value = '复制失败: ' + (res.error || '')
+    }
+  } catch (e: any) {
+    copyToast.value = '复制失败'
+  }
+  setTimeout(() => { copyToast.value = '' }, 2000)
+}
+
+function editImage() {
+  copyToast.value = '图片编辑功能开发中'
+  setTimeout(() => { copyToast.value = '' }, 2000)
+}
+
+function openFolder(path: string) {
+  ;(window as any).api.shell.showItemInFolder(path)
+}
+
+function useAsInspiration() {
+  if (!detailItem.value) return
+  const query: Record<string, string> = { prompt: detailItem.value.prompt }
+  if (detailItem.value.ref_images?.length) {
+    sessionStorage.setItem('imageGen:refImages', JSON.stringify(detailItem.value.ref_images))
+    query.hasRefImages = '1'
+  }
+  detailItem.value = null
+  router.push({ path: '/image-gen', query })
+}
+
+function useRevisedPrompt() {
+  if (!detailItem.value || !detailItem.value.revised_prompt) return
+  const query: Record<string, string> = { prompt: detailItem.value.revised_prompt }
+  if (detailItem.value.ref_images?.length) {
+    sessionStorage.setItem('imageGen:refImages', JSON.stringify(detailItem.value.ref_images))
+    query.hasRefImages = '1'
+  }
+  detailItem.value = null
+  router.push({ path: '/image-gen', query })
+}
+
+function formatDate(dateStr: string): string {
+  try {
+    const d = new Date(dateStr)
+    return d.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+  } catch {
+    return dateStr
+  }
+}
+
+onMounted(() => {
+  fetchData()
+})
+</script>

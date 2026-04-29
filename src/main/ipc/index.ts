@@ -1,0 +1,467 @@
+import { ipcMain, BrowserWindow, dialog, clipboard, nativeImage } from 'electron'
+import * as modelProviderService from '../services/model-provider'
+import * as personaService from '../services/persona'
+import * as knowledgeService from '../services/knowledge'
+import * as botService from '../services/bot'
+import * as conversationService from '../services/conversation'
+import * as skillService from '../services/skill'
+import * as mcpServerService from '../services/mcp-server'
+import * as settingsService from '../services/settings'
+import * as dataPathService from '../services/data-path'
+import * as usageStatsService from '../services/usage-stats'
+import { sendMessage } from '../services/chat-engine'
+import { callLLM } from '../services/llm'
+import { skillPresets } from '../services/skill-presets'
+import { executeSkillSandbox } from '../services/skill-sandbox'
+import * as vectorizeService from '../services/vectorize'
+import * as vectorStoreService from '../services/vector-store'
+import * as promptSkillService from '../services/prompt-skill'
+import * as imageSessionService from '../services/image-session'
+import * as imageGenService from '../services/image-generation'
+import * as inspirationService from '../services/inspiration'
+import * as promptPresetService from '../services/prompt-preset'
+import * as backupService from '../services/backup'
+
+export function registerIpcHandlers(): void {
+  // === Model Providers ===
+  ipcMain.handle('model:list', () => modelProviderService.listModelProviders())
+  ipcMain.handle('model:get', (_, id: string) => modelProviderService.getModelProvider(id))
+  ipcMain.handle('model:create', (_, data) => modelProviderService.createModelProvider(data))
+  ipcMain.handle('model:update', (_, id: string, data) =>
+    modelProviderService.updateModelProvider(id, data)
+  )
+  ipcMain.handle('model:delete', (_, id: string) => modelProviderService.deleteModelProvider(id))
+  ipcMain.handle('model:fetchRemote', (_, apiBase: string, apiKey: string) =>
+    modelProviderService.fetchRemoteModels(apiBase, apiKey)
+  )
+
+  // === Personas ===
+  ipcMain.handle('persona:list', () => personaService.listPersonas())
+  ipcMain.handle('persona:get', (_, id: string) => personaService.getPersona(id))
+  ipcMain.handle('persona:create', (_, data) => personaService.createPersona(data))
+  ipcMain.handle('persona:update', (_, id: string, data) =>
+    personaService.updatePersona(id, data)
+  )
+  ipcMain.handle('persona:delete', (_, id: string) => personaService.deletePersona(id))
+
+  // === Knowledge Base Categories ===
+  ipcMain.handle('knowledge:listCategories', () => knowledgeService.listCategories())
+  ipcMain.handle('knowledge:getCategory', (_, id: string) => knowledgeService.getCategory(id))
+  ipcMain.handle('knowledge:createCategory', (_, data) => knowledgeService.createCategory(data))
+  ipcMain.handle('knowledge:updateCategory', (_, id: string, data) =>
+    knowledgeService.updateCategory(id, data)
+  )
+  ipcMain.handle('knowledge:deleteCategory', (_, id: string) =>
+    knowledgeService.deleteCategory(id)
+  )
+
+  // === Knowledge Bases ===
+  ipcMain.handle('knowledge:list', (_, categoryId?: string) =>
+    knowledgeService.listKnowledgeBases(categoryId)
+  )
+  ipcMain.handle('knowledge:listPaged', (_, categoryId: string, page: number, pageSize: number) =>
+    knowledgeService.listKnowledgeBasesPaged(categoryId, page, pageSize)
+  )
+  ipcMain.handle('knowledge:get', (_, id: string) => knowledgeService.getKnowledgeBase(id))
+  ipcMain.handle('knowledge:create', (_, data) => knowledgeService.createKnowledgeBase(data))
+  ipcMain.handle('knowledge:delete', (_, id: string) => knowledgeService.deleteKnowledgeBase(id))
+  ipcMain.handle('knowledge:bindFolder', (_, categoryId: string, folderPath: string) =>
+    knowledgeService.bindFolder(categoryId, folderPath)
+  )
+  ipcMain.handle('knowledge:unbindFolder', (_, categoryId: string, folderPath: string) =>
+    knowledgeService.unbindFolder(categoryId, folderPath)
+  )
+  ipcMain.handle('knowledge:sync', (_, categoryId: string) =>
+    knowledgeService.syncCategory(categoryId)
+  )
+
+  // === Bots ===
+  ipcMain.handle('bot:list', () => botService.listBots())
+  ipcMain.handle('bot:get', (_, id: string) => botService.getBot(id))
+  ipcMain.handle('bot:create', (_, data) => botService.createBot(data))
+  ipcMain.handle('bot:update', (_, id: string, data) => botService.updateBot(id, data))
+  ipcMain.handle('bot:delete', (_, id: string) => botService.deleteBot(id))
+
+  // === Conversations ===
+  ipcMain.handle('chat:listConversations', (_, botId: string) =>
+    conversationService.listConversations(botId)
+  )
+  ipcMain.handle('chat:getConversation', (_, id: string) =>
+    conversationService.getConversation(id)
+  )
+  ipcMain.handle('chat:createConversation', (_, botId: string, title?: string) =>
+    conversationService.createConversation(botId, title)
+  )
+  ipcMain.handle('chat:updateTitle', (_, id: string, title: string) =>
+    conversationService.updateConversationTitle(id, title)
+  )
+  ipcMain.handle('chat:deleteConversation', (_, id: string) =>
+    conversationService.deleteConversation(id)
+  )
+
+  // === Messages ===
+  ipcMain.handle('chat:getMessages', (_, conversationId: string) =>
+    conversationService.getMessages(conversationId)
+  )
+  ipcMain.handle('chat:sendMessage', (event, data) => {
+    const window = BrowserWindow.fromWebContents(event.sender)
+    return sendMessage(data, window)
+  })
+
+  // === File Reading ===
+  ipcMain.handle('chat:readFileBase64', async (_, filePath: string) => {
+    const { readFileSync } = require('fs')
+    return readFileSync(filePath).toString('base64')
+  })
+  ipcMain.handle('chat:readFileText', async (_, filePath: string) => {
+    const { readFileSync } = require('fs')
+    return readFileSync(filePath, 'utf-8')
+  })
+
+  // === LLM Utility ===
+  ipcMain.handle('llm:call', async (_, providerId: string, modelId: string, messages: any[]) => {
+    const result = await callLLM(providerId, { modelId, messages })
+    return result.content
+  })
+
+  // === Skills ===
+  ipcMain.handle('skill:list', () => skillService.listSkills())
+  ipcMain.handle('skill:get', (_, id: string) => skillService.getSkill(id))
+  ipcMain.handle('skill:create', (_, data) => skillService.createSkill(data))
+  ipcMain.handle('skill:update', (_, id: string, data) => skillService.updateSkill(id, data))
+  ipcMain.handle('skill:delete', (_, id: string) => skillService.deleteSkill(id))
+  ipcMain.handle('skill:presets', () => skillPresets)
+  ipcMain.handle('skill:test', async (_, implementation: string, argsJson: string) => {
+    let args = {}
+    try { args = JSON.parse(argsJson || '{}') } catch {}
+    return executeSkillSandbox(implementation, args)
+  })
+  ipcMain.handle('skill:export', (_, ids: string[]) => {
+    const skills = ids.map((id) => skillService.getSkill(id)).filter(Boolean)
+    return skills.map((s) => ({
+      name: s!.name,
+      description: s!.description,
+      function_def: s!.function_def,
+      implementation: s!.implementation,
+      version: s!.version
+    }))
+  })
+  ipcMain.handle('skill:import', (_, dataArr: any[]) => {
+    const results: any[] = []
+    for (const data of dataArr) {
+      results.push(skillService.createSkill({
+        name: data.name,
+        description: data.description || '',
+        function_def: data.function_def || {},
+        implementation: data.implementation || '',
+        version: data.version || '1.0.0'
+      }))
+    }
+    return results
+  })
+
+  // === MCP Servers ===
+  ipcMain.handle('mcp:list', () => mcpServerService.listMcpServers())
+  ipcMain.handle('mcp:get', (_, id: string) => mcpServerService.getMcpServer(id))
+  ipcMain.handle('mcp:create', (_, data) => mcpServerService.createMcpServer(data))
+  ipcMain.handle('mcp:update', (_, id: string, data) => mcpServerService.updateMcpServer(id, data))
+  ipcMain.handle('mcp:delete', (_, id: string) => mcpServerService.deleteMcpServer(id))
+  ipcMain.handle('mcp:start', (_, id: string) => mcpServerService.startMcpServer(id))
+  ipcMain.handle('mcp:stop', (_, id: string) => mcpServerService.stopMcpServer(id))
+  ipcMain.handle('mcp:status', (_, id: string) => mcpServerService.getMcpServerStatus(id))
+
+  // === Prompt Skills (SKILL.md) ===
+  ipcMain.handle('promptSkill:list', () => promptSkillService.listPromptSkills())
+  ipcMain.handle('promptSkill:getContent', (_, dirName: string) =>
+    promptSkillService.getPromptSkillContent(dirName)
+  )
+  ipcMain.handle('promptSkill:toggle', (_, dirName: string, enabled: boolean) =>
+    promptSkillService.togglePromptSkill(dirName, enabled)
+  )
+  ipcMain.handle('promptSkill:delete', (_, dirName: string) =>
+    promptSkillService.deletePromptSkill(dirName)
+  )
+  ipcMain.handle('promptSkill:create', (_, name: string, description: string, content: string) =>
+    promptSkillService.createPromptSkillFromContent(name, description, content)
+  )
+  ipcMain.handle('promptSkill:getDir', () => promptSkillService.getSkillsDirectory())
+  ipcMain.handle('promptSkill:installFromUrl', async (_, url: string) => {
+    const { installSkillFromUrl } = await import('../services/prompt-skill-installer')
+    return installSkillFromUrl(url)
+  })
+  ipcMain.handle('promptSkill:searchMarket', async (_, keyword: string) => {
+    const { searchMarketSkills } = await import('../services/prompt-skill-installer')
+    return searchMarketSkills(keyword)
+  })
+
+  // === Data Directory ===
+  ipcMain.handle('dataDir:get', () => dataPathService.getDataDir())
+  ipcMain.handle('dataDir:isFirstLaunch', () => dataPathService.isFirstLaunch())
+  ipcMain.handle('dataDir:init', (_, dir?: string) => {
+    dataPathService.initDataDir(dir)
+    return true
+  })
+  ipcMain.handle('dataDir:set', async (_, dir: string) => {
+    dataPathService.setDataDir(dir)
+    return true
+  })
+  ipcMain.handle('dataDir:pick', async () => {
+    const result = await dialog.showOpenDialog({
+      title: '选择数据存储目录',
+      defaultPath: dataPathService.getDataDir(),
+      properties: ['openDirectory', 'createDirectory']
+    })
+    if (result.canceled || !result.filePaths.length) return null
+    return result.filePaths[0]
+  })
+
+  // === Data Migration ===
+  ipcMain.handle('migration:check', () => dataPathService.checkMigration())
+  ipcMain.handle('migration:start', (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    return dataPathService.migrateFiles((current, total, fileName) => {
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('migration:progress', { current, total, fileName })
+      }
+    })
+  })
+  ipcMain.handle('migration:deleteOld', () => dataPathService.deleteOldDir())
+  ipcMain.handle('migration:skip', () => {
+    dataPathService.skipMigration()
+    return true
+  })
+
+  // === Settings ===
+  ipcMain.handle('settings:get', (_, key: string) => settingsService.getSetting(key))
+  ipcMain.handle('settings:set', (_, key: string, value: string) =>
+    settingsService.setSetting(key, value)
+  )
+  ipcMain.handle('settings:getAll', () => settingsService.getAllSettings())
+
+  // === Vector Connection Test ===
+  ipcMain.handle('settings:testVector', async (_, apiBase: string, apiKey: string, model: string) => {
+    const url = apiBase.replace(/\/+$/, '') + '/embeddings'
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ model, input: ['test'] })
+    })
+    if (!response.ok) {
+      const errorText = await response.text()
+      throw new Error(`${response.status}: ${errorText}`)
+    }
+    const data = await response.json()
+    if (!data.data || !Array.isArray(data.data) || !data.data[0]?.embedding) {
+      throw new Error('返回格式异常')
+    }
+    return { dimension: data.data[0].embedding.length }
+  })
+
+  // === Vectorize ===
+  ipcMain.handle('vectorize:document', (event, knowledgeBaseId: string) => {
+    const window = BrowserWindow.fromWebContents(event.sender)
+    return vectorizeService.vectorizeDocument(knowledgeBaseId, window)
+  })
+  ipcMain.handle('vectorize:category', (event, categoryId: string) => {
+    const window = BrowserWindow.fromWebContents(event.sender)
+    return vectorizeService.vectorizeCategory(categoryId, window)
+  })
+  ipcMain.handle('vectorize:resetCategory', (event, categoryId: string) => {
+    const window = BrowserWindow.fromWebContents(event.sender)
+    return vectorizeService.resetAndVectorizeCategory(categoryId, window)
+  })
+  ipcMain.handle('vectorize:all', (event) => {
+    const window = BrowserWindow.fromWebContents(event.sender)
+    return vectorizeService.vectorizeAll(window)
+  })
+  ipcMain.handle('vectorize:stats', () => vectorizeService.getVectorStatsForUI())
+  ipcMain.handle('vectorize:chunkCount', (_, knowledgeBaseId: string) =>
+    vectorStoreService.getChunkCountByKnowledgeBaseId(knowledgeBaseId)
+  )
+
+  // === Usage Stats ===
+  ipcMain.handle('usage:getAll', () => usageStatsService.getAllUsageStats())
+  ipcMain.handle('usage:getProvider', (_, providerId: string) =>
+    usageStatsService.getProviderUsageStats(providerId)
+  )
+  ipcMain.handle('usage:clear', (_, providerId?: string) =>
+    usageStatsService.clearUsageStats(providerId)
+  )
+
+  // === Dialog ===
+  ipcMain.handle('dialog:openFile', async (_, options) => {
+    const result = await dialog.showOpenDialog(options)
+    return result
+  })
+
+  // === Shell ===
+  ipcMain.handle('shell:openPath', async (_, path: string) => {
+    const { shell } = require('electron')
+    return shell.openPath(path)
+  })
+  ipcMain.handle('shell:showItemInFolder', (_, path: string) => {
+    const { shell } = require('electron')
+    // 如果是相对路径（不以盘符或 / 开头），拼接数据目录
+    if (path && !/^[A-Za-z]:|^\//.test(path)) {
+      path = require('path').join(dataPathService.getDataDir(), path)
+    }
+    shell.showItemInFolder(path)
+  })
+  ipcMain.handle('shell:openExternal', async (_, url: string) => {
+    const { shell } = require('electron')
+    return shell.openExternal(url)
+  })
+
+  // === Image Generation Sessions ===
+  ipcMain.handle('imageGen:listSessions', () => imageSessionService.listImageSessions())
+  ipcMain.handle('imageGen:getSession', (_, id: string) => imageSessionService.getImageSession(id))
+  ipcMain.handle('imageGen:createSession', (_, data?) => imageSessionService.createImageSession(data))
+  ipcMain.handle('imageGen:updateSession', (_, id: string, data) =>
+    imageSessionService.updateImageSession(id, data)
+  )
+  ipcMain.handle('imageGen:deleteSession', (_, id: string) =>
+    imageSessionService.deleteImageSession(id)
+  )
+
+  // === Image Generations ===
+  ipcMain.handle('imageGen:listGenerations', (_, sessionId: string) =>
+    imageGenService.listGenerations(sessionId)
+  )
+  ipcMain.handle('imageGen:listRecentGenerations', (_, limit?: number) =>
+    imageGenService.listRecentGenerations(limit)
+  )
+  ipcMain.handle('imageGen:listAllGenerations', (_, page: number, pageSize: number, search?: string, startDate?: string, endDate?: string) =>
+    imageGenService.listAllGenerations(page, pageSize, search, startDate, endDate)
+  )
+  ipcMain.handle('imageGen:generate', (event, options) => {
+    const window = BrowserWindow.fromWebContents(event.sender)
+    return imageGenService.generateImages(options, window)
+  })
+  ipcMain.handle('imageGen:deleteGeneration', (_, id: string) =>
+    imageGenService.deleteGeneration(id)
+  )
+  ipcMain.handle('imageGen:deleteGenerations', (_, ids: string[]) =>
+    imageGenService.deleteGenerations(ids)
+  )
+
+  // === Inspirations ===
+  ipcMain.handle('imageGen:listInspirations', (_, options?) =>
+    inspirationService.listInspirations(options)
+  )
+  ipcMain.handle('imageGen:getInspiration', (_, id: string) =>
+    inspirationService.getInspiration(id)
+  )
+  ipcMain.handle('imageGen:fetchOnlineInspirations', (_, options?) =>
+    inspirationService.fetchOnlineInspirations(options)
+  )
+
+  // === Prompt Presets ===
+  ipcMain.handle('promptPreset:listCategories', (_, type?: string) =>
+    promptPresetService.listCategories(type)
+  )
+  ipcMain.handle('promptPreset:createCategory', (_, data) =>
+    promptPresetService.createCategory(data)
+  )
+  ipcMain.handle('promptPreset:updateCategory', (_, id: string, data) =>
+    promptPresetService.updateCategory(id, data)
+  )
+  ipcMain.handle('promptPreset:deleteCategory', (_, id: string) =>
+    promptPresetService.deleteCategory(id)
+  )
+  ipcMain.handle('promptPreset:listPresets', (_, type?: string) =>
+    promptPresetService.listPresets(type)
+  )
+  ipcMain.handle('promptPreset:listByCategory', (_, categoryId: string) =>
+    promptPresetService.listPresetsByCategory(categoryId)
+  )
+  ipcMain.handle('promptPreset:createPreset', (_, data) =>
+    promptPresetService.createPreset(data)
+  )
+  ipcMain.handle('promptPreset:updatePreset', (_, id: string, data) =>
+    promptPresetService.updatePreset(id, data)
+  )
+  ipcMain.handle('promptPreset:deletePreset', (_, id: string) =>
+    promptPresetService.deletePreset(id)
+  )
+
+  // === Clipboard ===
+  ipcMain.handle('clipboard:writeImage', async (_, filePath: string) => {
+    try {
+      const { existsSync } = require('fs') as typeof import('fs')
+      const { resolve } = require('path') as typeof import('path')
+
+      let absPath = filePath
+      if (!/^[A-Za-z]:/.test(filePath) && !filePath.startsWith('/')) {
+        absPath = resolve(dataPathService.getDataDir(), filePath)
+      }
+      if (!existsSync(absPath)) return { success: false, error: '文件不存在' }
+
+      const img = nativeImage.createFromPath(absPath)
+      if (img.isEmpty()) return { success: false, error: '无法读取图片' }
+      clipboard.writeImage(img)
+      return { success: true }
+    } catch (e: any) {
+      return { success: false, error: e?.message || String(e) }
+    }
+  })
+
+  // === Backup ===
+  ipcMain.handle('backup:list', () => backupService.listBackups())
+  ipcMain.handle('backup:db', () => backupService.backupDatabase())
+  ipcMain.handle('backup:full', (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    return backupService.backupFull((current, total, fileName) => {
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('backup:progress', { current, total, fileName })
+      }
+    })
+  })
+  ipcMain.handle('backup:restoreDb', (_, fileName: string) =>
+    backupService.restoreDatabase(fileName)
+  )
+  ipcMain.handle('backup:restoreFull', (event, fileName: string) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    return backupService.restoreFull(fileName, (current, total, fn) => {
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('backup:progress', { current, total, fileName: fn })
+      }
+    })
+  })
+  ipcMain.handle('backup:delete', (_, fileName: string) => backupService.deleteBackup(fileName))
+  ipcMain.handle('backup:getSettings', () => ({
+    interval: backupService.getAutoBackupInterval(),
+    maxCount: backupService.getMaxBackupCount()
+  }))
+  ipcMain.handle('backup:setSettings', (_, interval: string, maxCount: number) => {
+    backupService.setAutoBackupInterval(interval)
+    backupService.setMaxBackupCount(maxCount)
+  })
+
+  // === Window Controls ===
+  ipcMain.on('window:minimize', (event) => {
+    BrowserWindow.fromWebContents(event.sender)?.minimize()
+  })
+  ipcMain.on('window:maximize', (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (win?.isMaximized()) {
+      win.unmaximize()
+    } else {
+      win?.maximize()
+    }
+  })
+  ipcMain.on('window:close', (event) => {
+    BrowserWindow.fromWebContents(event.sender)?.close()
+  })
+  ipcMain.on('window:setTitleBarOverlay', (event, options: { color: string; symbolColor: string }) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (win) {
+      try {
+        win.setTitleBarOverlay({ color: options.color, symbolColor: options.symbolColor, height: 36 })
+      } catch (e) {
+        console.error('setTitleBarOverlay error:', e)
+      }
+    }
+  })
+}
