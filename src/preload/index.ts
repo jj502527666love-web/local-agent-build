@@ -73,6 +73,10 @@ const api = {
       ipcRenderer.on('imageGen:progress', (_event, data) => callback(data)),
     offProgress: () => ipcRenderer.removeAllListeners('imageGen:progress')
   },
+  canvas: {
+    invoke: (channel: string, ...args: unknown[]) =>
+      ipcRenderer.invoke(`canvas:${channel}`, ...args)
+  },
   clipboard: {
     writeImage: (filePath: string) => ipcRenderer.invoke('clipboard:writeImage', filePath)
   },

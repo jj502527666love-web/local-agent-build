@@ -21,6 +21,7 @@ import * as imageGenService from '../services/image-generation'
 import * as inspirationService from '../services/inspiration'
 import * as promptPresetService from '../services/prompt-preset'
 import * as backupService from '../services/backup'
+import * as canvasService from '../services/canvas'
 
 export function registerIpcHandlers(): void {
   // === Model Providers ===
@@ -464,4 +465,24 @@ export function registerIpcHandlers(): void {
       }
     }
   })
+
+  // === Canvas ===
+  ipcMain.handle('canvas:listProjects', () => canvasService.listProjects())
+  ipcMain.handle('canvas:getProject', (_, id: string) => canvasService.getProject(id))
+  ipcMain.handle('canvas:createProject', (_, data) => canvasService.createProject(data))
+  ipcMain.handle('canvas:updateProject', (_, id: string, data) => canvasService.updateProject(id, data))
+  ipcMain.handle('canvas:deleteProject', (_, id: string) => canvasService.deleteProject(id))
+  ipcMain.handle('canvas:listNodes', (_, projectId: string) => canvasService.listNodes(projectId))
+  ipcMain.handle('canvas:getNode', (_, id: string) => canvasService.getNode(id))
+  ipcMain.handle('canvas:createNode', (_, projectId: string, data) => canvasService.createNode(projectId, data))
+  ipcMain.handle('canvas:updateNode', (_, id: string, data) => canvasService.updateNode(id, data))
+  ipcMain.handle('canvas:updateNodePositions', (_, updates) => canvasService.updateNodePositions(updates))
+  ipcMain.handle('canvas:deleteNode', (_, id: string) => {
+    canvasService.deleteEdgesByNodeId(id)
+    return canvasService.deleteNode(id)
+  })
+  ipcMain.handle('canvas:listEdges', (_, projectId: string) => canvasService.listEdges(projectId))
+  ipcMain.handle('canvas:createEdge', (_, projectId: string, data) => canvasService.createEdge(projectId, data))
+  ipcMain.handle('canvas:deleteEdge', (_, id: string) => canvasService.deleteEdge(id))
+  ipcMain.handle('canvas:saveProjectState', (_, projectId: string, nodes) => canvasService.saveProjectState(projectId, nodes))
 }

@@ -1,0 +1,93 @@
+<template>
+  <div class="canvas-node" :style="{ borderColor: '#6366f1' }">
+    <div class="node-header" style="background: #eef2ff; color: #4338ca;">
+      <span class="node-type-dot" style="background: #6366f1;"></span>
+      文本输入
+      <button @click.stop="showPreset = !showPreset" :disabled="data.locked" class="px-1.5 py-0.5 rounded text-[9px] text-indigo-500 hover:bg-indigo-100 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" style="margin-left: auto;">预设</button>
+      <button @click="deleteNode" :disabled="data.locked" class="node-delete-btn" style="margin-left: 0;">
+        <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
+      </button>
+    </div>
+    <div class="node-body">
+      <textarea
+        v-model="text"
+        @change="saveData"
+        placeholder="输入提示词文本..."
+        rows="4"
+        class="node-textarea nodrag nopan"
+        :disabled="data.locked"
+      ></textarea>
+    </div>
+    <Handle type="source" :position="Position.Right" id="output" class="handle-text" />
+  </div>
+
+  <Teleport to="body">
+    <div v-if="showPreset" class="fixed inset-0 z-[9999] flex items-center justify-center" @click.self="showPreset = false">
+      <div class="w-[420px] max-h-[60vh] bg-surface-0 border border-surface-3 rounded-2xl shadow-xl flex flex-col">
+        <div class="flex items-center justify-between px-5 py-3 border-b border-surface-3">
+          <h3 class="text-sm font-semibold text-text-primary">预设提示词</h3>
+          <button @click="showPreset = false" class="p-1 rounded-lg text-text-tertiary hover:text-text-primary hover:bg-surface-2 transition-colors">
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18 18 6M6 6l12 12" /></svg>
+          </button>
+        </div>
+        <div class="flex-1 overflow-y-auto p-4 space-y-4">
+          <template v-if="presetGroups.length">
+            <div v-for="cat in presetGroups" :key="cat.id">
+              <div class="text-[10px] font-semibold text-text-tertiary uppercase tracking-wide mb-2">{{ cat.name }}</div>
+              <div class="grid grid-cols-2 gap-2">
+                <button
+                  v-for="item in cat.items"
+                  :key="item.id"
+                  @click="applyPreset(item.content)"
+                  class="text-left p-3 rounded-xl border border-surface-3 hover:border-primary-400 hover:bg-primary-50 transition-colors"
+                >
+                  <div class="text-xs font-medium text-text-primary mb-1">{{ item.label }}</div>
+                  <div class="text-[10px] text-text-tertiary line-clamp-2">{{ item.content }}</div>
+                </button>
+              </div>
+            </div>
+          </template>
+          <div v-else class="px-3 py-8 text-xs text-text-disabled text-center">暂无预设提示词</div>
+        </div>
+      </div>
+    </div>
+  </Teleport>
+</template>
+
+<script setup lang="ts">
+import { ref, computed, watch, onMounted } from 'vue'
+import { Handle, Position } from '@vue-flow/core'
+import { useCanvasStore } from '@/stores/canvas'
+import { usePromptPresetStore } from '@/stores/prompt-presets'
+
+const props = defineProps<{ data: Record<string, any> }>()
+const canvasStore = useCanvasStore()
+const presetStore = usePromptPresetStore()
+
+const text = ref(props.data.text || '')
+const showPreset = ref(false)
+
+const presetGroups = computed(() => presetStore.visibleGrouped('image_gen'))
+
+watch(() => props.data.text, (v) => { if (v !== text.value) text.value = v || '' })
+
+function saveData() {
+  if (!props.data.nodeId) return
+  canvasStore.updateNode(props.data.nodeId, {
+    data: { ...props.data, text: text.value }
+  })
+}
+
+function applyPreset(content: string) {
+  text.value = content
+  showPreset.value = false
+  saveData()
+}
+
+function deleteNode() {
+  if (!props.data.nodeId) return
+  canvasStore.removeNode(props.data.nodeId)
+}
+
+onMounted(() => { presetStore.fetchAll('image_gen') })
+</script>

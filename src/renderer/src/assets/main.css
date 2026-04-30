@@ -256,3 +256,111 @@
   margin: 8px 0;
 }
 .prose img:hover { opacity: 0.85; }
+
+/* === Canvas Node Styles === */
+.canvas-node {
+  width: 220px;
+  background: var(--surface-0);
+  border: 2px solid var(--surface-3);
+  border-radius: 12px;
+  overflow: hidden;
+  font-size: 12px;
+  user-select: none;
+}
+.canvas-node-wide {
+  width: 260px;
+}
+.node-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  position: relative;
+}
+.node-type-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.node-delete-btn {
+  margin-left: auto;
+  padding: 2px;
+  border-radius: 4px;
+  color: inherit;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s;
+}
+.canvas-node:hover .node-delete-btn {
+  opacity: 0.5;
+}
+.node-delete-btn:hover {
+  opacity: 1 !important;
+  background: rgba(0,0,0,0.06);
+}
+.node-body {
+  padding: 8px 10px 10px;
+}
+.node-label {
+  display: block;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-tertiary);
+  margin-bottom: 3px;
+}
+.node-textarea {
+  width: 100%;
+  padding: 6px 8px;
+  font-size: 11px;
+  line-height: 1.5;
+  border: 1px solid var(--surface-3);
+  border-radius: 6px;
+  background: var(--surface-1);
+  color: var(--text-primary);
+  resize: vertical;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.node-textarea:focus {
+  border-color: #6366f1;
+}
+.node-select {
+  width: 100%;
+  padding: 4px 6px;
+  font-size: 10px;
+  border: 1px solid var(--surface-3);
+  border-radius: 6px;
+  background: var(--surface-1);
+  color: var(--text-primary);
+  outline: none;
+}
+.node-select:focus {
+  border-color: #6366f1;
+}
+
+/* Handle colors by data type */
+.handle-text {
+  border-color: #6366f1 !important;
+}
+.handle-image {
+  border-color: #10b981 !important;
+}
+
+/* Execution state borders */
+.canvas-node[data-status="running"] {
+  border-color: #f59e0b !important;
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.15);
+}
+.canvas-node[data-status="done"] {
+  border-color: #22c55e !important;
+}
+.canvas-node[data-status="error"] {
+  border-color: #ef4444 !important;
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.12);
+}
+.canvas-node[data-status="blocked"] {
+  border-color: #9ca3af !important;
+  opacity: 0.7;
+}

@@ -50,6 +50,18 @@ function runMigrations(): void {
   if (!botColNames.includes('prompt_skill_dirs')) {
     db.exec("ALTER TABLE bots ADD COLUMN prompt_skill_dirs TEXT NOT NULL DEFAULT '[]'")
   }
+  // canvas_projects: add model provider columns
+  const canvasCols = db.prepare("PRAGMA table_info(canvas_projects)").all() as any[]
+  const canvasColNames = canvasCols.map((c: any) => c.name)
+  if (canvasCols.length > 0 && !canvasColNames.includes('text_provider_id')) {
+    db.exec("ALTER TABLE canvas_projects ADD COLUMN text_provider_id TEXT NOT NULL DEFAULT ''")
+    db.exec("ALTER TABLE canvas_projects ADD COLUMN text_model_id TEXT NOT NULL DEFAULT ''")
+    db.exec("ALTER TABLE canvas_projects ADD COLUMN image_provider_id TEXT NOT NULL DEFAULT ''")
+    db.exec("ALTER TABLE canvas_projects ADD COLUMN image_model_id TEXT NOT NULL DEFAULT ''")
+  }
+  if (canvasCols.length > 0 && !canvasColNames.includes('concurrency')) {
+    db.exec("ALTER TABLE canvas_projects ADD COLUMN concurrency INTEGER NOT NULL DEFAULT 1")
+  }
   // Populate FTS index from existing chunks if FTS table is empty
   const ftsCount = (db.prepare("SELECT COUNT(*) as cnt FROM vector_chunks_fts").get() as any).cnt
   const chunkCount = (db.prepare("SELECT COUNT(*) as cnt FROM vector_chunks").get() as any).cnt

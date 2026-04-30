@@ -61,6 +61,7 @@ import IconInspiration from '@/components/icons/IconInspiration.vue'
 import IconCreation from '@/components/icons/IconCreation.vue'
 import IconBatchGen from '@/components/icons/IconBatchGen.vue'
 import IconPrompt from '@/components/icons/IconPrompt.vue'
+import IconCanvas from '@/components/icons/IconCanvas.vue'
 
 const route = useRoute()
 const pageTitle = computed(() => (route.meta?.title as string) || '')
@@ -76,6 +77,7 @@ const navItems = [
   { path: '/mcps', label: 'MCP服务', icon: IconMcp },
   { path: '/image-gen', label: 'AI 生图', icon: IconImageGen },
   { path: '/batch-gen', label: '批量生图', icon: IconBatchGen },
+  { path: '/canvas', label: '流式画布', icon: IconCanvas },
   { path: '/inspiration', label: '灵感广场', icon: IconInspiration },
   { path: '/my-creations', label: '我的创作', icon: IconCreation },
   { path: '/prompts', label: '提示词', icon: IconPrompt }

@@ -209,3 +209,45 @@ CREATE TABLE IF NOT EXISTS prompt_presets (
 
 CREATE INDEX IF NOT EXISTS idx_prompt_presets_type ON prompt_presets(type);
 CREATE INDEX IF NOT EXISTS idx_prompt_presets_category ON prompt_presets(category_id);
+
+CREATE TABLE IF NOT EXISTS canvas_projects (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL DEFAULT 'New Canvas',
+  text_provider_id TEXT NOT NULL DEFAULT '',
+  text_model_id TEXT NOT NULL DEFAULT '',
+  image_provider_id TEXT NOT NULL DEFAULT '',
+  image_model_id TEXT NOT NULL DEFAULT '',
+  concurrency INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS canvas_nodes (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  type TEXT NOT NULL,
+  position_x REAL NOT NULL DEFAULT 0,
+  position_y REAL NOT NULL DEFAULT 0,
+  width REAL NOT NULL DEFAULT 240,
+  height REAL NOT NULL DEFAULT 0,
+  data TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (project_id) REFERENCES canvas_projects(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_canvas_nodes_project ON canvas_nodes(project_id);
+
+CREATE TABLE IF NOT EXISTS canvas_edges (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  source_node_id TEXT NOT NULL,
+  source_handle TEXT NOT NULL DEFAULT 'output',
+  target_node_id TEXT NOT NULL,
+  target_handle TEXT NOT NULL DEFAULT 'input',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (project_id) REFERENCES canvas_projects(id) ON DELETE CASCADE,
+  FOREIGN KEY (source_node_id) REFERENCES canvas_nodes(id) ON DELETE CASCADE,
+  FOREIGN KEY (target_node_id) REFERENCES canvas_nodes(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_canvas_edges_project ON canvas_edges(project_id);

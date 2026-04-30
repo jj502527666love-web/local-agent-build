@@ -76,6 +76,18 @@ export const routes: RouteRecordRaw[] = [
         meta: { title: '我的创作' }
       },
       {
+        path: 'canvas',
+        name: 'canvas',
+        component: () => import('@/views/canvas/CanvasListView.vue'),
+        meta: { title: '流式画布' }
+      },
+      {
+        path: 'canvas/:id',
+        name: 'canvasEditor',
+        component: () => import('@/views/canvas/CanvasEditorView.vue'),
+        meta: { title: '流式画布编辑' }
+      },
+      {
         path: 'prompts',
         name: 'prompts',
         component: () => import('@/views/prompts/PromptManageView.vue'),
