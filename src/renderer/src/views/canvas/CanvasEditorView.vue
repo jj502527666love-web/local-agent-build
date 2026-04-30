@@ -115,7 +115,7 @@
             <label class="form-label">文本处理服务商</label>
             <select v-model="settingsForm.text_provider_id" class="select-field" @change="settingsForm.text_model_id = ''">
               <option value="">-- 请选择 --</option>
-              <option v-for="p in providers" :key="p.id" :value="p.id">{{ p.name }}</option>
+              <option v-for="p in textProviders" :key="p.id" :value="p.id">{{ p.name }}</option>
             </select>
           </div>
           <div v-if="settingsForm.text_provider_id">
@@ -129,7 +129,7 @@
             <label class="form-label">生图服务商</label>
             <select v-model="settingsForm.image_provider_id" class="select-field" @change="settingsForm.image_model_id = ''">
               <option value="">-- 请选择 --</option>
-              <option v-for="p in providers" :key="p.id" :value="p.id">{{ p.name }}</option>
+              <option v-for="p in imageProviders" :key="p.id" :value="p.id">{{ p.name }}</option>
             </select>
           </div>
           <div v-if="settingsForm.image_provider_id">
@@ -214,7 +214,14 @@ const customEdgeTypes: Record<string, any> = {
 const nodeTypes: NodeTypeDef[] = NODE_TYPE_DEFS
 
 // Settings
-const providers = computed(() => modelStore.providers)
+const IMAGE_KEYWORDS = ['image', 'dall-e', 'flux', 'stable-diffusion', 'sdxl', 'cogview', 'wanx', 'kolors', 'gpt-image', 'jimeng', 'seedream', 'kling', 'midjourney', 'mj-', 'ideogram', 'recraft', 'playground', 'kandinsky', 'pixart']
+const LANGUAGE_KEYWORDS = ['gpt', 'claude', 'qwen', 'glm', 'kimi', 'deepseek', 'llama', 'mistral', 'gemma', 'yi-', 'baichuan', 'internlm', 'chat', 'turbo', 'lite', 'plus', 'pro', 'max', 'sonnet', 'opus', 'haiku', 'gemini', 'doubao', 'hunyuan', 'spark', 'ernie', 'abab', 'moonshot', 'step-', 'command-r', 'phi-', 'wizardlm', 'vicuna', 'openchat', 'solar', 'o1-', 'o3-', 'o4-']
+const NON_LANGUAGE_KEYWORDS = ['image', 'dall-e', 'flux', 'stable-diffusion', 'sdxl', 'cogview', 'wanx', 'kolors', 'embedding', 'embed', 'bge', 'e5-', 'text-embedding', 'tts', 'whisper', 'audio', 'speech', 'asr', 'rerank', 'reranker', 'jimeng', 'seedream', 'kling', 'midjourney', 'mj-', 'ideogram', 'recraft', 'playground', 'kandinsky', 'pixart', 'gpt-image']
+function isImageModel(m: string) { const l = m.toLowerCase(); return IMAGE_KEYWORDS.some(k => l.includes(k)) }
+function isLanguageModel(m: string) { const l = m.toLowerCase(); if (NON_LANGUAGE_KEYWORDS.some(k => l.includes(k))) return false; return LANGUAGE_KEYWORDS.some(k => l.includes(k)) }
+
+const textProviders = computed(() => modelStore.providers.filter(p => p.models.some(isLanguageModel) || !p.models.length))
+const imageProviders = computed(() => modelStore.providers.filter(p => p.models.some(isImageModel) || !p.models.length))
 const settingsForm = ref({
   title: '',
   text_provider_id: '',
@@ -225,13 +232,17 @@ const settingsForm = ref({
 })
 
 const settingsTextModels = computed(() => {
-  const p = providers.value.find((p) => p.id === settingsForm.value.text_provider_id)
-  return p ? (Array.isArray(p.models) ? p.models : []) : []
+  const p = modelStore.providers.find((p) => p.id === settingsForm.value.text_provider_id)
+  if (!p) return []
+  const filtered = p.models.filter(isLanguageModel)
+  return filtered.length ? filtered : p.models
 })
 
 const settingsImageModels = computed(() => {
-  const p = providers.value.find((p) => p.id === settingsForm.value.image_provider_id)
-  return p ? (Array.isArray(p.models) ? p.models : []) : []
+  const p = modelStore.providers.find((p) => p.id === settingsForm.value.image_provider_id)
+  if (!p) return []
+  const filtered = p.models.filter(isImageModel)
+  return filtered.length ? filtered : p.models
 })
 
 function openSettings() {

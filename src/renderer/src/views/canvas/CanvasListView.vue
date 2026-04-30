@@ -93,7 +93,7 @@
             <label class="form-label">文本处理服务商</label>
             <select v-model="createForm.text_provider_id" class="select-field" @change="onTextProviderChange">
               <option value="">-- 请选择 --</option>
-              <option v-for="p in providers" :key="p.id" :value="p.id">{{ p.name }}</option>
+              <option v-for="p in textProviders" :key="p.id" :value="p.id">{{ p.name }}</option>
             </select>
           </div>
           <div v-if="createForm.text_provider_id">
@@ -107,7 +107,7 @@
             <label class="form-label">生图服务商</label>
             <select v-model="createForm.image_provider_id" class="select-field" @change="onImageProviderChange">
               <option value="">-- 请选择 --</option>
-              <option v-for="p in providers" :key="p.id" :value="p.id">{{ p.name }}</option>
+              <option v-for="p in imageProviders" :key="p.id" :value="p.id">{{ p.name }}</option>
             </select>
           </div>
           <div v-if="createForm.image_provider_id">
@@ -136,7 +136,7 @@
 import { ref, computed, onMounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { useCanvasStore } from '@/stores/canvas'
-import { useModelStore, type ModelProvider } from '@/stores/models'
+import { useModelStore } from '@/stores/models'
 
 const router = useRouter()
 const canvasStore = useCanvasStore()
@@ -149,7 +149,14 @@ const renameTitle = ref('')
 const renameInputRef = ref<HTMLInputElement | null>(null)
 const showCreateDialog = ref(false)
 
-const providers = computed(() => modelStore.providers)
+const IMAGE_KEYWORDS = ['image', 'dall-e', 'flux', 'stable-diffusion', 'sdxl', 'cogview', 'wanx', 'kolors', 'gpt-image', 'jimeng', 'seedream', 'kling', 'midjourney', 'mj-', 'ideogram', 'recraft', 'playground', 'kandinsky', 'pixart']
+const LANGUAGE_KEYWORDS = ['gpt', 'claude', 'qwen', 'glm', 'kimi', 'deepseek', 'llama', 'mistral', 'gemma', 'yi-', 'baichuan', 'internlm', 'chat', 'turbo', 'lite', 'plus', 'pro', 'max', 'sonnet', 'opus', 'haiku', 'gemini', 'doubao', 'hunyuan', 'spark', 'ernie', 'abab', 'moonshot', 'step-', 'command-r', 'phi-', 'wizardlm', 'vicuna', 'openchat', 'solar', 'o1-', 'o3-', 'o4-']
+const NON_LANGUAGE_KEYWORDS = ['image', 'dall-e', 'flux', 'stable-diffusion', 'sdxl', 'cogview', 'wanx', 'kolors', 'embedding', 'embed', 'bge', 'e5-', 'text-embedding', 'tts', 'whisper', 'audio', 'speech', 'asr', 'rerank', 'reranker', 'jimeng', 'seedream', 'kling', 'midjourney', 'mj-', 'ideogram', 'recraft', 'playground', 'kandinsky', 'pixart', 'gpt-image']
+function isImageModel(m: string) { const l = m.toLowerCase(); return IMAGE_KEYWORDS.some(k => l.includes(k)) }
+function isLanguageModel(m: string) { const l = m.toLowerCase(); if (NON_LANGUAGE_KEYWORDS.some(k => l.includes(k))) return false; return LANGUAGE_KEYWORDS.some(k => l.includes(k)) }
+
+const textProviders = computed(() => modelStore.providers.filter(p => p.models.some(isLanguageModel) || !p.models.length))
+const imageProviders = computed(() => modelStore.providers.filter(p => p.models.some(isImageModel) || !p.models.length))
 
 const createForm = ref({
   title: '',
@@ -161,13 +168,17 @@ const createForm = ref({
 })
 
 const textModels = computed(() => {
-  const p = providers.value.find((p: ModelProvider) => p.id === createForm.value.text_provider_id)
-  return p ? (Array.isArray(p.models) ? p.models : []) : []
+  const p = modelStore.providers.find((p) => p.id === createForm.value.text_provider_id)
+  if (!p) return []
+  const filtered = p.models.filter(isLanguageModel)
+  return filtered.length ? filtered : p.models
 })
 
 const imageModels = computed(() => {
-  const p = providers.value.find((p: ModelProvider) => p.id === createForm.value.image_provider_id)
-  return p ? (Array.isArray(p.models) ? p.models : []) : []
+  const p = modelStore.providers.find((p) => p.id === createForm.value.image_provider_id)
+  if (!p) return []
+  const filtered = p.models.filter(isImageModel)
+  return filtered.length ? filtered : p.models
 })
 
 function onTextProviderChange() {
