@@ -379,9 +379,9 @@ async function deleteSingle(id: string) {
   await store.deleteGeneration(id)
 }
 
-const IMAGE_KEYWORDS = ['image', 'dall-e', 'flux', 'stable-diffusion', 'sdxl', 'cogview', 'wanx', 'kolors', 'gpt-image']
-const LANGUAGE_KEYWORDS = ['gpt', 'claude', 'qwen', 'glm', 'kimi', 'deepseek', 'llama', 'mistral', 'gemma', 'yi-', 'baichuan', 'internlm', 'chat', 'turbo', 'lite', 'plus', 'pro', 'max', 'sonnet', 'opus', 'haiku']
-const NON_LANGUAGE_KEYWORDS = ['image', 'dall-e', 'flux', 'stable-diffusion', 'sdxl', 'cogview', 'wanx', 'kolors', 'embedding', 'embed', 'bge', 'e5-', 'text-embedding', 'tts', 'whisper', 'audio', 'speech', 'asr', 'rerank', 'reranker']
+const IMAGE_KEYWORDS = ['image', 'dall-e', 'flux', 'stable-diffusion', 'sdxl', 'cogview', 'wanx', 'kolors', 'gpt-image', 'jimeng', 'seedream', 'kling', 'midjourney', 'mj-', 'ideogram', 'recraft', 'playground', 'kandinsky', 'pixart']
+const LANGUAGE_KEYWORDS = ['gpt', 'claude', 'qwen', 'glm', 'kimi', 'deepseek', 'llama', 'mistral', 'gemma', 'yi-', 'baichuan', 'internlm', 'chat', 'turbo', 'lite', 'plus', 'pro', 'max', 'sonnet', 'opus', 'haiku', 'gemini', 'doubao', 'hunyuan', 'spark', 'ernie', 'abab', 'moonshot', 'step-', 'command-r', 'phi-', 'wizardlm', 'vicuna', 'openchat', 'solar', 'o1-', 'o3-', 'o4-']
+const NON_LANGUAGE_KEYWORDS = ['image', 'dall-e', 'flux', 'stable-diffusion', 'sdxl', 'cogview', 'wanx', 'kolors', 'embedding', 'embed', 'bge', 'e5-', 'text-embedding', 'tts', 'whisper', 'audio', 'speech', 'asr', 'rerank', 'reranker', 'jimeng', 'seedream', 'kling', 'midjourney', 'mj-', 'ideogram', 'recraft', 'playground', 'kandinsky', 'pixart', 'gpt-image']
 
 function isImageModel(m: string) {
   const lower = m.toLowerCase()
