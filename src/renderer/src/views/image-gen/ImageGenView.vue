@@ -35,7 +35,7 @@
                 <textarea
                   v-model="prompt"
                   rows="5"
-                  class="w-full px-3 py-2 text-xs bg-surface-1 border border-surface-3 rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent placeholder:text-text-disabled"
+                  class="w-full px-3 py-2 text-xs bg-surface-1 border border-surface-3 rounded-lg resize-y focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent placeholder:text-text-disabled"
                   placeholder="描述你想要生成的图片..."
                 ></textarea>
                 <div v-if="optimizing" class="flex items-center gap-1.5 mt-1 text-[10px] text-text-tertiary">
@@ -404,8 +404,13 @@ const sizeOptions = [
   { label: '1:1', value: '1:1' },
   { label: '3:2', value: '3:2' },
   { label: '2:3', value: '2:3' },
+  { label: '3:4', value: '3:4' },
+  { label: '4:3', value: '4:3' },
+  { label: '4:5', value: '4:5' },
+  { label: '5:4', value: '5:4' },
   { label: '16:9', value: '16:9' },
-  { label: '9:16', value: '9:16' }
+  { label: '9:16', value: '9:16' },
+  { label: '21:9', value: '21:9' }
 ]
 
 const qualityOptions = [

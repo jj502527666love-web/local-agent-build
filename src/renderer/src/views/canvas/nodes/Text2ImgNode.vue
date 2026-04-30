@@ -56,7 +56,7 @@ const { executeSingleNode } = useWorkflowEngine()
 const api = () => (window as any).api
 
 const size = ref(props.data.size || '1:1')
-const sizes = ['1:1', '3:2', '2:3', '16:9', '9:16']
+const sizes = ['1:1', '3:2', '2:3', '3:4', '4:3', '4:5', '5:4', '16:9', '9:16', '21:9']
 
 function saveData() {
   if (!props.data.nodeId) return

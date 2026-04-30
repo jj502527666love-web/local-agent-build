@@ -35,7 +35,7 @@
           <textarea
             v-model="defaultPrompt"
             rows="4"
-            class="w-full px-3 py-2 text-xs bg-surface-1 border border-surface-3 rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent placeholder:text-text-disabled"
+            class="w-full px-3 py-2 text-xs bg-surface-1 border border-surface-3 rounded-lg resize-y focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent placeholder:text-text-disabled"
             placeholder="所有参考图的默认提示词..."
           ></textarea>
           <div v-if="optimizing" class="flex items-center gap-1.5 mt-1 text-[10px] text-text-tertiary">
@@ -208,7 +208,7 @@
               <div v-if="task.expanded" class="px-3 pb-3 space-y-3">
                 <div>
                   <label class="text-[10px] font-medium text-text-tertiary mb-1 block">自定义提示词 (留空使用默认)</label>
-                  <textarea v-model="task.customPrompt" rows="2" class="w-full px-2 py-1.5 text-[11px] bg-surface-1 border border-surface-3 rounded-md resize-none focus:outline-none focus:ring-1 focus:ring-primary-500 placeholder:text-text-disabled" placeholder="留空使用默认提示词..."></textarea>
+                  <textarea v-model="task.customPrompt" rows="2" class="w-full px-2 py-1.5 text-[11px] bg-surface-1 border border-surface-3 rounded-md resize-y focus:outline-none focus:ring-1 focus:ring-primary-500 placeholder:text-text-disabled" placeholder="留空使用默认提示词..."></textarea>
                 </div>
                 <div class="flex gap-3">
                   <div class="flex-1">
@@ -362,8 +362,13 @@ const sizeOptions = [
   { label: '1:1', value: '1:1' },
   { label: '3:2', value: '3:2' },
   { label: '2:3', value: '2:3' },
+  { label: '3:4', value: '3:4' },
+  { label: '4:3', value: '4:3' },
+  { label: '4:5', value: '4:5' },
+  { label: '5:4', value: '5:4' },
   { label: '16:9', value: '16:9' },
-  { label: '9:16', value: '9:16' }
+  { label: '9:16', value: '9:16' },
+  { label: '21:9', value: '21:9' }
 ]
 
 const qualityOptions = [
