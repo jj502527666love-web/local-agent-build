@@ -123,10 +123,14 @@
   </div>
 
   <router-view v-if="!showSetup" />
+
+  <!-- Register bonus toast (non-blocking) -->
+  <RegisterBonusToast />
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
+import RegisterBonusToast from '@/components/RegisterBonusToast.vue'
 
 const api = () => (window as any).api
 

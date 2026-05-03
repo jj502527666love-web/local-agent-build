@@ -108,6 +108,24 @@
                     <svg v-if="copiedId !== msg.id" class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.666 3.888A2.25 2.25 0 0 0 13.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 0 1-.75.75H9.75a.75.75 0 0 1-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 0 1-2.25 2.25H6.75A2.25 2.25 0 0 1 4.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 0 1 1.927-.184" /></svg>
                     <svg v-else class="w-3.5 h-3.5 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M4.5 12.75l6 6 9-13.5" /></svg>
                   </button>
+                  <div
+                    v-if="msg.role === 'assistant'"
+                    :data-dispatch-id="msg.id"
+                    class="absolute -right-8 top-9"
+                  >
+                    <button
+                      @click.stop="toggleDispatchMenu(msg.id)"
+                      :class="['transition-opacity p-1.5 rounded-lg bg-surface-2 hover:bg-surface-3 text-text-tertiary hover:text-text-primary', dispatchMenuId === msg.id ? 'opacity-100' : 'opacity-0 group-hover/msg:opacity-100']"
+                      title="发送到"
+                    >
+                      <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5" /></svg>
+                    </button>
+                    <div v-if="dispatchMenuId === msg.id" class="absolute right-0 top-full mt-1 w-32 py-1 rounded-lg bg-surface-0 border border-surface-3 shadow-[0_8px_24px_rgba(0,0,0,0.12)] z-20">
+                      <button @click.stop="dispatchTo('imageGen', msg)" class="w-full px-3 py-1.5 text-left text-xs text-text-secondary hover:bg-surface-2 hover:text-text-primary transition-colors">AI 生图</button>
+                      <button @click.stop="dispatchTo('batchGen', msg)" class="w-full px-3 py-1.5 text-left text-xs text-text-secondary hover:bg-surface-2 hover:text-text-primary transition-colors">批量生图</button>
+                      <button @click.stop="dispatchTo('canvasOrchestrate', msg)" class="w-full px-3 py-1.5 text-left text-xs text-text-secondary hover:bg-surface-2 hover:text-text-primary transition-colors">流式画布</button>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -240,7 +258,10 @@
                     :placeholder="dragging ? '松开以添加附件' : '输入消息，按 Enter 发送...'"
                     class="flex-1 px-3 py-2 text-sm bg-transparent resize-none focus:outline-none placeholder:text-text-disabled"
                   ></textarea>
-                  <button @click="send" :disabled="(!inputText.trim() && !pendingAttachments.length) || chatStore.streaming" class="w-9 h-9 flex items-center justify-center bg-primary-600 text-white rounded-xl hover:bg-primary-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all flex-shrink-0">
+                  <button v-if="chatStore.streaming" @click="chatStore.cancel()" class="w-9 h-9 flex items-center justify-center bg-red-600 text-white rounded-xl hover:bg-red-700 transition-all flex-shrink-0" title="中断当前回复">
+                    <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1.5" /></svg>
+                  </button>
+                  <button v-else @click="send" :disabled="!inputText.trim() && !pendingAttachments.length" class="w-9 h-9 flex items-center justify-center bg-primary-600 text-white rounded-xl hover:bg-primary-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all flex-shrink-0">
                     <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5" /></svg>
                   </button>
                 </div>
@@ -320,12 +341,55 @@
       </button>
     </div>
   </div>
+
+  <!-- Tool Approval Modal -->
+  <div v-if="pendingApproval" class="fixed inset-0 z-50 flex items-center justify-center pointer-events-none">
+    <div :class="['pointer-events-auto max-w-[90vw] rounded-xl bg-surface-0 shadow-[0_8px_40px_rgba(0,0,0,0.18)] border border-surface-3 overflow-hidden flex flex-col', approvalPreview ? 'w-[720px] max-h-[80vh]' : 'w-[480px]']">
+      <div class="px-5 py-3 border-b border-surface-3 flex items-center gap-2 flex-shrink-0">
+        <svg class="w-4 h-4 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" /></svg>
+        <div class="text-sm font-semibold text-text-primary">调用工具确认</div>
+      </div>
+      <div class="px-5 py-4 space-y-3 overflow-y-auto">
+        <div class="text-xs text-text-secondary">AI 请求调用工具 <code class="px-1.5 py-0.5 rounded bg-surface-2 text-primary-700 font-mono text-[11px]">{{ pendingApproval.tool }}</code>，是否允许？</div>
+
+        <!-- File write/append preview with line diff -->
+        <template v-if="approvalPreview && approvalPreview.type === 'file_write'">
+          <div class="flex items-center gap-2 text-[11px]">
+            <span :class="['px-1.5 py-0.5 rounded font-medium', approvalPreview.exists ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700']">{{ approvalPreview.exists ? '修改文件' : '新建文件' }}</span>
+            <code class="font-mono text-text-secondary truncate flex-1" :title="approvalPreview.path">{{ approvalPreview.path }}</code>
+            <span v-if="approvalDiffSummary" class="font-mono"><span class="text-emerald-600">+{{ approvalDiffSummary.adds }}</span> <span class="text-red-500">-{{ approvalDiffSummary.dels }}</span></span>
+          </div>
+          <div v-if="approvalPreview.tooLarge" class="text-[11px] text-text-tertiary">原文件超过 200KB，仅展示新内容预览。允许后原文件将被覆盖（同路径 .bak 会保留备份）。</div>
+          <div v-else-if="approvalPreview.isBinary" class="text-[11px] text-text-tertiary">原文件为二进制，仅展示新内容预览。允许后同路径 .bak 保留备份。</div>
+          <div class="rounded-lg border border-surface-3 overflow-hidden text-[11px] font-mono leading-relaxed max-h-[50vh] overflow-y-auto">
+            <div v-for="(ln, i) in approvalDiffLines" :key="i" :class="['px-3 py-0.5 whitespace-pre-wrap break-words', ln.cls]"><span class="select-none mr-2 text-text-tertiary">{{ ln.sigil }}</span>{{ ln.text }}</div>
+            <div v-if="approvalDiffTruncated" class="px-3 py-1 text-text-tertiary text-center bg-surface-2">… 剩余差异已省略</div>
+          </div>
+        </template>
+
+        <!-- run_command preview -->
+        <template v-else-if="pendingApproval.tool === 'run_command' && pendingApproval.args?.command">
+          <div class="text-[11px] text-text-secondary">将执行命令：</div>
+          <pre class="text-[12px] font-mono leading-relaxed bg-surface-2 rounded-lg p-3 max-h-48 overflow-y-auto whitespace-pre-wrap break-words text-amber-700">{{ pendingApproval.args.command }}</pre>
+          <div v-if="pendingApproval.args.cwd" class="text-[11px] text-text-tertiary">工作目录：<code class="font-mono">{{ pendingApproval.args.cwd }}</code></div>
+        </template>
+
+        <!-- Generic args fallback -->
+        <pre v-else class="text-[11px] font-mono leading-relaxed bg-surface-2 rounded-lg p-3 max-h-48 overflow-y-auto whitespace-pre-wrap break-words text-text-secondary">{{ formattedApprovalArgs }}</pre>
+      </div>
+      <div class="px-5 py-3 border-t border-surface-3 flex justify-end gap-2 flex-shrink-0">
+        <button @click="respondApproval(false)" class="px-3 py-1.5 text-xs rounded-lg border border-surface-3 hover:bg-surface-2 text-text-secondary">拒绝</button>
+        <button @click="respondApproval(true)" class="px-3 py-1.5 text-xs rounded-lg bg-primary-600 text-white hover:bg-primary-700">允许执行</button>
+      </div>
+    </div>
+  </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useChatStore } from '@/stores/chat'
+import { useHandoffStore } from '@/stores/handoff'
 import { useBotStore } from '@/stores/bots'
 import { useKnowledgeStore } from '@/stores/knowledge'
 import { useSkillStore } from '@/stores/skills'
@@ -335,6 +399,8 @@ import { usePromptPresetStore } from '@/stores/prompt-presets'
 import { renderMarkdown } from '@/utils/markdown'
 
 const route = useRoute()
+const router = useRouter()
+const handoff = useHandoffStore()
 const chatStore = useChatStore()
 const botStore = useBotStore()
 const kbStore = useKnowledgeStore()
@@ -372,6 +438,78 @@ const titleInputRef = ref<HTMLInputElement | null>(null)
 const confirmDeleteId = ref<string | null>(null)
 const copiedId = ref<string | null>(null)
 const previewImage = ref<string | null>(null)
+const dispatchMenuId = ref<string | null>(null)
+interface FileWritePreview {
+  type: 'file_write'
+  action: string
+  path: string
+  exists: boolean
+  isBinary?: boolean
+  tooLarge?: boolean
+  currentContent?: string
+  newContent: string
+}
+const pendingApproval = ref<{ request_id: string; conversation_id: string; tool: string; args: any; preview?: FileWritePreview } | null>(null)
+const formattedApprovalArgs = computed(() => {
+  const args = pendingApproval.value?.args
+  if (args == null) return ''
+  try {
+    return JSON.stringify(args, null, 2)
+  } catch {
+    return String(args)
+  }
+})
+const approvalPreview = computed<FileWritePreview | null>(() => pendingApproval.value?.preview || null)
+
+const DIFF_MAX_LINES = 1200
+const DIFF_RENDER_CAP = 600
+
+function lineDiff(a: string, b: string): { sigil: string; text: string; cls: string }[] {
+  const aL = (a || '').split('\n').slice(0, DIFF_MAX_LINES)
+  const bL = (b || '').split('\n').slice(0, DIFF_MAX_LINES)
+  const m = aL.length, n = bL.length
+  const dp: number[][] = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0))
+  for (let i = m - 1; i >= 0; i--) {
+    for (let j = n - 1; j >= 0; j--) {
+      dp[i][j] = aL[i] === bL[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1])
+    }
+  }
+  const out: { sigil: string; text: string; cls: string }[] = []
+  let i = 0, j = 0
+  while (i < m && j < n) {
+    if (aL[i] === bL[j]) { out.push({ sigil: ' ', text: aL[i], cls: '' }); i++; j++ }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) { out.push({ sigil: '-', text: aL[i], cls: 'bg-red-50 text-red-700' }); i++ }
+    else { out.push({ sigil: '+', text: bL[j], cls: 'bg-emerald-50 text-emerald-700' }); j++ }
+  }
+  while (i < m) out.push({ sigil: '-', text: aL[i++], cls: 'bg-red-50 text-red-700' })
+  while (j < n) out.push({ sigil: '+', text: bL[j++], cls: 'bg-emerald-50 text-emerald-700' })
+  return out
+}
+
+const approvalDiff = computed(() => {
+  const p = approvalPreview.value
+  if (!p) return [] as { sigil: string; text: string; cls: string }[]
+  if (typeof p.currentContent !== 'string') {
+    // No current content (new file / binary / too large): treat as all-new lines
+    return (p.newContent || '').split('\n').map((text) => ({ sigil: '+', text, cls: 'bg-emerald-50 text-emerald-700' }))
+  }
+  return lineDiff(p.currentContent, p.newContent)
+})
+const approvalDiffLines = computed(() => approvalDiff.value.slice(0, DIFF_RENDER_CAP))
+const approvalDiffTruncated = computed(() => approvalDiff.value.length > DIFF_RENDER_CAP)
+const approvalDiffSummary = computed(() => {
+  const all = approvalDiff.value
+  return {
+    adds: all.filter((l) => l.sigil === '+').length,
+    dels: all.filter((l) => l.sigil === '-').length
+  }
+})
+async function respondApproval(approved: boolean) {
+  const ap = pendingApproval.value
+  if (!ap) return
+  pendingApproval.value = null
+  await window.api.chat.invoke('respondToolApproval', ap.request_id, approved)
+}
 const loadingAttachment = ref(false)
 const dragging = ref(false)
 const MAX_ATTACHMENTS = 5
@@ -458,6 +596,12 @@ function onClickOutside(e: MouseEvent) {
   }
   if (toolbarDropdown.value && toolbarRef.value && !toolbarRef.value.contains(target)) {
     toolbarDropdown.value = ''
+  }
+  if (dispatchMenuId.value) {
+    const wrapper = (target as HTMLElement).closest('[data-dispatch-id]') as HTMLElement | null
+    if (!wrapper || wrapper.dataset.dispatchId !== dispatchMenuId.value) {
+      dispatchMenuId.value = null
+    }
   }
   if (showAttachMenu.value && attachRef.value && !attachRef.value.contains(target)) {
     showAttachMenu.value = false
@@ -676,6 +820,26 @@ async function copyMessage(msg: any) {
   } catch { /* ignore */ }
 }
 
+function toggleDispatchMenu(id: string) {
+  dispatchMenuId.value = dispatchMenuId.value === id ? null : id
+}
+
+function dispatchTo(target: 'imageGen' | 'batchGen' | 'canvasOrchestrate', msg: any) {
+  const content = (msg.content || '').trim()
+  if (!content) return
+  if (target === 'imageGen') {
+    handoff.set('imageGen', { prompt: content })
+    router.push({ name: 'imageGen' })
+  } else if (target === 'batchGen') {
+    handoff.set('batchGen', { prompt: content })
+    router.push({ name: 'batchGen' })
+  } else {
+    handoff.set('canvasOrchestrate', { description: content })
+    router.push({ name: 'canvas' })
+  }
+  dispatchMenuId.value = null
+}
+
 async function send() {
   const text = inputText.value.trim()
   if ((!text && !pendingAttachments.value.length) || chatStore.streaming) return
@@ -696,6 +860,9 @@ async function send() {
 onMounted(async () => {
   document.addEventListener('click', onClickOutside)
   chatStore.listenTitleUpdates()
+  window.api.chat.onToolApproval((data: any) => {
+    pendingApproval.value = data
+  })
   await Promise.all([
     botStore.fetchBots(),
     kbStore.fetchCategories(),
@@ -720,6 +887,7 @@ onMounted(async () => {
 onUnmounted(() => {
   document.removeEventListener('click', onClickOutside)
   chatStore.stopListenTitleUpdates()
+  window.api.chat.offToolApproval()
 })
 </script>
 

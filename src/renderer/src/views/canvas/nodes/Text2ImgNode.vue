@@ -3,6 +3,7 @@
     <div class="node-header" style="background: #fffbeb; color: #b45309;">
       <span class="node-type-dot" style="background: #f59e0b;"></span>
       文生图
+      <span class="text-[10px] font-normal opacity-60 ml-1">#{{ data.nodeIndex }}</span>
       <button @click="deleteNode" :disabled="data.locked" class="node-delete-btn">
         <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
       </button>
@@ -10,16 +11,24 @@
     <div class="node-body">
       <div class="mb-2">
         <label class="node-label">尺寸</label>
-        <div class="flex gap-1 flex-wrap">
-          <button
-            v-for="s in sizes"
-            :key="s"
-            @click="size = s; saveData()"
-            :disabled="data.locked"
-            class="px-2 py-0.5 text-[10px] rounded border transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-            :class="size === s ? 'border-amber-500 bg-amber-50 text-amber-700' : 'border-surface-3 text-text-tertiary hover:bg-surface-2'"
-          >{{ s }}</button>
-        </div>
+        <ImageSizePicker
+          v-model="size"
+          size="sm"
+          accent="amber"
+          :columns="6"
+          :disabled="data.locked"
+          :model-id="projectImageModelId"
+          :tier-id="tier"
+        />
+      </div>
+      <div class="mb-2">
+        <label class="node-label">分辨率</label>
+        <ResolutionTierPicker
+          v-model="tier"
+          size="sm"
+          :model-id="projectImageModelId"
+          :disabled="data.locked"
+        />
       </div>
       <!-- Status & Result -->
       <div v-if="data.status === 'running'" class="flex items-center gap-1.5 text-[10px] text-amber-600 mb-2">
@@ -40,30 +49,48 @@
     </div>
     <Handle type="target" :position="Position.Left" id="text-input" class="handle-text" style="top: 35%;" />
     <Handle type="target" :position="Position.Left" id="image-input" class="handle-image" style="top: 65%;" />
-    <Handle type="source" :position="Position.Right" id="output" class="handle-image" />
+    <Handle
+      type="source"
+      :position="Position.Right"
+      id="output"
+      class="handle-image"
+      @click="(e: MouseEvent) => onHandleClick?.(e, data.nodeId, 'output', 'image')"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, inject, watch, computed } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
 import { useCanvasStore } from '@/stores/canvas'
 import { useWorkflowEngine } from '../composables/useWorkflowEngine'
+import ImageSizePicker from '@/components/ImageSizePicker.vue'
+import ResolutionTierPicker from '@/components/ResolutionTierPicker.vue'
+import { DEFAULT_TIER_ID } from '@shared/image-size'
+
+type HandleClickHandler = (e: MouseEvent, nodeId: string, handleId: string, dataType: 'text' | 'image') => void
 
 const props = defineProps<{ data: Record<string, any> }>()
 const canvasStore = useCanvasStore()
 const { executeSingleNode } = useWorkflowEngine()
 const api = () => (window as any).api
+const onHandleClick = inject<HandleClickHandler | null>('onHandleClick', null)
 
 const size = ref(props.data.size || '1:1')
-const sizes = ['1:1', '3:2', '2:3', '3:4', '4:3', '4:5', '5:4', '16:9', '9:16', '21:9']
+const tier = ref<string>(props.data.tier_id || DEFAULT_TIER_ID)
+
+// v-model driven: persist whenever the user picks a preset or confirms a custom value.
+watch([size, tier], () => saveData())
 
 function saveData() {
   if (!props.data.nodeId) return
   canvasStore.updateNode(props.data.nodeId, {
-    data: { ...props.data, size: size.value }
+    data: { ...props.data, size: size.value, tier_id: tier.value }
   })
 }
+
+/** 节点展示用：从 canvas 当前项目拿生图模型 id，用于 ImageSizePicker/ResolutionTierPicker 能力域 */
+const projectImageModelId = computed(() => canvasStore.currentProject?.image_model_id || '')
 
 function getImageSrc(path: string): string {
   if (!path) return ''

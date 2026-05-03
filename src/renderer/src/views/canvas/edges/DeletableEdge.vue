@@ -18,6 +18,8 @@
 import { computed } from 'vue'
 import { BaseEdge, EdgeLabelRenderer, getBezierPath, useVueFlow } from '@vue-flow/core'
 
+defineOptions({ inheritAttrs: false })
+
 const props = defineProps<{
   id: string
   sourceX: number

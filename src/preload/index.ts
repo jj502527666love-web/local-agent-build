@@ -29,7 +29,10 @@ const api = {
     offStream: () => ipcRenderer.removeAllListeners('chat:stream'),
     onTitleUpdated: (callback: (data: unknown) => void) =>
       ipcRenderer.on('chat:titleUpdated', (_event, data) => callback(data)),
-    offTitleUpdated: () => ipcRenderer.removeAllListeners('chat:titleUpdated')
+    offTitleUpdated: () => ipcRenderer.removeAllListeners('chat:titleUpdated'),
+    onToolApproval: (callback: (data: unknown) => void) =>
+      ipcRenderer.on('chat:toolApproval', (_event, data) => callback(data)),
+    offToolApproval: () => ipcRenderer.removeAllListeners('chat:toolApproval')
   },
   skill: {
     invoke: (channel: string, ...args: unknown[]) =>
@@ -76,6 +79,12 @@ const api = {
   canvas: {
     invoke: (channel: string, ...args: unknown[]) =>
       ipcRenderer.invoke(`canvas:${channel}`, ...args)
+  },
+  cloud: {
+    setToken: (token: string | null) => ipcRenderer.invoke('cloud:setToken', token),
+    getToken: () => ipcRenderer.invoke('cloud:getToken'),
+    setPermissions: (perms: Record<string, any>) => ipcRenderer.invoke('cloud:setPermissions', perms),
+    getDeviceId: () => ipcRenderer.invoke('cloud:getDeviceId') as Promise<string>
   },
   clipboard: {
     writeImage: (filePath: string) => ipcRenderer.invoke('clipboard:writeImage', filePath)

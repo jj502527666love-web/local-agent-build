@@ -1,5 +1,9 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
+import { translateError } from '@/utils/error-message'
+
+// 说明：gen.error 始终保留后端返回的原文，友好翻译由展示层现场调用 translateError，
+// 这样详情弹窗总是能拿到英文原文，不会出现 HMR / 新旧数据结构不一致导致原文丢失的问题。
 
 export interface ImageGeneration {
   id: string
@@ -14,19 +18,53 @@ export interface ImageGeneration {
   result_path: string
   result_url: string
   status: string
+  /** 后端原文错误。展示时在 UI 层调 translateError 转换为友好文案 */
   error: string
   created_at: string
 }
 
 const api = () => (window as any).api
 
+/**
+ * 分页策略：
+ *  - items：当前页持久化数据，通过 listAllGenerations 按页拉取（仅 status=done）
+ *  - inFlight：generating/error 状态的临时项，跨页始终置顶展示，不计入 total
+ *  - completed 事件触发时：把 item 从 inFlight 移除；如果 currentPage === 1 再 prepend
+ *    到 items 顶部并裁到 pageSize；非首页只更新 total，待用户切回首页自然刷新
+ */
 export const useImageGenStore = defineStore('imageGen', () => {
-  const generations = ref<ImageGeneration[]>([])
+  /** 当前页数据（仅包含 status=done） */
+  const items = ref<ImageGeneration[]>([])
+  /** 正在生成中 / 失败的临时项，展示时永远置顶 */
+  const inFlight = ref<ImageGeneration[]>([])
+  const currentPage = ref(1)
+  const pageSize = ref(25)
+  const total = ref(0)
+  const loading = ref(false)
+
   const generating = ref(false)
   const progress = ref<{ total: number; completed: number; type: string } | null>(null)
+  const lastError = ref('')
 
-  async function fetchGenerations() {
-    generations.value = await api().imageGen.invoke('listRecentGenerations', 200)
+  /** 展示列表：inFlight 置顶 + items 分页数据 */
+  const displayList = computed<ImageGeneration[]>(() => [...inFlight.value, ...items.value])
+  /** 兼容旧消费者：等价于 displayList，供仍在读 store.generations 的代码使用 */
+  const generations = computed<ImageGeneration[]>(() => displayList.value)
+
+  async function fetchPage(page = 1, size = pageSize.value) {
+    loading.value = true
+    try {
+      const result = await api().imageGen.invoke('listAllGenerations', page, size) as {
+        items: ImageGeneration[]
+        total: number
+      }
+      items.value = result.items || []
+      total.value = result.total || 0
+      currentPage.value = page
+      pageSize.value = size
+    } finally {
+      loading.value = false
+    }
   }
 
   async function generate(options: {
@@ -35,14 +73,22 @@ export const useImageGenStore = defineStore('imageGen', () => {
     modelProviderId: string
     modelId: string
     size: string
+    /** 分辨率档位 id（1k/2k/4k），主进程据此+modelId 决定最终像素 */
+    tierId?: string
     quality?: string
     batchCount?: number
+    concurrency?: number
   }) {
     generating.value = true
+    lastError.value = ''
     progress.value = { total: options.batchCount || 1, completed: 0, type: 'start' }
     try {
-      await api().imageGen.invoke('generate', JSON.parse(JSON.stringify(options)))
-      await fetchGenerations()
+      const results = await api().imageGen.invoke('generate', JSON.parse(JSON.stringify(options))) as ImageGeneration[]
+      // 不再全量 refetch：新生成项通过 listenProgress 的 completed 事件合并进 items
+      return results || []
+    } catch (e: any) {
+      lastError.value = translateError(e.message || '')
+      return []
     } finally {
       generating.value = false
       progress.value = null
@@ -51,13 +97,40 @@ export const useImageGenStore = defineStore('imageGen', () => {
 
   async function deleteGeneration(id: string) {
     await api().imageGen.invoke('deleteGeneration', id)
-    generations.value = generations.value.filter((g) => g.id !== id)
+    const wasInItems = items.value.some(g => g.id === id)
+    items.value = items.value.filter(g => g.id !== id)
+    inFlight.value = inFlight.value.filter(g => g.id !== id)
+    if (wasInItems) total.value = Math.max(0, total.value - 1)
   }
 
   async function deleteGenerations(ids: string[]) {
     await api().imageGen.invoke('deleteGenerations', JSON.parse(JSON.stringify(ids)))
     const idSet = new Set(ids)
-    generations.value = generations.value.filter((g) => !idSet.has(g.id))
+    const before = items.value.length
+    items.value = items.value.filter(g => !idSet.has(g.id))
+    inFlight.value = inFlight.value.filter(g => !idSet.has(g.id))
+    const removed = before - items.value.length
+    if (removed > 0) total.value = Math.max(0, total.value - removed)
+  }
+
+  function mergeCompleted(gen: ImageGeneration) {
+    // 从 inFlight 移除
+    inFlight.value = inFlight.value.filter(g => g.id !== gen.id)
+    if (currentPage.value === 1) {
+      const idx = items.value.findIndex(g => g.id === gen.id)
+      if (idx >= 0) {
+        items.value[idx] = gen
+      } else {
+        items.value = [gen, ...items.value]
+        if (items.value.length > pageSize.value) {
+          items.value = items.value.slice(0, pageSize.value)
+        }
+        total.value += 1
+      }
+    } else {
+      // 非首页不改动 items，让用户切回首页时 fetchPage 自然看到新数据
+      total.value += 1
+    }
   }
 
   function listenProgress() {
@@ -69,9 +142,10 @@ export const useImageGenStore = defineStore('imageGen', () => {
         progress.value = { total: data.total, completed: data.completed, type: data.type }
       }
       if (data.type === 'generating' && data.genId) {
-        const exists = generations.value.find((g) => g.id === data.genId)
-        if (!exists) {
-          generations.value.push({
+        const existsInFlight = inFlight.value.find(g => g.id === data.genId)
+        const existsInItems = items.value.find(g => g.id === data.genId)
+        if (!existsInFlight && !existsInItems) {
+          inFlight.value.unshift({
             id: data.genId,
             session_id: '',
             prompt: '',
@@ -87,23 +161,40 @@ export const useImageGenStore = defineStore('imageGen', () => {
             error: '',
             created_at: new Date().toISOString()
           })
-        } else {
-          exists.status = 'generating'
+        } else if (existsInFlight) {
+          existsInFlight.status = 'generating'
+        } else if (existsInItems) {
+          existsInItems.status = 'generating'
         }
       }
       if (data.type === 'completed' && data.generation) {
-        const exists = generations.value.find((g) => g.id === data.generation.id)
-        if (!exists) {
-          generations.value.push(data.generation)
-        } else {
-          Object.assign(exists, data.generation)
-        }
+        mergeCompleted(data.generation)
       }
       if (data.type === 'error' && data.genId) {
-        const gen = generations.value.find((g) => g.id === data.genId)
+        // 失败项保留在 inFlight 中（状态标为 error），置顶提醒用户；
+        // 数据库里的记录由后端写入，用户点"清理失败"时再走 IPC 一并清除
+        const gen = inFlight.value.find(g => g.id === data.genId)
         if (gen) {
           gen.status = 'error'
           gen.error = data.error || ''
+        } else {
+          // 保险分支：此前 generating 事件丢失或已被合并走 completed，直接补一条
+          inFlight.value.unshift({
+            id: data.genId,
+            session_id: '',
+            prompt: '',
+            revised_prompt: '',
+            ref_images: [],
+            model_provider_id: '',
+            model_id: '',
+            size: '',
+            quality: '',
+            result_path: '',
+            result_url: '',
+            status: 'error',
+            error: data.error || '',
+            created_at: new Date().toISOString()
+          })
         }
       }
     })
@@ -114,10 +205,21 @@ export const useImageGenStore = defineStore('imageGen', () => {
   }
 
   return {
+    // 新消费者优先使用
+    items,
+    inFlight,
+    displayList,
+    currentPage,
+    pageSize,
+    total,
+    loading,
+    // 兼容旧消费者
     generations,
     generating,
     progress,
-    fetchGenerations,
+    lastError,
+    // methods
+    fetchPage,
     generate,
     deleteGeneration,
     deleteGenerations,

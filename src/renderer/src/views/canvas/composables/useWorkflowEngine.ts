@@ -1,5 +1,6 @@
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { useCanvasStore } from '@/stores/canvas'
+import { recordUsage } from '@/utils/model-usage-hints'
 import { getNodeTypeDef } from './useNodeTypes'
 
 export type TaskStatus = 'pending' | 'running' | 'done' | 'error' | 'skipped' | 'blocked'
@@ -12,10 +13,21 @@ export interface WorkflowTask {
 
 const api = () => (window as any).api
 
+// Module-level singletons so all composable consumers share the same state.
+// - workflowRunning: true while runWorkflow owns the canvas
+// - activeSingleRuns: tracks node IDs currently running via executeSingleNode
+const workflowRunning = ref(false)
+const tasks = ref<WorkflowTask[]>([])
+const nodeStatuses = ref<Map<string, TaskStatus>>(new Map())
+const activeSingleRuns = ref<Set<string>>(new Set())
+
+// Legacy alias kept for existing bindings (`workflowRunning` in view)
+const running = workflowRunning
+
+// Derived flag: any execution in flight (workflow or any single node)
+const anyRunning = computed(() => workflowRunning.value || activeSingleRuns.value.size > 0)
+
 export function useWorkflowEngine() {
-  const running = ref(false)
-  const tasks = ref<WorkflowTask[]>([])
-  const nodeStatuses = ref<Map<string, TaskStatus>>(new Map())
 
   function topologicalSort(projectId: string): string[] {
     const canvasStore = useCanvasStore()
@@ -68,12 +80,24 @@ export function useWorkflowEngine() {
       const def = getNodeTypeDef(sourceNode.type)
       if (!def) continue
 
-      const outputDef = def.outputs.find((o) => o.handle === edge.source_handle)
+      let outputDef = def.outputs.find((o) => o.handle === edge.source_handle)
+      // Dynamic outputs: match any output-* handle to the base output type
+      if (!outputDef && def.dynamicOutputs && edge.source_handle.startsWith('output-')) {
+        outputDef = def.outputs[0]
+      }
       if (!outputDef) continue
 
       if (outputDef.dataType === 'text') {
-        const text = sourceNode.data.result || sourceNode.data.text || ''
-        if (text) texts.push(text)
+        if (sourceNode.type === 'promptSlice') {
+          // For promptSlice, get text from the specific row matching the handle
+          const handleId = edge.source_handle
+          const rowId = handleId.replace('output-', '')
+          const row = (sourceNode.data.rows || []).find((r: any) => r.id === rowId)
+          if (row?.text) texts.push(row.text)
+        } else {
+          const text = sourceNode.data.result || sourceNode.data.text || ''
+          if (text) texts.push(text)
+        }
       } else if (outputDef.dataType === 'image') {
         const img = sourceNode.data.result_path || sourceNode.data.image_data || ''
         if (img) images.push(img)
@@ -130,6 +154,10 @@ export function useWorkflowEngine() {
         // Ref image nodes don't need execution
         break
 
+      case 'promptSlice':
+        // Prompt slice nodes don't need execution, they already have data
+        break
+
       case 'aiText': {
         const inputText = upstream.texts.join('\n') || node.data.text || ''
         if (!inputText) throw new Error('No text input')
@@ -146,22 +174,25 @@ export function useWorkflowEngine() {
         const result = await api().llm.invoke('call', project.text_provider_id, project.text_model_id, [
           { role: 'system', content: 'You are a helpful text assistant. Improve, expand, or refine the given text for use as an AI image generation prompt. Output only the improved text, nothing else.' },
           { role: 'user', content: inputText }
-        ])
+        ], { notifyStream: false })
 
         await canvasStore.updateNode(nodeId, {
           data: { ...node.data, text: inputText, result: result || inputText, status: 'done' }
         })
+        await recordUsage('chat', project.text_provider_id, project.text_model_id)
         break
       }
 
       case 'text2img': {
-        const prompt = upstream.texts.join('\n') || ''
-        if (!prompt) throw new Error('No prompt text connected')
-
         const project = canvasStore.currentProject
         if (!project?.image_provider_id || !project?.image_model_id) {
           throw new Error('Please configure image provider in canvas settings')
         }
+
+        const globalPrompt = project.system_prompt || ''
+        const rawPrompt = upstream.texts.join('\n') || ''
+        if (!rawPrompt) throw new Error('No prompt text connected')
+        const prompt = globalPrompt ? `${globalPrompt}\n${rawPrompt}` : rawPrompt
 
         await canvasStore.updateNode(nodeId, {
           data: { ...node.data, status: 'running' }
@@ -173,6 +204,7 @@ export function useWorkflowEngine() {
           modelProviderId: project.image_provider_id,
           modelId: project.image_model_id,
           size: node.data.size || '1:1',
+          tierId: node.data.tier_id || '2k',
           quality: node.data.quality || 'auto'
         }
 
@@ -208,6 +240,7 @@ export function useWorkflowEngine() {
               revised_prompt: gen.revised_prompt || ''
             }
           })
+          await recordUsage('image', project.image_provider_id, project.image_model_id)
         } else {
           throw new Error(gen?.error || 'Image generation failed')
         }
@@ -223,7 +256,9 @@ export function useWorkflowEngine() {
           throw new Error('Please configure image provider in canvas settings')
         }
 
-        const prompt = upstream.texts.join('\n') || node.data.prompt || 'Generate a variation of this image'
+        const globalPromptImg = project?.system_prompt || ''
+        const rawPromptImg = upstream.texts.join('\n') || node.data.prompt || 'Generate a variation of this image'
+        const prompt = globalPromptImg ? `${globalPromptImg}\n${rawPromptImg}` : rawPromptImg
 
         await canvasStore.updateNode(nodeId, {
           data: { ...node.data, status: 'running' }
@@ -253,6 +288,7 @@ export function useWorkflowEngine() {
           modelProviderId: project.image_provider_id,
           modelId: project.image_model_id,
           size: node.data.size || '1:1',
+          tierId: node.data.tier_id || '2k',
           quality: node.data.quality || 'auto'
         })
 
@@ -267,6 +303,7 @@ export function useWorkflowEngine() {
               revised_prompt: gen.revised_prompt || ''
             }
           })
+          await recordUsage('image', project.image_provider_id, project.image_model_id)
         } else {
           throw new Error(gen?.error || 'Image generation failed')
         }
@@ -318,8 +355,11 @@ export function useWorkflowEngine() {
   }
 
   async function runWorkflow(projectId: string): Promise<{ ok: boolean; message: string }> {
-    if (running.value) return { ok: false, message: 'Workflow already running' }
-    running.value = true
+    if (workflowRunning.value) return { ok: false, message: 'Workflow already running' }
+    if (activeSingleRuns.value.size > 0) {
+      return { ok: false, message: 'Single-node execution in progress, please wait' }
+    }
+    workflowRunning.value = true
     const canvasStore = useCanvasStore()
 
     try {
@@ -329,9 +369,21 @@ export function useWorkflowEngine() {
         throw new Error(errors.join('; '))
       }
 
-      const concurrency = canvasStore.currentProject?.concurrency || 1
+      const concurrency = Math.max(1, canvasStore.currentProject?.concurrency || 1)
+      const projectNodes = canvasStore.nodes.filter((n) => n.project_id === projectId)
       const sorted = topologicalSort(projectId)
       if (sorted.length === 0) throw new Error('No nodes to execute')
+
+      // Cycle detection: Kahn's algorithm drops cycle nodes; compare lengths
+      if (sorted.length !== projectNodes.length) {
+        const inCycle = projectNodes
+          .filter((n) => !sorted.includes(n.id))
+          .map((n) => {
+            const def = getNodeTypeDef(n.type)
+            return def?.label || n.type
+          })
+        throw new Error(`Detected cycle involving nodes: ${inCycle.join(', ')}`)
+      }
 
       // Initialize statuses
       const statusMap = new Map<string, TaskStatus>()
@@ -349,35 +401,73 @@ export function useWorkflowEngine() {
         if (node.type === 'refImage' && (node.data.image_data || node.data.image_path)) {
           statusMap.set(nodeId, 'done')
         }
+        if (node.type === 'promptSlice' && node.data.rows?.length > 0) {
+          statusMap.set(nodeId, 'done')
+        }
       }
 
-      // Concurrent execution loop: pick ready nodes, execute up to concurrency limit
+      // Sliding-window concurrency: keep up to `concurrency` tasks in flight.
+      // Finished slots are refilled as soon as a task completes, not after a batch barrier.
       const allNodes = new Set(sorted)
-      while (true) {
-        // Find nodes that are ready: pending + all predecessors finished
+      const inflight = new Map<string, Promise<void>>()
+
+      const launchTask = (nodeId: string): Promise<void> => {
+        const node = canvasStore.nodes.find((n) => n.id === nodeId)
+        if (!node) {
+          statusMap.set(nodeId, 'skipped')
+          return Promise.resolve()
+        }
+
+        const { ok, missing } = checkRequiredInputs(nodeId, projectId)
+        const def = getNodeTypeDef(node.type)
+        if (!ok && def && def.inputs.some((i) => i.required)) {
+          statusMap.set(nodeId, 'blocked')
+          return canvasStore
+            .updateNode(nodeId, {
+              data: { ...node.data, status: 'blocked', error: `Missing inputs: ${missing.join(', ')}` }
+            })
+            .then(() => {})
+        }
+
+        statusMap.set(nodeId, 'running')
+        return executeNode(nodeId, projectId)
+          .then(() => {
+            statusMap.set(nodeId, 'done')
+          })
+          .catch(async (e: any) => {
+            statusMap.set(nodeId, 'error')
+            await canvasStore.updateNode(nodeId, {
+              data: { ...node.data, status: 'error', error: e?.message || 'Unknown error' }
+            })
+          })
+      }
+
+      const findReady = (): { ready: string[]; blocked: string[] } => {
         const ready: string[] = []
         const blocked: string[] = []
         for (const nodeId of allNodes) {
           if (statusMap.get(nodeId) !== 'pending') continue
+          if (inflight.has(nodeId)) continue
           const preds = getPredecessors(nodeId, projectId)
           const allPredsFinished = preds.every((p) => {
             const s = statusMap.get(p)
             return s !== 'pending' && s !== 'running'
           })
           if (!allPredsFinished) continue
-          // If any predecessor errored/blocked, this node is blocked
           const anyPredFailed = preds.some((p) => {
             const s = statusMap.get(p)
             return s === 'error' || s === 'blocked'
           })
-          if (anyPredFailed) {
-            blocked.push(nodeId)
-          } else {
-            ready.push(nodeId)
-          }
+          if (anyPredFailed) blocked.push(nodeId)
+          else ready.push(nodeId)
         }
+        return { ready, blocked }
+      }
 
-        // Mark blocked nodes
+      while (true) {
+        const { ready, blocked } = findReady()
+
+        // Propagate failure to blocked nodes immediately
         for (const nodeId of blocked) {
           statusMap.set(nodeId, 'blocked')
           const node = canvasStore.nodes.find((n) => n.id === nodeId)
@@ -388,40 +478,24 @@ export function useWorkflowEngine() {
           }
         }
 
-        if (ready.length === 0 && blocked.length === 0) break // All done
+        // Fill up any free slots with ready tasks
+        while (inflight.size < concurrency && ready.length > 0) {
+          const nodeId = ready.shift()!
+          const task = launchTask(nodeId).finally(() => {
+            inflight.delete(nodeId)
+          })
+          inflight.set(nodeId, task)
+        }
 
-        if (ready.length === 0) continue // Only blocked found, loop to propagate
+        if (inflight.size === 0) {
+          // Nothing running, nothing runnable: we're either done or only 'blocked' propagation remains
+          const { ready: r2, blocked: b2 } = findReady()
+          if (r2.length === 0 && b2.length === 0) break
+          continue
+        }
 
-        // Take up to concurrency limit
-        const batch = ready.slice(0, concurrency)
-
-        // Execute batch in parallel
-        await Promise.all(batch.map(async (nodeId) => {
-          const node = canvasStore.nodes.find((n) => n.id === nodeId)
-          if (!node) { statusMap.set(nodeId, 'skipped'); return }
-
-          // Check required inputs have data
-          const { ok, missing } = checkRequiredInputs(nodeId, projectId)
-          const def = getNodeTypeDef(node.type)
-          if (!ok && def && def.inputs.some((i) => i.required)) {
-            statusMap.set(nodeId, 'blocked')
-            await canvasStore.updateNode(nodeId, {
-              data: { ...node.data, status: 'blocked', error: `Missing inputs: ${missing.join(', ')}` }
-            })
-            return
-          }
-
-          statusMap.set(nodeId, 'running')
-          try {
-            await executeNode(nodeId, projectId)
-            statusMap.set(nodeId, 'done')
-          } catch (e: any) {
-            statusMap.set(nodeId, 'error')
-            await canvasStore.updateNode(nodeId, {
-              data: { ...node.data, status: 'error', error: e?.message || 'Unknown error' }
-            })
-          }
-        }))
+        // Wait for any task to finish, then re-evaluate readiness
+        await Promise.race(inflight.values())
       }
 
       nodeStatuses.value = statusMap
@@ -446,12 +520,14 @@ export function useWorkflowEngine() {
       }
       return { ok: false, message: e?.message || 'Workflow failed' }
     } finally {
-      running.value = false
+      workflowRunning.value = false
     }
   }
 
   async function executeSingleNode(nodeId: string, projectId: string) {
-    if (running.value) return // Block during workflow execution
+    // Block if workflow is running, or this node is already running via single-execution
+    if (workflowRunning.value) return
+    if (activeSingleRuns.value.has(nodeId)) return
     const canvasStore = useCanvasStore()
     const node = canvasStore.nodes.find((n) => n.id === nodeId)
     if (!node) return
@@ -465,17 +541,28 @@ export function useWorkflowEngine() {
       return
     }
 
+    // Track in the module-level singleton so the workflow button and sibling nodes can observe it
+    const next = new Set(activeSingleRuns.value)
+    next.add(nodeId)
+    activeSingleRuns.value = next
     try {
       await executeNode(nodeId, projectId)
     } catch (e: any) {
       await canvasStore.updateNode(nodeId, {
         data: { ...node.data, status: 'error', error: e?.message || 'Unknown error' }
       })
+    } finally {
+      const cleared = new Set(activeSingleRuns.value)
+      cleared.delete(nodeId)
+      activeSingleRuns.value = cleared
     }
   }
 
   return {
     running,
+    workflowRunning,
+    activeSingleRuns,
+    anyRunning,
     tasks,
     nodeStatuses,
     runWorkflow,

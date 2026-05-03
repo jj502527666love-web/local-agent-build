@@ -50,6 +50,15 @@ function runMigrations(): void {
   if (!botColNames.includes('prompt_skill_dirs')) {
     db.exec("ALTER TABLE bots ADD COLUMN prompt_skill_dirs TEXT NOT NULL DEFAULT '[]'")
   }
+  if (!botColNames.includes('tool_approval')) {
+    db.exec("ALTER TABLE bots ADD COLUMN tool_approval TEXT NOT NULL DEFAULT 'destructive'")
+  }
+  // messages: persist tool_call_id so OpenAI tool_calls/tool pairs replay correctly
+  const msgCols = db.prepare("PRAGMA table_info(messages)").all() as any[]
+  const msgColNames = msgCols.map((c: any) => c.name)
+  if (!msgColNames.includes('tool_call_id')) {
+    db.exec("ALTER TABLE messages ADD COLUMN tool_call_id TEXT NOT NULL DEFAULT ''")
+  }
   // canvas_projects: add model provider columns
   const canvasCols = db.prepare("PRAGMA table_info(canvas_projects)").all() as any[]
   const canvasColNames = canvasCols.map((c: any) => c.name)
@@ -61,6 +70,9 @@ function runMigrations(): void {
   }
   if (canvasCols.length > 0 && !canvasColNames.includes('concurrency')) {
     db.exec("ALTER TABLE canvas_projects ADD COLUMN concurrency INTEGER NOT NULL DEFAULT 1")
+  }
+  if (canvasCols.length > 0 && !canvasColNames.includes('system_prompt')) {
+    db.exec("ALTER TABLE canvas_projects ADD COLUMN system_prompt TEXT NOT NULL DEFAULT ''")
   }
   // Populate FTS index from existing chunks if FTS table is empty
   const ftsCount = (db.prepare("SELECT COUNT(*) as cnt FROM vector_chunks_fts").get() as any).cnt

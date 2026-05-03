@@ -129,14 +129,17 @@
               </div>
             </div>
             <div class="flex gap-1">
-              <button @click="queryModels(provider)" class="btn-ghost">查询模型</button>
-              <button @click="openStats(provider.id)" class="btn-ghost">统计</button>
-              <button @click="editProvider(provider)" class="btn-ghost">编辑</button>
-              <button @click="removeProvider(provider.id)" class="btn-danger">删除</button>
+              <template v-if="!provider.isCloud">
+                <button @click="queryModels(provider)" class="btn-ghost">查询模型</button>
+                <button @click="openStats(provider.id)" class="btn-ghost">统计</button>
+                <button @click="editProvider(provider)" class="btn-ghost">编辑</button>
+                <button @click="removeProvider(provider.id)" class="btn-danger">删除</button>
+              </template>
+              <span v-else class="text-[10px] px-2 py-1 bg-primary-50 text-primary-600 rounded-lg font-medium">Cloud</span>
             </div>
           </div>
           <div class="text-xs text-text-tertiary space-y-1 pl-[52px]">
-            <div>地址: {{ provider.api_base }}</div>
+            <div v-if="provider.api_base">地址: {{ provider.api_base }}</div>
             <div class="flex flex-wrap gap-1 mt-1">
               <span v-for="m in provider.models.slice(0, 5)" :key="m" class="px-2 py-0.5 bg-surface-2 rounded-md text-text-secondary">{{ m }}</span>
               <span v-if="provider.models.length > 5" class="px-2 py-0.5 text-text-tertiary" :title="provider.models.slice(5).join(', ')">...+{{ provider.models.length - 5 }}</span>

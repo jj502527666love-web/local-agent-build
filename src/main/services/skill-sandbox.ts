@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync, unlinkSync, rmdirSync, renameSync, copyFileSync, appendFileSync } from 'fs'
-import { join, resolve, basename, dirname, extname } from 'path'
+import { join, resolve, basename, dirname, extname, isAbsolute } from 'path'
 import { execSync } from 'child_process'
 
 export interface SkillExecutionResult {
@@ -21,12 +21,28 @@ const DANGEROUS_PATTERNS = [
   /net\s+(user|stop)/i
 ]
 
-function validateReadPath(p: string): string {
-  return resolve(p)
+/**
+ * Unified path resolver.
+ * - null/''/'.'  -> sandboxRoot (workspace root) if provided, else cwd
+ * - absolute     -> resolve(p) as-is (respect explicit intent, e.g. skill resources)
+ * - relative     -> resolve(sandboxRoot, p) when sandboxRoot present; else resolve(p)
+ */
+export function resolveInWorkspace(p: string | undefined | null, sandboxRoot?: string): string {
+  if (sandboxRoot) {
+    const root = resolve(sandboxRoot)
+    if (!p || p === '.' || p === './' || p === '.\\') return root
+    if (isAbsolute(p)) return resolve(p)
+    return resolve(root, p)
+  }
+  return resolve(p || '.')
+}
+
+function validateReadPath(p: string, sandboxRoot?: string): string {
+  return resolveInWorkspace(p, sandboxRoot)
 }
 
 function validateWritePath(p: string, sandboxRoot?: string): string {
-  const resolved = resolve(p)
+  const resolved = resolveInWorkspace(p, sandboxRoot)
   if (sandboxRoot) {
     const normalizedRoot = resolve(sandboxRoot)
     if (!resolved.startsWith(normalizedRoot)) {
@@ -46,7 +62,7 @@ function validateCommand(cmd: string): void {
 
 function createFileOps(sandboxRoot?: string) {
   return {
-    readFile: (p: string, encoding?: string) => readFileSync(validateReadPath(p), (encoding || 'utf-8') as BufferEncoding),
+    readFile: (p: string, encoding?: string) => readFileSync(validateReadPath(p, sandboxRoot), (encoding || 'utf-8') as BufferEncoding),
     writeFile: (p: string, content: string, encoding?: string) => {
       const vp = validateWritePath(p, sandboxRoot)
       mkdirSync(dirname(vp), { recursive: true })
@@ -58,7 +74,7 @@ function createFileOps(sandboxRoot?: string) {
       return true
     },
     listDir: (p: string) => {
-      const dir = validateReadPath(p)
+      const dir = validateReadPath(p, sandboxRoot)
       return readdirSync(dir, { withFileTypes: true }).map(e => ({
         name: e.name,
         isDirectory: e.isDirectory(),
@@ -66,9 +82,9 @@ function createFileOps(sandboxRoot?: string) {
       }))
     },
     mkdir: (p: string) => { mkdirSync(validateWritePath(p, sandboxRoot), { recursive: true }); return true },
-    exists: (p: string) => existsSync(validateReadPath(p)),
+    exists: (p: string) => existsSync(validateReadPath(p, sandboxRoot)),
     stat: (p: string) => {
-      const s = statSync(validateReadPath(p))
+      const s = statSync(validateReadPath(p, sandboxRoot))
       return { size: s.size, isDirectory: s.isDirectory(), isFile: s.isFile(), mtime: s.mtime.toISOString() }
     },
     deleteFile: (p: string) => { unlinkSync(validateWritePath(p, sandboxRoot)); return true },
@@ -77,15 +93,21 @@ function createFileOps(sandboxRoot?: string) {
     copyFile: (from: string, to: string) => {
       const vTo = validateWritePath(to, sandboxRoot)
       mkdirSync(dirname(vTo), { recursive: true })
-      copyFileSync(validateReadPath(from), vTo)
+      copyFileSync(validateReadPath(from, sandboxRoot), vTo)
       return true
     },
     join: (...parts: string[]) => join(...parts),
     resolve: (...parts: string[]) => resolve(...parts),
+    wsResolve: (p: string) => resolveInWorkspace(p, sandboxRoot),
     basename: (p: string) => basename(p),
     dirname: (p: string) => dirname(p),
     extname: (p: string) => extname(p)
   }
+}
+
+function resolveShellCwd(cwd: string | undefined, sandboxRoot?: string): string | undefined {
+  if (!cwd) return sandboxRoot
+  return resolveInWorkspace(cwd, sandboxRoot)
 }
 
 function createShellOps(sandboxRoot?: string) {
@@ -93,7 +115,7 @@ function createShellOps(sandboxRoot?: string) {
     exec: (cmd: string, options?: { cwd?: string; timeout?: number }) => {
       validateCommand(cmd)
       const result = execSync(cmd, {
-        cwd: options?.cwd || sandboxRoot,
+        cwd: resolveShellCwd(options?.cwd, sandboxRoot),
         timeout: options?.timeout || 120000,
         encoding: 'utf-8',
         maxBuffer: 1024 * 1024
@@ -104,7 +126,7 @@ function createShellOps(sandboxRoot?: string) {
       validateCommand(cmd)
       try {
         const stdout = execSync(cmd, {
-          cwd: options?.cwd || sandboxRoot,
+          cwd: resolveShellCwd(options?.cwd, sandboxRoot),
           timeout: options?.timeout || 120000,
           encoding: 'utf-8',
           maxBuffer: 2 * 1024 * 1024,

@@ -42,6 +42,7 @@
                   <svg class="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
                   正在优化提示词...
                 </div>
+                <div v-if="optimizeError" class="mt-1 px-3 py-1.5 text-[11px] text-red-600 bg-red-50 rounded-lg">{{ optimizeError }}</div>
               </div>
 
               <!-- Reference Images -->
@@ -73,11 +74,16 @@
                 <label class="text-xs font-medium text-text-secondary mb-1.5 block">模型</label>
                 <select v-model="selectedProviderId" @change="selectedModelId = ''" class="w-full px-3 py-2 text-xs bg-surface-1 border border-surface-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 mb-2">
                   <option value="">-- 选择服务商 --</option>
-                  <option v-for="p in imageProviders" :key="p.id" :value="p.id">{{ p.name }}</option>
+                  <option v-for="p in modelStore.providers" :key="p.id" :value="p.id">{{ p.name }}</option>
                 </select>
                 <select v-model="selectedModelId" class="w-full px-3 py-2 text-xs bg-surface-1 border border-surface-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500" :disabled="!selectedProviderModels.length">
                   <option value="">-- 选择模型 --</option>
-                  <option v-for="m in selectedProviderModels" :key="m" :value="m">{{ m }}</option>
+                  <optgroup v-if="selectedModelGroups.recommended.length" label="推荐（生图）">
+                    <option v-for="m in selectedModelGroups.recommended" :key="m" :value="m">{{ m }}</option>
+                  </optgroup>
+                  <optgroup v-if="selectedModelGroups.others.length" label="其他可用">
+                    <option v-for="m in selectedModelGroups.others" :key="m" :value="m">{{ m }}</option>
+                  </optgroup>
                 </select>
                 <input v-if="selectedProviderId && !selectedProviderModels.length" v-model="selectedModelId" placeholder="输入模型名称" class="w-full mt-2 px-3 py-2 text-xs bg-surface-1 border border-surface-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500" />
               </div>
@@ -87,11 +93,16 @@
                 <label class="text-xs font-medium text-text-secondary mb-1.5 block">提示词优化模型</label>
                 <select v-model="optimizeProviderId" @change="optimizeModelId = ''" class="w-full px-3 py-2 text-xs bg-surface-1 border border-surface-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 mb-2">
                   <option value="">-- 选择服务商 --</option>
-                  <option v-for="p in languageProviders" :key="p.id" :value="p.id">{{ p.name }}</option>
+                  <option v-for="p in modelStore.providers" :key="p.id" :value="p.id">{{ p.name }}</option>
                 </select>
                 <select v-model="optimizeModelId" class="w-full px-3 py-2 text-xs bg-surface-1 border border-surface-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500" :disabled="!optimizeProviderModels.length">
                   <option value="">-- 选择模型 --</option>
-                  <option v-for="m in optimizeProviderModels" :key="m" :value="m">{{ m }}</option>
+                  <optgroup v-if="optimizeModelGroups.recommended.length" label="推荐（对话）">
+                    <option v-for="m in optimizeModelGroups.recommended" :key="m" :value="m">{{ m }}</option>
+                  </optgroup>
+                  <optgroup v-if="optimizeModelGroups.others.length" label="其他可用">
+                    <option v-for="m in optimizeModelGroups.others" :key="m" :value="m">{{ m }}</option>
+                  </optgroup>
                 </select>
                 <input v-if="optimizeProviderId && !optimizeProviderModels.length" v-model="optimizeModelId" placeholder="输入模型名称" class="w-full mt-2 px-3 py-2 text-xs bg-surface-1 border border-surface-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500" />
               </div>
@@ -99,14 +110,22 @@
               <!-- Size -->
               <div>
                 <label class="text-xs font-medium text-text-secondary mb-1.5 block">尺寸</label>
-                <div class="grid grid-cols-5 gap-1.5">
-                  <button
-                    v-for="s in sizeOptions"
-                    :key="s.value"
-                    @click="selectedSize = s.value"
-                    :class="['px-2 py-2 text-[10px] rounded-lg border transition-colors text-center', selectedSize === s.value ? 'border-primary-500 bg-primary-50 text-primary-700 font-medium' : 'border-surface-3 bg-surface-1 text-text-secondary hover:bg-surface-2']"
-                  >{{ s.label }}</button>
-                </div>
+                <ImageSizePicker
+                  v-model="selectedSize"
+                  :columns="6"
+                  :model-id="selectedModelId"
+                  :tier-id="selectedTier"
+                  show-hint
+                />
+              </div>
+
+              <!-- Resolution Tier -->
+              <div>
+                <label class="text-xs font-medium text-text-secondary mb-1.5 block">分辨率</label>
+                <ResolutionTierPicker
+                  v-model="selectedTier"
+                  :model-id="selectedModelId"
+                />
               </div>
 
               <!-- Quality -->
@@ -135,6 +154,19 @@
                 </div>
               </div>
 
+              <!-- Concurrency (only when batchCount > 1) -->
+              <div v-if="batchCount > 1">
+                <div class="flex items-center justify-between mb-1.5">
+                  <label class="text-xs font-medium text-text-secondary" title="同时发起的请求数。过高可能触发服务商限流">并发数</label>
+                  <span class="text-xs font-semibold text-primary-600">{{ concurrency }}</span>
+                </div>
+                <input type="range" v-model.number="concurrency" :min="1" :max="Math.min(10, batchCount)" step="1" class="w-full h-1.5 bg-surface-3 rounded-full appearance-none cursor-pointer accent-primary-600" />
+                <div class="flex justify-between text-[10px] text-text-tertiary mt-1">
+                  <span>1（串行）</span>
+                  <span>{{ Math.min(10, batchCount) }}</span>
+                </div>
+              </div>
+
             </div>
             <!-- Generate Button (sticky bottom) -->
             <div class="flex-shrink-0 p-4 border-t border-surface-3">
@@ -146,6 +178,7 @@
                 <svg v-if="store.generating" class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
                 {{ store.generating ? `生成中 (${store.progress?.completed || 0}/${store.progress?.total || batchCount})` : '开始生成' }}
               </button>
+              <div v-if="store.lastError" class="mt-2 px-3 py-1.5 text-[11px] text-red-600 bg-red-50 rounded-lg">{{ store.lastError }}</div>
             </div>
           </div>
 
@@ -156,12 +189,21 @@
                 <h3 class="text-xs font-semibold text-text-primary">生成结果</h3>
                 <template v-if="selectMode">
                   <span class="text-[10px] text-text-tertiary">{{ selectedIds.size }} 项已选</span>
-                  <button @click="toggleSelectAll" class="text-[10px] text-primary-600 hover:text-primary-700">{{ selectedIds.size === recentGenerations.length ? '取消全选' : '全选' }}</button>
+                  <button @click="toggleSelectAll" class="text-[10px] text-primary-600 hover:text-primary-700">{{ pagedGenerations.length > 0 && pagedGenerations.every(g => selectedIds.has(g.id)) ? '取消本页全选' : '本页全选' }}</button>
                   <button v-if="selectedIds.size > 0" @click="deleteSelected" class="text-[10px] text-red-500 hover:text-red-600">删除所选</button>
                 </template>
               </div>
               <div class="flex items-center gap-1">
-                <button v-if="recentGenerations.length" @click="toggleSelectMode" :class="['p-1.5 rounded text-[10px]', selectMode ? 'bg-primary-100 text-primary-600' : 'text-text-tertiary hover:text-text-secondary']" :title="selectMode ? '退出选择' : '选择'">
+                <button
+                  v-if="failedCount > 0 && !selectMode"
+                  @click="clearFailedGenerations"
+                  class="px-2 py-1 rounded text-[10px] text-red-500 hover:text-red-600 hover:bg-red-50 transition-colors flex items-center gap-1"
+                  :title="`清理 ${failedCount} 条失败记录`"
+                >
+                  <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165" /></svg>
+                  <span>清理失败 ({{ failedCount }})</span>
+                </button>
+                <button v-if="sortedGenerations.length" @click="toggleSelectMode" :class="['p-1.5 rounded text-[10px]', selectMode ? 'bg-primary-100 text-primary-600' : 'text-text-tertiary hover:text-text-secondary']" :title="selectMode ? '退出选择' : '选择'">
                   <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" /></svg>
                 </button>
                 <button @click="viewMode = 'grid'" :class="['p-1.5 rounded', viewMode === 'grid' ? 'bg-surface-2 text-text-primary' : 'text-text-tertiary hover:text-text-secondary']">
@@ -173,7 +215,7 @@
               </div>
             </div>
             <div class="flex-1 overflow-y-auto p-4">
-              <div v-if="!recentGenerations.length && !store.generating" class="flex-1 flex flex-col items-center justify-center py-20">
+              <div v-if="!sortedGenerations.length && !store.generating" class="flex-1 flex flex-col items-center justify-center py-20">
                 <div class="w-16 h-16 rounded-2xl bg-surface-2 flex items-center justify-center mb-4">
                   <svg class="w-8 h-8 text-text-disabled" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909M3.75 21h16.5A2.25 2.25 0 0 0 22.5 18.75V5.25A2.25 2.25 0 0 0 20.25 3H3.75A2.25 2.25 0 0 0 1.5 5.25v13.5A2.25 2.25 0 0 0 3.75 21Z" /></svg>
                 </div>
@@ -183,7 +225,7 @@
 
               <!-- Grid view -->
               <div v-else-if="viewMode === 'grid'" class="grid grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-2">
-                <div v-for="gen in recentGenerations" :key="gen.id" :class="['group relative rounded-xl overflow-hidden border bg-surface-0 shadow-sm hover:shadow-md transition-shadow', selectedIds.has(gen.id) ? 'border-primary-500 ring-1 ring-primary-500' : 'border-surface-3']" @click="selectMode ? toggleSelect(gen.id) : null">
+                <div v-for="gen in pagedGenerations" :key="gen.id" :class="['group relative rounded-xl overflow-hidden border bg-surface-0 shadow-sm hover:shadow-md transition-shadow', selectedIds.has(gen.id) ? 'border-primary-500 ring-1 ring-primary-500' : 'border-surface-3']" @click="selectMode ? toggleSelect(gen.id) : null">
                   <div v-if="selectMode" class="absolute top-1.5 left-1.5 z-10">
                     <div :class="['w-5 h-5 rounded-full border-2 flex items-center justify-center transition-colors', selectedIds.has(gen.id) ? 'bg-primary-600 border-primary-600' : 'bg-white/80 border-surface-4']">
                       <svg v-if="selectedIds.has(gen.id)" class="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="m4.5 12.75 6 6 9-13.5" /></svg>
@@ -198,8 +240,16 @@
                       <button @click.stop="copyImage(gen.result_path)" class="w-7 h-7 rounded-lg bg-black/50 hover:bg-black/70 text-white flex items-center justify-center" title="复制图片">
                         <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.666 3.888A2.25 2.25 0 0 0 13.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 0 1-.75.75H9.75a.75.75 0 0 1-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 0 1-2.25 2.25H6.75A2.25 2.25 0 0 1 4.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 0 1 1.927-.184" /></svg>
                       </button>
-                      <button @click.stop="editImage" class="w-7 h-7 rounded-lg bg-black/50 hover:bg-black/70 text-white flex items-center justify-center" title="编辑">
+                      <button @click.stop="editImage(gen.id)" class="w-7 h-7 rounded-lg bg-black/50 hover:bg-black/70 text-white flex items-center justify-center" title="编辑">
                         <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Z" /></svg>
+                      </button>
+                      <button
+                        @click.stop="askRegenerate(gen)"
+                        :disabled="store.generating"
+                        class="w-7 h-7 rounded-lg bg-black/50 hover:bg-black/70 disabled:opacity-40 disabled:cursor-not-allowed text-white flex items-center justify-center"
+                        title="重新生成"
+                      >
+                        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15.5-6.36L21 8" /><path d="M21 3v5h-5" /><path d="M21 12a9 9 0 0 1-15.5 6.36L3 16" /><path d="M3 21v-5h5" /></svg>
                       </button>
                     </div>
                   </div>
@@ -208,7 +258,20 @@
                   </div>
                   <div v-else-if="gen.status === 'error'" class="aspect-square flex flex-col items-center justify-center bg-red-50 p-3">
                     <svg class="w-6 h-6 text-red-400 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z" /></svg>
-                    <p class="text-[10px] text-red-500 text-center line-clamp-3">{{ gen.error }}</p>
+                    <p class="text-[10px] text-red-500 text-center line-clamp-2">{{ translateError(gen.error) }}</p>
+                    <div class="mt-1.5 flex items-center gap-1">
+                      <button
+                        type="button"
+                        @click.stop="openErrorDialog(gen)"
+                        class="px-2 py-0.5 text-[10px] text-red-600 border border-red-300 rounded-md hover:bg-red-100 transition-colors"
+                      >详情</button>
+                      <button
+                        type="button"
+                        @click.stop="askRegenerate(gen)"
+                        :disabled="store.generating"
+                        class="px-2 py-0.5 text-[10px] text-primary-700 border border-primary-300 rounded-md hover:bg-primary-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                      >重新生成</button>
+                    </div>
                   </div>
                   <div class="p-2.5">
                     <p class="text-[11px] text-text-secondary line-clamp-2">{{ gen.prompt }}</p>
@@ -224,7 +287,7 @@
 
               <!-- List view -->
               <div v-else class="space-y-2">
-                <div v-for="gen in recentGenerations" :key="gen.id" :class="['flex gap-3 p-3 rounded-xl border bg-surface-0 group hover:shadow-sm transition-shadow', selectedIds.has(gen.id) ? 'border-primary-500 ring-1 ring-primary-500' : 'border-surface-3']" @click="selectMode ? toggleSelect(gen.id) : null">
+                <div v-for="gen in pagedGenerations" :key="gen.id" :class="['flex gap-3 p-3 rounded-xl border bg-surface-0 group hover:shadow-sm transition-shadow', selectedIds.has(gen.id) ? 'border-primary-500 ring-1 ring-primary-500' : 'border-surface-3']" @click="selectMode ? toggleSelect(gen.id) : null">
                   <div v-if="selectMode" class="flex items-center pr-1">
                     <div :class="['w-5 h-5 rounded-full border-2 flex items-center justify-center transition-colors', selectedIds.has(gen.id) ? 'bg-primary-600 border-primary-600' : 'border-surface-4']">
                       <svg v-if="selectedIds.has(gen.id)" class="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="m4.5 12.75 6 6 9-13.5" /></svg>
@@ -247,13 +310,34 @@
                       <span class="text-[10px] text-text-tertiary">{{ gen.size }}</span>
                       <span :class="['text-[10px]', gen.status === 'done' ? 'text-green-600' : gen.status === 'error' ? 'text-red-500' : 'text-text-tertiary']">{{ gen.status }}</span>
                     </div>
-                    <p v-if="gen.status === 'error'" class="text-[10px] text-red-500 mt-1">{{ gen.error }}</p>
+                    <p v-if="gen.status === 'error'" class="text-[10px] text-red-500 mt-1 line-clamp-2">{{ translateError(gen.error) }}</p>
+                    <div v-if="gen.status === 'error'" class="mt-1 flex items-center gap-1">
+                      <button
+                        type="button"
+                        @click.stop="openErrorDialog(gen)"
+                        class="px-1.5 py-0.5 text-[10px] text-red-600 border border-red-300 rounded-md hover:bg-red-50 transition-colors"
+                      >详情</button>
+                      <button
+                        type="button"
+                        @click.stop="askRegenerate(gen)"
+                        :disabled="store.generating"
+                        class="px-1.5 py-0.5 text-[10px] text-primary-700 border border-primary-300 rounded-md hover:bg-primary-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                      >重新生成</button>
+                    </div>
                   </div>
                   <div v-if="!selectMode" class="flex items-start gap-1">
+                    <button
+                      @click.stop="askRegenerate(gen)"
+                      :disabled="store.generating"
+                      class="opacity-0 group-hover:opacity-100 p-1.5 text-text-tertiary hover:text-primary-600 rounded-lg hover:bg-surface-2 disabled:opacity-20 disabled:cursor-not-allowed transition-all"
+                      title="重新生成"
+                    >
+                      <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15.5-6.36L21 8" /><path d="M21 3v5h-5" /><path d="M21 12a9 9 0 0 1-15.5 6.36L3 16" /><path d="M3 21v-5h5" /></svg>
+                    </button>
                     <button v-if="gen.status === 'done' && gen.result_path" @click.stop="copyImage(gen.result_path)" class="opacity-0 group-hover:opacity-100 p-1.5 text-text-tertiary hover:text-primary-600 rounded-lg hover:bg-surface-2 transition-all" title="复制图片">
                       <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.666 3.888A2.25 2.25 0 0 0 13.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 0 1-.75.75H9.75a.75.75 0 0 1-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 0 1-2.25 2.25H6.75A2.25 2.25 0 0 1 4.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 0 1 1.927-.184" /></svg>
                     </button>
-                    <button v-if="gen.status === 'done' && gen.result_path" @click.stop="editImage" class="opacity-0 group-hover:opacity-100 p-1.5 text-text-tertiary hover:text-primary-600 rounded-lg hover:bg-surface-2 transition-all" title="编辑">
+                    <button v-if="gen.status === 'done' && gen.result_path" @click.stop="editImage(gen.id)" class="opacity-0 group-hover:opacity-100 p-1.5 text-text-tertiary hover:text-primary-600 rounded-lg hover:bg-surface-2 transition-all" title="编辑">
                       <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Z" /></svg>
                     </button>
                     <button v-if="gen.status === 'done' && gen.result_path" @click.stop="openFolder(gen.result_path)" class="opacity-0 group-hover:opacity-100 p-1.5 text-text-tertiary hover:text-text-primary rounded-lg hover:bg-surface-2 transition-all" title="打开所在目录">
@@ -264,6 +348,45 @@
                     </button>
                   </div>
                 </div>
+              </div>
+
+              <!-- Pagination -->
+              <div v-if="totalPages > 1" class="flex items-center justify-center gap-1 pt-4 pb-2">
+                <button
+                  @click="goToPage(1)"
+                  :disabled="currentPage === 1"
+                  class="px-2 py-1 text-[11px] rounded border border-surface-3 bg-surface-0 text-text-secondary hover:bg-surface-2 disabled:opacity-40 disabled:cursor-not-allowed"
+                  title="首页"
+                >«</button>
+                <button
+                  @click="goToPage(currentPage - 1)"
+                  :disabled="currentPage === 1"
+                  class="px-2 py-1 text-[11px] rounded border border-surface-3 bg-surface-0 text-text-secondary hover:bg-surface-2 disabled:opacity-40 disabled:cursor-not-allowed"
+                  title="上一页"
+                >‹</button>
+                <span class="px-2 py-1 text-[11px] text-text-secondary">
+                  第 <input
+                    type="number"
+                    :value="currentPage"
+                    @change="(e) => goToPage(parseInt((e.target as HTMLInputElement).value) || 1)"
+                    :min="1"
+                    :max="totalPages"
+                    class="w-12 px-1 py-0.5 text-center text-[11px] border border-surface-3 rounded bg-surface-0 outline-none focus:ring-1 focus:ring-primary-500"
+                  /> / {{ totalPages }} 页
+                  <span class="text-text-tertiary ml-2">共 {{ store.total }} 条</span>
+                </span>
+                <button
+                  @click="goToPage(currentPage + 1)"
+                  :disabled="currentPage === totalPages"
+                  class="px-2 py-1 text-[11px] rounded border border-surface-3 bg-surface-0 text-text-secondary hover:bg-surface-2 disabled:opacity-40 disabled:cursor-not-allowed"
+                  title="下一页"
+                >›</button>
+                <button
+                  @click="goToPage(totalPages)"
+                  :disabled="currentPage === totalPages"
+                  class="px-2 py-1 text-[11px] rounded border border-surface-3 bg-surface-0 text-text-secondary hover:bg-surface-2 disabled:opacity-40 disabled:cursor-not-allowed"
+                  title="末页"
+                >»</button>
               </div>
             </div>
           </div>
@@ -309,19 +432,91 @@
       </button>
     </div>
   </div>
+
+  <!-- Error detail dialog -->
+  <ErrorDetailDialog
+    :visible="errorDialog.visible"
+    :raw-error="errorDialog.rawError"
+    title="生成失败详情"
+    @close="errorDialog.visible = false"
+  />
+
+  <!-- Regenerate confirm dialog -->
+  <ConfirmDialog
+    :visible="confirmDialog.visible"
+    title="重新生成"
+    message="将以原记录的参数再生成一条新记录，是否继续？"
+    confirm-text="重新生成"
+    @confirm="confirmRegenerate"
+    @cancel="cancelRegenerate"
+  />
 </template>
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useImageGenStore } from '@/stores/image-gen'
 import { useModelStore } from '@/stores/models'
 import { usePromptPresetStore } from '@/stores/prompt-presets'
+import { useHandoffStore } from '@/stores/handoff'
+import { translateError } from '@/utils/error-message'
+import { groupAndSort } from '@/utils/model-caps'
+import { recordUsage, warmHintsCache, getHintsSync } from '@/utils/model-usage-hints'
+import ImageSizePicker from '@/components/ImageSizePicker.vue'
+import ResolutionTierPicker from '@/components/ResolutionTierPicker.vue'
+import { DEFAULT_TIER_ID } from '@shared/image-size'
+import ErrorDetailDialog from '@/components/ErrorDetailDialog.vue'
+import ConfirmDialog from '@/components/ConfirmDialog.vue'
+import type { ImageGeneration } from '@/stores/image-gen'
 
 const route = useRoute()
+const router = useRouter()
 const store = useImageGenStore()
+const handoff = useHandoffStore()
 const modelStore = useModelStore()
 const presetStore = usePromptPresetStore()
+
+// 错误详情弹窗：仅存原文，友好翻译由 ErrorDetailDialog 内部派生
+const errorDialog = ref<{ visible: boolean; rawError: string }>({
+  visible: false,
+  rawError: ''
+})
+function openErrorDialog(gen: Pick<ImageGeneration, 'error'>) {
+  errorDialog.value = { visible: true, rawError: gen.error || '' }
+}
+
+// 确认弹窗：避免误点直接触发重新生成
+const confirmDialog = ref<{ visible: boolean; pending: ImageGeneration | null }>({
+  visible: false,
+  pending: null
+})
+function askRegenerate(gen: ImageGeneration) {
+  if (store.generating) return
+  confirmDialog.value = { visible: true, pending: gen }
+}
+async function confirmRegenerate() {
+  const gen = confirmDialog.value.pending
+  confirmDialog.value = { visible: false, pending: null }
+  if (!gen) return
+  await regenerate(gen)
+}
+function cancelRegenerate() {
+  confirmDialog.value = { visible: false, pending: null }
+}
+
+// 重新生成：以原记录的参数再生成一条新的生成记录，原记录保留供对比
+async function regenerate(gen: ImageGeneration) {
+  if (store.generating) return
+  await store.generate({
+    prompt: gen.prompt,
+    refImages: gen.ref_images || [],
+    modelProviderId: gen.model_provider_id,
+    modelId: gen.model_id,
+    size: gen.size,
+    quality: gen.quality,
+    batchCount: 1
+  })
+}
 
 const promptPresets = computed(() => presetStore.visibleGrouped('image_gen'))
 
@@ -339,10 +534,13 @@ const selectedModelId = ref('')
 const optimizeProviderId = ref('')
 const optimizeModelId = ref('')
 const selectedSize = ref('1:1')
+const selectedTier = ref<string>(DEFAULT_TIER_ID)
 const batchCount = ref(1)
+const concurrency = ref(2)
 const viewMode = ref<'grid' | 'list'>('grid')
 const previewImage = ref<string | null>(null)
 const optimizing = ref(false)
+const optimizeError = ref('')
 const showPresetPopup = ref(false)
 const selectMode = ref(false)
 const selectedIds = ref<Set<string>>(new Set())
@@ -360,11 +558,16 @@ function toggleSelect(id: string) {
 }
 
 function toggleSelectAll() {
-  if (selectedIds.value.size === recentGenerations.value.length) {
-    selectedIds.value = new Set()
+  // Select / deselect items on the CURRENT page only (standard paginated UX)
+  const pageIds = pagedGenerations.value.map(g => g.id)
+  const allSelected = pageIds.every(id => selectedIds.value.has(id))
+  const next = new Set(selectedIds.value)
+  if (allSelected) {
+    pageIds.forEach(id => next.delete(id))
   } else {
-    selectedIds.value = new Set(recentGenerations.value.map(g => g.id))
+    pageIds.forEach(id => next.add(id))
   }
+  selectedIds.value = next
 }
 
 async function deleteSelected() {
@@ -372,46 +575,23 @@ async function deleteSelected() {
   const ids = [...selectedIds.value]
   await store.deleteGenerations(ids)
   selectedIds.value = new Set()
-  if (!store.generations.length) selectMode.value = false
+  if (!store.displayList.length) selectMode.value = false
+  await refreshFailedCount()
+  // 删完当前页则回退到最后一页或第一页
+  if (!store.items.length && store.total > 0) {
+    const target = Math.max(1, Math.min(store.currentPage, Math.ceil(store.total / PAGE_SIZE)))
+    await store.fetchPage(target, PAGE_SIZE)
+  }
 }
 
 async function deleteSingle(id: string) {
   await store.deleteGeneration(id)
+  await refreshFailedCount()
 }
 
-const IMAGE_KEYWORDS = ['image', 'dall-e', 'flux', 'stable-diffusion', 'sdxl', 'cogview', 'wanx', 'kolors', 'gpt-image', 'jimeng', 'seedream', 'kling', 'midjourney', 'mj-', 'ideogram', 'recraft', 'playground', 'kandinsky', 'pixart']
-const LANGUAGE_KEYWORDS = ['gpt', 'claude', 'qwen', 'glm', 'kimi', 'deepseek', 'llama', 'mistral', 'gemma', 'yi-', 'baichuan', 'internlm', 'chat', 'turbo', 'lite', 'plus', 'pro', 'max', 'sonnet', 'opus', 'haiku', 'gemini', 'doubao', 'hunyuan', 'spark', 'ernie', 'abab', 'moonshot', 'step-', 'command-r', 'phi-', 'wizardlm', 'vicuna', 'openchat', 'solar', 'o1-', 'o3-', 'o4-']
-const NON_LANGUAGE_KEYWORDS = ['image', 'dall-e', 'flux', 'stable-diffusion', 'sdxl', 'cogview', 'wanx', 'kolors', 'embedding', 'embed', 'bge', 'e5-', 'text-embedding', 'tts', 'whisper', 'audio', 'speech', 'asr', 'rerank', 'reranker', 'jimeng', 'seedream', 'kling', 'midjourney', 'mj-', 'ideogram', 'recraft', 'playground', 'kandinsky', 'pixart', 'gpt-image']
-
-function isImageModel(m: string) {
-  const lower = m.toLowerCase()
-  return IMAGE_KEYWORDS.some(k => lower.includes(k))
-}
-function isLanguageModel(m: string) {
-  const lower = m.toLowerCase()
-  if (NON_LANGUAGE_KEYWORDS.some(k => lower.includes(k))) return false
-  return LANGUAGE_KEYWORDS.some(k => lower.includes(k))
-}
-
-const imageProviders = computed(() =>
-  modelStore.providers.filter(p => p.models.some(isImageModel) || !p.models.length)
-)
-const languageProviders = computed(() =>
-  modelStore.providers.filter(p => p.models.some(isLanguageModel) || !p.models.length)
-)
-
-const sizeOptions = [
-  { label: '1:1', value: '1:1' },
-  { label: '3:2', value: '3:2' },
-  { label: '2:3', value: '2:3' },
-  { label: '3:4', value: '3:4' },
-  { label: '4:3', value: '4:3' },
-  { label: '4:5', value: '4:5' },
-  { label: '5:4', value: '5:4' },
-  { label: '16:9', value: '16:9' },
-  { label: '9:16', value: '9:16' },
-  { label: '21:9', value: '21:9' }
-]
+// Usage-hints reactivity tick: bumped on successful generate/optimize so the
+// recommended section re-sorts without a full reload.
+const hintsTick = ref(0)
 
 const qualityOptions = [
   { label: '自动', value: 'auto' },
@@ -420,26 +600,70 @@ const qualityOptions = [
 ]
 const selectedQuality = ref('auto')
 
-const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000
-const recentGenerations = computed(() => {
-  const cutoff = new Date(Date.now() - SEVEN_DAYS_MS).toISOString()
-  return store.generations.filter(g => g.created_at >= cutoff)
+// Result list — 后端分页，25 条/页
+const PAGE_SIZE = 25
+
+/** 分页状态均来自 store（单一真源），避免与背后数据不同步 */
+const currentPage = computed(() => store.currentPage)
+const totalPages = computed(() => Math.max(1, Math.ceil(store.total / PAGE_SIZE)))
+
+/** 当前页展示列表：inFlight 置顶 + 当前页 items。
+ * 保留 pagedGenerations / sortedGenerations 的名字供模板不改动。 */
+const pagedGenerations = computed(() => store.displayList)
+const sortedGenerations = pagedGenerations
+
+/** 失败计数：全局读 db，不仅限当前页。生成/删除后手动调一次 refreshFailedCount() */
+const failedCount = ref(0)
+async function refreshFailedCount() {
+  try {
+    failedCount.value = (await (window as any).api.imageGen.invoke('countFailedGenerations')) as number
+  } catch (e) {
+    console.error('Failed to count failed generations:', e)
+  }
+}
+
+async function goToPage(p: number) {
+  const target = Math.max(1, Math.min(totalPages.value, p))
+  if (target === currentPage.value) return
+  selectedIds.value = new Set()
+  await store.fetchPage(target, PAGE_SIZE)
+}
+
+async function clearFailedGenerations() {
+  if (!failedCount.value) return
+  if (!confirm(`确定清理 ${failedCount.value} 条失败记录？此操作不可恢复。`)) return
+  await (window as any).api.imageGen.invoke('clearFailedGenerations')
+  // 清除当前 inFlight 中的失败项（依赖 store 内部逻辑难以做到，先在 UI 层直接筛除后侍 store 后续优化）
+  selectedIds.value = new Set()
+  await Promise.all([store.fetchPage(currentPage.value, PAGE_SIZE), refreshFailedCount()])
+}
+
+const selectedProvider = computed(() =>
+  modelStore.providers.find(p => p.id === selectedProviderId.value) || null
+)
+const selectedProviderModels = computed(() => selectedProvider.value?.models ?? [])
+
+const selectedModelGroups = computed(() => {
+  hintsTick.value
+  if (!selectedProvider.value) return { recommended: [], others: [] }
+  return groupAndSort(selectedProvider.value.models, 'image', {
+    cloudTypeOf: (mid) => modelStore.cloudTypeOf(selectedProvider.value!.id, mid),
+    usageHints: getHintsSync('image', selectedProvider.value.id)
+  })
 })
 
-const selectedProviderModels = computed(() => {
-  if (!selectedProviderId.value) return []
-  const p = modelStore.providers.find((p) => p.id === selectedProviderId.value)
-  if (!p) return []
-  const filtered = p.models.filter(isImageModel)
-  return filtered.length ? filtered : p.models
-})
+const optimizeProvider = computed(() =>
+  modelStore.providers.find(p => p.id === optimizeProviderId.value) || null
+)
+const optimizeProviderModels = computed(() => optimizeProvider.value?.models ?? [])
 
-const optimizeProviderModels = computed(() => {
-  if (!optimizeProviderId.value) return []
-  const p = modelStore.providers.find((p) => p.id === optimizeProviderId.value)
-  if (!p) return []
-  const filtered = p.models.filter(isLanguageModel)
-  return filtered.length ? filtered : p.models
+const optimizeModelGroups = computed(() => {
+  hintsTick.value
+  if (!optimizeProvider.value) return { recommended: [], others: [] }
+  return groupAndSort(optimizeProvider.value.models, 'chat', {
+    cloudTypeOf: (mid) => modelStore.cloudTypeOf(optimizeProvider.value!.id, mid),
+    usageHints: getHintsSync('chat', optimizeProvider.value.id)
+  })
 })
 
 const canGenerate = computed(() =>
@@ -479,8 +703,11 @@ async function optimizePrompt(lang: 'cn' | 'en') {
     ]
     const result = await (window as any).api.llm.invoke('call', optimizeProviderId.value, optimizeModelId.value, messages)
     if (result) prompt.value = result
+    await recordUsage('chat', optimizeProviderId.value, optimizeModelId.value)
+    hintsTick.value++
   } catch (e: any) {
-    console.error('Optimize failed:', e)
+    optimizeError.value = translateError(e.message || '')
+    setTimeout(() => { optimizeError.value = '' }, 5000)
   } finally {
     optimizing.value = false
   }
@@ -532,15 +759,26 @@ async function pickRefImage() {
 
 async function doGenerate() {
   if (!canGenerate.value || store.generating) return
-  await store.generate({
-    prompt: prompt.value,
-    refImages: refImages.value.length ? refImages.value : undefined,
-    modelProviderId: selectedProviderId.value,
-    modelId: selectedModelId.value,
-    size: selectedSize.value,
-    quality: selectedQuality.value,
-    batchCount: batchCount.value
-  })
+  try {
+    await store.generate({
+      prompt: prompt.value,
+      refImages: refImages.value.length ? refImages.value : undefined,
+      modelProviderId: selectedProviderId.value,
+      modelId: selectedModelId.value,
+      size: selectedSize.value,
+      tierId: selectedTier.value,
+      quality: selectedQuality.value,
+      batchCount: batchCount.value,
+      concurrency: concurrency.value
+    })
+    await recordUsage('image', selectedProviderId.value, selectedModelId.value)
+    hintsTick.value++
+    // 生成后刷新失败计数（任一条失败即计入全局）
+    await refreshFailedCount()
+  } catch (e) {
+    // store handles its own error state; hints only update on real success
+    throw e
+  }
 }
 
 const copyToast = ref('')
@@ -559,9 +797,8 @@ async function copyImage(path: string) {
   setTimeout(() => { copyToast.value = '' }, 2000)
 }
 
-function editImage() {
-  copyToast.value = '图片编辑功能开发中'
-  setTimeout(() => { copyToast.value = '' }, 2000)
+function editImage(genId: string) {
+  router.push(`/image-edit/${genId}`)
 }
 
 function openFolder(path: string) {
@@ -597,18 +834,33 @@ watch(optimizeModelId, (v) => {
     window.api.settings.invoke('set', 'imagegen_optimize_model_id', v)
   }
 })
+watch(selectedTier, (v) => {
+  if (v) window.api.settings.invoke('set', 'imagegen_tier_id', v)
+})
 
 onMounted(async () => {
   store.listenProgress()
-  await Promise.all([store.fetchGenerations(), modelStore.fetchProviders(), presetStore.fetchAll('image_gen')])
+  // 冷启只拉第 1 页 (25 条)，替代之前的 listRecentGenerations(200)
+  await Promise.all([
+    store.fetchPage(1, PAGE_SIZE),
+    refreshFailedCount(),
+    modelStore.fetchProviders(),
+    presetStore.fetchAll('image_gen'),
+    warmHintsCache()
+  ])
+  hintsTick.value++
 
   const all = (await window.api.settings.invoke('getAll')) as Record<string, string>
   if (all['imagegen_provider_id']) selectedProviderId.value = all['imagegen_provider_id']
   if (all['imagegen_model_id']) selectedModelId.value = all['imagegen_model_id']
   if (all['imagegen_optimize_provider_id']) optimizeProviderId.value = all['imagegen_optimize_provider_id']
   if (all['imagegen_optimize_model_id']) optimizeModelId.value = all['imagegen_optimize_model_id']
+  if (all['imagegen_tier_id']) selectedTier.value = all['imagegen_tier_id']
 
   applyInspirationFromQuery()
+
+  const pending = handoff.consume<{ prompt?: string }>('imageGen')
+  if (pending?.prompt) prompt.value = pending.prompt
 })
 
 onUnmounted(() => {

@@ -1,9 +1,10 @@
 <template>
-  <div class="canvas-node" :style="{ borderColor: '#6366f1' }">
+  <div class="canvas-node" :style="{ borderColor: !text.trim() ? '#f87171' : '#6366f1' }">
     <div class="node-header" style="background: #eef2ff; color: #4338ca;">
       <span class="node-type-dot" style="background: #6366f1;"></span>
       文本输入
-      <button @click.stop="showPreset = !showPreset" :disabled="data.locked" class="px-1.5 py-0.5 rounded text-[9px] text-indigo-500 hover:bg-indigo-100 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" style="margin-left: auto;">预设</button>
+      <span class="text-[10px] font-normal opacity-60 ml-1">#{{ data.nodeIndex }}</span>
+      <button @click.stop="togglePreset" :disabled="data.locked" class="px-1.5 py-0.5 rounded text-[9px] text-indigo-500 hover:bg-indigo-100 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" style="margin-left: auto;">预设</button>
       <button @click="deleteNode" :disabled="data.locked" class="node-delete-btn" style="margin-left: 0;">
         <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
       </button>
@@ -11,19 +12,26 @@
     <div class="node-body">
       <textarea
         v-model="text"
-        @change="saveData"
+        @input="debouncedSave"
         placeholder="输入提示词文本..."
         rows="4"
         class="node-textarea nodrag nopan"
         :disabled="data.locked"
       ></textarea>
+      <div v-if="!text.trim()" class="text-[9px] text-red-400 mt-1 px-0.5">未输入文本</div>
     </div>
-    <Handle type="source" :position="Position.Right" id="output" class="handle-text" />
+    <Handle
+      type="source"
+      :position="Position.Right"
+      id="output"
+      class="handle-text"
+      @click="(e: MouseEvent) => onHandleClick?.(e, data.nodeId, 'output', 'text')"
+    />
   </div>
 
   <Teleport to="body">
-    <div v-if="showPreset" class="fixed inset-0 z-[9999] flex items-center justify-center" @click.self="showPreset = false">
-      <div class="w-[420px] max-h-[60vh] bg-surface-0 border border-surface-3 rounded-2xl shadow-xl flex flex-col">
+    <div v-if="showPreset" class="fixed z-[9999] flex items-center justify-center" :style="presetPosition">
+      <div class="w-[420px] max-h-[60vh] bg-surface-0 border border-surface-3 rounded-2xl shadow-xl flex flex-col" v-click-outside="() => showPreset = false">
         <div class="flex items-center justify-between px-5 py-3 border-b border-surface-3">
           <h3 class="text-sm font-semibold text-text-primary">预设提示词</h3>
           <button @click="showPreset = false" class="p-1 rounded-lg text-text-tertiary hover:text-text-primary hover:bg-surface-2 transition-colors">
@@ -55,27 +63,61 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, inject } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
 import { useCanvasStore } from '@/stores/canvas'
 import { usePromptPresetStore } from '@/stores/prompt-presets'
 
+type HandleClickHandler = (e: MouseEvent, nodeId: string, handleId: string, dataType: 'text' | 'image') => void
+
 const props = defineProps<{ data: Record<string, any> }>()
 const canvasStore = useCanvasStore()
 const presetStore = usePromptPresetStore()
+const onHandleClick = inject<HandleClickHandler | null>('onHandleClick', null)
 
 const text = ref(props.data.text || '')
 const showPreset = ref(false)
+const presetPosition = ref({ top: '50%', left: '50%', transform: 'translate(-50%, -50%)' })
 
-const presetGroups = computed(() => presetStore.visibleGrouped('image_gen'))
+const presetType = computed(() => {
+  if (!props.data.nodeId) return 'image_gen'
+  const edges = canvasStore.edges.filter((e: any) => e.source_node_id === props.data.nodeId)
+  for (const edge of edges) {
+    const target = canvasStore.nodes.find((n: any) => n.id === edge.target_node_id)
+    if (target?.type === 'aiText') return 'text'
+    if (target?.type === 'text2img' || target?.type === 'img2img') return 'image_gen'
+  }
+  return 'image_gen'
+})
+
+const presetGroups = computed(() => presetStore.visibleGrouped(presetType.value))
 
 watch(() => props.data.text, (v) => { if (v !== text.value) text.value = v || '' })
+
+let saveTimer: ReturnType<typeof setTimeout> | null = null
+function debouncedSave() {
+  if (saveTimer) clearTimeout(saveTimer)
+  saveTimer = setTimeout(saveData, 300)
+}
 
 function saveData() {
   if (!props.data.nodeId) return
   canvasStore.updateNode(props.data.nodeId, {
     data: { ...props.data, text: text.value }
   })
+}
+
+function togglePreset(e: MouseEvent) {
+  showPreset.value = !showPreset.value
+  if (showPreset.value) {
+    const btn = e.currentTarget as HTMLElement
+    const rect = btn.getBoundingClientRect()
+    presetPosition.value = {
+      top: `${rect.bottom + 8}px`,
+      left: `${rect.left}px`,
+      transform: 'none'
+    }
+  }
 }
 
 function applyPreset(content: string) {
@@ -89,5 +131,17 @@ function deleteNode() {
   canvasStore.removeNode(props.data.nodeId)
 }
 
-onMounted(() => { presetStore.fetchAll('image_gen') })
+onMounted(() => { presetStore.fetchAll() })
+
+const vClickOutside = {
+  mounted(el: HTMLElement, binding: any) {
+    (el as any)._clickOutside = (e: MouseEvent) => {
+      if (!el.contains(e.target as Node)) binding.value()
+    }
+    setTimeout(() => document.addEventListener('click', (el as any)._clickOutside), 0)
+  },
+  unmounted(el: HTMLElement) {
+    document.removeEventListener('click', (el as any)._clickOutside)
+  }
+}
 </script>

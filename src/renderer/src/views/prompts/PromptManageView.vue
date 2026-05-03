@@ -168,17 +168,22 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { usePromptPresetStore, type PromptCategory, type PromptPreset } from '@/stores/prompt-presets'
 import { useModelStore } from '@/stores/models'
 
+const route = useRoute()
+const router = useRouter()
 const store = usePromptPresetStore()
 const modelStore = useModelStore()
 
-const tabs = [
-  { type: 'image_gen', label: 'AI 生图预设' },
-  { type: 'chat_quick', label: '对话快捷词' },
-  { type: 'persona', label: '人格规则预设' }
+const TABS: { label: string; type: string }[] = [
+  { label: 'AI 生图预设', type: 'image_gen' },
+  { label: '对话快捷键', type: 'chat' },
+  { label: '人格规则预设', type: 'persona' }
 ]
+
+const tabs = TABS
 
 const activeTab = ref('image_gen')
 const selectedCategoryId = ref('')
@@ -330,5 +335,19 @@ async function doOptimize() {
 
 onMounted(async () => {
   await Promise.all([store.fetchAll(), modelStore.fetchProviders()])
+
+  // Auto-open create modal when navigated here with ?action=create
+  // (e.g. from Image2PromptView "存入预设")
+  const q = route.query
+  if (q.action === 'create' && typeof q.content === 'string' && q.content) {
+    const requestedType = (typeof q.type === 'string' ? q.type : '') || 'image_gen'
+    if (TABS.some(t => t.type === requestedType)) {
+      activeTab.value = requestedType
+    }
+    presetForm.value = { category_id: '', label: '', content: q.content }
+    showAddPreset.value = true
+    // Clear the query so back/forward navigation doesn't re-trigger the modal
+    router.replace({ path: '/prompts', query: {} })
+  }
 })
 </script>

@@ -79,14 +79,27 @@ function convertLocalImages(html: string): string {
   })
 }
 
+const LINK_JUMP_BTN_RE = /<button class="link-jump-btn"[^>]*>[\s\S]*?<\/button>/g
+
 export function renderMarkdown(content: string): string {
   const html = marked.parse(content) as string
   const withImages = convertLocalImages(html)
   const processed = insertLinkButtons(withImages)
-  return DOMPurify.sanitize(processed, {
+  // Protect self-generated link-jump buttons from DOMPurify stripping their SVG icons.
+  // Use a plain-ASCII token so it survives DOMPurify's HTML5 parsing round-trip.
+  const jumpButtons: string[] = []
+  const shielded = processed.replace(LINK_JUMP_BTN_RE, (match) => {
+    jumpButtons.push(match)
+    return `__LINK_JUMP_BTN_${jumpButtons.length - 1}__`
+  })
+  let sanitized = DOMPurify.sanitize(shielded, {
     ADD_ATTR: ['onclick', 'data-link', 'data-link-type'],
     ADD_TAGS: ['button'],
     ADD_URI_SAFE_ATTR: ['src'],
     ALLOWED_URI_REGEXP: /^(?:(?:https?|data|local-file):)/i
   })
+  jumpButtons.forEach((btn, i) => {
+    sanitized = sanitized.replace(`__LINK_JUMP_BTN_${i}__`, btn)
+  })
+  return sanitized
 }

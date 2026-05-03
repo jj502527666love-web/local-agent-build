@@ -18,6 +18,15 @@
         </div>
       </div>
       <div class="flex items-center gap-2">
+        <button
+          v-if="failedCount > 0"
+          @click="clearFailed"
+          class="px-2.5 py-1.5 rounded-lg text-xs text-red-500 hover:text-red-600 hover:bg-red-50 transition-colors flex items-center gap-1"
+          :title="`清理 ${failedCount} 条失败记录`"
+        >
+          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165" /></svg>
+          <span>清理失败 ({{ failedCount }})</span>
+        </button>
         <div class="relative">
           <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-tertiary" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z" /></svg>
           <input
@@ -56,7 +65,7 @@
               <button @click.stop="copyImage(item.result_path)" class="w-7 h-7 rounded-lg bg-black/50 hover:bg-black/70 text-white flex items-center justify-center" title="复制图片">
                 <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.666 3.888A2.25 2.25 0 0 0 13.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 0 1-.75.75H9.75a.75.75 0 0 1-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 0 1-2.25 2.25H6.75A2.25 2.25 0 0 1 4.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 0 1 1.927-.184" /></svg>
               </button>
-              <button @click.stop="editImage" class="w-7 h-7 rounded-lg bg-black/50 hover:bg-black/70 text-white flex items-center justify-center" title="编辑">
+              <button @click.stop="editImage(item.id)" class="w-7 h-7 rounded-lg bg-black/50 hover:bg-black/70 text-white flex items-center justify-center" title="编辑">
                 <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Z" /></svg>
               </button>
             </div>
@@ -71,10 +80,42 @@
       </div>
 
       <!-- Pagination -->
-      <div v-if="totalPages > 1" class="flex items-center justify-center gap-2 mt-6">
-        <button @click="page > 1 && (page--, fetchData())" :disabled="page <= 1" class="px-3 py-1.5 text-xs border border-surface-3 rounded-lg disabled:opacity-40 hover:bg-surface-2 transition-colors">上一页</button>
-        <span class="text-xs text-text-tertiary">{{ page }} / {{ totalPages }}</span>
-        <button @click="page < totalPages && (page++, fetchData())" :disabled="page >= totalPages" class="px-3 py-1.5 text-xs border border-surface-3 rounded-lg disabled:opacity-40 hover:bg-surface-2 transition-colors">下一页</button>
+      <div v-if="totalPages > 1" class="flex items-center justify-center gap-1 mt-6">
+        <button
+          @click="goToPage(1)"
+          :disabled="page <= 1"
+          class="px-2.5 py-1.5 text-xs border border-surface-3 rounded-lg disabled:opacity-40 hover:bg-surface-2 transition-colors"
+          title="首页"
+        >«</button>
+        <button
+          @click="goToPage(page - 1)"
+          :disabled="page <= 1"
+          class="px-2.5 py-1.5 text-xs border border-surface-3 rounded-lg disabled:opacity-40 hover:bg-surface-2 transition-colors"
+          title="上一页"
+        >‹</button>
+        <span class="px-2 text-xs text-text-secondary">
+          第 <input
+            type="number"
+            :value="page"
+            @change="(e) => goToPage(parseInt((e.target as HTMLInputElement).value) || 1)"
+            :min="1"
+            :max="totalPages"
+            class="w-12 px-1 py-0.5 text-center text-xs border border-surface-3 rounded bg-surface-0 outline-none focus:ring-1 focus:ring-primary-500"
+          /> / {{ totalPages }} 页
+          <span class="text-text-tertiary ml-2">共 {{ total }} 条</span>
+        </span>
+        <button
+          @click="goToPage(page + 1)"
+          :disabled="page >= totalPages"
+          class="px-2.5 py-1.5 text-xs border border-surface-3 rounded-lg disabled:opacity-40 hover:bg-surface-2 transition-colors"
+          title="下一页"
+        >›</button>
+        <button
+          @click="goToPage(totalPages)"
+          :disabled="page >= totalPages"
+          class="px-2.5 py-1.5 text-xs border border-surface-3 rounded-lg disabled:opacity-40 hover:bg-surface-2 transition-colors"
+          title="末页"
+        >»</button>
       </div>
     </div>
 
@@ -91,7 +132,7 @@
             <button @click.stop="copyImage(detailItem.result_path)" class="w-8 h-8 rounded-lg bg-black/50 hover:bg-black/70 text-white flex items-center justify-center" title="复制图片">
               <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.666 3.888A2.25 2.25 0 0 0 13.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 0 1-.75.75H9.75a.75.75 0 0 1-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 0 1-2.25 2.25H6.75A2.25 2.25 0 0 1 4.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 0 1 1.927-.184" /></svg>
             </button>
-            <button @click.stop="editImage" class="w-8 h-8 rounded-lg bg-black/50 hover:bg-black/70 text-white flex items-center justify-center" title="编辑">
+            <button @click.stop="editImage(detailItem.id)" class="w-8 h-8 rounded-lg bg-black/50 hover:bg-black/70 text-white flex items-center justify-center" title="编辑">
               <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Z" /></svg>
             </button>
           </div>
@@ -186,10 +227,11 @@ const api = () => (window as any).api
 const items = ref<ImageGeneration[]>([])
 const search = ref('')
 const page = ref(1)
-const pageSize = 20
+const pageSize = 25
 const total = ref(0)
 const loading = ref(false)
 const detailItem = ref<ImageGeneration | null>(null)
+const failedCount = ref(0)
 
 const periodOptions = [
   { label: '周', value: 'week' },
@@ -261,6 +303,36 @@ async function fetchData() {
   }
 }
 
+async function fetchFailedCount() {
+  try {
+    failedCount.value = (await api().imageGen.invoke('countFailedGenerations')) as number
+  } catch (e) {
+    console.error('Failed to count failed generations:', e)
+  }
+}
+
+function goToPage(p: number) {
+  const target = Math.max(1, Math.min(totalPages.value, p))
+  if (target !== page.value) {
+    page.value = target
+    fetchData()
+  }
+}
+
+async function clearFailed() {
+  if (failedCount.value <= 0) return
+  if (!confirm(`确定清理 ${failedCount.value} 条失败记录？此操作不可恢复。`)) return
+  try {
+    const res = await api().imageGen.invoke('clearFailedGenerations') as { deleted: number }
+    copyToast.value = `已清理 ${res.deleted} 条失败记录`
+    setTimeout(() => { copyToast.value = '' }, 2000)
+    failedCount.value = 0
+  } catch (e: any) {
+    copyToast.value = '清理失败：' + (e?.message || '')
+    setTimeout(() => { copyToast.value = '' }, 2000)
+  }
+}
+
 function openDetail(item: ImageGeneration) {
   detailItem.value = item
 }
@@ -281,9 +353,8 @@ async function copyImage(path: string) {
   setTimeout(() => { copyToast.value = '' }, 2000)
 }
 
-function editImage() {
-  copyToast.value = '图片编辑功能开发中'
-  setTimeout(() => { copyToast.value = '' }, 2000)
+function editImage(genId: string) {
+  router.push(`/image-edit/${genId}`)
 }
 
 function openFolder(path: string) {
@@ -323,5 +394,6 @@ function formatDate(dateStr: string): string {
 
 onMounted(() => {
   fetchData()
+  fetchFailedCount()
 })
 </script>

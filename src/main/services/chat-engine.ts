@@ -1,11 +1,12 @@
 import { BrowserWindow } from 'electron'
 import { join } from 'path'
 import { existsSync, mkdirSync } from 'fs'
+import { v4 as uuid } from 'uuid'
 import { getDataDir } from './data-path'
-import { getBot } from './bot'
+import { getBot, type ToolApproval } from './bot'
 import { getPersona } from './persona'
 import { getMessages, addMessage, getConversation, updateConversationTitle } from './conversation'
-import { callLLM, ChatMessage } from './llm'
+import { callLLM, ChatMessage, AbortedError, isAbortedError } from './llm'
 import { listSkills } from './skill'
 import { getMcpServer } from './mcp-server'
 import { getSummary, upsertSummary } from './conversation-summary'
@@ -15,14 +16,203 @@ import { listKnowledgeBases } from './knowledge'
 import { executeSkillSandbox } from './skill-sandbox'
 import { callMcpTool } from './mcp-server'
 import { listPromptSkills, getPromptSkillByName } from './prompt-skill'
-import { coreToolDefs, executeCoreToolCall, CORE_TOOL_NAMES } from './core-tools'
+import { coreToolDefs, executeCoreToolCall, CORE_TOOL_NAMES, previewFileWrite, type FileWritePreview } from './core-tools'
 
-const MAX_CONTEXT_TOKENS = 8000
+// Per-model context-window table. Values are the *total* model context (prompt + completion).
+// We reserve ~25% for the response and pass the rest as the prompt budget.
+const MODEL_CONTEXT_LIMITS: { match: RegExp; total: number }[] = [
+  // Claude
+  { match: /claude-(?:opus|sonnet|haiku)-4|claude-3\.5|claude-3-5/i, total: 200_000 },
+  { match: /claude-3/i, total: 200_000 },
+  { match: /claude/i, total: 200_000 },
+  // GPT-4 / GPT-5
+  { match: /gpt-5/i, total: 256_000 },
+  { match: /gpt-4\.1/i, total: 1_000_000 },
+  { match: /gpt-4o|gpt-4-turbo|gpt-4-1106|gpt-4-0125/i, total: 128_000 },
+  { match: /gpt-4-32k/i, total: 32_000 },
+  { match: /gpt-4/i, total: 8_000 },
+  { match: /o1|o3|o4/i, total: 200_000 },
+  // GPT-3.5
+  { match: /gpt-3\.5-turbo-16k/i, total: 16_000 },
+  { match: /gpt-3\.5/i, total: 16_000 },
+  // Gemini
+  { match: /gemini-(?:1\.5|2\.0|2\.5)-pro/i, total: 1_000_000 },
+  { match: /gemini-(?:1\.5|2\.0|2\.5)-flash/i, total: 1_000_000 },
+  { match: /gemini/i, total: 32_000 },
+  // DeepSeek
+  { match: /deepseek-(?:r1|reasoner)/i, total: 64_000 },
+  { match: /deepseek-chat|deepseek-coder|deepseek-v3/i, total: 64_000 },
+  { match: /deepseek/i, total: 32_000 },
+  // Qwen
+  { match: /qwen.*-1m|qwen.*-long/i, total: 1_000_000 },
+  { match: /qwen-?(?:plus|max|turbo)|qwen2\.5|qwen3/i, total: 128_000 },
+  { match: /qwen/i, total: 32_000 },
+  // GLM / ChatGLM
+  { match: /glm-4-(?:plus|long|air|0520)/i, total: 128_000 },
+  { match: /glm-4/i, total: 128_000 },
+  { match: /glm/i, total: 32_000 },
+  // Mistral
+  { match: /mistral-large/i, total: 128_000 },
+  { match: /mistral/i, total: 32_000 },
+  // Llama
+  { match: /llama-?3\.[12]/i, total: 128_000 },
+  { match: /llama-?3/i, total: 8_000 },
+  // Yi / Doubao / Baichuan / Moonshot
+  { match: /moonshot|kimi/i, total: 128_000 },
+  { match: /doubao/i, total: 128_000 },
+  { match: /yi-/i, total: 32_000 }
+]
+
+const DEFAULT_TOTAL_CONTEXT = 32_000
+const RESPONSE_RESERVE_RATIO = 0.25
+
+function getModelPromptBudget(modelId: string): number {
+  const id = String(modelId || '')
+  const found = MODEL_CONTEXT_LIMITS.find((e) => e.match.test(id))
+  const total = found?.total ?? DEFAULT_TOTAL_CONTEXT
+  return Math.max(2000, Math.floor(total * (1 - RESPONSE_RESERVE_RATIO)))
+}
+
+// Per-conversation AbortController so the renderer can cancel a running send.
+const activeControllers = new Map<string, AbortController>()
+
+export function cancelChat(conversationId: string): boolean {
+  const ctrl = activeControllers.get(conversationId)
+  if (!ctrl) return false
+  ctrl.abort()
+  activeControllers.delete(conversationId)
+  // Reject any pending approvals for this conversation
+  for (const [reqId, ctx] of pendingApprovals) {
+    if (ctx.conversationId === conversationId) {
+      ctx.resolve(false)
+      pendingApprovals.delete(reqId)
+    }
+  }
+  return true
+}
+
+export function isChatActive(conversationId: string): boolean {
+  return activeControllers.has(conversationId)
+}
+
+// === Tool approval ===
+interface PendingApproval {
+  conversationId: string
+  resolve: (approved: boolean) => void
+}
+const pendingApprovals = new Map<string, PendingApproval>()
+
+const DESTRUCTIVE_FILE_OPS = new Set(['write', 'append', 'mkdir', 'delete', 'copy', 'rename', 'write_json'])
+
+function isDestructiveTool(name: string, args: any): boolean {
+  if (name === 'run_command') return true
+  if (name === 'file_ops') return DESTRUCTIVE_FILE_OPS.has(args?.action)
+  // user skills run arbitrary JS - treat as destructive
+  // MCP tools - treat as destructive (we cannot know their side effects)
+  if (name && !['use_skill', 'image_gen'].includes(name)) {
+    // Anything except prompt skill loading and image gen is potentially side-effectful;
+    // image_gen only writes to workspace/images which is user-expected.
+    return false // explicit list above; everything else is non-destructive by default
+  }
+  return false
+}
+
+function needsApproval(mode: ToolApproval, name: string, args: any): boolean {
+  if (mode === 'off') return false
+  if (mode === 'all') return true
+  return isDestructiveTool(name, args)
+}
+
+function requestToolApproval(
+  window: BrowserWindow | null,
+  conversationId: string,
+  toolCall: any,
+  parsedArgs: any,
+  preview: FileWritePreview | null,
+  signal: AbortSignal
+): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const requestId = uuid()
+    pendingApprovals.set(requestId, { conversationId, resolve })
+    const onAbort = () => {
+      const ctx = pendingApprovals.get(requestId)
+      if (ctx) {
+        pendingApprovals.delete(requestId)
+        ctx.resolve(false)
+      }
+    }
+    if (signal.aborted) {
+      onAbort()
+      return
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    if (window) {
+      window.webContents.send('chat:toolApproval', {
+        request_id: requestId,
+        conversation_id: conversationId,
+        tool: toolCall.function?.name || 'unknown',
+        args: parsedArgs,
+        preview: preview || undefined
+      })
+    } else {
+      // No window to ask: fail closed
+      pendingApprovals.delete(requestId)
+      resolve(false)
+    }
+  })
+}
+
+export function respondToolApproval(requestId: string, approved: boolean): boolean {
+  const ctx = pendingApprovals.get(requestId)
+  if (!ctx) return false
+  pendingApprovals.delete(requestId)
+  ctx.resolve(approved)
+  return true
+}
 
 function getWorkspaceDir(conversationId: string): string {
   const dir = join(getDataDir(), 'workspaces', conversationId)
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
   return dir
+}
+
+/**
+ * After slicing history for the sliding window, the first messages may be orphan
+ * tool results (parent assistant.tool_calls got trimmed) or trailing assistant.tool_calls
+ * without their matching tool responses. Both cases cause OpenAI to reject the replay, so
+ * we repair by trimming those orphans.
+ */
+function repairHistoryHead(msgs: ChatMessage[]): ChatMessage[] {
+  let start = 0
+  // Drop leading orphan tool results.
+  while (start < msgs.length && msgs[start].role === 'tool') start++
+  // Drop a leading assistant whose declared tool_calls aren't all answered below it.
+  if (start < msgs.length) {
+    const head = msgs[start] as any
+    if (head.role === 'assistant' && Array.isArray(head.tool_calls) && head.tool_calls.length > 0) {
+      const ids: string[] = head.tool_calls.map((tc: any) => tc?.id).filter(Boolean)
+      const tail = msgs.slice(start + 1)
+      const answered = ids.every((id) =>
+        tail.some((m: any) => m.role === 'tool' && m.tool_call_id === id)
+      )
+      if (!answered) start++
+    }
+  }
+  let end = msgs.length
+  // Drop a trailing assistant.tool_calls whose tool results were sliced off.
+  while (end > 0) {
+    const last = msgs[end - 1] as any
+    if (last?.role === 'assistant' && Array.isArray(last.tool_calls) && last.tool_calls.length > 0) {
+      const ids: string[] = last.tool_calls.map((tc: any) => tc?.id).filter(Boolean)
+      const tail = msgs.slice(end)
+      const answered = ids.every((id) =>
+        tail.some((m: any) => m.role === 'tool' && m.tool_call_id === id)
+      )
+      if (!answered) { end--; continue }
+    }
+    break
+  }
+  return msgs.slice(start, end)
 }
 
 const RECENT_ROUNDS = 6
@@ -106,7 +296,8 @@ export async function sendMessage(
 ): Promise<void> {
   const bot = getBot(options.botId)
   if (!bot) throw new Error('Bot not found')
-  if (!bot.model_provider_id) throw new Error('Bot has no model provider configured')
+  if (!bot.model_provider_id && !bot.model_id) throw new Error('Bot has no model provider configured')
+  const effectiveProviderId = bot.model_provider_id || 'cloud:default'
 
   // Save user message
   addMessage({
@@ -154,6 +345,18 @@ export async function sendMessage(
     if (mcpNames.length > 0) capSummary.push(`MCP服务: ${mcpNames.join(', ')}`)
   }
   baseSystemParts.push(`当前配置:\n${capSummary.join('\n')}`)
+
+  // Workspace path: tell the LLM where relative file paths resolve to
+  const workspaceDir = getWorkspaceDir(options.conversationId)
+  baseSystemParts.push(
+    `[工作区目录]: ${workspaceDir}\n` +
+    `- 当前对话专属目录,file_ops / run_command / image_gen 未指定绝对路径时默认在此目录操作\n` +
+    `- 路径解析规则:\n` +
+    `  · 绝对路径(如 C:\\foo\\bar.txt)按字面解析\n` +
+    `  · 相对路径(如 out.md、data/x.json)解析到工作区内\n` +
+    `  · '.' 或空字符串表示工作区根\n` +
+    `- 查看工作区内容请调用 file_ops({action:'tree', path:'.'}) 或 ({action:'list', path:'.'})`
+  )
 
   // System prompt from persona
   if (bot.persona_id) {
@@ -271,23 +474,45 @@ export async function sendMessage(
       }
     } else if (msg.role === 'assistant') {
       if (msg.tool_calls && msg.tool_calls.length > 0) {
-        // Skip assistant messages with tool_calls from history
-        // (tool_call_ids are not persisted, replaying them causes API errors)
+        // Replay full assistant.tool_calls block — but only if every tool_call has a paired tool result
+        // later in history (otherwise the OpenAI API rejects it).
+        const toolCallIds = msg.tool_calls.map((tc: any) => tc.id).filter(Boolean)
+        const allPaired = toolCallIds.length > 0 && toolCallIds.every((id: string) =>
+          history.some((m) => m.role === 'tool' && m.tool_call_id === id)
+        )
+        if (allPaired) {
+          historyMessages.push({
+            role: 'assistant',
+            content: msg.content || '',
+            tool_calls: msg.tool_calls
+          } as any)
+        }
         continue
       }
       historyMessages.push({ role: 'assistant', content: msg.content })
     } else if (msg.role === 'tool') {
-      // Skip tool result messages from history (paired with skipped tool_calls above)
-      continue
+      // Replay tool result paired to a previously-emitted assistant tool_call.
+      if (!msg.tool_call_id) continue
+      const lastAssistant = [...historyMessages].reverse().find((m) => m.role === 'assistant') as any
+      const isPairedAbove = lastAssistant?.tool_calls?.some((tc: any) => tc.id === msg.tool_call_id)
+      if (!isPairedAbove) continue
+      historyMessages.push({
+        role: 'tool',
+        content: msg.content,
+        tool_call_id: msg.tool_call_id
+      } as any)
     }
   }
 
-  // Sliding window: keep recent rounds, trim if exceeding token limit
+  // Sliding window: keep recent rounds, trim if exceeding the model's prompt budget.
   const systemTokens = estimateMessagesTokens(messages)
-  const budget = MAX_CONTEXT_TOKENS - systemTokens
+  const promptBudget = getModelPromptBudget(bot.model_id)
+  const budget = promptBudget - systemTokens
   let included = historyMessages.slice(-RECENT_ROUNDS * 2)
+  included = repairHistoryHead(included)
   while (included.length > 2 && estimateMessagesTokens(included) > budget) {
     included = included.slice(2)
+    included = repairHistoryHead(included)
   }
   messages.push(...included)
 
@@ -299,19 +524,27 @@ export async function sendMessage(
 
   // Call LLM with multi-round tool call loop (agent mode)
   const MAX_TOOL_ROUNDS = 10
+  // Replace any leftover controller (e.g. previous failed cleanup) with a fresh one for this turn.
+  const prevCtrl = activeControllers.get(options.conversationId)
+  if (prevCtrl) prevCtrl.abort()
+  const abortController = new AbortController()
+  activeControllers.set(options.conversationId, abortController)
+  const signal = abortController.signal
   try {
     let currentMessages: ChatMessage[] = [...messages]
     let round = 0
 
     while (round <= MAX_TOOL_ROUNDS) {
+      if (signal.aborted) throw new AbortedError()
       const t0 = Date.now()
       const response = await callLLM(
-        bot.model_provider_id,
+        effectiveProviderId,
         {
           modelId: bot.model_id,
           messages: currentMessages,
           tools: tools.length > 0 ? tools : undefined,
-          stream: true
+          stream: true,
+          signal
         },
         window
       )
@@ -349,27 +582,65 @@ export async function sendMessage(
         window.webContents.send('chat:stream', { type: 'tool_start', tools: toolNames })
       }
 
-      // Execute tool calls and collect results
+      // Pass 1 (serial): approval gate, collect rejections eagerly so the user sees them paired with the right call.
+      type Plan = { toolCall: any; fnName: string; resultStr?: string }
+      const plans: Plan[] = []
+      const sandboxDir = getWorkspaceDir(options.conversationId)
       for (const toolCall of response.tool_calls) {
+        if (signal.aborted) throw new AbortedError()
         const fnName = toolCall.function?.name || 'unknown'
-        const result = await executeToolCall(toolCall, effectiveSkillIds, effectiveMcpIds, options.conversationId)
+        let parsedArgs: any = {}
+        try { parsedArgs = JSON.parse(toolCall.function?.arguments || '{}') } catch {}
+
+        if (needsApproval(bot.tool_approval, fnName, parsedArgs)) {
+          const preview = fnName === 'file_ops' ? previewFileWrite(parsedArgs, sandboxDir) : null
+          const approved = await requestToolApproval(window, options.conversationId, toolCall, parsedArgs, preview, signal)
+          if (signal.aborted) throw new AbortedError()
+          if (!approved) {
+            plans.push({
+              toolCall,
+              fnName,
+              resultStr: JSON.stringify({ error: '用户拒绝了该工具调用', tool: fnName })
+            })
+            if (window) {
+              window.webContents.send('chat:stream', { type: 'tool_result', tool: fnName, summary: '[已拒绝]' })
+            }
+            continue
+          }
+        }
+        plans.push({ toolCall, fnName })
+      }
+
+      // Pass 2 (parallel): execute all approved tools concurrently while preserving call order.
+      const pendingExecs = plans.map(async (p) => {
+        if (p.resultStr !== undefined) return p
+        if (signal.aborted) throw new AbortedError()
+        const result = await executeToolCall(p.toolCall, effectiveSkillIds, effectiveMcpIds, options.conversationId)
         const resultStr = JSON.stringify(result)
-        // Send tool result summary to renderer
         if (window) {
           const summary = typeof result === 'string'
             ? (result.length > 100 ? result.slice(0, 100) + '...' : result)
             : (resultStr.length > 100 ? resultStr.slice(0, 100) + '...' : resultStr)
-          window.webContents.send('chat:stream', { type: 'tool_result', tool: fnName, summary })
+          window.webContents.send('chat:stream', { type: 'tool_result', tool: p.fnName, summary })
         }
+        return { ...p, resultStr }
+      })
+      const completed = await Promise.all(pendingExecs)
+      if (signal.aborted) throw new AbortedError()
+
+      // Pass 3 (serial): persist + append in original order so the LLM sees a deterministic transcript.
+      for (const p of completed) {
+        const resultStr = p.resultStr || ''
         addMessage({
           conversation_id: options.conversationId,
           role: 'tool',
-          content: resultStr
+          content: resultStr,
+          tool_call_id: p.toolCall.id || ''
         })
         currentMessages.push({
           role: 'tool',
           content: resultStr,
-          tool_call_id: toolCall.id || ''
+          tool_call_id: p.toolCall.id || ''
         })
       }
 
@@ -381,12 +652,14 @@ export async function sendMessage(
         if (window) {
           window.webContents.send('chat:stream', { type: 'tool_done' })
         }
+        if (signal.aborted) throw new AbortedError()
         const finalResponse = await callLLM(
-          bot.model_provider_id,
+          effectiveProviderId,
           {
             modelId: bot.model_id,
             messages: currentMessages,
-            stream: true
+            stream: true,
+            signal
           },
           window
         )
@@ -404,22 +677,37 @@ export async function sendMessage(
       }
     }
     // Auto-generate title on 1st or 5th user message
-    maybeGenerateTitle(options.conversationId, bot.model_provider_id, bot.model_id, window)
+    maybeGenerateTitle(options.conversationId, effectiveProviderId, bot.model_id, window)
     // Auto-summarize if history exceeds threshold
-    maybeGenerateSummary(options.conversationId, bot.model_provider_id, bot.model_id)
+    maybeGenerateSummary(options.conversationId, effectiveProviderId, bot.model_id)
   } catch (error: any) {
-    // Send error to renderer
-    if (window) {
-      window.webContents.send('chat:stream', {
-        type: 'error',
-        error: error.message
+    if (isAbortedError(error)) {
+      // User-initiated cancel: surface as a friendly aborted marker, not an error.
+      if (window) {
+        window.webContents.send('chat:stream', { type: 'aborted' })
+      }
+      addMessage({
+        conversation_id: options.conversationId,
+        role: 'assistant',
+        content: '[已中断]'
+      })
+    } else {
+      if (window) {
+        window.webContents.send('chat:stream', {
+          type: 'error',
+          error: error.message
+        })
+      }
+      addMessage({
+        conversation_id: options.conversationId,
+        role: 'assistant',
+        content: `[Error] ${error.message}`
       })
     }
-    addMessage({
-      conversation_id: options.conversationId,
-      role: 'assistant',
-      content: `[Error] ${error.message}`
-    })
+  } finally {
+    if (activeControllers.get(options.conversationId) === abortController) {
+      activeControllers.delete(options.conversationId)
+    }
   }
 }
 

@@ -9,7 +9,7 @@ import * as mcpServerService from '../services/mcp-server'
 import * as settingsService from '../services/settings'
 import * as dataPathService from '../services/data-path'
 import * as usageStatsService from '../services/usage-stats'
-import { sendMessage } from '../services/chat-engine'
+import { sendMessage, cancelChat, isChatActive, respondToolApproval } from '../services/chat-engine'
 import { callLLM } from '../services/llm'
 import { skillPresets } from '../services/skill-presets'
 import { executeSkillSandbox } from '../services/skill-sandbox'
@@ -22,6 +22,8 @@ import * as inspirationService from '../services/inspiration'
 import * as promptPresetService from '../services/prompt-preset'
 import * as backupService from '../services/backup'
 import * as canvasService from '../services/canvas'
+import { setCloudToken, getCloudToken, setCloudPermissions } from '../services/cloud-token'
+import { getDeviceId } from '../services/device-id'
 
 export function registerIpcHandlers(): void {
   // === Model Providers ===
@@ -108,6 +110,11 @@ export function registerIpcHandlers(): void {
     const window = BrowserWindow.fromWebContents(event.sender)
     return sendMessage(data, window)
   })
+  ipcMain.handle('chat:cancel', (_, conversationId: string) => cancelChat(conversationId))
+  ipcMain.handle('chat:isActive', (_, conversationId: string) => isChatActive(conversationId))
+  ipcMain.handle('chat:respondToolApproval', (_, requestId: string, approved: boolean) =>
+    respondToolApproval(requestId, approved)
+  )
 
   // === File Reading ===
   ipcMain.handle('chat:readFileBase64', async (_, filePath: string) => {
@@ -120,9 +127,80 @@ export function registerIpcHandlers(): void {
   })
 
   // === LLM Utility ===
-  ipcMain.handle('llm:call', async (_, providerId: string, modelId: string, messages: any[]) => {
-    const result = await callLLM(providerId, { modelId, messages })
-    return result.content
+  const llmAbortMap = new Map<string, AbortController>()
+
+  ipcMain.handle(
+    'llm:call',
+    async (
+      event,
+      providerId: string,
+      modelId: string,
+      messages: any[],
+      opts?: {
+        requestId?: string
+        max_tokens?: number
+        response_format?: { type: string; [k: string]: any }
+        stream?: boolean
+        notifyStream?: boolean
+        timeoutMs?: number
+        temperature?: number
+      }
+    ) => {
+      const {
+        requestId,
+        max_tokens,
+        response_format,
+        stream = true,
+        notifyStream,
+        timeoutMs,
+        temperature
+      } = opts ?? {}
+
+      const ac = new AbortController()
+      if (requestId) {
+        // Cancel any previous request sharing the same requestId
+        const prev = llmAbortMap.get(requestId)
+        if (prev) prev.abort()
+        llmAbortMap.set(requestId, ac)
+      }
+
+      // Optional hard timeout
+      let timer: ReturnType<typeof setTimeout> | undefined
+      if (timeoutMs && timeoutMs > 0) {
+        timer = setTimeout(() => ac.abort(), timeoutMs)
+      }
+
+      const win = BrowserWindow.fromWebContents(event.sender) ?? undefined
+
+      try {
+        const result = await callLLM(
+          providerId,
+          {
+            modelId,
+            messages,
+            stream,
+            max_tokens,
+            response_format,
+            temperature,
+            notifyStream,
+            signal: ac.signal
+          },
+          win
+        )
+        return result.content
+      } finally {
+        if (timer) clearTimeout(timer)
+        if (requestId) llmAbortMap.delete(requestId)
+      }
+    }
+  )
+
+  ipcMain.handle('llm:cancel', (_, requestId: string) => {
+    const ac = llmAbortMap.get(requestId)
+    if (ac) {
+      ac.abort()
+      llmAbortMap.delete(requestId)
+    }
   })
 
   // === Skills ===
@@ -346,6 +424,22 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('imageGen:deleteGenerations', (_, ids: string[]) =>
     imageGenService.deleteGenerations(ids)
   )
+  ipcMain.handle('imageGen:countFailedGenerations', () =>
+    imageGenService.countFailedGenerations()
+  )
+  ipcMain.handle('imageGen:clearFailedGenerations', () =>
+    imageGenService.clearFailedGenerations()
+  )
+
+  ipcMain.handle('imageGen:getGeneration', (_, id: string) =>
+    imageGenService.getGeneration(id)
+  )
+  ipcMain.handle('imageGen:saveEditedImage', (_, id: string, base64Data: string) =>
+    imageGenService.saveEditedImage(id, base64Data)
+  )
+  ipcMain.handle('imageGen:getAbsolutePath', (_, relPath: string) =>
+    imageGenService.getAbsolutePath(relPath)
+  )
 
   // === Inspirations ===
   ipcMain.handle('imageGen:listInspirations', (_, options?) =>
@@ -485,4 +579,16 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('canvas:createEdge', (_, projectId: string, data) => canvasService.createEdge(projectId, data))
   ipcMain.handle('canvas:deleteEdge', (_, id: string) => canvasService.deleteEdge(id))
   ipcMain.handle('canvas:saveProjectState', (_, projectId: string, nodes) => canvasService.saveProjectState(projectId, nodes))
+  ipcMain.handle('canvas:saveNodeImage', (_, projectId: string, nodeId: string, dataUrl: string) =>
+    canvasService.saveNodeImage(projectId, nodeId, dataUrl)
+  )
+  ipcMain.handle('canvas:deleteNodeImage', (_, projectId: string, nodeId: string) =>
+    canvasService.deleteNodeImage(projectId, nodeId)
+  )
+
+  // === Cloud Token ===
+  ipcMain.handle('cloud:setToken', (_, token: string | null) => setCloudToken(token))
+  ipcMain.handle('cloud:getToken', () => getCloudToken())
+  ipcMain.handle('cloud:setPermissions', (_, perms: Record<string, any>) => setCloudPermissions(perms))
+  ipcMain.handle('cloud:getDeviceId', () => getDeviceId())
 }

@@ -7,7 +7,23 @@ files:
   - '!src/*'
   - '!electron.vite.config.*'
   - '!{.eslintignore,.eslintrc.cjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
-  - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+  - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json,tsconfig.node.tsbuildinfo}'
+  # Backend (Laravel + React admin) is deployed separately to agent-admin.o455.com — do NOT bundle
+  - '!agent-admin/**/*'
+  # Dev-only loose files at repo root
+  - '!find_pptmaster.py'
+  - '!progress.txt'
+  - '!*.md'
+  # better-sqlite3 build debug artifacts (~30MB) — only the .node binary is needed at runtime
+  - '!node_modules/better-sqlite3/build/Release/obj/**/*'
+  - '!node_modules/better-sqlite3/build/Release/*.{iobj,ipdb,lib,exp,pdb}'
+  - '!node_modules/better-sqlite3/build/Release/test_extension.node'
+  - '!node_modules/better-sqlite3/deps/**/*'
+  - '!node_modules/better-sqlite3/src/**/*'
+  - '!node_modules/better-sqlite3/docs/**/*'
+  - '!node_modules/better-sqlite3/benchmark/**/*'
+  # Source maps from runtime deps (~10MB combined)
+  - '!**/*.map'
 electronLanguages:
   - en-US
   - zh-CN

@@ -1,6 +1,6 @@
 {
   "name": "local-agent",
-  "version": "0.3.8",
+  "version": "0.5.5",
   "description": "Local AI Agent Platform",
   "main": "./out/main/index.js",
   "scripts": {
@@ -13,8 +13,11 @@
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.0",
     "@electron-toolkit/utils": "^3.0.0",
+    "@types/qrcode": "^1.5.6",
     "better-sqlite3": "^11.0.0",
     "electron-updater": "^6.8.3",
+    "fabric": "^7.3.1",
+    "qrcode": "^1.5.4",
     "uuid": "^10.0.0"
   },
   "devDependencies": {

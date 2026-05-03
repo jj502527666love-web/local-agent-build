@@ -49,11 +49,16 @@
           <label class="text-xs font-medium text-text-secondary mb-1.5 block">模型</label>
           <select v-model="selectedProviderId" @change="selectedModelId = ''" class="w-full px-3 py-2 text-xs bg-surface-1 border border-surface-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 mb-2">
             <option value="">-- 选择服务商 --</option>
-            <option v-for="p in imageProviders" :key="p.id" :value="p.id">{{ p.name }}</option>
+            <option v-for="p in modelStore.providers" :key="p.id" :value="p.id">{{ p.name }}</option>
           </select>
           <select v-model="selectedModelId" class="w-full px-3 py-2 text-xs bg-surface-1 border border-surface-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500" :disabled="!selectedProviderModels.length">
             <option value="">-- 选择模型 --</option>
-            <option v-for="m in selectedProviderModels" :key="m" :value="m">{{ m }}</option>
+            <optgroup v-if="selectedModelGroups.recommended.length" label="推荐（生图）">
+              <option v-for="m in selectedModelGroups.recommended" :key="m" :value="m">{{ m }}</option>
+            </optgroup>
+            <optgroup v-if="selectedModelGroups.others.length" label="其他可用">
+              <option v-for="m in selectedModelGroups.others" :key="m" :value="m">{{ m }}</option>
+            </optgroup>
           </select>
           <input v-if="selectedProviderId && !selectedProviderModels.length" v-model="selectedModelId" placeholder="输入模型名称" class="w-full mt-2 px-3 py-2 text-xs bg-surface-1 border border-surface-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500" />
         </div>
@@ -63,11 +68,16 @@
           <label class="text-xs font-medium text-text-secondary mb-1.5 block">提示词优化模型</label>
           <select v-model="optimizeProviderId" @change="optimizeModelId = ''" class="w-full px-3 py-2 text-xs bg-surface-1 border border-surface-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 mb-2">
             <option value="">-- 选择服务商 --</option>
-            <option v-for="p in languageProviders" :key="p.id" :value="p.id">{{ p.name }}</option>
+            <option v-for="p in modelStore.providers" :key="p.id" :value="p.id">{{ p.name }}</option>
           </select>
           <select v-model="optimizeModelId" class="w-full px-3 py-2 text-xs bg-surface-1 border border-surface-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500" :disabled="!optimizeProviderModels.length">
             <option value="">-- 选择模型 --</option>
-            <option v-for="m in optimizeProviderModels" :key="m" :value="m">{{ m }}</option>
+            <optgroup v-if="optimizeModelGroups.recommended.length" label="推荐（对话）">
+              <option v-for="m in optimizeModelGroups.recommended" :key="m" :value="m">{{ m }}</option>
+            </optgroup>
+            <optgroup v-if="optimizeModelGroups.others.length" label="其他可用">
+              <option v-for="m in optimizeModelGroups.others" :key="m" :value="m">{{ m }}</option>
+            </optgroup>
           </select>
           <input v-if="optimizeProviderId && !optimizeProviderModels.length" v-model="optimizeModelId" placeholder="输入模型名称" class="w-full mt-2 px-3 py-2 text-xs bg-surface-1 border border-surface-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500" />
         </div>
@@ -75,14 +85,22 @@
         <!-- Default Size -->
         <div>
           <label class="text-xs font-medium text-text-secondary mb-1.5 block">默认尺寸</label>
-          <div class="grid grid-cols-5 gap-1.5">
-            <button
-              v-for="s in sizeOptions"
-              :key="s.value"
-              @click="defaultSize = s.value"
-              :class="['px-2 py-2 text-[10px] rounded-lg border transition-colors text-center', defaultSize === s.value ? 'border-primary-500 bg-primary-50 text-primary-700 font-medium' : 'border-surface-3 bg-surface-1 text-text-secondary hover:bg-surface-2']"
-            >{{ s.label }}</button>
-          </div>
+          <ImageSizePicker
+            v-model="defaultSize"
+            :columns="6"
+            :model-id="selectedModelId"
+            :tier-id="defaultTier"
+            show-hint
+          />
+        </div>
+
+        <!-- Default Resolution Tier -->
+        <div>
+          <label class="text-xs font-medium text-text-secondary mb-1.5 block">默认分辨率</label>
+          <ResolutionTierPicker
+            v-model="defaultTier"
+            :model-id="selectedModelId"
+          />
         </div>
 
         <!-- Default Quality -->
@@ -107,6 +125,19 @@
             <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.5v15m7.5-7.5h-15" /></svg>
             添加参考图
           </button>
+        </div>
+
+        <!-- Concurrency -->
+        <div v-if="tasks.length > 1">
+          <div class="flex items-center justify-between mb-1.5">
+            <label class="text-xs font-medium text-text-secondary" title="同时发起的请求数。过高可能触发服务商限流">并发数</label>
+            <span class="text-xs font-semibold text-primary-600">{{ concurrency }}</span>
+          </div>
+          <input type="range" v-model.number="concurrency" :min="1" :max="Math.min(10, tasks.length)" step="1" class="w-full h-1.5 bg-surface-3 rounded-full appearance-none cursor-pointer accent-primary-600" />
+          <div class="flex justify-between text-[10px] text-text-tertiary mt-1">
+            <span>1（串行）</span>
+            <span>{{ Math.min(10, tasks.length) }}</span>
+          </div>
         </div>
 
         <!-- Start All -->
@@ -192,7 +223,7 @@
                   <button @click.stop="copyImage(task.resultPath!)" class="w-7 h-7 rounded-lg bg-black/50 hover:bg-black/70 text-white flex items-center justify-center" title="复制图片">
                     <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.666 3.888A2.25 2.25 0 0 0 13.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 0 1-.75.75H9.75a.75.75 0 0 1-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 0 1-2.25 2.25H6.75A2.25 2.25 0 0 1 4.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 0 1 1.927-.184" /></svg>
                   </button>
-                  <button @click.stop="editImage" class="w-7 h-7 rounded-lg bg-black/50 hover:bg-black/70 text-white flex items-center justify-center" title="编辑">
+                  <button v-if="task.genId" @click.stop="editImage(task.genId)" class="w-7 h-7 rounded-lg bg-black/50 hover:bg-black/70 text-white flex items-center justify-center" title="编辑">
                     <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Z" /></svg>
                   </button>
                 </div>
@@ -213,10 +244,14 @@
                 <div class="flex gap-3">
                   <div class="flex-1">
                     <label class="text-[10px] font-medium text-text-tertiary mb-1 block">尺寸</label>
-                    <select v-model="task.customSize" class="w-full px-2 py-1.5 text-[11px] bg-surface-1 border border-surface-3 rounded-md focus:outline-none focus:ring-1 focus:ring-primary-500">
-                      <option value="">默认 ({{ defaultSize }})</option>
-                      <option v-for="s in sizeOptions" :key="s.value" :value="s.value">{{ s.label }}</option>
-                    </select>
+                    <ImageSizePicker
+                      v-model="task.customSize"
+                      layout="select"
+                      allow-inherit
+                      :inherit-label="`默认 (${defaultSize})`"
+                      :model-id="selectedModelId"
+                      :tier-id="defaultTier"
+                    />
                   </div>
                   <div class="flex-1">
                     <label class="text-[10px] font-medium text-text-tertiary mb-1 block">画质</label>
@@ -230,8 +265,19 @@
             </div>
 
             <!-- Error message -->
-            <div v-if="task.status === 'error' && task.error" class="px-3 pb-2">
-              <p class="text-[10px] text-red-500">{{ task.error }}</p>
+            <div v-if="task.status === 'error' && task.error" class="px-3 pb-2 flex items-start gap-2">
+              <p class="flex-1 min-w-0 text-[10px] text-red-500 line-clamp-2">{{ translateError(task.error) }}</p>
+              <button
+                type="button"
+                @click.stop="openErrorDialog(task)"
+                class="flex-shrink-0 px-1.5 py-0.5 text-[10px] text-red-600 border border-red-300 rounded-md hover:bg-red-50 transition-colors"
+              >详情</button>
+              <button
+                type="button"
+                @click.stop="askRetry(task)"
+                :disabled="batchRunning"
+                class="flex-shrink-0 px-1.5 py-0.5 text-[10px] text-primary-700 border border-primary-300 rounded-md hover:bg-primary-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              >重试</button>
             </div>
           </div>
         </div>
@@ -275,14 +321,42 @@
         <img :src="previewImage" class="max-w-full max-h-[90vh] object-contain" />
       </div>
     </div>
+
+    <!-- Error detail dialog -->
+    <ErrorDetailDialog
+      :visible="errorDialog.visible"
+      :raw-error="errorDialog.rawError"
+      title="生成失败详情"
+      @close="errorDialog.visible = false"
+    />
+
+    <!-- Retry confirm dialog -->
+    <ConfirmDialog
+      :visible="confirmDialog.visible"
+      title="重试当前任务"
+      message="将以原参数重新执行此条任务，是否继续？"
+      confirm-text="重试"
+      @confirm="confirmRetry"
+      @cancel="cancelRetry"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted, reactive } from 'vue'
+import { useRouter } from 'vue-router'
 import { useImageGenStore } from '@/stores/image-gen'
 import { useModelStore } from '@/stores/models'
 import { usePromptPresetStore } from '@/stores/prompt-presets'
+import { useHandoffStore } from '@/stores/handoff'
+import { groupAndSort } from '@/utils/model-caps'
+import { recordUsage, warmHintsCache, getHintsSync } from '@/utils/model-usage-hints'
+import ImageSizePicker from '@/components/ImageSizePicker.vue'
+import ResolutionTierPicker from '@/components/ResolutionTierPicker.vue'
+import { DEFAULT_TIER_ID } from '@shared/image-size'
+import ErrorDetailDialog from '@/components/ErrorDetailDialog.vue'
+import ConfirmDialog from '@/components/ConfirmDialog.vue'
+import { translateError } from '@/utils/error-message'
 
 interface BatchTask {
   id: string
@@ -291,14 +365,47 @@ interface BatchTask {
   customSize: string
   customQuality: string
   status: 'pending' | 'generating' | 'done' | 'error'
+  /** 后端错误原文。UI 展示时调 translateError 转换为友好文案 */
   error: string
   resultPath: string | null
+  genId: string | null
   expanded: boolean
 }
 
+const router = useRouter()
 const store = useImageGenStore()
 const modelStore = useModelStore()
 const presetStore = usePromptPresetStore()
+const handoff = useHandoffStore()
+
+// 错误详情弹窗：仅存原文，友好翻译由 ErrorDetailDialog 内部派生
+const errorDialog = ref<{ visible: boolean; rawError: string }>({
+  visible: false,
+  rawError: ''
+})
+function openErrorDialog(task: Pick<BatchTask, 'error'>) {
+  errorDialog.value = { visible: true, rawError: task.error || '' }
+}
+
+// 确认弹窗：避免误点直接触发重试
+const confirmDialog = ref<{ visible: boolean; pending: BatchTask | null }>({
+  visible: false,
+  pending: null
+})
+function askRetry(task: BatchTask) {
+  if (batchRunning.value) return
+  if (!selectedProviderId.value || !selectedModelId.value) return
+  confirmDialog.value = { visible: true, pending: task }
+}
+async function confirmRetry() {
+  const task = confirmDialog.value.pending
+  confirmDialog.value = { visible: false, pending: null }
+  if (!task) return
+  await retryTask(task)
+}
+function cancelRetry() {
+  confirmDialog.value = { visible: false, pending: null }
+}
 
 const promptPresets = computed(() => presetStore.visibleGrouped('image_gen'))
 
@@ -308,10 +415,12 @@ const selectedModelId = ref('')
 const optimizeProviderId = ref('')
 const optimizeModelId = ref('')
 const defaultSize = ref('1:1')
+const defaultTier = ref<string>(DEFAULT_TIER_ID)
 const defaultQuality = ref('auto')
 const optimizing = ref(false)
 const showPresetPopup = ref(false)
 const batchRunning = ref(false)
+const concurrency = ref(2)
 const previewImage = ref<string | null>(null)
 const tasks = ref<BatchTask[]>([])
 
@@ -321,55 +430,34 @@ function localFileUrl(path: string): string {
   return 'local-file://img?' + param + '=' + encodeURIComponent(path)
 }
 
-const IMAGE_KEYWORDS = ['image', 'dall-e', 'flux', 'stable-diffusion', 'sdxl', 'cogview', 'wanx', 'kolors', 'gpt-image', 'jimeng', 'seedream', 'kling', 'midjourney', 'mj-', 'ideogram', 'recraft', 'playground', 'kandinsky', 'pixart']
-const LANGUAGE_KEYWORDS = ['gpt', 'claude', 'qwen', 'glm', 'kimi', 'deepseek', 'llama', 'mistral', 'gemma', 'yi-', 'baichuan', 'internlm', 'chat', 'turbo', 'lite', 'plus', 'pro', 'max', 'sonnet', 'opus', 'haiku', 'gemini', 'doubao', 'hunyuan', 'spark', 'ernie', 'abab', 'moonshot', 'step-', 'command-r', 'phi-', 'wizardlm', 'vicuna', 'openchat', 'solar', 'o1-', 'o3-', 'o4-']
-const NON_LANGUAGE_KEYWORDS = ['image', 'dall-e', 'flux', 'stable-diffusion', 'sdxl', 'cogview', 'wanx', 'kolors', 'embedding', 'embed', 'bge', 'e5-', 'text-embedding', 'tts', 'whisper', 'audio', 'speech', 'asr', 'rerank', 'reranker', 'jimeng', 'seedream', 'kling', 'midjourney', 'mj-', 'ideogram', 'recraft', 'playground', 'kandinsky', 'pixart', 'gpt-image']
+// Usage-hints tick: bumped after successful generate/optimize to re-sort recommended
+const hintsTick = ref(0)
 
-function isImageModel(m: string) {
-  const lower = m.toLowerCase()
-  return IMAGE_KEYWORDS.some(k => lower.includes(k))
-}
-function isLanguageModel(m: string) {
-  const lower = m.toLowerCase()
-  if (NON_LANGUAGE_KEYWORDS.some(k => lower.includes(k))) return false
-  return LANGUAGE_KEYWORDS.some(k => lower.includes(k))
-}
-
-const imageProviders = computed(() =>
-  modelStore.providers.filter(p => p.models.some(isImageModel) || !p.models.length)
+const selectedProvider = computed(() =>
+  modelStore.providers.find(p => p.id === selectedProviderId.value) || null
 )
-const languageProviders = computed(() =>
-  modelStore.providers.filter(p => p.models.some(isLanguageModel) || !p.models.length)
-)
-
-const selectedProviderModels = computed(() => {
-  if (!selectedProviderId.value) return []
-  const p = modelStore.providers.find((p) => p.id === selectedProviderId.value)
-  if (!p) return []
-  const filtered = p.models.filter(isImageModel)
-  return filtered.length ? filtered : p.models
+const selectedProviderModels = computed(() => selectedProvider.value?.models ?? [])
+const selectedModelGroups = computed(() => {
+  hintsTick.value
+  if (!selectedProvider.value) return { recommended: [], others: [] }
+  return groupAndSort(selectedProvider.value.models, 'image', {
+    cloudTypeOf: (mid) => modelStore.cloudTypeOf(selectedProvider.value!.id, mid),
+    usageHints: getHintsSync('image', selectedProvider.value.id)
+  })
 })
 
-const optimizeProviderModels = computed(() => {
-  if (!optimizeProviderId.value) return []
-  const p = modelStore.providers.find((p) => p.id === optimizeProviderId.value)
-  if (!p) return []
-  const filtered = p.models.filter(isLanguageModel)
-  return filtered.length ? filtered : p.models
+const optimizeProvider = computed(() =>
+  modelStore.providers.find(p => p.id === optimizeProviderId.value) || null
+)
+const optimizeProviderModels = computed(() => optimizeProvider.value?.models ?? [])
+const optimizeModelGroups = computed(() => {
+  hintsTick.value
+  if (!optimizeProvider.value) return { recommended: [], others: [] }
+  return groupAndSort(optimizeProvider.value.models, 'chat', {
+    cloudTypeOf: (mid) => modelStore.cloudTypeOf(optimizeProvider.value!.id, mid),
+    usageHints: getHintsSync('chat', optimizeProvider.value.id)
+  })
 })
-
-const sizeOptions = [
-  { label: '1:1', value: '1:1' },
-  { label: '3:2', value: '3:2' },
-  { label: '2:3', value: '2:3' },
-  { label: '3:4', value: '3:4' },
-  { label: '4:3', value: '4:3' },
-  { label: '4:5', value: '4:5' },
-  { label: '5:4', value: '5:4' },
-  { label: '16:9', value: '16:9' },
-  { label: '9:16', value: '9:16' },
-  { label: '21:9', value: '21:9' }
-]
 
 const qualityOptions = [
   { label: '自动', value: 'auto' },
@@ -439,6 +527,7 @@ async function pickRefImages() {
         status: 'pending' as const,
         error: '',
         resultPath: null,
+        genId: null,
         expanded: false
       }))
     }
@@ -488,6 +577,8 @@ async function optimizeDefaultPrompt(lang: 'cn' | 'en') {
     ]
     const result = await (window as any).api.llm.invoke('call', optimizeProviderId.value, optimizeModelId.value, messages)
     if (result) defaultPrompt.value = result
+    await recordUsage('chat', optimizeProviderId.value, optimizeModelId.value)
+    hintsTick.value++
   } catch (e: any) {
     console.error('Optimize failed:', e)
   } finally {
@@ -495,42 +586,84 @@ async function optimizeDefaultPrompt(lang: 'cn' | 'en') {
   }
 }
 
+// 单条执行。提到顶层供 startAll 和 retryTask 共用，避免重复实现。
+// task.error 始终保留后端原文，展示层由 translateError 现场派生友好翻译。
+async function runOne(task: BatchTask): Promise<void> {
+  task.status = 'generating'
+  task.error = ''
+  try {
+    const prompt = task.customPrompt.trim() || defaultPrompt.value.trim()
+    const size = task.customSize || defaultSize.value
+    const quality = task.customQuality || defaultQuality.value
+
+    const results = await store.generate({
+      prompt,
+      refImages: [task.refImage],
+      modelProviderId: selectedProviderId.value,
+      modelId: selectedModelId.value,
+      size,
+      tierId: defaultTier.value,
+      quality,
+      batchCount: 1
+    })
+
+    const gen = (results || [])[0]
+    if (gen && gen.status === 'done' && gen.result_path) {
+      task.status = 'done'
+      task.resultPath = gen.result_path
+      task.genId = gen.id
+    } else {
+      task.status = 'error'
+      task.error = gen?.error || '生成失败'
+    }
+  } catch (e: any) {
+    task.status = 'error'
+    task.error = e?.message || '生成失败'
+  }
+}
+
 async function startAll() {
   if (!canStart.value || batchRunning.value) return
   batchRunning.value = true
 
-  for (const task of tasks.value) {
-    if (task.status === 'done') continue
-    task.status = 'generating'
-    task.error = ''
-    try {
-      const prompt = task.customPrompt.trim() || defaultPrompt.value.trim()
-      const size = task.customSize || defaultSize.value
-      const quality = task.customQuality || defaultQuality.value
+  const queue = tasks.value.filter(t => t.status !== 'done')
+  for (const t of queue) { t.status = 'pending'; t.error = '' }
+  const limit = Math.max(1, Math.min(concurrency.value, queue.length, 10))
+  let cursor = 0
 
-      const countBefore = store.generations.length
-      await store.generate({
-        prompt,
-        refImages: [task.refImage],
-        modelProviderId: selectedProviderId.value,
-        modelId: selectedModelId.value,
-        size,
-        quality,
-        batchCount: 1
-      })
-
-      // Find newly added generation
-      const newGen = store.generations.find((g, i) => i < store.generations.length - countBefore + 1 && g.status === 'done' && g.result_path)
-        || store.generations[0]
-      task.status = 'done'
-      task.resultPath = newGen?.result_path || null
-    } catch (e: any) {
-      task.status = 'error'
-      task.error = e?.message || '生成失败'
+  async function worker() {
+    while (cursor < queue.length) {
+      const task = queue[cursor++]
+      if (!task) break
+      await runOne(task)
     }
   }
 
+  const workers = Array.from({ length: limit }, () => worker())
+  await Promise.all(workers)
+
   batchRunning.value = false
+  // Record usage after at least one success so the image model bubbles up next time
+  if (tasks.value.some(t => t.status === 'done')) {
+    await recordUsage('image', selectedProviderId.value, selectedModelId.value)
+    hintsTick.value++
+  }
+}
+
+// 单条重试：复用 runOne，包装 batchRunning 状态以避免与批量执行并发
+async function retryTask(task: BatchTask) {
+  if (batchRunning.value) return
+  if (!selectedProviderId.value || !selectedModelId.value) return
+  batchRunning.value = true
+  try {
+    await runOne(task)
+    if (task.status === 'done') {
+      await recordUsage('image', selectedProviderId.value, selectedModelId.value)
+      hintsTick.value++
+    }
+  } finally {
+    batchRunning.value = false
+  }
 }
 
 const copyToast = ref('')
@@ -549,9 +682,8 @@ async function copyImage(path: string) {
   setTimeout(() => { copyToast.value = '' }, 2000)
 }
 
-function editImage() {
-  copyToast.value = '图片编辑功能开发中'
-  setTimeout(() => { copyToast.value = '' }, 2000)
+function editImage(genId: string) {
+  router.push(`/image-edit/${genId}`)
 }
 
 watch(selectedModelId, (v) => {
@@ -559,6 +691,9 @@ watch(selectedModelId, (v) => {
     window.api.settings.invoke('set', 'imagegen_provider_id', selectedProviderId.value)
     window.api.settings.invoke('set', 'imagegen_model_id', v)
   }
+})
+watch(defaultTier, (v) => {
+  if (v) window.api.settings.invoke('set', 'imagegen_tier_id', v)
 })
 watch(optimizeModelId, (v) => {
   if (v) {
@@ -569,13 +704,20 @@ watch(optimizeModelId, (v) => {
 
 onMounted(async () => {
   store.listenProgress()
-  await Promise.all([store.fetchGenerations(), modelStore.fetchProviders(), presetStore.fetchAll('image_gen')])
+  // BatchGenView 自己维护 tasks 数组，不消费 store.generations / items，
+  // 因此不需要 fetch 历史记录；仅保留 listenProgress 以获取每条生成的进度事件。
+  await Promise.all([modelStore.fetchProviders(), presetStore.fetchAll('image_gen'), warmHintsCache()])
+  hintsTick.value++
 
   const all = (await window.api.settings.invoke('getAll')) as Record<string, string>
   if (all['imagegen_provider_id']) selectedProviderId.value = all['imagegen_provider_id']
   if (all['imagegen_model_id']) selectedModelId.value = all['imagegen_model_id']
   if (all['imagegen_optimize_provider_id']) optimizeProviderId.value = all['imagegen_optimize_provider_id']
   if (all['imagegen_optimize_model_id']) optimizeModelId.value = all['imagegen_optimize_model_id']
+  if (all['imagegen_tier_id']) defaultTier.value = all['imagegen_tier_id']
+
+  const pending = handoff.consume<{ prompt?: string }>('batchGen')
+  if (pending?.prompt) defaultPrompt.value = pending.prompt
 })
 
 onUnmounted(() => {

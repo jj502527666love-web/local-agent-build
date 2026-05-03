@@ -3,13 +3,15 @@
   "include": [
     "src/renderer/src/env.d.ts",
     "src/renderer/src/**/*",
-    "src/renderer/src/**/*.vue"
+    "src/renderer/src/**/*.vue",
+    "src/shared/**/*"
   ],
   "compilerOptions": {
     "composite": true,
     "resolveJsonModule": true,
     "paths": {
-      "@/*": ["./src/renderer/src/*"]
+      "@/*": ["./src/renderer/src/*"],
+      "@shared/*": ["./src/shared/*"]
     }
   }
 }

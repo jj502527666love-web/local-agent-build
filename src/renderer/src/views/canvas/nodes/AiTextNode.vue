@@ -3,6 +3,7 @@
     <div class="node-header" style="background: #f5f3ff; color: #6d28d9;">
       <span class="node-type-dot" style="background: #8b5cf6;"></span>
       AI 文本
+      <span class="text-[10px] font-normal opacity-60 ml-1">#{{ data.nodeIndex }}</span>
       <button @click="deleteNode" :disabled="data.locked" class="node-delete-btn">
         <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
       </button>
@@ -23,18 +24,28 @@
       </button>
     </div>
     <Handle type="target" :position="Position.Left" id="input" class="handle-text" />
-    <Handle type="source" :position="Position.Right" id="output" class="handle-text" />
+    <Handle
+      type="source"
+      :position="Position.Right"
+      id="output"
+      class="handle-text"
+      @click="(e: MouseEvent) => onHandleClick?.(e, data.nodeId, 'output', 'text')"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
+import { inject } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
 import { useCanvasStore } from '@/stores/canvas'
 import { useWorkflowEngine } from '../composables/useWorkflowEngine'
 
+type HandleClickHandler = (e: MouseEvent, nodeId: string, handleId: string, dataType: 'text' | 'image') => void
+
 const props = defineProps<{ data: Record<string, any> }>()
 const canvasStore = useCanvasStore()
 const { executeSingleNode } = useWorkflowEngine()
+const onHandleClick = inject<HandleClickHandler | null>('onHandleClick', null)
 
 async function runAiText() {
   if (!props.data.nodeId || !props.data.projectId) return

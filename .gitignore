@@ -1,6 +1,37 @@
+# Dependencies / build output
 node_modules
 out
 dist
 *.local
 .env
+.env.*
+!.env.example
 *.db
+
+# Editor / IDE
+.vscode
+.idea
+.windsurf
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# TypeScript incremental build cache
+*.tsbuildinfo
+
+# electron-vite runtime-generated config
+electron.vite.config.*.mjs
+
+# electron-builder local-only
+dev-app-update.yml
+
+# Unrelated sub-projects (deployed / tracked separately)
+/agent-admin/
+/ppt_project_flower/
+
+# Dev loose files at repo root
+/find_pptmaster.py
+/progress.txt
+*.log

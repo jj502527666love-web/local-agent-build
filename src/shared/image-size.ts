@@ -1,0 +1,384 @@
+/**
+ * 生图尺寸：单一真源 + 纯函数，前后端共用。
+ *
+ * 支持三类 value：
+ *  - 预设比例 value（如 "1:1" / "9:21"）→ 走权威像素
+ *  - 自定义比例（如 "7:3"）→ 按长边策略换算为 snap-to-8 像素
+ *  - 自定义像素（如 "960x1280" / "960×1280"）→ 原样透传（snap 到 8 的倍数）
+ */
+
+export interface ImageSizePreset {
+  /** UI 显示文本（通常等于 value） */
+  label: string
+  /** 持久化与 UI 绑定值 */
+  value: string
+  /** 规范像素串 "WxH" */
+  pixels: string
+  /** 解析后的比例 [w, h]，方便 UI 渲染缩略图 */
+  ratio: [number, number]
+}
+
+/**
+ * 权威预设表。新增预设只需在这里追加一行，前后端自动同步。
+ * 像素映射遵循"竖向保持长边 1792"风格（与 16:9 / 9:16 / 21:9 保持一致）。
+ */
+export const IMAGE_SIZE_PRESETS: readonly ImageSizePreset[] = [
+  { label: '1:1', value: '1:1', pixels: '1024x1024', ratio: [1, 1] },
+  { label: '3:2', value: '3:2', pixels: '1536x1024', ratio: [3, 2] },
+  { label: '2:3', value: '2:3', pixels: '1024x1536', ratio: [2, 3] },
+  { label: '3:4', value: '3:4', pixels: '768x1024', ratio: [3, 4] },
+  { label: '4:3', value: '4:3', pixels: '1024x768', ratio: [4, 3] },
+  { label: '4:5', value: '4:5', pixels: '816x1024', ratio: [4, 5] },
+  { label: '5:4', value: '5:4', pixels: '1024x816', ratio: [5, 4] },
+  { label: '16:9', value: '16:9', pixels: '1792x1024', ratio: [16, 9] },
+  { label: '9:16', value: '9:16', pixels: '1024x1792', ratio: [9, 16] },
+  { label: '21:9', value: '21:9', pixels: '1792x768', ratio: [21, 9] },
+  { label: '9:21', value: '9:21', pixels: '768x1792', ratio: [9, 21] }
+] as const
+
+const PRESET_BY_VALUE: Record<string, ImageSizePreset> = Object.fromEntries(
+  IMAGE_SIZE_PRESETS.map((p) => [p.value, p])
+)
+const PRESET_VALUE_SET: ReadonlySet<string> = new Set(IMAGE_SIZE_PRESETS.map((p) => p.value))
+
+/** 像素边界：防止畸形输入把上游 API 搞崩 */
+export const PIXEL_MIN = 64
+export const PIXEL_MAX = 4096
+/** 比例分子/分母上限：避免 "1000:1" 这种不合理输入 */
+export const RATIO_MAX = 64
+/** 像素 snap 基数：多数扩散模型要求尺寸为 8 的倍数 */
+export const PIXEL_SNAP = 8
+
+/**
+ * 上游模型的"通用能力档位"边界。
+ *  - 短边 < 512 时多数商用生图模型拒绝或超时（观测：224x1792 → Upstream request failed）
+ *  - 长边 > 2048 时显存/计算超限同样会失败
+ *  - 比例超出 LONG_EDGE_MAX / SHORT_EDGE_MIN = 4（即 1:4 或 4:1）时无法同时满足上面两点，会被压缩到极限档位
+ */
+export const SHORT_EDGE_MIN = 512
+export const LONG_EDGE_MAX = 2048
+
+/** 分辨率档位定义（1K/2K/4K 等） */
+export interface ImageResolutionTier {
+  id: string
+  label: string
+  /** 该档位的长边像素上限 */
+  longSide: number
+  /** 按钮标签后的小字提示，如"较慢" */
+  note?: string
+}
+
+/** 某个生图模型的尺寸能力域 */
+export interface ModelImageCapability {
+  /** 可选档位列表（顺序与 UI 一致） */
+  tiers: ImageResolutionTier[]
+  /** 长短边比上限，默认 4（1:4 或 4:1） */
+  maxRatio?: number
+  /** 总像素上限（防止上游"尺寸超限静默降级"），undefined = 不限制 */
+  maxTotalPixels?: number
+}
+
+/** 默认选中档位 id，首次进入生图 / 模型切换后的回退值 */
+export const DEFAULT_TIER_ID = '2k'
+
+/** 默认能力：未注册模型都按 1K + 2K 走 */
+const DEFAULT_CAPABILITY: ModelImageCapability = {
+  tiers: [
+    { id: '1k', label: '1K', longSide: 1024 },
+    { id: '2k', label: '2K', longSide: 2048 }
+  ],
+  maxRatio: 4
+}
+
+/**
+ * 已知模型的能力注册表。新增模型只需在此加一行。
+ * 后续可迁移到管理后台 cloud_models.image_capability 字段。
+ */
+const CAPABILITIES: Record<string, ModelImageCapability> = {
+  // 云端网关的 gpt-image-2：实测可出 3840x2160，4096² 会被静默降级到 1254²
+  'gpt-image-2': {
+    tiers: [
+      { id: '1k', label: '1K', longSide: 1024 },
+      { id: '2k', label: '2K', longSide: 2048 },
+      { id: '4k', label: '4K', longSide: 3840, note: '较慢' }
+    ],
+    maxRatio: 4,
+    maxTotalPixels: 8_500_000
+  }
+}
+
+/** 查某个模型的能力域。未注册返回 DEFAULT_CAPABILITY。 */
+export function getModelCapability(modelId?: string): ModelImageCapability {
+  if (!modelId) return DEFAULT_CAPABILITY
+  return CAPABILITIES[modelId] ?? DEFAULT_CAPABILITY
+}
+
+/** 保证 tierId 合法，否则回退到 DEFAULT_TIER_ID 或首档。用于模型切换后的自动降级。 */
+export function ensureValidTierId(modelId: string | undefined, tierId: string | undefined): string {
+  const cap = getModelCapability(modelId)
+  if (tierId && cap.tiers.find((t) => t.id === tierId)) return tierId
+  if (cap.tiers.find((t) => t.id === DEFAULT_TIER_ID)) return DEFAULT_TIER_ID
+  return cap.tiers[0]?.id ?? DEFAULT_TIER_ID
+}
+
+/** 取指定模型+档位的长边像素值。 */
+export function getTierLongSide(modelId: string | undefined, tierId: string | undefined): number {
+  const cap = getModelCapability(modelId)
+  const id = ensureValidTierId(modelId, tierId)
+  const tier = cap.tiers.find((t) => t.id === id)
+  return tier ? tier.longSide : LONG_EDGE_MAX
+}
+
+/** 是否命中预设表 */
+export function isPresetValue(v: string): boolean {
+  return PRESET_VALUE_SET.has(v)
+}
+
+/** 把用户输入归一化：去空白，× → x，小写 */
+export function normalizeSizeInput(v: string): string {
+  if (!v) return ''
+  return v.trim().replace(/\s+/g, '').replace(/[×X]/g, 'x').toLowerCase()
+}
+
+/**
+ * 解析比例字符串 "A:B"。返回 { w, h }，非法返回 null。
+ * 约束：A、B 均为 1~RATIO_MAX 的正整数。
+ */
+export function parseRatio(v: string): { w: number; h: number } | null {
+  if (!v) return null
+  const s = normalizeSizeInput(v)
+  const m = /^(\d{1,2}):(\d{1,2})$/.exec(s)
+  if (!m) return null
+  const w = Number(m[1])
+  const h = Number(m[2])
+  if (!Number.isFinite(w) || !Number.isFinite(h)) return null
+  if (w < 1 || h < 1 || w > RATIO_MAX || h > RATIO_MAX) return null
+  return { w, h }
+}
+
+/**
+ * 解析像素字符串 "WxH"（支持 × / X）。非法返回 null。
+ * 约束：PIXEL_MIN ~ PIXEL_MAX。不强制 snap，由 resolveSizeToPixels 去 snap。
+ */
+export function parsePixels(v: string): { w: number; h: number } | null {
+  if (!v) return null
+  const s = normalizeSizeInput(v)
+  const m = /^(\d{2,4})x(\d{2,4})$/.exec(s)
+  if (!m) return null
+  const w = Number(m[1])
+  const h = Number(m[2])
+  if (!Number.isFinite(w) || !Number.isFinite(h)) return null
+  if (w < PIXEL_MIN || h < PIXEL_MIN || w > PIXEL_MAX || h > PIXEL_MAX) return null
+  return { w, h }
+}
+
+/** snap 到最近的 step 倍数，并 clamp 到 [min, max] */
+function snap(n: number, step: number, min: number, max: number): number {
+  const v = Math.round(n / step) * step
+  return Math.max(min, Math.min(max, v))
+}
+
+export interface ResolveOptions {
+  /** 自定义比例换算时的长边。与 modelId+tierId 冲突时后者优先。默认回退 1792。 */
+  longSide?: number
+  /** snap 基数，默认 8 */
+  snap?: number
+  /** 模型 id，用于查 capability（决定长边上限、总像素上限、比例上限） */
+  modelId?: string
+  /** 选中档位 id（1k/2k/4k），决定 longSide */
+  tierId?: string
+}
+
+/** clampToCapableRange 的可选边界配置 */
+export interface ClampOptions {
+  /** 长边上限，默认 LONG_EDGE_MAX */
+  longEdgeMax?: number
+  /** 短边下限，默认 SHORT_EDGE_MIN */
+  shortEdgeMin?: number
+  /** 长短边比上限，默认 longEdgeMax / shortEdgeMin */
+  maxRatio?: number
+  /** 总像素上限，undefined = 不限制 */
+  maxTotalPixels?: number
+}
+
+/**
+ * 在保持原始比例的前提下，把 (w, h) 夹持到能力域边界：
+ *   短边 >= shortEdgeMin && 长边 <= longEdgeMax && 总像素 <= maxTotalPixels
+ * 若原始比例超出 maxRatio 则压缩到比例边界（如 1:4）。
+ * 返回的 clamped 标志表示是否发生了调整（供 UI 层回显 "实际出图" 提示用）。
+ */
+export function clampToCapableRange(
+  w: number,
+  h: number,
+  options?: ClampOptions
+): { w: number; h: number; clamped: boolean } {
+  const longMax = options?.longEdgeMax ?? LONG_EDGE_MAX
+  const shortMin = options?.shortEdgeMin ?? SHORT_EDGE_MIN
+  const ratioCap = options?.maxRatio ?? longMax / shortMin
+  const totalMax = options?.maxTotalPixels
+
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) {
+    return { w: shortMin, h: shortMin, clamped: true }
+  }
+  const isWide = w >= h
+  const short = isWide ? h : w
+  const long = isWide ? w : h
+  const ratio = long / short
+
+  let newShort: number
+  let newLong: number
+
+  if (ratio > ratioCap) {
+    // 比例过于极端：压缩到比例边界
+    newShort = shortMin
+    newLong = Math.min(longMax, shortMin * ratioCap)
+  } else {
+    // 保持比例，先保证短边下限
+    newShort = Math.max(short, shortMin)
+    newLong = newShort * ratio
+    // 再保证长边上限（触发时会回头微调短边）
+    if (newLong > longMax) {
+      newLong = longMax
+      newShort = newLong / ratio
+    }
+  }
+
+  // 总像素上限（防止 4K 1:1 这种上游静默降级）
+  if (totalMax && newLong * newShort > totalMax) {
+    const scale = Math.sqrt(totalMax / (newLong * newShort))
+    newLong *= scale
+    newShort *= scale
+  }
+
+  const outW = isWide ? newLong : newShort
+  const outH = isWide ? newShort : newLong
+  const clamped = Math.round(outW) !== Math.round(w) || Math.round(outH) !== Math.round(h)
+  return { w: Math.round(outW), h: Math.round(outH), clamped }
+}
+
+/** 详细解析结果：除像素串外，给 UI 层提供 "是否来自预设 / 是否被 clamp / 原始值" 元数据。 */
+export interface SizeResolution {
+  pixels: string
+  w: number
+  h: number
+  /** 是否命中预设（预设不经过 clamp） */
+  fromPreset: boolean
+  /** 最终像素相对"未受能力域限制的原始换算"是否被调整 */
+  clamped: boolean
+}
+
+/**
+ * 把任意合法 size 规范化为像素串 "WxH"。非法返回 null。
+ *
+ * 解析顺序：
+ *  1. 命中预设 → 预设 pixels（不 clamp）
+ *  2. 像素格式 → clamp 到能力域后 snap
+ *  3. 比例格式 → 按 longSide 换算 → clamp → snap
+ *  4. 都不是 → null
+ */
+export function resolveSizeToPixelsDetailed(size: string, opts?: ResolveOptions): SizeResolution | null {
+  if (!size) return null
+  const s = normalizeSizeInput(size)
+
+  const snapStep = opts?.snap ?? PIXEL_SNAP
+
+  // 档位 + 能力域：优先级 modelId+tierId > longSide > 默认 1792
+  const hasCapability = opts?.modelId != null
+  const cap = hasCapability ? getModelCapability(opts!.modelId) : null
+  const tierLongSide = hasCapability ? getTierLongSide(opts!.modelId, opts?.tierId) : null
+  const longSide = tierLongSide ?? opts?.longSide ?? 1792
+  const clampOpts: ClampOptions | undefined = cap
+    ? {
+        longEdgeMax: tierLongSide!,
+        shortEdgeMin: SHORT_EDGE_MIN,
+        maxRatio: cap.maxRatio,
+        maxTotalPixels: cap.maxTotalPixels
+      }
+    : undefined
+
+  // 1. 预设
+  const preset = PRESET_BY_VALUE[size] ?? PRESET_BY_VALUE[s]
+  if (preset) {
+    // 传了 modelId+tierId 时按档位重算；否则返回预设固定像素
+    if (cap) {
+      const [rw, rh] = preset.ratio
+      const maxR = Math.max(rw, rh)
+      const minR = Math.min(rw, rh)
+      const shortRaw = (longSide * minR) / maxR
+      const rawW = rw >= rh ? longSide : shortRaw
+      const rawH = rw >= rh ? shortRaw : longSide
+      const c = clampToCapableRange(rawW, rawH, clampOpts)
+      const w = snap(c.w, snapStep, PIXEL_MIN, PIXEL_MAX)
+      const h = snap(c.h, snapStep, PIXEL_MIN, PIXEL_MAX)
+      return { pixels: `${w}x${h}`, w, h, fromPreset: true, clamped: c.clamped }
+    }
+    const [pw, ph] = preset.pixels.split('x').map(Number)
+    return { pixels: preset.pixels, w: pw, h: ph, fromPreset: true, clamped: false }
+  }
+
+  // 2. 像素格式
+  const px = parsePixels(s)
+  if (px) {
+    const c = clampToCapableRange(px.w, px.h, clampOpts)
+    const w = snap(c.w, snapStep, PIXEL_MIN, PIXEL_MAX)
+    const h = snap(c.h, snapStep, PIXEL_MIN, PIXEL_MAX)
+    const clamped = c.clamped || w !== px.w || h !== px.h
+    return { pixels: `${w}x${h}`, w, h, fromPreset: false, clamped }
+  }
+
+  // 3. 比例格式
+  const r = parseRatio(s)
+  if (r) {
+    const long = Math.min(longSide, PIXEL_MAX)
+    const maxR = Math.max(r.w, r.h)
+    const minR = Math.min(r.w, r.h)
+    const shortRaw = (long * minR) / maxR
+    const rawW = r.w >= r.h ? long : shortRaw
+    const rawH = r.w >= r.h ? shortRaw : long
+    const c = clampToCapableRange(rawW, rawH, clampOpts)
+    const w = snap(c.w, snapStep, PIXEL_MIN, PIXEL_MAX)
+    const h = snap(c.h, snapStep, PIXEL_MIN, PIXEL_MAX)
+    if (w < PIXEL_MIN || h < PIXEL_MIN) return null
+    return { pixels: `${w}x${h}`, w, h, fromPreset: false, clamped: c.clamped }
+  }
+
+  return null
+}
+
+/** 向后兼容的简洁接口：仅返回像素串。 */
+export function resolveSizeToPixels(size: string, opts?: ResolveOptions): string | null {
+  const r = resolveSizeToPixelsDetailed(size, opts)
+  return r ? r.pixels : null
+}
+
+/**
+ * UI 层校验：size 是否可被 resolveSizeToPixels 解析。
+ * 包含预设、自定义比例、自定义像素三类合法值。
+ */
+export function isValidSizeValue(v: string): boolean {
+  if (!v) return false
+  if (isPresetValue(v)) return true
+  if (parsePixels(v)) return true
+  if (parseRatio(v)) return true
+  return false
+}
+
+/**
+ * 把存储值格式化为适合 UI 展示的短文本。
+ *  - 预设：直接返回 label（通常等于 value）
+ *  - 像素：返回 "WxH"（归一后形式）
+ *  - 比例：返回 "A:B"
+ *  - 非法：原样返回
+ */
+export function formatSizeForDisplay(v: string): string {
+  if (!v) return ''
+  const preset = PRESET_BY_VALUE[v]
+  if (preset) return preset.label
+  const s = normalizeSizeInput(v)
+  const px = parsePixels(s)
+  if (px) return `${px.w}x${px.h}`
+  const r = parseRatio(s)
+  if (r) return `${r.w}:${r.h}`
+  return v
+}
+

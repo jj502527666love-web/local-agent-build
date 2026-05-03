@@ -3,6 +3,7 @@
     <div class="node-header" style="background: #ecfeff; color: #0e7490;">
       <span class="node-type-dot" style="background: #06b6d4;"></span>
       图片结果
+      <span class="text-[10px] font-normal opacity-60 ml-1">#{{ data.nodeIndex }}</span>
       <button @click="deleteNode" :disabled="data.locked" class="node-delete-btn">
         <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
       </button>

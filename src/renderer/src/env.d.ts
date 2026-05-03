@@ -20,6 +20,8 @@ interface Window {
       offStream: () => void
       onTitleUpdated: (callback: (data: unknown) => void) => void
       offTitleUpdated: () => void
+      onToolApproval: (callback: (data: unknown) => void) => void
+      offToolApproval: () => void
     }
     skill: { invoke: (channel: string, ...args: unknown[]) => Promise<unknown> }
     mcp: { invoke: (channel: string, ...args: unknown[]) => Promise<unknown> }
@@ -36,6 +38,12 @@ interface Window {
       invoke: (channel: string, ...args: unknown[]) => Promise<unknown>
       onProgress: (callback: (data: unknown) => void) => void
       offProgress: () => void
+    }
+    cloud: {
+      setToken: (token: string | null) => Promise<void>
+      getToken: () => Promise<string | null>
+      setPermissions: (perms: Record<string, any>) => Promise<void>
+      getDeviceId: () => Promise<string>
     }
     clipboard: {
       writeImage: (filePath: string) => Promise<{ success: boolean; error?: string }>

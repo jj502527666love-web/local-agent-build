@@ -3,10 +3,12 @@ import { v4 as uuid } from 'uuid'
 import { getModelProvider } from './model-provider'
 import { createImageSession } from './image-session'
 import { getDataDir } from './data-path'
+import { getCloudToken, getCloudGatewayUrl } from './cloud-token'
 import { join } from 'path'
 import { mkdirSync, writeFileSync } from 'fs'
 import { BrowserWindow } from 'electron'
 import { recordUsage } from './usage-stats'
+import { resolveSizeToPixels } from '@shared/image-size'
 
 export interface ImageGeneration {
   id: string
@@ -29,24 +31,24 @@ export interface GenerateImageOptions {
   sessionId?: string
   prompt: string
   refImages?: string[]
+  mask?: string
   modelProviderId: string
   modelId: string
   size: string
+  /** 分辨率档位 id（1k/2k/4k），配合 modelId 决定发出前的最终像素 */
+  tierId?: string
   quality?: string
   batchCount?: number
+  /** Parallel workers within a single batch. 1 = serial (legacy), max 10. */
+  concurrency?: number
 }
 
-const SIZE_MAP: Record<string, string> = {
-  '1:1': '1024x1024',
-  '3:2': '1536x1024',
-  '2:3': '1024x1536',
-  '3:4': '768x1024',
-  '4:3': '1024x768',
-  '4:5': '816x1024',
-  '5:4': '1024x816',
-  '16:9': '1792x1024',
-  '9:16': '1024x1792',
-  '21:9': '1792x768'
+/** 解析 UI 传入的 size（预设 / 比例 / 像素）为上游 API 接受的 "WxH" 像素串。
+ * 传入 modelId+tierId 时按对应能力域 clamp；非法值直接抛错。 */
+function resolvePixels(size: string, modelId?: string, tierId?: string): string {
+  const px = resolveSizeToPixels(size, { modelId, tierId })
+  if (!px) throw new Error(`尺寸格式非法：${size}`)
+  return px
 }
 
 function parseRow(row: any): ImageGeneration {
@@ -120,6 +122,18 @@ export function listAllGenerations(page: number, pageSize: number, search?: stri
   return { items: rows.map(parseRow), total }
 }
 
+export function countFailedGenerations(): number {
+  const db = getDatabase()
+  const row = db.prepare('SELECT COUNT(*) as total FROM image_generations WHERE status = ?').get('error') as any
+  return row?.total || 0
+}
+
+export function clearFailedGenerations(): { deleted: number } {
+  const db = getDatabase()
+  const result = db.prepare('DELETE FROM image_generations WHERE status = ?').run('error')
+  return { deleted: result.changes }
+}
+
 export function deleteGeneration(id: string): boolean {
   const db = getDatabase()
   const result = db.prepare('DELETE FROM image_generations WHERE id = ?').run(id)
@@ -152,29 +166,38 @@ async function callImageAPI(
   prompt: string,
   size: string,
   quality: string,
-  refImages?: string[]
+  refImages?: string[],
+  mask?: string,
+  tierId?: string
 ): Promise<{ b64_json?: string; url?: string; revised_prompt?: string }> {
+  if (providerId.startsWith('cloud:')) {
+    return callCloudImageAPI(modelId, prompt, size, quality, refImages, mask, tierId)
+  }
+
   const provider = getModelProvider(providerId)
   if (!provider) throw new Error(`Model provider not found: ${providerId}`)
-
   const apiBase = provider.api_base.replace(/\/$/, '')
+  const apiKey = provider.api_key
+
   const hasRefImages = refImages && refImages.length > 0
   const url = hasRefImages ? `${apiBase}/images/edits` : `${apiBase}/images/generations`
 
   const headers: Record<string, string> = {}
-  if (provider.api_key) {
-    headers['Authorization'] = `Bearer ${provider.api_key}`
+  if (apiKey) {
+    headers['Authorization'] = `Bearer ${apiKey}`
   }
 
   let fetchOptions: RequestInit
 
+  let resolvedPx: string | null = null
   if (hasRefImages) {
     // Use multipart form for /images/edits
+    resolvedPx = resolvePixels(size, modelId, tierId)
     const form = new FormData()
     form.append('model', modelId)
     form.append('prompt', prompt)
     form.append('n', '1')
-    form.append('size', SIZE_MAP[size] || size)
+    form.append('size', resolvedPx)
     form.append('quality', quality)
     form.append('response_format', 'b64_json')
 
@@ -189,19 +212,26 @@ async function callImageAPI(
       form.append('image', blob, `ref.${ext}`)
     }
 
-    console.log('[ImageGen] Using /images/edits with', refImages.length, 'reference images')
+    if (mask) {
+      const maskMatch = mask.match(/^data:([^;]+);base64,/)
+      const maskRaw = maskMatch ? mask.slice(maskMatch[0].length) : mask
+      const maskBuffer = Buffer.from(maskRaw, 'base64')
+      const maskBlob = new Blob([maskBuffer], { type: 'image/png' })
+      form.append('mask', maskBlob, 'mask.png')
+    }
+
     fetchOptions = { method: 'POST', headers, body: form }
   } else {
     headers['Content-Type'] = 'application/json'
+    resolvedPx = resolvePixels(size, modelId, tierId)
     const body: any = {
       model: modelId,
       prompt,
       n: 1,
-      size: SIZE_MAP[size] || size,
+      size: resolvedPx,
       quality,
       response_format: 'b64_json'
     }
-    console.log('[ImageGen] Using /images/generations')
     fetchOptions = { method: 'POST', headers, body: JSON.stringify(body) }
   }
 
@@ -236,6 +266,102 @@ async function callImageAPI(
   }
 }
 
+async function callCloudImageAPI(
+  modelId: string,
+  prompt: string,
+  size: string,
+  quality: string,
+  refImages?: string[],
+  mask?: string,
+  tierId?: string
+): Promise<{ b64_json?: string; url?: string; revised_prompt?: string }> {
+  const token = getCloudToken()
+  if (!token) throw new Error('Cloud login required')
+  const gatewayUrl = getCloudGatewayUrl()
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${token}`
+  }
+
+  const hasRefImages = refImages && refImages.length > 0
+  const endpoint = hasRefImages ? '/images/edits' : '/images/generations'
+  const body: any = {
+    model: modelId,
+    prompt,
+    n: 1,
+    size: resolvePixels(size, modelId, tierId),
+    quality,
+    response_format: 'b64_json'
+  }
+
+  if (hasRefImages) {
+    body.images = refImages.map((img) => {
+      const match = img.match(/^data:([^;]+);base64,/)
+      const base64 = match ? img.slice(match[0].length) : img
+      return base64
+    })
+  }
+
+  if (mask) {
+    const maskMatch = mask.match(/^data:([^;]+);base64,/)
+    body.mask = maskMatch ? mask.slice(maskMatch[0].length) : mask
+  }
+
+  // Step 1: Submit task
+  const submitRes = await fetch(`${gatewayUrl}${endpoint}`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body)
+  })
+
+  if (!submitRes.ok) {
+    const errorText = await submitRes.text()
+    throw new Error(`Image API error ${submitRes.status}: ${errorText}`)
+  }
+
+  const submitData = await submitRes.json()
+  const taskId = submitData.task_id
+  if (!taskId) {
+    // Direct response (no async)
+    const result = submitData.data?.[0]
+    if (!result) throw new Error('No image data in response')
+    return { b64_json: result.b64_json, url: result.url, revised_prompt: result.revised_prompt }
+  }
+
+  // Step 2: Poll for result
+  console.log('[ImageGen] Cloud task submitted:', taskId)
+  const maxWait = 300000 // 5 minutes
+  const pollInterval = 3000
+  const start = Date.now()
+
+  while (Date.now() - start < maxWait) {
+    await new Promise(r => setTimeout(r, pollInterval))
+
+    const statusRes = await fetch(`${gatewayUrl}/images/status/${taskId}`, {
+      method: 'GET',
+      headers: { 'Authorization': `Bearer ${token}` }
+    })
+
+    if (!statusRes.ok) {
+      throw new Error(`Image API error ${statusRes.status}: ${await statusRes.text()}`)
+    }
+
+    const statusData = await statusRes.json()
+
+    if (statusData.status === 'completed') {
+      const result = statusData.result?.data?.[0]
+      if (!result) throw new Error('No image data in response')
+      return { b64_json: result.b64_json, url: result.url, revised_prompt: result.revised_prompt }
+    }
+
+    if (statusData.status === 'failed') {
+      throw new Error(statusData.error || 'Image generation failed')
+    }
+  }
+
+  throw new Error('Image generation timed out')
+}
+
 function saveImageToFile(sessionId: string, genId: string, b64Data: string): string {
   const dir = getImageDir(sessionId)
   // Detect format from base64 header or default to png
@@ -250,7 +376,8 @@ function saveImageToFile(sessionId: string, genId: string, b64Data: string): str
   }
   const filename = `${genId}.${ext}`
   const filePath = join(dir, filename)
-  writeFileSync(filePath, Buffer.from(rawBase64, 'base64'))
+  const buffer = Buffer.from(rawBase64, 'base64')
+  writeFileSync(filePath, buffer)
   return toRelativePath(filePath)   // 返回相对路径
 }
 
@@ -363,18 +490,21 @@ export async function generateImages(
     })
   }
 
-  // Generate each image
-  for (let i = 0; i < batchCount; i++) {
+  const concurrency = Math.min(Math.max(options.concurrency || 1, 1), 10)
+  const ordered: (ImageGeneration | null)[] = new Array(batchCount).fill(null)
+  let cursor = 0
+  let completedCount = 0
+
+  async function runOne(i: number): Promise<void> {
     const genId = genIds[i]
     try {
       updateGenerationStatus(genId, 'generating', {})
-
       if (window) {
         window.webContents.send('imageGen:progress', {
           type: 'generating',
           index: i,
           total: batchCount,
-          completed: i,
+          completed: completedCount,
           genId,
           sessionId
         })
@@ -386,12 +516,13 @@ export async function generateImages(
         options.prompt,
         options.size,
         quality,
-        options.refImages
+        options.refImages,
+        options.mask,
+        options.tierId
       )
 
       let resultPath = ''
       let resultUrl = ''
-
       if (apiResult.b64_json) {
         resultPath = saveImageToFile(sessionId, genId, apiResult.b64_json)
       } else if (apiResult.url) {
@@ -410,14 +541,15 @@ export async function generateImages(
       })
 
       const gen = getGeneration(genId)!
-      results.push(gen)
+      ordered[i] = gen
+      completedCount++
 
       if (window) {
         window.webContents.send('imageGen:progress', {
           type: 'completed',
           index: i,
           total: batchCount,
-          completed: i + 1,
+          completed: completedCount,
           genId,
           generation: gen,
           sessionId
@@ -428,14 +560,15 @@ export async function generateImages(
       updateGenerationStatus(genId, 'error', { error: errorMsg })
 
       const gen = getGeneration(genId)!
-      results.push(gen)
+      ordered[i] = gen
+      completedCount++
 
       if (window) {
         window.webContents.send('imageGen:progress', {
           type: 'error',
           index: i,
           total: batchCount,
-          completed: i + 1,
+          completed: completedCount,
           genId,
           error: errorMsg,
           sessionId
@@ -443,6 +576,18 @@ export async function generateImages(
       }
     }
   }
+
+  async function worker(): Promise<void> {
+    while (true) {
+      const i = cursor++
+      if (i >= batchCount) return
+      await runOne(i)
+    }
+  }
+
+  const workers = Array.from({ length: Math.min(concurrency, batchCount) }, () => worker())
+  await Promise.all(workers)
+  for (const g of ordered) if (g) results.push(g)
 
   // Send done
   if (window) {
@@ -456,3 +601,35 @@ export async function generateImages(
 
   return results
 }
+
+export function getAbsolutePath(relPath: string): string {
+  const isAbsolute = /^[A-Za-z]:|^\//.test(relPath)
+  if (isAbsolute) return relPath
+  return join(getDataDir(), relPath)
+}
+
+export function saveEditedImage(id: string, base64Data: string): ImageGeneration | null {
+  const gen = getGeneration(id)
+  if (!gen) throw new Error('Generation not found: ' + id)
+
+  const dir = getImageDir(gen.session_id)
+  let ext = 'png'
+  let rawBase64 = base64Data
+  if (base64Data.startsWith('data:')) {
+    const match = base64Data.match(/^data:image\/(\w+);base64,/)
+    if (match) {
+      ext = match[1] === 'jpeg' ? 'jpg' : match[1]
+      rawBase64 = base64Data.slice(match[0].length)
+    }
+  }
+  const filename = `${id}_edited.${ext}`
+  const filePath = join(dir, filename)
+  writeFileSync(filePath, Buffer.from(rawBase64, 'base64'))
+
+  const relPath = toRelativePath(filePath)
+  const db = getDatabase()
+  db.prepare('UPDATE image_generations SET result_path = ? WHERE id = ?').run(relPath, id)
+
+  return getGeneration(id)
+}
+

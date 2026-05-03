@@ -9,6 +9,7 @@ export interface CanvasProject {
   image_provider_id: string
   image_model_id: string
   concurrency: number
+  system_prompt: string
   created_at: string
   updated_at: string
 }
@@ -54,6 +55,7 @@ export const useCanvasStore = defineStore('canvas', () => {
     image_provider_id?: string
     image_model_id?: string
     concurrency?: number
+    system_prompt?: string
   }): Promise<CanvasProject> {
     const project = await api().canvas.invoke('createProject', JSON.parse(JSON.stringify(data)))
     projects.value.unshift(project)
@@ -67,6 +69,7 @@ export const useCanvasStore = defineStore('canvas', () => {
     image_provider_id?: string
     image_model_id?: string
     concurrency?: number
+    system_prompt?: string
   }): Promise<CanvasProject | null> {
     const updated = await api().canvas.invoke('updateProject', id, data)
     const idx = projects.value.findIndex((p) => p.id === id)
@@ -89,8 +92,27 @@ export const useCanvasStore = defineStore('canvas', () => {
     const project = await api().canvas.invoke('getProject', id)
     if (!project) return
     currentProject.value = project
-    nodes.value = await api().canvas.invoke('listNodes', id)
+    const loadedNodes: CanvasNode[] = await api().canvas.invoke('listNodes', id)
+    // Reset stale running/blocked states from a previous (possibly crashed) session.
+    // Keep 'error' so the user can see the last failure reason after reopening the canvas.
+    const staleIds: string[] = []
+    for (const n of loadedNodes) {
+      const st = n.data?.status
+      if (st === 'running' || st === 'blocked') {
+        n.data = { ...n.data, status: 'idle', error: '' }
+        staleIds.push(n.id)
+      }
+    }
+    nodes.value = loadedNodes
     edges.value = await api().canvas.invoke('listEdges', id)
+    // Persist the resets in the background; UI already reflects the cleaned state
+    if (staleIds.length > 0) {
+      for (const nodeId of staleIds) {
+        const n = loadedNodes.find((x) => x.id === nodeId)
+        if (!n) continue
+        api().canvas.invoke('updateNode', nodeId, { data: JSON.parse(JSON.stringify(n.data)) }).catch(() => {})
+      }
+    }
   }
 
   async function addNode(projectId: string, data: {
@@ -151,6 +173,18 @@ export const useCanvasStore = defineStore('canvas', () => {
     edges.value = edges.value.filter((e) => e.id !== id)
   }
 
+  async function removeEdgesByHandle(nodeId: string, handleId: string) {
+    const toRemove = edges.value.filter(
+      (e) => (e.source_node_id === nodeId && e.source_handle === handleId)
+    )
+    for (const edge of toRemove) {
+      await api().canvas.invoke('deleteEdge', edge.id)
+    }
+    edges.value = edges.value.filter(
+      (e) => !(e.source_node_id === nodeId && e.source_handle === handleId)
+    )
+  }
+
   async function saveState() {
     if (!currentProject.value) return
     const nodeStates = nodes.value.map((n) => ({
@@ -174,7 +208,8 @@ export const useCanvasStore = defineStore('canvas', () => {
       text_model_id: source.text_model_id,
       image_provider_id: source.image_provider_id,
       image_model_id: source.image_model_id,
-      concurrency: source.concurrency
+      concurrency: source.concurrency,
+      system_prompt: source.system_prompt
     })
 
     // Load source nodes and edges
@@ -187,7 +222,11 @@ export const useCanvasStore = defineStore('canvas', () => {
         case 'textInput':
           return { text: data.text || '' }
         case 'refImage':
-          return { image_data: data.image_data || '', image_path: data.image_path || '' }
+          // Intentionally start empty; the migration step below will populate image_path
+          // after copying the underlying file into the new project directory.
+          // If copy fails we leave the node empty rather than keeping a dangling path
+          // that points into the old (possibly deleted) project dir.
+          return { image_data: '', image_path: '' }
         case 'aiText':
           return { text: data.text || '', result: '', status: 'idle' }
         case 'text2img':
@@ -196,6 +235,8 @@ export const useCanvasStore = defineStore('canvas', () => {
           return { model_provider_id: data.model_provider_id || '', model_id: data.model_id || '', size: data.size || '1:1', quality: data.quality || 'auto', prompt: data.prompt || '', status: 'idle', generation_id: '', result_path: '' }
         case 'imageResult':
           return { generation_id: '', result_path: '', result_url: '' }
+        case 'promptSlice':
+          return { rows: (data.rows || []).map((r: any) => ({ id: r.id, text: r.text || '' })) }
         default:
           return { ...data, status: undefined, error: undefined }
       }
@@ -213,6 +254,42 @@ export const useCanvasStore = defineStore('canvas', () => {
         data: cleanNodeData(n.type, n.data)
       })))
       idMap.set(n.id, created.id)
+
+      // For refImage nodes, also copy the underlying image file into the new project's dir.
+      // Otherwise the new project would reference files under the old project dir and break
+      // when the source project is deleted. Also opportunistically migrate legacy
+      // base64 image_data into on-disk storage.
+      if (n.type === 'refImage') {
+        const oldData = n.data || {}
+        let dataUri = ''
+        if (oldData.image_data) {
+          dataUri = oldData.image_data
+        } else if (oldData.image_path) {
+          try {
+            const dataDir = await api().dataDir.get()
+            const fullPath = `${dataDir}/${oldData.image_path}`
+            const b64 = await api().chat.invoke('readFileBase64', fullPath)
+            const ext = String(oldData.image_path).split('.').pop()?.toLowerCase() || 'png'
+            const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg'
+              : ext === 'webp' ? 'image/webp'
+              : ext === 'gif' ? 'image/gif'
+              : 'image/png'
+            dataUri = `data:${mime};base64,${b64}`
+          } catch {
+            dataUri = ''
+          }
+        }
+        if (dataUri) {
+          try {
+            const saved = await api().canvas.invoke('saveNodeImage', newProject.id, created.id, dataUri)
+            await api().canvas.invoke('updateNode', created.id, {
+              data: { image_data: '', image_path: saved.image_path }
+            })
+          } catch {
+            // Fall back silently — the duplicated node will just be empty
+          }
+        }
+      }
     }
 
     // Copy edges with remapped node IDs
@@ -255,6 +332,7 @@ export const useCanvasStore = defineStore('canvas', () => {
     removeNode,
     addEdge,
     removeEdge,
+    removeEdgesByHandle,
     saveState,
     reset
   }

@@ -4,6 +4,7 @@ export interface NodeTypeDef {
   color: string
   inputs: { handle: string; dataType: 'text' | 'image'; required: boolean }[]
   outputs: { handle: string; dataType: 'text' | 'image' }[]
+  dynamicOutputs?: boolean
 }
 
 export const NODE_TYPE_DEFS: NodeTypeDef[] = [
@@ -54,6 +55,14 @@ export const NODE_TYPE_DEFS: NodeTypeDef[] = [
     color: '#06b6d4',
     inputs: [{ handle: 'input', dataType: 'image', required: true }],
     outputs: []
+  },
+  {
+    type: 'promptSlice',
+    label: '提示词切片',
+    color: '#ec4899',
+    inputs: [],
+    outputs: [{ handle: 'output-0', dataType: 'text' }],
+    dynamicOutputs: true
   }
 ]
 
@@ -73,6 +82,10 @@ export function getHandleType(
     const input = def.inputs.find((i) => i.handle === handleId)
     return input?.dataType || null
   } else {
+    // Dynamic outputs: match any handle with the same prefix pattern
+    if (def.dynamicOutputs && handleId.startsWith('output-')) {
+      return def.outputs[0]?.dataType || null
+    }
     const output = def.outputs.find((o) => o.handle === handleId)
     return output?.dataType || null
   }

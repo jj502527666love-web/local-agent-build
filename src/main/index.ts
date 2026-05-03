@@ -11,6 +11,7 @@ import { runAutoBackupIfNeeded } from './services/backup'
 
 if (is.dev) {
   process.env['ELECTRON_DISABLE_SECURITY_WARNINGS'] = 'true'
+  process.env['NODE_TLS_REJECT_UNAUTHORIZED'] = '0'
 }
 
 function createAppIcon(): Electron.NativeImage {
@@ -48,7 +49,8 @@ function createWindow(): void {
     },
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
-      sandbox: false
+      sandbox: false,
+      webSecurity: false
     }
   })
 
@@ -69,8 +71,10 @@ function createWindow(): void {
 }
 
 protocol.registerSchemesAsPrivileged([
-  { scheme: 'local-file', privileges: { bypassCSP: true, stream: true, supportFetchAPI: true } }
+  { scheme: 'local-file', privileges: { bypassCSP: true, stream: true, supportFetchAPI: true, corsEnabled: true } }
 ])
+
+app.commandLine.appendSwitch('ignore-certificate-errors')
 
 app.whenReady().then(async () => {
   electronApp.setAppUserModelId('com.local-agent.app')
@@ -93,7 +97,7 @@ app.whenReady().then(async () => {
       const data = readFileSync(filePath)
       const ext = filePath.split('.').pop()?.toLowerCase() || 'png'
       const mime = ext === 'jpg' ? 'image/jpeg' : ext === 'webp' ? 'image/webp' : ext === 'gif' ? 'image/gif' : 'image/png'
-      return new Response(data, { headers: { 'Content-Type': mime } })
+      return new Response(data, { headers: { 'Content-Type': mime, 'Access-Control-Allow-Origin': '*' } })
     } catch (e) {
       console.error('local-file protocol error:', e)
       return new Response('Error', { status: 500 })
@@ -101,16 +105,19 @@ app.whenReady().then(async () => {
   })
 
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
-    callback({
-      responseHeaders: {
-        ...details.responseHeaders,
-        'Content-Security-Policy': [
-          is.dev
-            ? "default-src 'self' 'unsafe-inline' 'unsafe-eval'; connect-src 'self' ws: wss: https: http:; img-src 'self' data: https: http: local-file:"
-            : "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https: http:; img-src 'self' data: https: http: local-file:"
-        ]
-      }
-    })
+    const headers = { ...details.responseHeaders }
+    headers['Content-Security-Policy'] = [
+      is.dev
+        ? "default-src 'self' 'unsafe-inline' 'unsafe-eval'; connect-src 'self' ws: wss: https: http:; img-src 'self' data: https: http: local-file:"
+        : "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https: http:; img-src 'self' data: https: http: local-file:"
+    ]
+    // Bypass CORS for cloud API requests
+    if (details.url.includes('agent-admin.o455.com')) {
+      headers['Access-Control-Allow-Origin'] = ['*']
+      headers['Access-Control-Allow-Headers'] = ['*']
+      headers['Access-Control-Allow-Methods'] = ['*']
+    }
+    callback({ responseHeaders: headers })
   })
 
   // Initialize database

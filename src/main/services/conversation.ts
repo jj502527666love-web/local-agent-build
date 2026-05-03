@@ -1,7 +1,7 @@
 import { getDatabase } from '../database'
 import { v4 as uuid } from 'uuid'
 import { join } from 'path'
-import { existsSync, rmSync } from 'fs'
+import { existsSync, mkdirSync, rmSync } from 'fs'
 import { getDataDir } from './data-path'
 
 export interface Conversation {
@@ -19,6 +19,7 @@ export interface Message {
   content: string
   attachments: any[]
   tool_calls: any[]
+  tool_call_id: string
   created_at: string
 }
 
@@ -43,6 +44,13 @@ export function createConversation(botId: string, title?: string): Conversation 
   db.prepare(
     'INSERT INTO conversations (id, bot_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)'
   ).run(id, botId, title || 'New Chat', now, now)
+  // Eagerly create workspace directory so the "工作区" button works before any tool writes files.
+  try {
+    const wsDir = join(getDataDir(), 'workspaces', id)
+    if (!existsSync(wsDir)) mkdirSync(wsDir, { recursive: true })
+  } catch (e) {
+    console.error('Failed to create workspace dir:', e)
+  }
   return getConversation(id)!
 }
 
@@ -73,7 +81,8 @@ export function getMessages(conversationId: string): Message[] {
   return rows.map((r) => ({
     ...r,
     attachments: JSON.parse(r.attachments || '[]'),
-    tool_calls: JSON.parse(r.tool_calls || '[]')
+    tool_calls: JSON.parse(r.tool_calls || '[]'),
+    tool_call_id: r.tool_call_id || ''
   }))
 }
 
@@ -83,12 +92,13 @@ export function addMessage(data: {
   content: string
   attachments?: any[]
   tool_calls?: any[]
+  tool_call_id?: string
 }): Message {
   const db = getDatabase()
   const id = uuid()
   const now = new Date().toISOString()
   db.prepare(
-    'INSERT INTO messages (id, conversation_id, role, content, attachments, tool_calls, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    'INSERT INTO messages (id, conversation_id, role, content, attachments, tool_calls, tool_call_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
   ).run(
     id,
     data.conversation_id,
@@ -96,6 +106,7 @@ export function addMessage(data: {
     data.content,
     JSON.stringify(data.attachments || []),
     JSON.stringify(data.tool_calls || []),
+    data.tool_call_id || '',
     now
   )
   db.prepare('UPDATE conversations SET updated_at=? WHERE id=?').run(now, data.conversation_id)
@@ -106,6 +117,7 @@ export function addMessage(data: {
     content: data.content,
     attachments: data.attachments || [],
     tool_calls: data.tool_calls || [],
+    tool_call_id: data.tool_call_id || '',
     created_at: now
   }
 }

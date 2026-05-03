@@ -1,6 +1,8 @@
 import { getDatabase } from '../database'
 import { v4 as uuid } from 'uuid'
 
+export type ToolApproval = 'off' | 'destructive' | 'all'
+
 export interface Bot {
   id: string
   name: string
@@ -13,6 +15,7 @@ export interface Bot {
   skill_ids: string[]
   mcp_ids: string[]
   prompt_skill_dirs: string[]
+  tool_approval: ToolApproval
   created_at: string
   updated_at: string
 }
@@ -23,7 +26,8 @@ function parseBot(row: any): Bot {
     kb_category_ids: JSON.parse(row.kb_category_ids || '[]'),
     skill_ids: JSON.parse(row.skill_ids || '[]'),
     mcp_ids: JSON.parse(row.mcp_ids || '[]'),
-    prompt_skill_dirs: JSON.parse(row.prompt_skill_dirs || '[]')
+    prompt_skill_dirs: JSON.parse(row.prompt_skill_dirs || '[]'),
+    tool_approval: (row.tool_approval || 'destructive') as ToolApproval
   }
 }
 
@@ -51,12 +55,13 @@ export function createBot(data: {
   skill_ids?: string[]
   mcp_ids?: string[]
   prompt_skill_dirs?: string[]
+  tool_approval?: ToolApproval
 }): Bot {
   const db = getDatabase()
   const id = uuid()
   const now = new Date().toISOString()
   db.prepare(
-    'INSERT INTO bots (id, name, description, model_provider_id, model_id, persona_id, kb_only, kb_category_ids, skill_ids, mcp_ids, prompt_skill_dirs, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    'INSERT INTO bots (id, name, description, model_provider_id, model_id, persona_id, kb_only, kb_category_ids, skill_ids, mcp_ids, prompt_skill_dirs, tool_approval, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
   ).run(
     id,
     data.name,
@@ -69,6 +74,7 @@ export function createBot(data: {
     JSON.stringify(data.skill_ids || []),
     JSON.stringify(data.mcp_ids || []),
     JSON.stringify(data.prompt_skill_dirs || []),
+    data.tool_approval || 'destructive',
     now,
     now
   )
@@ -88,6 +94,7 @@ export function updateBot(
     skill_ids: string[]
     mcp_ids: string[]
     prompt_skill_dirs: string[]
+    tool_approval: ToolApproval
   }>
 ): Bot | null {
   const db = getDatabase()
@@ -96,7 +103,7 @@ export function updateBot(
 
   const now = new Date().toISOString()
   db.prepare(
-    'UPDATE bots SET name=?, description=?, model_provider_id=?, model_id=?, persona_id=?, kb_only=?, kb_category_ids=?, skill_ids=?, mcp_ids=?, prompt_skill_dirs=?, updated_at=? WHERE id=?'
+    'UPDATE bots SET name=?, description=?, model_provider_id=?, model_id=?, persona_id=?, kb_only=?, kb_category_ids=?, skill_ids=?, mcp_ids=?, prompt_skill_dirs=?, tool_approval=?, updated_at=? WHERE id=?'
   ).run(
     data.name ?? existing.name,
     data.description ?? existing.description,
@@ -108,6 +115,7 @@ export function updateBot(
     JSON.stringify(data.skill_ids ?? existing.skill_ids),
     JSON.stringify(data.mcp_ids ?? existing.mcp_ids),
     JSON.stringify(data.prompt_skill_dirs ?? existing.prompt_skill_dirs),
+    data.tool_approval ?? existing.tool_approval,
     now,
     id
   )

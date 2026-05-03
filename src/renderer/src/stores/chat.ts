@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import { translateError } from '@/utils/error-message'
 
 export interface Conversation {
   id: string
@@ -144,9 +145,12 @@ export const useChatStore = defineStore('chat', () => {
         streamContent.value = ''
         const msg = messages.value.find((m) => m.id === tempId)
         if (msg) msg.content = ''
+      } else if (data.type === 'aborted') {
+        const msg = messages.value.find((m) => m.id === tempId)
+        if (msg && !msg.content) msg.content = '[\u5df2\u4e2d\u65ad]'
       } else if (data.type === 'error') {
         const msg = messages.value.find((m) => m.id === tempId)
-        if (msg) msg.content = `[Error] ${data.error}`
+        if (msg) msg.content = `[Error] ${translateError(data.error)}`
       }
       // Don't handle 'done' here - cleanup after IPC resolves
     })
@@ -163,7 +167,8 @@ export const useChatStore = defineStore('chat', () => {
         ...(overrides?.promptSkillDirs?.length ? { overridePromptSkillDirs: overrides.promptSkillDirs } : {})
       })
     } catch (err: any) {
-      console.error('[chat] sendMessage error:', err)
+      const msg = messages.value.find((m) => m.id === tempId)
+      if (msg && !msg.content) msg.content = `[Error] ${translateError(err.message || '')}`
     } finally {
       // Collapse tool logs after response completes
       const msg = messages.value.find((m) => m.id === tempId)
@@ -186,6 +191,10 @@ export const useChatStore = defineStore('chat', () => {
         if (lastDb.role === 'assistant' && !lastDb.content && lastContent) {
           lastDb.content = lastContent
         }
+        // Translate error messages from DB
+        if (lastDb.role === 'assistant' && lastDb.content?.startsWith('[Error]')) {
+          lastDb.content = `[Error] ${translateError(lastDb.content.slice(8))}`
+        }
       }
       messages.value = dbMessages
     }
@@ -202,6 +211,12 @@ export const useChatStore = defineStore('chat', () => {
 
   function isConversationStreaming(convId: string): boolean {
     return streamingConvIds.value.has(convId)
+  }
+
+  async function cancel(convId?: string) {
+    const id = convId || currentConversationId.value
+    if (!id) return false
+    return (await window.api.chat.invoke('cancel', id)) as boolean
   }
 
   return {
@@ -221,6 +236,7 @@ export const useChatStore = defineStore('chat', () => {
     listenTitleUpdates,
     stopListenTitleUpdates,
     sendMessage,
+    cancel,
     reset
   }
 })

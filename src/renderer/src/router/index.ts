@@ -2,8 +2,15 @@ import type { RouteRecordRaw } from 'vue-router'
 
 export const routes: RouteRecordRaw[] = [
   {
+    path: '/login',
+    name: 'login',
+    component: () => import('@/views/login/LoginView.vue'),
+    meta: { guest: true }
+  },
+  {
     path: '/',
     component: () => import('@/layouts/MainLayout.vue'),
+    meta: { requiresAuth: true },
     children: [
       { path: '', redirect: '/chat' },
       { path: 'chat', name: 'chat', component: () => import('@/views/chat/ChatView.vue'), meta: { title: '对话' } },
@@ -64,6 +71,12 @@ export const routes: RouteRecordRaw[] = [
         meta: { title: '批量生图' }
       },
       {
+        path: 'image-to-prompt',
+        name: 'imageToPrompt',
+        component: () => import('@/views/image-gen/Image2PromptView.vue'),
+        meta: { title: '图片反推' }
+      },
+      {
         path: 'inspiration',
         name: 'inspiration',
         component: () => import('@/views/image-gen/InspirationView.vue'),
@@ -74,6 +87,12 @@ export const routes: RouteRecordRaw[] = [
         name: 'myCreations',
         component: () => import('@/views/image-gen/MyCreationsView.vue'),
         meta: { title: '我的创作' }
+      },
+      {
+        path: 'image-edit/:id',
+        name: 'imageEdit',
+        component: () => import('@/views/image-gen/ImageEditView.vue'),
+        meta: { title: '图片编辑' }
       },
       {
         path: 'canvas',
@@ -98,6 +117,18 @@ export const routes: RouteRecordRaw[] = [
         name: 'settings',
         component: () => import('@/views/settings/SettingsView.vue'),
         meta: { title: '设置' }
+      },
+      {
+        path: 'user-center',
+        name: 'userCenter',
+        component: () => import('@/views/user-center/UserCenterView.vue'),
+        meta: { title: '用户中心' }
+      },
+      {
+        path: 'plans-store',
+        name: 'plansStore',
+        component: () => import('@/views/plans-store/PlansStoreView.vue'),
+        meta: { title: '套餐商城' }
       }
     ]
   }

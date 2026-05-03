@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS bots (
   skill_ids TEXT NOT NULL DEFAULT '[]',
   mcp_ids TEXT NOT NULL DEFAULT '[]',
   prompt_skill_dirs TEXT NOT NULL DEFAULT '[]',
+  tool_approval TEXT NOT NULL DEFAULT 'destructive',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (model_provider_id) REFERENCES model_providers(id) ON DELETE SET NULL,
@@ -91,6 +92,7 @@ CREATE TABLE IF NOT EXISTS messages (
   content TEXT NOT NULL DEFAULT '',
   attachments TEXT NOT NULL DEFAULT '[]',
   tool_calls TEXT NOT NULL DEFAULT '[]',
+  tool_call_id TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
 );
@@ -218,6 +220,7 @@ CREATE TABLE IF NOT EXISTS canvas_projects (
   image_provider_id TEXT NOT NULL DEFAULT '',
   image_model_id TEXT NOT NULL DEFAULT '',
   concurrency INTEGER NOT NULL DEFAULT 1,
+  system_prompt TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

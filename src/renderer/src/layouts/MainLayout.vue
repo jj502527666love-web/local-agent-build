@@ -21,7 +21,15 @@
           <span class="font-medium">{{ item.label }}</span>
         </router-link>
       </nav>
-      <div class="px-3 py-3 border-t border-surface-3">
+      <div class="px-3 py-3 border-t border-surface-3 space-y-0.5">
+        <router-link
+          to="/user-center"
+          class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-text-secondary hover:bg-surface-2 transition-all duration-150"
+          active-class="nav-active"
+        >
+          <IconUser class="w-[18px] h-[18px] flex-shrink-0" />
+          <span class="font-medium">{{ cloudAuth.user?.nickname || cloudAuth.user?.username || '\u7528\u6237' }}</span>
+        </router-link>
         <router-link
           to="/settings"
           class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-text-secondary hover:bg-surface-2 transition-all duration-150"
@@ -60,28 +68,42 @@ import IconImageGen from '@/components/icons/IconImageGen.vue'
 import IconInspiration from '@/components/icons/IconInspiration.vue'
 import IconCreation from '@/components/icons/IconCreation.vue'
 import IconBatchGen from '@/components/icons/IconBatchGen.vue'
+import IconImage2Prompt from '@/components/icons/IconImage2Prompt.vue'
 import IconPrompt from '@/components/icons/IconPrompt.vue'
 import IconCanvas from '@/components/icons/IconCanvas.vue'
+import IconUser from '@/components/icons/IconUser.vue'
+import { useCloudAuthStore } from '@/stores/cloud-auth'
 
 const route = useRoute()
+const cloudAuth = useCloudAuthStore()
 const pageTitle = computed(() => (route.meta?.title as string) || '')
 
-const navItems = [
-  { path: '/chat', label: '对话', icon: IconChat },
-  { path: '/bots', label: '机器人', icon: IconBot },
-  { path: '/knowledge', label: '知识库', icon: IconKnowledge },
-  { path: '/models', label: '模型服务', icon: IconModel },
-  { path: '/personas', label: '人格规则', icon: IconPersona },
-  { path: '/tools', label: '小工具', icon: IconTool },
-  { path: '/skills', label: 'Skills技能', icon: IconSkill },
-  { path: '/mcps', label: 'MCP服务', icon: IconMcp },
-  { path: '/image-gen', label: 'AI 生图', icon: IconImageGen },
-  { path: '/batch-gen', label: '批量生图', icon: IconBatchGen },
-  { path: '/canvas', label: '流式画布', icon: IconCanvas },
-  { path: '/inspiration', label: '灵感广场', icon: IconInspiration },
-  { path: '/my-creations', label: '我的创作', icon: IconCreation },
-  { path: '/prompts', label: '提示词', icon: IconPrompt }
+const allNavItems = [
+  { path: '/chat', label: '\u5BF9\u8BDD', icon: IconChat },
+  { path: '/bots', label: '\u673A\u5668\u4EBA', icon: IconBot },
+  { path: '/knowledge', label: '\u77E5\u8BC6\u5E93', icon: IconKnowledge },
+  { path: '/models', label: '\u6A21\u578B\u670D\u52A1', icon: IconModel, requirePermission: 'allow_custom_provider' },
+  { path: '/personas', label: '\u4EBA\u683C\u89C4\u5219', icon: IconPersona },
+  { path: '/tools', label: '\u5C0F\u5DE5\u5177', icon: IconTool },
+  { path: '/skills', label: 'Skills\u6280\u80FD', icon: IconSkill },
+  { path: '/mcps', label: 'MCP\u670D\u52A1', icon: IconMcp },
+  { path: '/image-gen', label: 'AI \u751F\u56FE', icon: IconImageGen },
+  { path: '/batch-gen', label: '\u6279\u91CF\u751F\u56FE', icon: IconBatchGen },
+  { path: '/image-to-prompt', label: '\u56FE\u7247\u53CD\u63A8', icon: IconImage2Prompt },
+  { path: '/canvas', label: '\u6D41\u5F0F\u753B\u5E03', icon: IconCanvas },
+  { path: '/inspiration', label: '\u7075\u611F\u5E7F\u573A', icon: IconInspiration },
+  { path: '/my-creations', label: '\u6211\u7684\u521B\u4F5C', icon: IconCreation },
+  { path: '/prompts', label: '\u63D0\u793A\u8BCD', icon: IconPrompt }
 ]
+
+const navItems = computed(() => {
+  return allNavItems.filter(item => {
+    if (item.requirePermission === 'allow_custom_provider') {
+      return cloudAuth.permissions.allow_custom_provider
+    }
+    return true
+  })
+})
 </script>
 
 <style scoped>

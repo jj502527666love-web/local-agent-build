@@ -99,6 +99,16 @@
             </div>
           </div>
         </div>
+        <div>
+          <label class="form-label">工具调用确认</label>
+          <div class="flex gap-2">
+            <label v-for="opt in approvalOptions" :key="opt.value" :class="['flex-1 cursor-pointer rounded-lg border px-3 py-2 text-xs transition-colors', form.tool_approval === opt.value ? 'border-primary-500 bg-primary-50 text-primary-700' : 'border-surface-3 hover:bg-surface-2 text-text-secondary']">
+              <input type="radio" :value="opt.value" v-model="form.tool_approval" class="hidden" />
+              <div class="font-medium mb-0.5">{{ opt.label }}</div>
+              <div class="text-[11px] leading-snug opacity-80">{{ opt.desc }}</div>
+            </label>
+          </div>
+        </div>
         <div class="flex gap-3 pt-2">
           <button @click="saveBot" class="btn-primary">{{ editingId ? '更新' : '创建' }}</button>
           <button @click="showForm = false" class="btn-secondary">取消</button>
@@ -171,6 +181,13 @@ const promptSkillStore = usePromptSkillStore()
 const showForm = ref(false)
 const editingId = ref<string | null>(null)
 const botDropdown = ref('')
+type ToolApproval = 'off' | 'destructive' | 'all'
+const approvalOptions: { value: ToolApproval; label: string; desc: string }[] = [
+  { value: 'off', label: '关闭', desc: '所有工具自动执行' },
+  { value: 'destructive', label: '仅破坏性', desc: '写文件 / 命令前确认' },
+  { value: 'all', label: '全部', desc: '每个工具调用都确认' }
+]
+
 const form = ref({
   name: '',
   description: '',
@@ -181,7 +198,8 @@ const form = ref({
   kb_category_ids: [] as string[],
   skill_ids: [] as string[],
   mcp_ids: [] as string[],
-  prompt_skill_dirs: [] as string[]
+  prompt_skill_dirs: [] as string[],
+  tool_approval: 'destructive' as ToolApproval
 })
 
 const selectedProviderModels = computed(() => {
@@ -191,7 +209,7 @@ const selectedProviderModels = computed(() => {
 })
 
 function resetForm() {
-  form.value = { name: '', description: '', model_provider_id: '', model_id: '', persona_id: '', kb_only: 0, kb_category_ids: [], skill_ids: [], mcp_ids: [], prompt_skill_dirs: [] }
+  form.value = { name: '', description: '', model_provider_id: '', model_id: '', persona_id: '', kb_only: 0, kb_category_ids: [], skill_ids: [], mcp_ids: [], prompt_skill_dirs: [], tool_approval: 'destructive' }
 }
 
 function editBot(bot: Bot) {
@@ -199,23 +217,25 @@ function editBot(bot: Bot) {
   form.value = {
     name: bot.name,
     description: bot.description,
-    model_provider_id: bot.model_provider_id || '',
+    model_provider_id: bot.model_provider_id || (bot.model_id && modelStore.providers.some(p => p.isCloud && p.models.includes(bot.model_id)) ? 'cloud:default' : ''),
     model_id: bot.model_id,
     persona_id: bot.persona_id || '',
     kb_only: bot.kb_only || 0,
     kb_category_ids: [...bot.kb_category_ids],
     skill_ids: bot.skill_ids.filter(id => userSkills.value.some(s => s.id === id)),
     mcp_ids: [...bot.mcp_ids],
-    prompt_skill_dirs: [...(bot.prompt_skill_dirs || [])]
+    prompt_skill_dirs: [...(bot.prompt_skill_dirs || [])],
+    tool_approval: bot.tool_approval || 'destructive'
   }
   showForm.value = true
 }
 
 async function saveBot() {
   try {
+    const isCloud = form.value.model_provider_id?.startsWith('cloud:')
     const data = {
       ...form.value,
-      model_provider_id: form.value.model_provider_id || null,
+      model_provider_id: (form.value.model_provider_id && !isCloud) ? form.value.model_provider_id : null,
       persona_id: form.value.persona_id || null
     }
     if (editingId.value) {

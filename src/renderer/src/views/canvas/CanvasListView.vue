@@ -81,7 +81,7 @@
     </div>
 
     <!-- Create Canvas Dialog -->
-    <div v-if="showCreateDialog" class="fixed inset-0 z-50 flex items-center justify-center" @click.self="showCreateDialog = false">
+    <div v-if="showCreateDialog" class="fixed inset-0 z-50 flex items-center justify-center" @click.self="closeCreateDialog">
       <div class="w-[420px] bg-surface-0 rounded-2xl shadow-xl border border-surface-3 p-6" @click.stop>
         <h2 class="text-base font-semibold text-text-primary mb-4">新建流式画布</h2>
         <div class="space-y-4">
@@ -93,28 +93,38 @@
             <label class="form-label">文本处理服务商</label>
             <select v-model="createForm.text_provider_id" class="select-field" @change="onTextProviderChange">
               <option value="">-- 请选择 --</option>
-              <option v-for="p in textProviders" :key="p.id" :value="p.id">{{ p.name }}</option>
+              <option v-for="p in modelStore.providers" :key="p.id" :value="p.id">{{ p.name }}</option>
             </select>
           </div>
           <div v-if="createForm.text_provider_id">
             <label class="form-label">文本模型</label>
             <select v-model="createForm.text_model_id" class="select-field">
               <option value="">-- 请选择 --</option>
-              <option v-for="m in textModels" :key="m" :value="m">{{ m }}</option>
+              <optgroup v-if="textModelGroups.recommended.length" label="推荐（对话）">
+                <option v-for="m in textModelGroups.recommended" :key="m" :value="m">{{ m }}</option>
+              </optgroup>
+              <optgroup v-if="textModelGroups.others.length" label="其他可用">
+                <option v-for="m in textModelGroups.others" :key="m" :value="m">{{ m }}</option>
+              </optgroup>
             </select>
           </div>
           <div>
             <label class="form-label">生图服务商</label>
             <select v-model="createForm.image_provider_id" class="select-field" @change="onImageProviderChange">
               <option value="">-- 请选择 --</option>
-              <option v-for="p in imageProviders" :key="p.id" :value="p.id">{{ p.name }}</option>
+              <option v-for="p in modelStore.providers" :key="p.id" :value="p.id">{{ p.name }}</option>
             </select>
           </div>
           <div v-if="createForm.image_provider_id">
             <label class="form-label">生图模型</label>
             <select v-model="createForm.image_model_id" class="select-field">
               <option value="">-- 请选择 --</option>
-              <option v-for="m in imageModels" :key="m" :value="m">{{ m }}</option>
+              <optgroup v-if="imageModelGroups.recommended.length" label="推荐（生图）">
+                <option v-for="m in imageModelGroups.recommended" :key="m" :value="m">{{ m }}</option>
+              </optgroup>
+              <optgroup v-if="imageModelGroups.others.length" label="其他可用">
+                <option v-for="m in imageModelGroups.others" :key="m" :value="m">{{ m }}</option>
+              </optgroup>
             </select>
           </div>
           <div>
@@ -124,7 +134,7 @@
           </div>
         </div>
         <div class="flex justify-end gap-2 mt-6">
-          <button @click="showCreateDialog = false" class="btn-secondary text-xs">取消</button>
+          <button @click="closeCreateDialog" class="btn-secondary text-xs">取消</button>
           <button @click="doCreate" :disabled="!createForm.title.trim()" class="btn-primary text-xs disabled:opacity-40 disabled:cursor-not-allowed">创建</button>
         </div>
       </div>
@@ -137,10 +147,14 @@ import { ref, computed, onMounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { useCanvasStore } from '@/stores/canvas'
 import { useModelStore } from '@/stores/models'
+import { useHandoffStore } from '@/stores/handoff'
+import { groupAndSort } from '@/utils/model-caps'
+import { warmHintsCache, getHintsSync } from '@/utils/model-usage-hints'
 
 const router = useRouter()
 const canvasStore = useCanvasStore()
 const modelStore = useModelStore()
+const handoff = useHandoffStore()
 
 const search = ref('')
 const confirmDeleteId = ref<string | null>(null)
@@ -148,15 +162,9 @@ const renamingId = ref<string | null>(null)
 const renameTitle = ref('')
 const renameInputRef = ref<HTMLInputElement | null>(null)
 const showCreateDialog = ref(false)
+const pendingOrchestrateDescription = ref('')
 
-const IMAGE_KEYWORDS = ['image', 'dall-e', 'flux', 'stable-diffusion', 'sdxl', 'cogview', 'wanx', 'kolors', 'gpt-image', 'jimeng', 'seedream', 'kling', 'midjourney', 'mj-', 'ideogram', 'recraft', 'playground', 'kandinsky', 'pixart']
-const LANGUAGE_KEYWORDS = ['gpt', 'claude', 'qwen', 'glm', 'kimi', 'deepseek', 'llama', 'mistral', 'gemma', 'yi-', 'baichuan', 'internlm', 'chat', 'turbo', 'lite', 'plus', 'pro', 'max', 'sonnet', 'opus', 'haiku', 'gemini', 'doubao', 'hunyuan', 'spark', 'ernie', 'abab', 'moonshot', 'step-', 'command-r', 'phi-', 'wizardlm', 'vicuna', 'openchat', 'solar', 'o1-', 'o3-', 'o4-']
-const NON_LANGUAGE_KEYWORDS = ['image', 'dall-e', 'flux', 'stable-diffusion', 'sdxl', 'cogview', 'wanx', 'kolors', 'embedding', 'embed', 'bge', 'e5-', 'text-embedding', 'tts', 'whisper', 'audio', 'speech', 'asr', 'rerank', 'reranker', 'jimeng', 'seedream', 'kling', 'midjourney', 'mj-', 'ideogram', 'recraft', 'playground', 'kandinsky', 'pixart', 'gpt-image']
-function isImageModel(m: string) { const l = m.toLowerCase(); return IMAGE_KEYWORDS.some(k => l.includes(k)) }
-function isLanguageModel(m: string) { const l = m.toLowerCase(); if (NON_LANGUAGE_KEYWORDS.some(k => l.includes(k))) return false; return LANGUAGE_KEYWORDS.some(k => l.includes(k)) }
-
-const textProviders = computed(() => modelStore.providers.filter(p => p.models.some(isLanguageModel) || !p.models.length))
-const imageProviders = computed(() => modelStore.providers.filter(p => p.models.some(isImageModel) || !p.models.length))
+const hintsTick = ref(0)
 
 const createForm = ref({
   title: '',
@@ -167,18 +175,27 @@ const createForm = ref({
   concurrency: 1
 })
 
-const textModels = computed(() => {
-  const p = modelStore.providers.find((p) => p.id === createForm.value.text_provider_id)
-  if (!p) return []
-  const filtered = p.models.filter(isLanguageModel)
-  return filtered.length ? filtered : p.models
+const textProvider = computed(() =>
+  modelStore.providers.find(p => p.id === createForm.value.text_provider_id) || null
+)
+const imageProvider = computed(() =>
+  modelStore.providers.find(p => p.id === createForm.value.image_provider_id) || null
+)
+const textModelGroups = computed(() => {
+  hintsTick.value
+  if (!textProvider.value) return { recommended: [], others: [] }
+  return groupAndSort(textProvider.value.models, 'chat', {
+    cloudTypeOf: (mid) => modelStore.cloudTypeOf(textProvider.value!.id, mid),
+    usageHints: getHintsSync('chat', textProvider.value.id)
+  })
 })
-
-const imageModels = computed(() => {
-  const p = modelStore.providers.find((p) => p.id === createForm.value.image_provider_id)
-  if (!p) return []
-  const filtered = p.models.filter(isImageModel)
-  return filtered.length ? filtered : p.models
+const imageModelGroups = computed(() => {
+  hintsTick.value
+  if (!imageProvider.value) return { recommended: [], others: [] }
+  return groupAndSort(imageProvider.value.models, 'image', {
+    cloudTypeOf: (mid) => modelStore.cloudTypeOf(imageProvider.value!.id, mid),
+    usageHints: getHintsSync('image', imageProvider.value.id)
+  })
 })
 
 function onTextProviderChange() {
@@ -202,6 +219,11 @@ function formatDate(dateStr: string): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
+function closeCreateDialog() {
+  showCreateDialog.value = false
+  pendingOrchestrateDescription.value = ''
+}
+
 async function doCreate() {
   const title = createForm.value.title.trim()
   if (!title) return
@@ -216,6 +238,10 @@ async function doCreate() {
   })
   showCreateDialog.value = false
   createForm.value = { title: '', text_provider_id: '', text_model_id: '', image_provider_id: '', image_model_id: '', concurrency: 1 }
+  if (pendingOrchestrateDescription.value) {
+    handoff.set('canvasOrchestrate', { description: pendingOrchestrateDescription.value })
+    pendingOrchestrateDescription.value = ''
+  }
   router.push(`/canvas/${project.id}`)
 }
 
@@ -257,8 +283,14 @@ async function doDelete(id: string) {
   confirmDeleteId.value = null
 }
 
-onMounted(() => {
-  canvasStore.fetchProjects()
-  modelStore.fetchProviders()
+onMounted(async () => {
+  await Promise.all([canvasStore.fetchProjects(), modelStore.fetchProviders(), warmHintsCache()])
+  hintsTick.value++
+
+  const pending = handoff.consume<{ description?: string }>('canvasOrchestrate')
+  if (pending?.description) {
+    pendingOrchestrateDescription.value = pending.description
+    showCreateDialog.value = true
+  }
 })
 </script>

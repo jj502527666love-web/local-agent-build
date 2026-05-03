@@ -3,6 +3,7 @@
     <div class="node-header" style="background: #ecfdf5; color: #047857;">
       <span class="node-type-dot" style="background: #10b981;"></span>
       参考图
+      <span class="text-[10px] font-normal opacity-60 ml-1">#{{ data.nodeIndex }}</span>
       <button @click="deleteNode" :disabled="data.locked" class="node-delete-btn">
         <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
       </button>
@@ -17,18 +18,27 @@
       </div>
       <button v-if="imagePreview" @click="clearImage" :disabled="data.locked" class="w-full py-1 text-[10px] text-text-tertiary hover:text-red-500 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">清除图片</button>
     </div>
-    <Handle type="source" :position="Position.Right" id="output" class="handle-image" />
+    <Handle
+      type="source"
+      :position="Position.Right"
+      id="output"
+      class="handle-image"
+      @click="(e: MouseEvent) => onHandleClick?.(e, data.nodeId, 'output', 'image')"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, inject } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
 import { useCanvasStore } from '@/stores/canvas'
+
+type HandleClickHandler = (e: MouseEvent, nodeId: string, handleId: string, dataType: 'text' | 'image') => void
 
 const props = defineProps<{ data: Record<string, any> }>()
 const canvasStore = useCanvasStore()
 const api = () => (window as any).api
+const onHandleClick = inject<HandleClickHandler | null>('onHandleClick', null)
 
 const imagePreview = computed(() => {
   if (props.data.image_data) return props.data.image_data
@@ -41,6 +51,23 @@ const imagePreview = computed(() => {
   return ''
 })
 
+async function persistImage(dataUri: string) {
+  if (!props.data.nodeId || !props.data.projectId) return
+  try {
+    // Persist base64 to disk, store only the relative path in node.data.image_path.
+    // This avoids writing large base64 blobs into SQLite on every edit/save.
+    const saved = await api().canvas.invoke('saveNodeImage', props.data.projectId, props.data.nodeId, dataUri)
+    canvasStore.updateNode(props.data.nodeId, {
+      data: { ...props.data, image_data: '', image_path: saved.image_path }
+    })
+  } catch {
+    // Fallback to in-DB base64 if disk save fails, so the user doesn't lose the image
+    canvasStore.updateNode(props.data.nodeId, {
+      data: { ...props.data, image_data: dataUri, image_path: '' }
+    })
+  }
+}
+
 async function pickImage() {
   const result = await api().dialog.openFile({
     title: '选择参考图片',
@@ -50,26 +77,35 @@ async function pickImage() {
   if (result.canceled || !result.filePaths?.length) return
   const filePath = result.filePaths[0]
   const b64 = await api().chat.invoke('readFileBase64', filePath)
-  const dataUri = `data:image/png;base64,${b64}`
-  canvasStore.updateNode(props.data.nodeId, {
-    data: { ...props.data, image_data: dataUri, image_path: '' }
-  })
+  const ext = (filePath.split('.').pop() || 'png').toLowerCase()
+  const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg'
+    : ext === 'webp' ? 'image/webp'
+    : ext === 'gif' ? 'image/gif'
+    : 'image/png'
+  const dataUri = `data:${mime};base64,${b64}`
+  await persistImage(dataUri)
 }
 
-async function onDrop(e: DragEvent) {
+function onDrop(e: DragEvent) {
   const file = e.dataTransfer?.files?.[0]
   if (!file || !file.type.startsWith('image/')) return
   const reader = new FileReader()
-  reader.onload = () => {
+  reader.onload = async () => {
     const dataUri = reader.result as string
-    canvasStore.updateNode(props.data.nodeId, {
-      data: { ...props.data, image_data: dataUri, image_path: '' }
-    })
+    await persistImage(dataUri)
   }
   reader.readAsDataURL(file)
 }
 
-function clearImage() {
+async function clearImage() {
+  if (!props.data.nodeId) return
+  // Remove the disk file first (best-effort), then clear the node fields.
+  // Ignore IPC errors — we still want the UI state reset even if cleanup fails.
+  if (props.data.projectId && props.data.image_path) {
+    try {
+      await api().canvas.invoke('deleteNodeImage', props.data.projectId, props.data.nodeId)
+    } catch {}
+  }
   canvasStore.updateNode(props.data.nodeId, {
     data: { ...props.data, image_data: '', image_path: '' }
   })

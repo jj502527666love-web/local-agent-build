@@ -5,6 +5,8 @@ function plain<T>(data: T): T {
   return JSON.parse(JSON.stringify(data))
 }
 
+export type ToolApproval = 'off' | 'destructive' | 'all'
+
 export interface Bot {
   id: string
   name: string
@@ -17,6 +19,7 @@ export interface Bot {
   skill_ids: string[]
   mcp_ids: string[]
   prompt_skill_dirs: string[]
+  tool_approval: ToolApproval
   created_at: string
   updated_at: string
 }
