@@ -21,7 +21,7 @@ jobs:
           vmImage: 'windows-latest'
           platformName: 'win'
         mac:
-          vmImage: 'macOS-13'
+          vmImage: 'macOS-latest'
           platformName: 'mac'
     pool:
       vmImage: $(vmImage)
