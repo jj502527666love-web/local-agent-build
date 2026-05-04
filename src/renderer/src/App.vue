@@ -4,10 +4,10 @@
     <div class="w-full max-w-lg bg-surface-0 rounded-2xl shadow-2xl p-8">
       <div class="flex items-center gap-3 mb-6">
         <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center">
-          <span class="text-white text-lg font-bold">L</span>
+          <span class="text-white text-lg font-bold">{{ appAbbr.charAt(0) }}</span>
         </div>
         <div>
-          <h1 class="text-lg font-bold text-text-primary">Local Agent</h1>
+          <h1 class="text-lg font-bold text-text-primary">{{ appName }}</h1>
           <p class="text-xs text-text-tertiary">首次启动配置</p>
         </div>
       </div>
@@ -131,6 +131,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import RegisterBonusToast from '@/components/RegisterBonusToast.vue'
+import { appName, appAbbr } from '@/utils/branding'
 
 const api = () => (window as any).api
 

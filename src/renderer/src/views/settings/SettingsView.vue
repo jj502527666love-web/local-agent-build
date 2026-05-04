@@ -212,10 +212,10 @@
           <div class="card p-5">
             <div class="flex items-center gap-3">
               <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center">
-                <span class="text-white text-xs font-bold leading-none tracking-tight">LA</span>
+                <span class="text-white text-xs font-bold leading-none tracking-tight">{{ appAbbr }}</span>
               </div>
               <div>
-                <div class="text-sm font-semibold text-text-primary">Local Agent</div>
+                <div class="text-sm font-semibold text-text-primary">{{ appName }}</div>
                 <div class="text-xs text-text-tertiary">v{{ appVersion }} · 本地智能体平台</div>
               </div>
             </div>
@@ -230,6 +230,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useThemeStore } from '@/stores/theme'
 import type { ThemeMode } from '@/stores/theme'
+import { appName, appAbbr } from '@/utils/branding'
 
 declare const __APP_VERSION__: string
 const appVersion = __APP_VERSION__

@@ -73,24 +73,11 @@ import IconPrompt from '@/components/icons/IconPrompt.vue'
 import IconCanvas from '@/components/icons/IconCanvas.vue'
 import IconUser from '@/components/icons/IconUser.vue'
 import { useCloudAuthStore } from '@/stores/cloud-auth'
+import { appName, appAbbr } from '@/utils/branding'
 
 const route = useRoute()
 const cloudAuth = useCloudAuthStore()
 const pageTitle = computed(() => (route.meta?.title as string) || '')
-
-// 品牌名：优先读 runtimeConfig.appName（由 inject 注入），dev fallback 'LocalAgent'
-const _runtimeAppName = (window as unknown as { runtimeConfig?: { appName?: string } }).runtimeConfig?.appName
-const appName = _runtimeAppName || 'LocalAgent'
-function deriveAbbr(name: string): string {
-  const trimmed = name.trim()
-  if (!trimmed) return 'LA'
-  // 中文取前 2 字
-  if (/^[\u4e00-\u9fa5]/.test(trimmed)) return trimmed.slice(0, 2)
-  // 英文/数字取前 2 字母大写
-  const ascii = trimmed.replace(/[^a-zA-Z0-9]/g, '')
-  return (ascii.slice(0, 2) || 'LA').toUpperCase()
-}
-const appAbbr = deriveAbbr(appName)
 
 const allNavItems = [
   { path: '/chat', label: '\u5BF9\u8BDD', icon: IconChat },

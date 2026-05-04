@@ -3,10 +3,10 @@
     <div class="w-full max-w-sm bg-surface-0 rounded-2xl shadow-lg p-8">
       <div class="flex items-center gap-3 mb-8">
         <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center">
-          <span class="text-white text-sm font-bold">LA</span>
+          <span class="text-white text-sm font-bold">{{ appAbbr }}</span>
         </div>
         <div>
-          <h1 class="text-base font-bold text-text-primary">Local Agent</h1>
+          <h1 class="text-base font-bold text-text-primary">{{ appName }}</h1>
           <p class="text-xs text-text-tertiary">{{ isRegister ? '\u6ce8\u518c\u8d26\u53f7' : '\u767b\u5f55\u8d26\u53f7' }}</p>
         </div>
       </div>
@@ -72,6 +72,7 @@
 import { ref, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useCloudAuthStore } from '@/stores/cloud-auth'
+import { appName, appAbbr } from '@/utils/branding'
 
 const router = useRouter()
 const store = useCloudAuthStore()
