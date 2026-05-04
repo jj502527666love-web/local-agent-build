@@ -1,0 +1,92 @@
+name: Cloud Build (macOS)
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_id:
+        description: 'Build UUID issued by agent-build'
+        required: true
+        type: string
+      app_name:
+        description: 'Display name of the white-labeled app'
+        required: true
+        type: string
+      domain:
+        description: 'Tenant domain (with scheme, e.g. https://a.com)'
+        required: true
+        type: string
+      api_domain:
+        description: 'API domain for the desktop runtime (with scheme)'
+        required: true
+        type: string
+      icon_url:
+        description: 'Signed URL to download the icon PNG'
+        required: true
+        type: string
+      callback_url:
+        description: 'agent-build callback endpoint'
+        required: true
+        type: string
+      callback_token:
+        description: 'One-time bearer token for callback'
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Inject build parameters
+        run: node scripts/inject-build-params.js
+        env:
+          BUILD_ID: ${{ inputs.build_id }}
+          APP_NAME: ${{ inputs.app_name }}
+          DOMAIN: ${{ inputs.domain }}
+          API_DOMAIN: ${{ inputs.api_domain }}
+          ICON_URL: ${{ inputs.icon_url }}
+          PLATFORM: mac
+
+      - name: Build & Package
+        run: npm run dist
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-output-${{ inputs.build_id }}
+          retention-days: 1
+          path: |
+            dist/*.dmg
+            dist/*.dmg.blockmap
+            dist/*-mac.zip
+            dist/latest-mac.yml
+
+      - name: Notify agent-build (success)
+        if: success()
+        run: |
+          curl -fsS -X POST "${{ inputs.callback_url }}" \
+            -H "Authorization: Bearer ${{ inputs.callback_token }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"build_id\":\"${{ inputs.build_id }}\",\"run_id\":${{ github.run_id }},\"status\":\"success\",\"artifact_name\":\"build-output-${{ inputs.build_id }}\"}"
+
+      - name: Notify agent-build (failure)
+        if: failure()
+        run: |
+          curl -fsS -X POST "${{ inputs.callback_url }}" \
+            -H "Authorization: Bearer ${{ inputs.callback_token }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"build_id\":\"${{ inputs.build_id }}\",\"run_id\":${{ github.run_id }},\"status\":\"failed\"}"
