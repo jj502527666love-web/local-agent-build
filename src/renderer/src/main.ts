@@ -8,6 +8,10 @@ import { useThemeStore } from './stores/theme'
 import { useCloudAuthStore } from './stores/cloud-auth'
 import './assets/main.css'
 
+// 启动时根据 runtimeConfig.appName 设置 document.title（覆盖 index.html 默认 'LocalAgent'）
+const _cfg = (window as unknown as { runtimeConfig?: { appName?: string } }).runtimeConfig
+if (_cfg?.appName) document.title = _cfg.appName
+
 const router = createRouter({
   history: createWebHashHistory(),
   routes

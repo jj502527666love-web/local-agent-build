@@ -1,4 +1,8 @@
-const CLOUD_API_BASE = 'https://agent-admin.o455.com/api'
+// 通过 preload 暴露的 runtimeConfig 派生 API base（生产由 inject 注入，dev fallback 默认）
+function getCloudApiBase(): string {
+  const cfg = (window as unknown as { runtimeConfig?: { apiDomain?: string } }).runtimeConfig
+  return cfg?.apiDomain ? `${cfg.apiDomain}/api` : 'https://agent-admin.o455.com/api'
+}
 
 let token: string | null = null
 let deviceIdCache: string | null = null
@@ -55,7 +59,7 @@ async function request(method: string, path: string, body?: unknown, options: Re
     if (deviceId) headers['X-Device-Id'] = deviceId
   }
 
-  const res = await fetch(`${CLOUD_API_BASE}${path}`, {
+  const res = await fetch(`${getCloudApiBase()}${path}`, {
     method,
     headers,
     body: body ? JSON.stringify(body) : undefined

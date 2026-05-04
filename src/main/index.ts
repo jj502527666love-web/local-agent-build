@@ -8,6 +8,7 @@ import { registerIpcHandlers } from './ipc'
 import { stopAllMcpServers } from './services/mcp-server'
 import { getDataDir } from './services/data-path'
 import { runAutoBackupIfNeeded } from './services/backup'
+import { getRuntimeConfig } from './services/runtime-config'
 
 if (is.dev) {
   process.env['ELECTRON_DISABLE_SECURITY_WARNINGS'] = 'true'
@@ -77,7 +78,7 @@ protocol.registerSchemesAsPrivileged([
 app.commandLine.appendSwitch('ignore-certificate-errors')
 
 app.whenReady().then(async () => {
-  electronApp.setAppUserModelId('com.local-agent.app')
+  electronApp.setAppUserModelId(getRuntimeConfig().appId)
 
   protocol.handle('local-file', (request) => {
     try {
@@ -111,8 +112,11 @@ app.whenReady().then(async () => {
         ? "default-src 'self' 'unsafe-inline' 'unsafe-eval'; connect-src 'self' ws: wss: https: http:; img-src 'self' data: https: http: local-file:"
         : "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https: http:; img-src 'self' data: https: http: local-file:"
     ]
-    // Bypass CORS for cloud API requests
-    if (details.url.includes('agent-admin.o455.com')) {
+    // Bypass CORS for cloud API requests（apiDomain 由 inject 注入，dev fallback 默认）
+    const apiHost = (() => {
+      try { return new URL(getRuntimeConfig().apiDomain).hostname } catch { return '' }
+    })()
+    if (apiHost && details.url.includes(apiHost)) {
       headers['Access-Control-Allow-Origin'] = ['*']
       headers['Access-Control-Allow-Headers'] = ['*']
       headers['Access-Control-Allow-Methods'] = ['*']

@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
+import { getRuntimeConfig } from '../main/services/runtime-config'
 
 const api = {
   db: {
@@ -157,6 +158,7 @@ if (process.contextIsolated) {
   try {
     contextBridge.exposeInMainWorld('electron', electronAPI)
     contextBridge.exposeInMainWorld('api', api)
+    contextBridge.exposeInMainWorld('runtimeConfig', getRuntimeConfig())
   } catch (error) {
     console.error(error)
   }
@@ -165,4 +167,6 @@ if (process.contextIsolated) {
   window.electron = electronAPI
   // @ts-ignore
   window.api = api
+  // @ts-ignore
+  window.runtimeConfig = getRuntimeConfig()
 }

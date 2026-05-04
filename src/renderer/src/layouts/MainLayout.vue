@@ -4,9 +4,9 @@
       <div class="h-14 flex items-center px-5 app-drag">
         <div class="flex items-center gap-2.5">
           <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center">
-            <span class="text-white text-[11px] font-bold leading-none tracking-tight">LA</span>
+            <span class="text-white text-[11px] font-bold leading-none tracking-tight">{{ appAbbr }}</span>
           </div>
-          <span class="text-sm font-bold text-text-primary tracking-tight">LocalAgent</span>
+          <span class="text-sm font-bold text-text-primary tracking-tight">{{ appName }}</span>
         </div>
       </div>
       <nav class="flex-1 px-3 py-1 overflow-y-auto space-y-0.5">
@@ -77,6 +77,20 @@ import { useCloudAuthStore } from '@/stores/cloud-auth'
 const route = useRoute()
 const cloudAuth = useCloudAuthStore()
 const pageTitle = computed(() => (route.meta?.title as string) || '')
+
+// 品牌名：优先读 runtimeConfig.appName（由 inject 注入），dev fallback 'LocalAgent'
+const _runtimeAppName = (window as unknown as { runtimeConfig?: { appName?: string } }).runtimeConfig?.appName
+const appName = _runtimeAppName || 'LocalAgent'
+function deriveAbbr(name: string): string {
+  const trimmed = name.trim()
+  if (!trimmed) return 'LA'
+  // 中文取前 2 字
+  if (/^[\u4e00-\u9fa5]/.test(trimmed)) return trimmed.slice(0, 2)
+  // 英文/数字取前 2 字母大写
+  const ascii = trimmed.replace(/[^a-zA-Z0-9]/g, '')
+  return (ascii.slice(0, 2) || 'LA').toUpperCase()
+}
+const appAbbr = deriveAbbr(appName)
 
 const allNavItems = [
   { path: '/chat', label: '\u5BF9\u8BDD', icon: IconChat },
