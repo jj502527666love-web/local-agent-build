@@ -129,8 +129,11 @@ function validatePng(buf) {
   // width = byte 16-19, height = byte 20-23 (big endian)
   const width = buf.readUInt32BE(16)
   const height = buf.readUInt32BE(20)
-  if (width < 64 || width > 1024 || height < 64 || height > 1024) {
-    fail(`icon size out of range: ${width}x${height}`)
+  // 与 agent-admin CloudBuildIconController 校验对齐：512~1024 1:1 PNG
+  // 这是第三道防线，前面两道在 agent-admin 前端 (<img>.naturalWidth)
+  // 和后端 (getimagesize)。
+  if (width < 512 || width > 1024 || height < 512 || height > 1024) {
+    fail(`icon size out of range (must be 512~1024): ${width}x${height}`)
   }
   if (width !== height) {
     fail(`icon must be square: got ${width}x${height}`)
