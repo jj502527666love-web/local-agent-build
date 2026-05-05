@@ -103,18 +103,6 @@
           />
         </div>
 
-        <!-- Default Quality -->
-        <div>
-          <label class="text-xs font-medium text-text-secondary mb-1.5 block">默认画质</label>
-          <div class="grid grid-cols-3 gap-1.5">
-            <button
-              v-for="q in qualityOptions"
-              :key="q.value"
-              @click="defaultQuality = q.value"
-              :class="['px-2 py-2 text-[10px] rounded-lg border transition-colors text-center', defaultQuality === q.value ? 'border-primary-500 bg-primary-50 text-primary-700 font-medium' : 'border-surface-3 bg-surface-1 text-text-secondary hover:bg-surface-2']"
-            >{{ q.label }}</button>
-          </div>
-        </div>
 
         <!-- Add Reference Images -->
         <div>
@@ -209,10 +197,9 @@
                 <!-- Custom prompt (or show default) -->
                 <p class="text-[11px] text-text-secondary line-clamp-2 mb-1.5">{{ task.customPrompt || defaultPrompt || '(未设置提示词)' }}</p>
 
-                <!-- Custom size/quality display -->
+                <!-- Size display（批量场景必带参考图，画质对 /edits 无效不展示） -->
                 <div class="flex items-center gap-2 text-[10px] text-text-tertiary">
                   <span>{{ task.customSize || defaultSize }}</span>
-                  <span>{{ getQualityLabel(task.customQuality || defaultQuality) }}</span>
                 </div>
               </div>
 
@@ -241,25 +228,16 @@
                   <label class="text-[10px] font-medium text-text-tertiary mb-1 block">自定义提示词 (留空使用默认)</label>
                   <textarea v-model="task.customPrompt" rows="2" class="w-full px-2 py-1.5 text-[11px] bg-surface-1 border border-surface-3 rounded-md resize-y focus:outline-none focus:ring-1 focus:ring-primary-500 placeholder:text-text-disabled" placeholder="留空使用默认提示词..."></textarea>
                 </div>
-                <div class="flex gap-3">
-                  <div class="flex-1">
-                    <label class="text-[10px] font-medium text-text-tertiary mb-1 block">尺寸</label>
-                    <ImageSizePicker
-                      v-model="task.customSize"
-                      layout="select"
-                      allow-inherit
-                      :inherit-label="`默认 (${defaultSize})`"
-                      :model-id="selectedModelId"
-                      :tier-id="defaultTier"
-                    />
-                  </div>
-                  <div class="flex-1">
-                    <label class="text-[10px] font-medium text-text-tertiary mb-1 block">画质</label>
-                    <select v-model="task.customQuality" class="w-full px-2 py-1.5 text-[11px] bg-surface-1 border border-surface-3 rounded-md focus:outline-none focus:ring-1 focus:ring-primary-500">
-                      <option value="">默认 ({{ getQualityLabel(defaultQuality) }})</option>
-                      <option v-for="q in qualityOptions" :key="q.value" :value="q.value">{{ q.label }}</option>
-                    </select>
-                  </div>
+                <div>
+                  <label class="text-[10px] font-medium text-text-tertiary mb-1 block">尺寸</label>
+                  <ImageSizePicker
+                    v-model="task.customSize"
+                    layout="select"
+                    allow-inherit
+                    :inherit-label="`默认 (${defaultSize})`"
+                    :model-id="selectedModelId"
+                    :tier-id="defaultTier"
+                  />
                 </div>
               </div>
             </div>
@@ -353,7 +331,8 @@ import { groupAndSort } from '@/utils/model-caps'
 import { recordUsage, warmHintsCache, getHintsSync } from '@/utils/model-usage-hints'
 import ImageSizePicker from '@/components/ImageSizePicker.vue'
 import ResolutionTierPicker from '@/components/ResolutionTierPicker.vue'
-import { DEFAULT_TIER_ID } from '@shared/image-size'
+import { DEFAULT_TIER_ID, DEFAULT_QUALITY_ID } from '@shared/image-size'
+import { stripImageMetadata } from '@shared/strip-image-metadata'
 import ErrorDetailDialog from '@/components/ErrorDetailDialog.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import { translateError } from '@/utils/error-message'
@@ -363,7 +342,6 @@ interface BatchTask {
   refImage: string
   customPrompt: string
   customSize: string
-  customQuality: string
   status: 'pending' | 'generating' | 'done' | 'error'
   /** 后端错误原文。UI 展示时调 translateError 转换为友好文案 */
   error: string
@@ -416,7 +394,6 @@ const optimizeProviderId = ref('')
 const optimizeModelId = ref('')
 const defaultSize = ref('1:1')
 const defaultTier = ref<string>(DEFAULT_TIER_ID)
-const defaultQuality = ref('auto')
 const optimizing = ref(false)
 const showPresetPopup = ref(false)
 const batchRunning = ref(false)
@@ -459,16 +436,6 @@ const optimizeModelGroups = computed(() => {
   })
 })
 
-const qualityOptions = [
-  { label: '自动', value: 'auto' },
-  { label: '标准', value: 'standard' },
-  { label: '高清', value: 'hd' }
-]
-
-function getQualityLabel(value: string): string {
-  return qualityOptions.find(q => q.value === value)?.label || value
-}
-
 const canStart = computed(() =>
   tasks.value.length > 0 &&
   (defaultPrompt.value.trim() || tasks.value.every(t => t.customPrompt.trim())) &&
@@ -481,6 +448,7 @@ const completedCount = computed(() =>
 )
 
 function compressImage(dataUri: string, maxSize: number, quality: number): Promise<string> {
+  const cleanUri = stripImageMetadata(dataUri)
   return new Promise((resolve, reject) => {
     const img = new Image()
     img.onload = () => {
@@ -498,7 +466,7 @@ function compressImage(dataUri: string, maxSize: number, quality: number): Promi
       resolve(canvas.toDataURL('image/jpeg', quality))
     }
     img.onerror = reject
-    img.src = dataUri
+    img.src = cleanUri
   })
 }
 
@@ -523,7 +491,6 @@ async function pickRefImages() {
         refImage: compressed,
         customPrompt: '',
         customSize: '',
-        customQuality: '',
         status: 'pending' as const,
         error: '',
         resultPath: null,
@@ -594,7 +561,6 @@ async function runOne(task: BatchTask): Promise<void> {
   try {
     const prompt = task.customPrompt.trim() || defaultPrompt.value.trim()
     const size = task.customSize || defaultSize.value
-    const quality = task.customQuality || defaultQuality.value
 
     const results = await store.generate({
       prompt,
@@ -603,7 +569,7 @@ async function runOne(task: BatchTask): Promise<void> {
       modelId: selectedModelId.value,
       size,
       tierId: defaultTier.value,
-      quality,
+      quality: DEFAULT_QUALITY_ID,
       batchCount: 1
     })
 

@@ -22,7 +22,17 @@ import * as inspirationService from '../services/inspiration'
 import * as promptPresetService from '../services/prompt-preset'
 import * as backupService from '../services/backup'
 import * as canvasService from '../services/canvas'
-import { setCloudToken, getCloudToken, setCloudPermissions } from '../services/cloud-token'
+import {
+  setCloudToken,
+  getCloudToken,
+  setCloudPermissions,
+  setCloudEmbeddingModels,
+  getCloudEmbeddingModels,
+  setPreferredCloudEmbeddingModel,
+  getPreferredCloudEmbeddingModel,
+  getActiveCloudEmbeddingModelId,
+  getAllowCustomEmbedding,
+} from '../services/cloud-token'
 import { getDeviceId } from '../services/device-id'
 
 export function registerIpcHandlers(): void {
@@ -359,6 +369,13 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('vectorize:chunkCount', (_, knowledgeBaseId: string) =>
     vectorStoreService.getChunkCountByKnowledgeBaseId(knowledgeBaseId)
   )
+  ipcMain.handle('vectorize:checkModelMismatch', () =>
+    vectorizeService.checkEmbeddingModelMismatch()
+  )
+  ipcMain.handle('vectorize:reembedAll', (event) => {
+    const window = BrowserWindow.fromWebContents(event.sender)
+    return vectorizeService.reembedAll(window)
+  })
 
   // === Usage Stats ===
   ipcMain.handle('usage:getAll', () => usageStatsService.getAllUsageStats())
@@ -591,4 +608,18 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('cloud:getToken', () => getCloudToken())
   ipcMain.handle('cloud:setPermissions', (_, perms: Record<string, any>) => setCloudPermissions(perms))
   ipcMain.handle('cloud:getDeviceId', () => getDeviceId())
+
+  // === Cloud Embedding（渲染进程同步云端可用 embedding 模型 + 偏好选择） ===
+  ipcMain.handle('cloud:setEmbeddingModels', (_, models: any[]) => {
+    setCloudEmbeddingModels(Array.isArray(models) ? models : [])
+  })
+  ipcMain.handle('cloud:setPreferredEmbeddingModel', (_, modelId: string) => {
+    setPreferredCloudEmbeddingModel(modelId || '')
+  })
+  ipcMain.handle('cloud:getEmbeddingState', () => ({
+    models: getCloudEmbeddingModels(),
+    preferred: getPreferredCloudEmbeddingModel(),
+    active: getActiveCloudEmbeddingModelId(),
+    allowCustomEmbedding: getAllowCustomEmbedding(),
+  }))
 }

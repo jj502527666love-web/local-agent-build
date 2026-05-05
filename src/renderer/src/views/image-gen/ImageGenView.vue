@@ -128,17 +128,13 @@
                 />
               </div>
 
-              <!-- Quality -->
-              <div>
+              <!-- Quality：仅在无参考图且模型支持画质档位时显示（/edits 接口 quality 无效，强制 auto） -->
+              <div v-if="!hasRefImages && qualitiesAvailable">
                 <label class="text-xs font-medium text-text-secondary mb-1.5 block">画质</label>
-                <div class="grid grid-cols-3 gap-1.5">
-                  <button
-                    v-for="q in qualityOptions"
-                    :key="q.value"
-                    @click="selectedQuality = q.value"
-                    :class="['px-2 py-2 text-[10px] rounded-lg border transition-colors text-center', selectedQuality === q.value ? 'border-primary-500 bg-primary-50 text-primary-700 font-medium' : 'border-surface-3 bg-surface-1 text-text-secondary hover:bg-surface-2']"
-                  >{{ q.label }}</button>
-                </div>
+                <QualityPicker
+                  v-model="selectedQuality"
+                  :model-id="selectedModelId"
+                />
               </div>
 
               <!-- Batch Count -->
@@ -464,7 +460,9 @@ import { groupAndSort } from '@/utils/model-caps'
 import { recordUsage, warmHintsCache, getHintsSync } from '@/utils/model-usage-hints'
 import ImageSizePicker from '@/components/ImageSizePicker.vue'
 import ResolutionTierPicker from '@/components/ResolutionTierPicker.vue'
-import { DEFAULT_TIER_ID } from '@shared/image-size'
+import QualityPicker from '@/components/QualityPicker.vue'
+import { DEFAULT_TIER_ID, DEFAULT_QUALITY_ID, hasQualityOptions } from '@shared/image-size'
+import { stripImageMetadata } from '@shared/strip-image-metadata'
 import ErrorDetailDialog from '@/components/ErrorDetailDialog.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import type { ImageGeneration } from '@/stores/image-gen'
@@ -593,12 +591,9 @@ async function deleteSingle(id: string) {
 // recommended section re-sorts without a full reload.
 const hintsTick = ref(0)
 
-const qualityOptions = [
-  { label: '自动', value: 'auto' },
-  { label: '标准', value: 'standard' },
-  { label: '高清', value: 'hd' }
-]
-const selectedQuality = ref('auto')
+const selectedQuality = ref(DEFAULT_QUALITY_ID)
+const hasRefImages = computed(() => refImages.value.length > 0)
+const qualitiesAvailable = computed(() => hasQualityOptions(selectedModelId.value))
 
 // Result list — 后端分页，25 条/页
 const PAGE_SIZE = 25
@@ -714,6 +709,7 @@ async function optimizePrompt(lang: 'cn' | 'en') {
 }
 
 function compressImage(dataUri: string, maxSize: number, quality: number): Promise<string> {
+  const cleanUri = stripImageMetadata(dataUri)
   return new Promise((resolve, reject) => {
     const img = new Image()
     img.onload = () => {
@@ -731,7 +727,7 @@ function compressImage(dataUri: string, maxSize: number, quality: number): Promi
       resolve(canvas.toDataURL('image/jpeg', quality))
     }
     img.onerror = reject
-    img.src = dataUri
+    img.src = cleanUri
   })
 }
 
@@ -767,7 +763,7 @@ async function doGenerate() {
       modelId: selectedModelId.value,
       size: selectedSize.value,
       tierId: selectedTier.value,
-      quality: selectedQuality.value,
+      quality: hasRefImages.value ? DEFAULT_QUALITY_ID : selectedQuality.value,
       batchCount: batchCount.value,
       concurrency: concurrency.value
     })

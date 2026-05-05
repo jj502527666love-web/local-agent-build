@@ -74,6 +74,19 @@ function runMigrations(): void {
   if (canvasCols.length > 0 && !canvasColNames.includes('system_prompt')) {
     db.exec("ALTER TABLE canvas_projects ADD COLUMN system_prompt TEXT NOT NULL DEFAULT ''")
   }
+  // vector_chunks: track which embedding model/dim/source produced each chunk's vector
+  // 用于检测模型变更后强制重向量化（不同模型的向量空间不可混用）
+  const chunkCols = db.prepare("PRAGMA table_info(vector_chunks)").all() as any[]
+  const chunkColNames = chunkCols.map((c: any) => c.name)
+  if (!chunkColNames.includes('embedding_model')) {
+    db.exec("ALTER TABLE vector_chunks ADD COLUMN embedding_model TEXT NOT NULL DEFAULT ''")
+  }
+  if (!chunkColNames.includes('embedding_dim')) {
+    db.exec("ALTER TABLE vector_chunks ADD COLUMN embedding_dim INTEGER NOT NULL DEFAULT 0")
+  }
+  if (!chunkColNames.includes('embedding_source')) {
+    db.exec("ALTER TABLE vector_chunks ADD COLUMN embedding_source TEXT NOT NULL DEFAULT ''")
+  }
   // Populate FTS index from existing chunks if FTS table is empty
   const ftsCount = (db.prepare("SELECT COUNT(*) as cnt FROM vector_chunks_fts").get() as any).cnt
   const chunkCount = (db.prepare("SELECT COUNT(*) as cnt FROM vector_chunks").get() as any).cnt

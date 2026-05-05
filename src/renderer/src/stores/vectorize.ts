@@ -7,6 +7,8 @@ export interface VectorProgress {
   current: number
   total: number
   message: string
+  /** 错误时附带的结构化代码，UI 据此引导用户跳转购买/设置等 */
+  errorCode?: 'NO_CLOUD_MODEL' | 'INSUFFICIENT_BALANCE' | 'NOT_CONFIGURED' | 'UNAUTHORIZED' | 'GENERIC'
 }
 
 export interface CategoryStats {
@@ -108,6 +110,27 @@ export const useVectorizeStore = defineStore('vectorize', () => {
     }
   }
 
+  /**
+   * 全量清空已有向量并重新生成。用于模型变更后的恢复入口。
+   */
+  async function reembedAll() {
+    vectorizing.value = true
+    progress.value = null
+
+    window.api.vectorize.onProgress((data: unknown) => {
+      progress.value = data as VectorProgress
+    })
+
+    try {
+      const result = await window.api.vectorize.reembedAll()
+      await fetchStats()
+      return result
+    } finally {
+      vectorizing.value = false
+      window.api.vectorize.offProgress()
+    }
+  }
+
   return {
     stats,
     loading,
@@ -117,6 +140,7 @@ export const useVectorizeStore = defineStore('vectorize', () => {
     vectorizeDocument,
     vectorizeCategory,
     resetCategory,
-    vectorizeAll
+    vectorizeAll,
+    reembedAll
   }
 })

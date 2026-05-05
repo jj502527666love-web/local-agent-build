@@ -10,8 +10,50 @@
               <svg class="w-4 h-4 text-primary-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75m-16.5-3.75v3.75m16.5 0v3.75C20.25 16.153 16.556 18 12 18s-8.25-1.847-8.25-4.125v-3.75m16.5 0c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125" /></svg>
             </div>
             <h2 class="text-sm font-semibold text-text-primary">向量服务</h2>
+            <span v-if="vectorMode === 'cloud-locked'" class="ml-auto text-[10px] px-2 py-0.5 rounded bg-primary-50 text-primary-700 font-medium border border-primary-200">由云端统一配置</span>
           </div>
-          <div class="form-card">
+
+          <!-- Source Tabs：仅在「dual」模式（已登录 + 允许自定义）下显示 -->
+          <div v-if="vectorMode === 'dual'" class="flex items-center gap-2 mb-3">
+            <button
+              @click="requestSwitchSource('cloud')"
+              :class="['px-3 py-1.5 text-xs font-medium rounded-lg border transition-all',
+                vectorSource === 'cloud'
+                  ? 'border-primary-500 bg-primary-50 text-primary-700'
+                  : 'border-surface-3 bg-surface-0 text-text-secondary hover:bg-surface-2']"
+            >云端模型</button>
+            <button
+              @click="requestSwitchSource('local')"
+              :class="['px-3 py-1.5 text-xs font-medium rounded-lg border transition-all',
+                vectorSource === 'local'
+                  ? 'border-primary-500 bg-primary-50 text-primary-700'
+                  : 'border-surface-3 bg-surface-0 text-text-secondary hover:bg-surface-2']"
+            >自定义配置</button>
+          </div>
+
+          <!-- 云端模式（cloud-locked / dual+cloud） -->
+          <div v-if="vectorSource === 'cloud'" class="form-card">
+            <div v-if="cloudEmbeddingModels.length > 0">
+              <label class="form-label">云端向量模型</label>
+              <select v-model="cloudEmbeddingModel" @change="saveCloudEmbeddingPreference" class="select-field">
+                <option v-for="m in cloudEmbeddingModels" :key="m.model_id" :value="m.model_id">
+                  {{ m.name || m.model_id }}
+                </option>
+              </select>
+              <p class="text-[11px] text-text-tertiary mt-1.5">消耗云端{{ siteConfig.labels.token }}（与对话共享同一池）</p>
+            </div>
+            <div v-else class="flex items-start gap-2 p-3 rounded-lg bg-amber-50 border border-amber-200 dark:bg-amber-900/20 dark:border-amber-800">
+              <svg class="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" /></svg>
+              <div class="flex-1">
+                <div class="text-xs text-amber-800 dark:text-amber-300 font-medium">您的套餐未包含向量模型</div>
+                <div class="text-[11px] text-amber-700 dark:text-amber-400 mt-1">购买含向量模型的套餐后，知识库可使用云端向量服务</div>
+                <router-link to="/plans-store" class="inline-block mt-2 text-xs text-primary-600 hover:text-primary-700 font-medium">前往套餐商城 →</router-link>
+              </div>
+            </div>
+          </div>
+
+          <!-- 自定义模式（local-only / dual+local） -->
+          <div v-if="vectorSource === 'local'" class="form-card">
             <div>
               <label class="form-label">服务类型</label>
               <select v-model="vectorForm.type" class="select-field">
@@ -22,6 +64,14 @@
             <div>
               <label class="form-label">API 基础地址</label>
               <input v-model="vectorForm.api_base" placeholder="https://api.openai.com/v1" class="input-field" />
+              <p
+                v-if="vectorForm.api_base && vectorForm.api_base.trim()"
+                class="text-[11px] text-text-tertiary mt-1"
+              >
+                <span>实际生效地址：</span>
+                <span class="font-mono text-text-secondary">{{ normalizedVectorApiBase }}</span>
+                <span v-if="normalizedVectorApiBase !== vectorForm.api_base.trim()" class="ml-1 text-primary-600">（已自动补 /v1）</span>
+              </p>
             </div>
             <div>
               <label class="form-label">API 密钥</label>
@@ -39,6 +89,24 @@
               </button>
               <span v-if="vectorSaved" class="text-xs text-emerald-600 font-medium animate-pulse">已保存</span>
               <span v-if="vectorTestResult" :class="['text-xs font-medium', vectorTestOk ? 'text-emerald-600' : 'text-red-500']">{{ vectorTestResult }}</span>
+            </div>
+            <p class="text-[11px] text-text-tertiary">自定义配置不消耗云端{{ siteConfig.labels.token }}。若管理员关闭「自定义向量」权限，本地配置将被忽略，强制走云端</p>
+          </div>
+
+          <!-- 切换源确认弹窗（仅当库内已有向量时显示） -->
+          <div v-if="sourceSwitchTarget" class="fixed inset-0 flex items-center justify-center z-50">
+            <div class="bg-surface-0 rounded-xl shadow-2xl border border-surface-3 p-6 max-w-md w-full mx-4">
+              <h3 class="text-sm font-semibold text-text-primary mb-2">切换向量源</h3>
+              <p class="text-xs text-text-secondary mb-2">
+                当前已有 <b class="text-text-primary">{{ mismatchInfo?.totalChunks ?? 0 }}</b> 个分块使用「{{ describeMeta(mismatchInfo?.legacy?.[0]) }}」向量化。
+              </p>
+              <p class="text-xs text-amber-600 font-medium mb-4">
+                切换到「{{ sourceSwitchTarget === 'cloud' ? '云端模型' : '自定义配置' }}」后，已有向量空间不兼容，知识库召回将失效。请在切换后前往「向量统计」页执行「全量重新向量化」。
+              </p>
+              <div class="flex justify-end gap-2">
+                <button @click="cancelSwitchSource" class="btn-secondary">取消</button>
+                <button @click="confirmSwitchSource" class="btn-primary">确认切换</button>
+              </div>
             </div>
           </div>
         </section>
@@ -227,22 +295,56 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useThemeStore } from '@/stores/theme'
 import type { ThemeMode } from '@/stores/theme'
+import { useCloudAuthStore } from '@/stores/cloud-auth'
+import { useSiteConfigStore } from '@/stores/site-config'
 import { appName, appAbbr } from '@/utils/branding'
+import { normalizeApiBase } from '@shared/api-base-normalize'
 
 declare const __APP_VERSION__: string
 const appVersion = __APP_VERSION__
 
 const themeStore = useThemeStore()
+const cloudAuth = useCloudAuthStore()
+const siteConfig = useSiteConfigStore()
 const themeOptions: { value: ThemeMode; label: string }[] = [
   { value: 'light', label: '浅色' },
   { value: 'dark', label: '深色' },
   { value: 'system', label: '跟随系统' }
 ]
 
+// === Vector Service：双源（云端 / 自定义）状态 ===
 const vectorForm = ref({ type: 'openai', api_base: '', api_key: '', model: 'text-embedding-3-small' })
+const normalizedVectorApiBase = computed(() => normalizeApiBase(vectorForm.value.api_base))
+const vectorSource = ref<'cloud' | 'local'>('local')
+const cloudEmbeddingModels = ref<Array<{ id: number; model_id: string; name: string }>>([])
+const cloudEmbeddingModel = ref<string>('')
+const sourceSwitchTarget = ref<'cloud' | 'local' | null>(null)
+const mismatchInfo = ref<{
+  totalChunks: number
+  legacy?: Array<{ model: string; dim: number; source: string; chunk_count: number }>
+} | null>(null)
+
+/**
+ * 三态模式：
+ * - cloud-locked: 已登录 且 allow_custom_embedding=false → 强制云端，无 Tabs
+ * - dual:        已登录 且 allow_custom_embedding=true  → 显示 Tabs，可切换
+ * - local-only:  未登录                                → 仅自定义
+ */
+const vectorMode = computed<'cloud-locked' | 'dual' | 'local-only'>(() => {
+  if (!cloudAuth.isLoggedIn) return 'local-only'
+  if (!cloudAuth.permissions.allow_custom_embedding) return 'cloud-locked'
+  return 'dual'
+})
+
+function describeMeta(m?: { model: string; source: string; dim: number }): string {
+  if (!m) return '历史向量数据'
+  const src = m.source === 'cloud' ? '云端' : (m.source === 'local' ? '自定义' : '未知')
+  const model = m.model || '(旧版本未记录模型)'
+  return `${src} / ${model}${m.dim ? ` · ${m.dim} 维` : ''}`
+}
 const generalForm = ref({ temperature: '0.7' })
 const vectorSaved = ref(false)
 const vectorTesting = ref(false)
@@ -390,6 +492,41 @@ async function loadSettings() {
   if (all['vector_api_key']) vectorForm.value.api_key = all['vector_api_key']
   if (all['vector_model']) vectorForm.value.model = all['vector_model']
   if (all['temperature']) generalForm.value.temperature = all['temperature']
+
+  // 加载云端 embedding 状态：包括用户偏好模型 + 当前可用模型列表
+  try {
+    const state = await window.api.cloud.getEmbeddingState()
+    cloudEmbeddingModels.value = state.models || []
+    if (state.preferred && state.models?.some((m) => m.model_id === state.preferred)) {
+      cloudEmbeddingModel.value = state.preferred
+    } else if (state.models?.[0]) {
+      cloudEmbeddingModel.value = state.models[0].model_id
+    } else {
+      cloudEmbeddingModel.value = ''
+    }
+  } catch {
+    cloudEmbeddingModels.value = []
+    cloudEmbeddingModel.value = ''
+  }
+
+  // 解析当前生效的 vector_source：用户主动选择 > 权限默认
+  const stored = (all['vector_source'] || '').trim()
+  if (stored === 'cloud' || stored === 'local') {
+    vectorSource.value = stored
+  } else {
+    // 默认：cloud-locked / 已登录强制云端，否则 local
+    vectorSource.value = vectorMode.value === 'cloud-locked' ? 'cloud' : 'local'
+  }
+  // 强制纠正：cloud-locked 模式必须 cloud；local-only 模式必须 local
+  if (vectorMode.value === 'cloud-locked' && vectorSource.value !== 'cloud') {
+    vectorSource.value = 'cloud'
+    await window.api.settings.invoke('set', 'vector_source', 'cloud')
+  }
+  if (vectorMode.value === 'local-only' && vectorSource.value !== 'local') {
+    vectorSource.value = 'local'
+    await window.api.settings.invoke('set', 'vector_source', 'local')
+  }
+
   dataDir.value = await (window as any).api.dataDir.get() as string
 }
 
@@ -401,6 +538,71 @@ async function saveVectorSettings() {
   vectorSaved.value = true
   setTimeout(() => { vectorSaved.value = false }, 2000)
 }
+
+async function saveCloudEmbeddingPreference() {
+  await window.api.settings.invoke('set', 'cloud_embedding_model', cloudEmbeddingModel.value)
+  await window.api.cloud.setPreferredEmbeddingModel(cloudEmbeddingModel.value)
+  vectorSaved.value = true
+  setTimeout(() => { vectorSaved.value = false }, 2000)
+}
+
+/**
+ * 切换源前置检查：若库内已有向量数据，先弹确认；否则直接切换。
+ * cloud-locked / local-only 模式下 Tabs 不可见，此函数不会被调用。
+ */
+async function requestSwitchSource(target: 'cloud' | 'local') {
+  if (target === vectorSource.value) return
+  // 切到 cloud 但没有可用模型 → 直接锁定并提示
+  if (target === 'cloud' && cloudEmbeddingModels.value.length === 0) {
+    sourceSwitchTarget.value = null
+    // 仍切到云端 tab 显示「未包含向量模型」提示
+    vectorSource.value = 'cloud'
+    await window.api.settings.invoke('set', 'vector_source', 'cloud')
+    return
+  }
+  // 检查库内是否已有向量
+  try {
+    const res = await window.api.vectorize.checkModelMismatch()
+    if (res.totalChunks > 0) {
+      mismatchInfo.value = { totalChunks: res.totalChunks, legacy: res.legacy }
+      sourceSwitchTarget.value = target
+      return
+    }
+  } catch { /* 忽略检查失败，直接切 */ }
+  await applySwitchSource(target)
+}
+
+function cancelSwitchSource() {
+  sourceSwitchTarget.value = null
+  mismatchInfo.value = null
+}
+
+async function confirmSwitchSource() {
+  if (!sourceSwitchTarget.value) return
+  await applySwitchSource(sourceSwitchTarget.value)
+  sourceSwitchTarget.value = null
+  mismatchInfo.value = null
+}
+
+async function applySwitchSource(target: 'cloud' | 'local') {
+  vectorSource.value = target
+  await window.api.settings.invoke('set', 'vector_source', target)
+}
+
+// 监听权限变化：管理员把 allow_custom_embedding 关掉后，若用户当前在 local 上，强制切到 cloud
+watch(
+  () => vectorMode.value,
+  async (mode) => {
+    if (mode === 'cloud-locked' && vectorSource.value !== 'cloud') {
+      vectorSource.value = 'cloud'
+      await window.api.settings.invoke('set', 'vector_source', 'cloud')
+    }
+    if (mode === 'local-only' && vectorSource.value !== 'local') {
+      vectorSource.value = 'local'
+      await window.api.settings.invoke('set', 'vector_source', 'local')
+    }
+  },
+)
 
 async function testVectorConnection() {
   vectorTesting.value = true

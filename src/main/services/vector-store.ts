@@ -9,7 +9,18 @@ export interface VectorChunk {
   content: string
   embedding: number[] | null
   token_count: number
+  embedding_model: string
+  embedding_dim: number
+  embedding_source: string
   created_at: string
+}
+
+export interface ChunkEmbeddingMeta {
+  knowledge_base_id: string
+  embedding_model: string
+  embedding_dim: number
+  embedding_source: string
+  chunk_count: number
 }
 
 export interface SearchResult {
@@ -29,11 +40,19 @@ function bufferToEmbedding(buf: Buffer): number[] {
 
 export function insertChunks(
   knowledgeBaseId: string,
-  chunks: Array<{ content: string; embedding: number[] | null; tokenCount: number; index: number }>
+  chunks: Array<{
+    content: string
+    embedding: number[] | null
+    tokenCount: number
+    index: number
+    embeddingModel?: string
+    embeddingDim?: number
+    embeddingSource?: string
+  }>
 ): string[] {
   const db = getDatabase()
   const stmt = db.prepare(
-    'INSERT INTO vector_chunks (id, knowledge_base_id, chunk_index, content, embedding, token_count) VALUES (?, ?, ?, ?, ?, ?)'
+    'INSERT INTO vector_chunks (id, knowledge_base_id, chunk_index, content, embedding, token_count, embedding_model, embedding_dim, embedding_source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
   )
 
   const ftsStmt = db.prepare(
@@ -45,13 +64,64 @@ export function insertChunks(
     for (const chunk of chunks) {
       const id = uuid()
       const embBuf = chunk.embedding ? embeddingToBuffer(chunk.embedding) : null
-      stmt.run(id, knowledgeBaseId, chunk.index, chunk.content, embBuf, chunk.tokenCount)
+      // 仅当成功向量化时才记录模型元数据（embedding === null 视为分块仅入库未向量化）
+      const model = chunk.embedding ? chunk.embeddingModel || '' : ''
+      const dim = chunk.embedding ? chunk.embeddingDim || chunk.embedding.length : 0
+      const source = chunk.embedding ? chunk.embeddingSource || '' : ''
+      stmt.run(id, knowledgeBaseId, chunk.index, chunk.content, embBuf, chunk.tokenCount, model, dim, source)
       ftsStmt.run(id, knowledgeBaseId, chunk.content)
       ids.push(id)
     }
   })
   insertMany()
   return ids
+}
+
+/**
+ * 列出所有 chunks 用过的 (model, dim, source) 组合及对应数量。
+ * 用于检测模型变更后的兼容性：当前生效模型 ≠ 库内任何记录则需重向量化。
+ */
+export function getChunkEmbeddingMeta(): ChunkEmbeddingMeta[] {
+  const db = getDatabase()
+  return db
+    .prepare(
+      `SELECT 
+        knowledge_base_id,
+        embedding_model,
+        embedding_dim,
+        embedding_source,
+        COUNT(*) as chunk_count
+      FROM vector_chunks
+      WHERE embedding IS NOT NULL
+      GROUP BY knowledge_base_id, embedding_model, embedding_dim, embedding_source`
+    )
+    .all() as ChunkEmbeddingMeta[]
+}
+
+/**
+ * 全局向量元数据汇总：返回库内所有不同的 (model, dim, source) 组合及总分块数。
+ * 当返回多条或与当前生效模型不一致时，UI 应提示重向量化。
+ */
+export function getGlobalEmbeddingMeta(): Array<{
+  embedding_model: string
+  embedding_dim: number
+  embedding_source: string
+  chunk_count: number
+}> {
+  const db = getDatabase()
+  return db
+    .prepare(
+      `SELECT 
+        embedding_model,
+        embedding_dim,
+        embedding_source,
+        COUNT(*) as chunk_count
+      FROM vector_chunks
+      WHERE embedding IS NOT NULL
+      GROUP BY embedding_model, embedding_dim, embedding_source
+      ORDER BY chunk_count DESC`
+    )
+    .all() as any[]
 }
 
 export function deleteChunksByKnowledgeBaseId(knowledgeBaseId: string): number {
@@ -71,7 +141,10 @@ export function getChunksByKnowledgeBaseId(knowledgeBaseId: string): VectorChunk
 
   return rows.map((row) => ({
     ...row,
-    embedding: row.embedding ? bufferToEmbedding(row.embedding) : null
+    embedding: row.embedding ? bufferToEmbedding(row.embedding) : null,
+    embedding_model: row.embedding_model || '',
+    embedding_dim: row.embedding_dim || 0,
+    embedding_source: row.embedding_source || '',
   }))
 }
 
@@ -146,6 +219,9 @@ export function searchKeyword(
         content: row.content,
         embedding: null,
         token_count: 0,
+        embedding_model: '',
+        embedding_dim: 0,
+        embedding_source: '',
         created_at: ''
       },
       score: -row.rank
@@ -186,22 +262,27 @@ export function searchSimilar(
   queryEmbedding: number[],
   knowledgeBaseIds: string[],
   topK: number = 5,
-  threshold: number = 0.3
+  threshold: number = 0.3,
+  options?: { embeddingDim?: number }
 ): SearchResult[] {
   const db = getDatabase()
 
   if (knowledgeBaseIds.length === 0) return []
 
   const placeholders = knowledgeBaseIds.map(() => '?').join(',')
+  // 维度过滤：仅与 query 相同维度的 chunks 参与相似度计算，避免跨模型脏召回
+  const dim = options?.embeddingDim || queryEmbedding.length
   const rows = db
     .prepare(
-      `SELECT * FROM vector_chunks WHERE knowledge_base_id IN (${placeholders}) AND embedding IS NOT NULL`
+      `SELECT * FROM vector_chunks WHERE knowledge_base_id IN (${placeholders}) AND embedding IS NOT NULL AND (embedding_dim = ? OR embedding_dim = 0)`
     )
-    .all(...knowledgeBaseIds) as any[]
+    .all(...knowledgeBaseIds, dim) as any[]
 
   const results: SearchResult[] = []
   for (const row of rows) {
     const embedding = bufferToEmbedding(row.embedding)
+    // 老数据 embedding_dim=0 时仍走运行时长度校验，跨维向量直接跳过
+    if (embedding.length !== queryEmbedding.length) continue
     const score = cosineSimilarity(queryEmbedding, embedding)
     if (score >= threshold) {
       results.push({

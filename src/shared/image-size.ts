@@ -68,6 +68,16 @@ export interface ImageResolutionTier {
   note?: string
 }
 
+/** 画质档位定义（auto/low/medium/high 等） */
+export interface ImageQualityOption {
+  /** 透传给上游 API 的原值，如 'auto' / 'low' / 'medium' / 'high' / 'standard' / 'hd' */
+  id: string
+  /** UI 显示文本 */
+  label: string
+  /** 按钮标签后的小字提示 */
+  note?: string
+}
+
 /** 某个生图模型的尺寸能力域 */
 export interface ModelImageCapability {
   /** 可选档位列表（顺序与 UI 一致） */
@@ -76,12 +86,19 @@ export interface ModelImageCapability {
   maxRatio?: number
   /** 总像素上限（防止上游"尺寸超限静默降级"），undefined = 不限制 */
   maxTotalPixels?: number
+  /**
+   * 上游 API 接受的 quality 档位。undefined / 空数组 = 上游不区分画质，UI 不显示该控件。
+   * 注意：参考图（/images/edits）场景下 UI 应隐藏画质控件并强制发送 'auto'。
+   */
+  qualities?: ImageQualityOption[]
 }
 
 /** 默认选中档位 id，首次进入生图 / 模型切换后的回退值 */
 export const DEFAULT_TIER_ID = '2k'
+/** 默认画质 id，所有未注册 qualities 或模型切换后的回退值 */
+export const DEFAULT_QUALITY_ID = 'auto'
 
-/** 默认能力：未注册模型都按 1K + 2K 走 */
+/** 默认能力：未注册模型都按 1K + 2K 走；不注册画质，UI 默认不显示 */
 const DEFAULT_CAPABILITY: ModelImageCapability = {
   tiers: [
     { id: '1k', label: '1K', longSide: 1024 },
@@ -89,6 +106,14 @@ const DEFAULT_CAPABILITY: ModelImageCapability = {
   ],
   maxRatio: 4
 }
+
+/** gpt-image 系列的标准画质档位（官方 API 支持 auto/low/medium/high） */
+const GPT_IMAGE_QUALITIES: ImageQualityOption[] = [
+  { id: 'auto', label: '自动' },
+  { id: 'low', label: '低' },
+  { id: 'medium', label: '中' },
+  { id: 'high', label: '高', note: '较慢' }
+]
 
 /**
  * 已知模型的能力注册表。新增模型只需在此加一行。
@@ -103,7 +128,16 @@ const CAPABILITIES: Record<string, ModelImageCapability> = {
       { id: '4k', label: '4K', longSide: 3840, note: '较慢' }
     ],
     maxRatio: 4,
-    maxTotalPixels: 8_500_000
+    maxTotalPixels: 8_500_000,
+    qualities: GPT_IMAGE_QUALITIES
+  },
+  'gpt-image-1': {
+    tiers: [
+      { id: '1k', label: '1K', longSide: 1024 },
+      { id: '2k', label: '2K', longSide: 2048 }
+    ],
+    maxRatio: 4,
+    qualities: GPT_IMAGE_QUALITIES
   }
 }
 
@@ -119,6 +153,26 @@ export function ensureValidTierId(modelId: string | undefined, tierId: string | 
   if (tierId && cap.tiers.find((t) => t.id === tierId)) return tierId
   if (cap.tiers.find((t) => t.id === DEFAULT_TIER_ID)) return DEFAULT_TIER_ID
   return cap.tiers[0]?.id ?? DEFAULT_TIER_ID
+}
+
+/**
+ * 保证 qualityId 在指定模型能力域内合法。
+ * - 模型未注册 qualities → 始终返回 DEFAULT_QUALITY_ID（'auto'）
+ * - qualityId 不在列表内 → 优先回退到 DEFAULT_QUALITY_ID，再回退到首档
+ */
+export function ensureValidQuality(modelId: string | undefined, qualityId: string | undefined): string {
+  const cap = getModelCapability(modelId)
+  const list = cap.qualities
+  if (!list || list.length === 0) return DEFAULT_QUALITY_ID
+  if (qualityId && list.find((q) => q.id === qualityId)) return qualityId
+  if (list.find((q) => q.id === DEFAULT_QUALITY_ID)) return DEFAULT_QUALITY_ID
+  return list[0]?.id ?? DEFAULT_QUALITY_ID
+}
+
+/** 模型是否有可选画质档位，UI 据此决定是否渲染画质控件。 */
+export function hasQualityOptions(modelId?: string): boolean {
+  const cap = getModelCapability(modelId)
+  return !!cap.qualities && cap.qualities.length > 0
 }
 
 /** 取指定模型+档位的长边像素值。 */

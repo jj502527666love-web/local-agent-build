@@ -1,5 +1,6 @@
 import { getDatabase } from '../database'
 import { v4 as uuid } from 'uuid'
+import { normalizeApiBase } from './api-base-normalize'
 
 export interface ModelProvider {
   id: string
@@ -36,9 +37,10 @@ export function createModelProvider(data: {
   const id = uuid()
   const now = new Date().toISOString()
   const models = JSON.stringify(data.models || [])
+  const apiBase = normalizeApiBase(data.api_base)
   db.prepare(
     'INSERT INTO model_providers (id, name, type, api_base, api_key, models, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-  ).run(id, data.name, data.type, data.api_base, data.api_key, models, now, now)
+  ).run(id, data.name, data.type, apiBase, data.api_key, models, now, now)
   return getModelProvider(id)!
 }
 
@@ -52,7 +54,8 @@ export function updateModelProvider(
 
   const name = data.name ?? existing.name
   const type = data.type ?? existing.type
-  const api_base = data.api_base ?? existing.api_base
+  // 仅在用户传入新值时 normalize，未传入则保持原值
+  const api_base = data.api_base !== undefined ? normalizeApiBase(data.api_base) : existing.api_base
   const api_key = data.api_key ?? existing.api_key
   const models = JSON.stringify(data.models ?? existing.models)
   const now = new Date().toISOString()
@@ -70,13 +73,16 @@ export function deleteModelProvider(id: string): boolean {
 }
 
 export async function fetchRemoteModels(apiBase: string, apiKey: string): Promise<string[]> {
-  const base = apiBase.replace(/\/$/, '')
+  // 先 normalize：用户可能填不带 /v1 的地址，统一成 base/v1 形式
+  const base = normalizeApiBase(apiBase)
   const headers: Record<string, string> = {}
   if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
 
+  // normalize 后大多数情况 base 已含 /v1；保留一份不带 /v1 的候选以兼容少数直接挂根的代理
+  const stripped = base.replace(/\/v\d+[a-z]*$/i, '')
   const urls = [
     `${base}/models`,
-    ...(base.endsWith('/v1') ? [] : [`${base}/v1/models`])
+    ...(stripped !== base ? [`${stripped}/models`] : [])
   ]
 
   let lastError = ''

@@ -72,10 +72,10 @@
               class="flex items-center justify-between px-3 py-2 bg-surface-1 rounded-lg text-xs">
               <span class="text-text-primary font-medium">{{ r.model_name }}</span>
               <span v-if="r.billing_type === 'token'" class="text-text-secondary">
-                {{ r.input_price }} / {{ r.output_price }} 余额/M
+                {{ r.input_price }} / {{ r.output_price }} {{ siteConfig.labels.token }}/M
               </span>
               <span v-else class="text-text-secondary">
-                {{ r.credit_per_call }} 积分/次
+                {{ r.credit_per_call }} {{ siteConfig.labels.credit }}/次
               </span>
             </div>
           </div>
@@ -135,12 +135,14 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useCloudAuthStore } from '@/stores/cloud-auth'
+import { useSiteConfigStore } from '@/stores/site-config'
 import RedeemBox from '@/components/RedeemBox.vue'
 import MyPlansBox from '@/components/MyPlansBox.vue'
 import BalanceLogsDialog from '@/components/BalanceLogsDialog.vue'
 
 const router = useRouter()
 const store = useCloudAuthStore()
+const siteConfig = useSiteConfigStore()
 
 const pwdForm = ref({ oldPassword: '', newPassword: '', confirmPassword: '' })
 const pwdError = ref('')
@@ -181,8 +183,7 @@ function goPlansStore() {
 }
 
 function balanceLabel(type: string): string {
-  const map: Record<string, string> = { token: '余额', credit: '积分' }
-  return map[type?.toLowerCase()] || type
+  return siteConfig.labelOf(type?.toLowerCase())
 }
 
 onMounted(() => {

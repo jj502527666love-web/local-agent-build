@@ -334,9 +334,11 @@ import { useRoute, useRouter } from 'vue-router'
 import { Canvas, FabricImage, Rect, Ellipse, IText, PencilBrush, filters, Path, Control, util } from 'fabric'
 import type { FabricObject, TPointerEvent, Transform } from 'fabric'
 import { recordUsage } from '@/utils/model-usage-hints'
+import { useSiteConfigStore } from '@/stores/site-config'
 
 const route = useRoute()
 const router = useRouter()
+const siteConfig = useSiteConfigStore()
 const api = () => (window as any).api
 
 // ---- Refs ----
@@ -1535,7 +1537,7 @@ function classifyError(rawMsg: string): string {
     return '鉴权失败：请检查 API Key 或云端登录状态'
   }
   if (m.includes('402') || m.includes('insufficient') || m.includes('balance') || m.includes('payment')) {
-    return '余额不足或付费失败'
+    return `${siteConfig.labels.token}不足或付费失败`
   }
   if (m.includes('429') || m.includes('rate limit') || m.includes('too many')) {
     return '请求过于频繁，稍后重试'

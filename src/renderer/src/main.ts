@@ -6,6 +6,7 @@ import { routes } from './router'
 import { getCloudToken } from './utils/cloud-api'
 import { useThemeStore } from './stores/theme'
 import { useCloudAuthStore } from './stores/cloud-auth'
+import { useSiteConfigStore } from './stores/site-config'
 import './assets/main.css'
 
 // 启动时根据 runtimeConfig.appName 设置 document.title（覆盖 index.html 默认 'LocalAgent'）
@@ -40,3 +41,5 @@ app.mount('#app')
 // Initialize stores after mount (pinia must be installed first)
 useThemeStore()
 useCloudAuthStore().init()
+// 拉取公开站点配置（货币文案等），无需登录，启动时调一次
+useSiteConfigStore().init()

@@ -8,7 +8,7 @@
       >
         <div class="w-full max-w-xl bg-surface-0 rounded-2xl shadow-2xl flex flex-col max-h-[80vh]">
           <div class="flex items-center justify-between px-5 py-3 border-b border-surface-2">
-            <h3 class="text-sm font-semibold text-text-primary">余额明细</h3>
+            <h3 class="text-sm font-semibold text-text-primary">{{ siteConfig.labels.token }}明细</h3>
             <button @click="close" class="text-text-tertiary hover:text-text-primary">
               <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
@@ -23,8 +23,8 @@
               @change="reload"
             >
               <option value="">全部类型</option>
-              <option value="token">余额</option>
-              <option value="credit">积分</option>
+              <option value="token">{{ siteConfig.labels.token }}</option>
+              <option value="credit">{{ siteConfig.labels.credit }}</option>
             </select>
             <select
               v-model="filterChange"
@@ -55,8 +55,8 @@
                 <div class="flex items-start justify-between gap-3">
                   <div class="min-w-0 flex-1">
                     <div class="flex items-center gap-2">
-                      <span class="text-[10px] px-1.5 py-0.5 rounded bg-surface-2 text-text-secondary uppercase">
-                        {{ log.balance_type }}
+                      <span class="text-[10px] px-1.5 py-0.5 rounded bg-surface-2 text-text-secondary">
+                        {{ siteConfig.labelOf(log.balance_type) }}
                       </span>
                       <span class="text-[11px] text-text-secondary">{{ changeTypeLabel(log.change_type) }}</span>
                     </div>
@@ -91,6 +91,9 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { cloudClient } from '@/utils/cloud-api'
+import { useSiteConfigStore } from '@/stores/site-config'
+
+const siteConfig = useSiteConfigStore()
 
 interface BalanceLog {
   id: number

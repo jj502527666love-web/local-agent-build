@@ -25,6 +25,7 @@ export interface CloudModel {
 
 export interface CloudPermissions {
   allow_custom_provider: boolean
+  allow_custom_embedding: boolean
   allow_image_gen: boolean
   allow_knowledge_base: boolean
   max_context_messages: number
@@ -59,6 +60,7 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
   const models = ref<CloudModel[]>([])
   const permissions = ref<CloudPermissions>({
     allow_custom_provider: false,
+    allow_custom_embedding: true,
     allow_image_gen: true,
     allow_knowledge_base: true,
     max_context_messages: 50,
@@ -121,8 +123,20 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
     models.value = []
     balances.value = []
     plans.value = []
-    permissions.value = { allow_custom_provider: false, allow_image_gen: true, allow_knowledge_base: true, max_context_messages: 50 }
-    window.api?.cloud?.setPermissions({ allow_custom_provider: false })
+    permissions.value = {
+      allow_custom_provider: false,
+      allow_custom_embedding: true,
+      allow_image_gen: true,
+      allow_knowledge_base: true,
+      max_context_messages: 50,
+    }
+    window.api?.cloud?.setPermissions({
+      allow_custom_provider: false,
+      allow_custom_embedding: true,
+    })
+    // 清空主进程缓存的云端 embedding 模型与偏好，避免状态泄漏
+    window.api?.cloud?.setEmbeddingModels([])
+    window.api?.cloud?.setPreferredEmbeddingModel('')
   }
 
   async function fetchMe() {
@@ -155,7 +169,22 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
         plans.value = (planRes.plans || []) as MyPlan[]
       } catch { plans.value = [] }
       // Sync permissions to main process for LLM routing guard
-      window.api?.cloud?.setPermissions({ allow_custom_provider: permissions.value.allow_custom_provider })
+      window.api?.cloud?.setPermissions({
+        allow_custom_provider: permissions.value.allow_custom_provider,
+        allow_custom_embedding: permissions.value.allow_custom_embedding,
+      })
+      // 同步云端 embedding 模型清单到主进程，用于 vectorize 路由 + Settings UI 渲染
+      const embeddingModels = (modelsRes.models || [])
+        .filter((m: any) => m.type === 'embedding')
+        .map((m: any) => ({ id: m.id, model_id: m.model_id, name: m.name }))
+      window.api?.cloud?.setEmbeddingModels(embeddingModels)
+      // 用户偏好的云端 embedding 模型（从 settings 读取，由 SettingsView 写入）
+      try {
+        const preferred = (await window.api.settings.invoke('get', 'cloud_embedding_model')) as string | undefined
+        window.api?.cloud?.setPreferredEmbeddingModel(preferred || '')
+      } catch {
+        window.api?.cloud?.setPreferredEmbeddingModel('')
+      }
     } catch (e: any) {
       console.error('[CloudAuth] fetchCloudData error:', e.message, e)
       if (e.message === 'AUTH_EXPIRED') logout()

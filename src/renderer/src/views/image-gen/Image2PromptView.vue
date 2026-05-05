@@ -253,6 +253,7 @@ import { useRouter } from 'vue-router'
 import { useModelStore } from '@/stores/models'
 import { groupAndSort } from '@/utils/model-caps'
 import { recordUsage, warmHintsCache, getHintsSync } from '@/utils/model-usage-hints'
+import { stripImageMetadata } from '@shared/strip-image-metadata'
 
 interface Task {
   id: string
@@ -360,6 +361,7 @@ watch([outputLang, stylePreset], () => {
 
 // ---- Image upload ----
 function compressImage(dataUri: string, maxSize: number, quality: number): Promise<string> {
+  const cleanUri = stripImageMetadata(dataUri)
   return new Promise((resolve, reject) => {
     const img = new Image()
     img.onload = () => {
@@ -377,7 +379,7 @@ function compressImage(dataUri: string, maxSize: number, quality: number): Promi
       resolve(canvas.toDataURL('image/jpeg', quality))
     }
     img.onerror = reject
-    img.src = dataUri
+    img.src = cleanUri
   })
 }
 

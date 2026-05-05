@@ -84,11 +84,11 @@
 
             <div class="grid grid-cols-2 gap-2 text-[11px] mb-3">
               <div v-if="p.token_quota > 0">
-                <span class="text-text-tertiary">余额额度</span>
+                <span class="text-text-tertiary">{{ siteConfig.labels.token }}额度</span>
                 <span class="text-text-primary ml-1 font-medium">{{ formatNum(p.token_quota) }}</span>
               </div>
               <div v-if="p.credit_quota > 0">
-                <span class="text-text-tertiary">积分额度</span>
+                <span class="text-text-tertiary">{{ siteConfig.labels.credit }}额度</span>
                 <span class="text-text-primary ml-1 font-medium">{{ formatNum(p.credit_quota) }}</span>
               </div>
               <div>
@@ -144,7 +144,10 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { cloudClient } from '@/utils/cloud-api'
+import { useSiteConfigStore } from '@/stores/site-config'
 import PaymentDialog from '@/components/PaymentDialog.vue'
+
+const siteConfig = useSiteConfigStore()
 
 interface StoreModel {
   id: number

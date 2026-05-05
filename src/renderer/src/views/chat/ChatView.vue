@@ -397,6 +397,7 @@ import { useMcpStore } from '@/stores/mcps'
 import { usePromptSkillStore } from '@/stores/prompt-skills'
 import { usePromptPresetStore } from '@/stores/prompt-presets'
 import { renderMarkdown } from '@/utils/markdown'
+import { stripImageMetadata } from '@shared/strip-image-metadata'
 
 const route = useRoute()
 const router = useRouter()
@@ -702,6 +703,7 @@ async function handleDrop(e: DragEvent) {
 }
 
 function compressImage(dataUri: string, maxSize: number, quality: number): Promise<string> {
+  const cleanUri = stripImageMetadata(dataUri)
   return new Promise((resolve, reject) => {
     const img = new Image()
     img.onload = () => {
@@ -719,7 +721,7 @@ function compressImage(dataUri: string, maxSize: number, quality: number): Promi
       resolve(canvas.toDataURL('image/jpeg', quality))
     }
     img.onerror = reject
-    img.src = dataUri
+    img.src = cleanUri
   })
 }
 

@@ -36,6 +36,14 @@ interface Window {
     }
     vectorize: {
       invoke: (channel: string, ...args: unknown[]) => Promise<unknown>
+      checkModelMismatch: () => Promise<{
+        mismatch: boolean
+        reason: 'empty' | 'multiple_models' | 'model_changed' | 'config_error' | 'consistent'
+        current?: { model: string; source: 'cloud' | 'local' }
+        legacy?: Array<{ model: string; dim: number; source: string; chunk_count: number }>
+        totalChunks: number
+      }>
+      reembedAll: () => Promise<{ processed: number; failed: number }>
       onProgress: (callback: (data: unknown) => void) => void
       offProgress: () => void
     }
@@ -44,6 +52,14 @@ interface Window {
       getToken: () => Promise<string | null>
       setPermissions: (perms: Record<string, any>) => Promise<void>
       getDeviceId: () => Promise<string>
+      setEmbeddingModels: (models: Array<{ id: number; model_id: string; name: string }>) => Promise<void>
+      setPreferredEmbeddingModel: (modelId: string) => Promise<void>
+      getEmbeddingState: () => Promise<{
+        models: Array<{ id: number; model_id: string; name: string }>
+        preferred: string
+        active: string
+        allowCustomEmbedding: boolean
+      }>
     }
     clipboard: {
       writeImage: (filePath: string) => Promise<{ success: boolean; error?: string }>

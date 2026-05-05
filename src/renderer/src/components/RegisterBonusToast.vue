@@ -17,11 +17,11 @@
           <p class="text-text-secondary mb-2">已发放注册赠送</p>
           <div class="space-y-1">
             <div v-if="(bonus.token ?? 0) > 0" class="flex items-center justify-between">
-              <span class="text-text-tertiary">余额</span>
+              <span class="text-text-tertiary">{{ siteConfig.labels.token }}</span>
               <span class="font-semibold text-emerald-600">+ {{ formatAmount(bonus.token) }}</span>
             </div>
             <div v-if="(bonus.credit ?? 0) > 0" class="flex items-center justify-between">
-              <span class="text-text-tertiary">积分</span>
+              <span class="text-text-tertiary">{{ siteConfig.labels.credit }}</span>
               <span class="font-semibold text-emerald-600">+ {{ formatAmount(bonus.credit) }}</span>
             </div>
             <div v-if="bonus.user_plan_id" class="flex items-center justify-between">
@@ -48,9 +48,11 @@
 <script setup lang="ts">
 import { ref, watch, onUnmounted } from 'vue'
 import { useCloudAuthStore } from '@/stores/cloud-auth'
+import { useSiteConfigStore } from '@/stores/site-config'
 import type { RegisterBonus } from '@/stores/cloud-auth'
 
 const store = useCloudAuthStore()
+const siteConfig = useSiteConfigStore()
 const visible = ref(false)
 const bonus = ref<RegisterBonus | null>(null)
 let timer: ReturnType<typeof setTimeout> | null = null

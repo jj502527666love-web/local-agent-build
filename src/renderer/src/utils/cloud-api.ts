@@ -83,6 +83,11 @@ export const cloudAuth = {
   refresh: () => request('POST', '/auth/refresh'),
 }
 
+// 公开端点（无需登录）
+export const cloudPublic = {
+  siteConfig: () => request('GET', '/public/site-config'),
+}
+
 export const cloudClient = {
   myModels: () => request('GET', '/client/models'),
   myPermissions: () => request('GET', '/client/permissions'),

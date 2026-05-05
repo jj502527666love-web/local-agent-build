@@ -38,11 +38,11 @@
             <span class="text-text-primary ml-1">{{ p.expires_at ? formatDate(p.expires_at) : '永久' }}</span>
           </div>
           <div v-if="p.token_granted > 0">
-            <span class="text-text-tertiary">余额额度</span>
+            <span class="text-text-tertiary">{{ siteConfig.labels.token }}额度</span>
             <span class="text-text-primary ml-1">{{ formatAmount(p.token_granted) }}</span>
           </div>
           <div v-if="p.credit_granted > 0">
-            <span class="text-text-tertiary">积分额度</span>
+            <span class="text-text-tertiary">{{ siteConfig.labels.credit }}额度</span>
             <span class="text-text-primary ml-1">{{ formatAmount(p.credit_granted) }}</span>
           </div>
         </div>
@@ -67,9 +67,11 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useCloudAuthStore } from '@/stores/cloud-auth'
+import { useSiteConfigStore } from '@/stores/site-config'
 import type { MyPlan } from '@/stores/cloud-auth'
 
 const store = useCloudAuthStore()
+const siteConfig = useSiteConfigStore()
 
 const plans = computed<MyPlan[]>(() => store.plans || [])
 const activePlans = computed(() => plans.value.filter(p => p.status === 'active'))

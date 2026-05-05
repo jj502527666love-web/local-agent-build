@@ -2,6 +2,7 @@ import { getModelProvider } from './model-provider'
 import { BrowserWindow } from 'electron'
 import { recordUsage } from './usage-stats'
 import { getCloudToken, getCloudGatewayUrl, getAllowCustomProvider } from './cloud-token'
+import { normalizeApiBase } from './api-base-normalize'
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool'
@@ -132,7 +133,7 @@ export async function callLLM(
       throw new Error('Custom provider is disabled by admin')
     }
     const config = getProviderConfig(providerId)
-    url = `${config.apiBase.replace(/\/$/, '')}/chat/completions`
+    url = `${normalizeApiBase(config.apiBase)}/chat/completions`
     apiKey = config.apiKey
   }
 

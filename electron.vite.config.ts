@@ -34,6 +34,11 @@ export default defineConfig({
     },
     css: {
       postcss: resolve('src/renderer/postcss.config.js')
+    },
+    server: {
+      host: '127.0.0.1',
+      strictPort: false,
+      port: 6173
     }
   }
 })

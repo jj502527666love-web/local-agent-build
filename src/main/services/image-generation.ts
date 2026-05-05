@@ -9,6 +9,8 @@ import { mkdirSync, writeFileSync } from 'fs'
 import { BrowserWindow } from 'electron'
 import { recordUsage } from './usage-stats'
 import { resolveSizeToPixels } from '@shared/image-size'
+import { stripBase64 } from '@shared/strip-image-metadata'
+import { normalizeApiBase } from './api-base-normalize'
 
 export interface ImageGeneration {
   id: string
@@ -176,7 +178,7 @@ async function callImageAPI(
 
   const provider = getModelProvider(providerId)
   if (!provider) throw new Error(`Model provider not found: ${providerId}`)
-  const apiBase = provider.api_base.replace(/\/$/, '')
+  const apiBase = normalizeApiBase(provider.api_base)
   const apiKey = provider.api_key
 
   const hasRefImages = refImages && refImages.length > 0
@@ -202,20 +204,24 @@ async function callImageAPI(
     form.append('response_format', 'b64_json')
 
     for (const img of refImages) {
-      // Strip data URI prefix if present
+      // Strip data URI prefix if present, and remove EXIF/ICC/XMP/COM segments
+      // to avoid upstream rejecting non-standard ICC v4 profiles (e.g. WeChat images).
       const match = img.match(/^data:([^;]+);base64,/)
       const mimeType = match ? match[1] : 'image/png'
       const raw = match ? img.slice(match[0].length) : img
-      const buffer = Buffer.from(raw, 'base64')
+      const format: 'jpeg' | 'png' = mimeType.includes('png') ? 'png' : 'jpeg'
+      const cleaned = stripBase64(raw, format)
+      const buffer = Buffer.from(cleaned, 'base64')
       const blob = new Blob([buffer], { type: mimeType })
-      const ext = mimeType.includes('png') ? 'png' : 'jpg'
+      const ext = format === 'png' ? 'png' : 'jpg'
       form.append('image', blob, `ref.${ext}`)
     }
 
     if (mask) {
       const maskMatch = mask.match(/^data:([^;]+);base64,/)
       const maskRaw = maskMatch ? mask.slice(maskMatch[0].length) : mask
-      const maskBuffer = Buffer.from(maskRaw, 'base64')
+      const cleanedMask = stripBase64(maskRaw, 'png')
+      const maskBuffer = Buffer.from(cleanedMask, 'base64')
       const maskBlob = new Blob([maskBuffer], { type: 'image/png' })
       form.append('mask', maskBlob, 'mask.png')
     }
@@ -297,14 +303,17 @@ async function callCloudImageAPI(
   if (hasRefImages) {
     body.images = refImages.map((img) => {
       const match = img.match(/^data:([^;]+);base64,/)
+      const mimeType = match?.[1] || 'image/jpeg'
       const base64 = match ? img.slice(match[0].length) : img
-      return base64
+      const format: 'jpeg' | 'png' = mimeType.includes('png') ? 'png' : 'jpeg'
+      return stripBase64(base64, format)
     })
   }
 
   if (mask) {
     const maskMatch = mask.match(/^data:([^;]+);base64,/)
-    body.mask = maskMatch ? mask.slice(maskMatch[0].length) : mask
+    const maskRaw = maskMatch ? mask.slice(maskMatch[0].length) : mask
+    body.mask = stripBase64(maskRaw, 'png')
   }
 
   // Step 1: Submit task

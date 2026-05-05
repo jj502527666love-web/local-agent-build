@@ -240,7 +240,7 @@ async function retrieveRelevantChunks(docText: string, query: string, docName: s
 
   const scored = chunks.map((chunk, i) => ({
     chunk,
-    score: cosineSimilarity(queryResult.embedding, chunkResults[i].embedding)
+    score: cosineSimilarity(queryResult.embedding, chunkResults.embeddings[i].embedding)
   }))
   scored.sort((a, b) => b.score - a.score)
 

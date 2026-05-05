@@ -29,6 +29,7 @@ dev-app-update.yml
 
 # Unrelated sub-projects (deployed / tracked separately)
 /agent-admin/
+/agent-build/
 /ppt_project_flower/
 
 # Dev loose files at repo root

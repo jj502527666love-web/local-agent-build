@@ -58,6 +58,8 @@ const api = {
   vectorize: {
     invoke: (channel: string, ...args: unknown[]) =>
       ipcRenderer.invoke(`vectorize:${channel}`, ...args),
+    checkModelMismatch: () => ipcRenderer.invoke('vectorize:checkModelMismatch'),
+    reembedAll: () => ipcRenderer.invoke('vectorize:reembedAll'),
     onProgress: (callback: (data: unknown) => void) =>
       ipcRenderer.on('vectorize:progress', (_event, data) => callback(data)),
     offProgress: () => ipcRenderer.removeAllListeners('vectorize:progress')
@@ -85,7 +87,17 @@ const api = {
     setToken: (token: string | null) => ipcRenderer.invoke('cloud:setToken', token),
     getToken: () => ipcRenderer.invoke('cloud:getToken'),
     setPermissions: (perms: Record<string, any>) => ipcRenderer.invoke('cloud:setPermissions', perms),
-    getDeviceId: () => ipcRenderer.invoke('cloud:getDeviceId') as Promise<string>
+    getDeviceId: () => ipcRenderer.invoke('cloud:getDeviceId') as Promise<string>,
+    setEmbeddingModels: (models: Array<{ id: number; model_id: string; name: string }>) =>
+      ipcRenderer.invoke('cloud:setEmbeddingModels', models),
+    setPreferredEmbeddingModel: (modelId: string) =>
+      ipcRenderer.invoke('cloud:setPreferredEmbeddingModel', modelId),
+    getEmbeddingState: () => ipcRenderer.invoke('cloud:getEmbeddingState') as Promise<{
+      models: Array<{ id: number; model_id: string; name: string }>
+      preferred: string
+      active: string
+      allowCustomEmbedding: boolean
+    }>
   },
   clipboard: {
     writeImage: (filePath: string) => ipcRenderer.invoke('clipboard:writeImage', filePath)

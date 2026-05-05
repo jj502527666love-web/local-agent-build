@@ -27,8 +27,8 @@
     <div v-if="success" class="mt-3 bg-emerald-50 text-emerald-700 rounded-lg px-3 py-2 text-xs">
       <div class="font-semibold mb-1">兑换成功</div>
       <div class="space-x-3">
-        <span v-if="(success.token ?? 0) > 0">余额 +{{ formatAmount(success.token) }}</span>
-        <span v-if="(success.credit ?? 0) > 0">积分 +{{ formatAmount(success.credit) }}</span>
+        <span v-if="(success.token ?? 0) > 0">{{ siteConfig.labels.token }} +{{ formatAmount(success.token) }}</span>
+        <span v-if="(success.credit ?? 0) > 0">{{ siteConfig.labels.credit }} +{{ formatAmount(success.credit) }}</span>
         <span v-if="success.user_plan_id">套餐 #{{ success.plan_id }} 已开通</span>
         <span v-else-if="success.plan_archived">套餐 #{{ success.plan_id }} 已归档，未发放</span>
       </div>
@@ -45,6 +45,9 @@
 import { ref } from 'vue'
 import { cloudClient } from '@/utils/cloud-api'
 import { useCloudAuthStore } from '@/stores/cloud-auth'
+import { useSiteConfigStore } from '@/stores/site-config'
+
+const siteConfig = useSiteConfigStore()
 
 interface RedeemReward {
   token?: number

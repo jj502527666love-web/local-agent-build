@@ -127,6 +127,9 @@ CREATE TABLE IF NOT EXISTS vector_chunks (
   content TEXT NOT NULL,
   embedding BLOB,
   token_count INTEGER NOT NULL DEFAULT 0,
+  embedding_model TEXT NOT NULL DEFAULT '',
+  embedding_dim INTEGER NOT NULL DEFAULT 0,
+  embedding_source TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (knowledge_base_id) REFERENCES knowledge_bases(id) ON DELETE CASCADE
 );

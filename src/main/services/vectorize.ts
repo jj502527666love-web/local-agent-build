@@ -1,9 +1,8 @@
 import { BrowserWindow } from 'electron'
 import { chunkFile } from './chunker'
-import { embedBatch } from './embedding'
-import { insertChunks, deleteChunksByKnowledgeBaseId, getChunkCountByKnowledgeBaseId, getVectorStats } from './vector-store'
+import { embedBatch, getEmbeddingConfig, EmbeddingUnavailableError } from './embedding'
+import { insertChunks, deleteChunksByKnowledgeBaseId, getVectorStats, getGlobalEmbeddingMeta } from './vector-store'
 import { getDatabase } from '../database'
-import { getSetting } from './settings'
 
 export interface VectorizeProgress {
   knowledgeBaseId: string
@@ -11,6 +10,8 @@ export interface VectorizeProgress {
   current: number
   total: number
   message: string
+  /** 错误时附带的结构化代码，UI 据此引导用户 */
+  errorCode?: 'NO_CLOUD_MODEL' | 'INSUFFICIENT_BALANCE' | 'NOT_CONFIGURED' | 'UNAUTHORIZED' | 'GENERIC'
 }
 
 function sendProgress(win: BrowserWindow | null, progress: VectorizeProgress): void {
@@ -30,9 +31,22 @@ export async function vectorizeDocument(
   if (!kb) throw new Error('知识文档不存在')
   if (!kb.file_path) throw new Error('文档文件路径为空')
 
-  // Check vector service config
-  const apiBase = getSetting('vector_api_base')
-  if (!apiBase) throw new Error('向量服务未配置：请在设置中配置向量服务')
+  // 预检：解析当前生效的 embedding 配置（云端 / 本地），失败立即抛
+  // EmbeddingUnavailableError，前端按 errorCode 路由到「购买套餐 / 去设置」
+  let resolvedConfig
+  try {
+    resolvedConfig = await getEmbeddingConfig()
+  } catch (err: any) {
+    sendProgress(win, {
+      knowledgeBaseId,
+      status: 'error',
+      current: 0,
+      total: 0,
+      message: err?.message || '向量服务不可用',
+      errorCode: err instanceof EmbeddingUnavailableError ? err.code : 'GENERIC',
+    })
+    throw err
+  }
 
   // Update status to processing
   db.prepare('UPDATE knowledge_bases SET status = ? WHERE id = ?').run('processing', knowledgeBaseId)
@@ -79,30 +93,55 @@ export async function vectorizeDocument(
       embedding: number[] | null
       tokenCount: number
       index: number
+      embeddingModel?: string
+      embeddingDim?: number
+      embeddingSource?: string
     }> = []
 
+    // 终止性错误：余额不足 / 未配置 / 未授权 → 立即停止后续批次（避免 N 次 402 噪声）
+    let fatalError: EmbeddingUnavailableError | null = null
+
     for (let i = 0; i < chunks.length; i += BATCH_SIZE) {
+      if (fatalError) {
+        // 后续 chunks 直接入库不向量化
+        for (const chunk of chunks.slice(i)) {
+          allChunkData.push({
+            content: chunk.content,
+            embedding: null,
+            tokenCount: chunk.tokenCount,
+            index: chunk.index,
+          })
+        }
+        break
+      }
+
       const batch = chunks.slice(i, i + BATCH_SIZE)
       const texts = batch.map((c) => c.content)
 
       try {
-        const embeddings = await embedBatch(texts)
+        const result = await embedBatch(texts, resolvedConfig)
         for (let j = 0; j < batch.length; j++) {
           allChunkData.push({
             content: batch[j].content,
-            embedding: embeddings[j].embedding,
-            tokenCount: embeddings[j].tokenCount || batch[j].tokenCount,
-            index: batch[j].index
+            embedding: result.embeddings[j].embedding,
+            tokenCount: result.embeddings[j].tokenCount || batch[j].tokenCount,
+            index: batch[j].index,
+            embeddingModel: result.meta.model,
+            embeddingDim: result.meta.dim,
+            embeddingSource: result.meta.source,
           })
         }
       } catch (err: any) {
-        // If embedding fails, store chunks without embeddings
+        // EmbeddingUnavailableError 视为 fatal，普通 5xx/网络错误降级为单批失败
+        const isFatal = err instanceof EmbeddingUnavailableError
+        if (isFatal) fatalError = err
+
         for (const chunk of batch) {
           allChunkData.push({
             content: chunk.content,
             embedding: null,
             tokenCount: chunk.tokenCount,
-            index: chunk.index
+            index: chunk.index,
           })
         }
         sendProgress(win, {
@@ -110,24 +149,46 @@ export async function vectorizeDocument(
           status: 'embedding',
           current: Math.min(i + BATCH_SIZE, chunks.length),
           total: chunks.length,
-          message: `向量化批次失败: ${err.message?.slice(0, 100)}`
+          message: `向量化批次失败: ${(err.message || '').slice(0, 120)}`,
+          errorCode: isFatal ? err.code : 'GENERIC',
         })
       }
 
-      const done = Math.min(i + BATCH_SIZE, chunks.length)
-      sendProgress(win, {
-        knowledgeBaseId,
-        status: 'embedding',
-        current: done,
-        total: chunks.length,
-        message: `正在向量化 ${done}/${chunks.length} 个分块...`
-      })
+      // 致命错误时跳过常规进度更新，避免覆盖刚发出的错误消息
+      if (!fatalError) {
+        const done = Math.min(i + BATCH_SIZE, chunks.length)
+        sendProgress(win, {
+          knowledgeBaseId,
+          status: 'embedding',
+          current: done,
+          total: chunks.length,
+          message: `正在向量化 ${done}/${chunks.length} 个分块...`
+        })
+      }
     }
 
     // Step 3: Insert into vector store
     insertChunks(knowledgeBaseId, allChunkData)
 
     const embeddedCount = allChunkData.filter((c) => c.embedding !== null).length
+
+    // 致命错误情况下：保留已分块文本，但状态置 error 让用户重新触发
+    if (fatalError) {
+      db.prepare('UPDATE knowledge_bases SET status = ?, chunk_count = ? WHERE id = ?').run(
+        'error',
+        allChunkData.length,
+        knowledgeBaseId,
+      )
+      sendProgress(win, {
+        knowledgeBaseId,
+        status: 'error',
+        current: embeddedCount,
+        total: chunks.length,
+        message: fatalError.message,
+        errorCode: fatalError.code,
+      })
+      throw fatalError
+    }
 
     // Update knowledge base status
     db.prepare('UPDATE knowledge_bases SET status = ?, chunk_count = ? WHERE id = ?').run(
@@ -147,13 +208,17 @@ export async function vectorizeDocument(
     return { chunkCount: allChunkData.length, embeddedCount }
   } catch (err: any) {
     db.prepare('UPDATE knowledge_bases SET status = ? WHERE id = ?').run('error', knowledgeBaseId)
-    sendProgress(win, {
-      knowledgeBaseId,
-      status: 'error',
-      current: 0,
-      total: 0,
-      message: `向量化失败: ${err.message}`
-    })
+    // EmbeddingUnavailableError 已经在上面 sendProgress 过；其它通用错误兜底一次
+    if (!(err instanceof EmbeddingUnavailableError)) {
+      sendProgress(win, {
+        knowledgeBaseId,
+        status: 'error',
+        current: 0,
+        total: 0,
+        message: `向量化失败: ${err.message}`,
+        errorCode: 'GENERIC',
+      })
+    }
     throw err
   }
 }
@@ -238,6 +303,128 @@ export async function resetAndVectorizeCategory(
     }
   }
 
+  return { processed, failed }
+}
+
+/**
+ * 检测当前生效 embedding 模型与库中已向量化数据是否一致。
+ * 用于 SettingsView 切换源 / 启动时弹出「需重向量化」提示。
+ *
+ * 返回 mismatch=true 的判定标准（任一满足）：
+ *   - 库中存在多种 (model, dim, source) 组合
+ *   - 库中唯一组合的 (model, source) 与当前生效配置不一致
+ *   - 库中维度与当前生效维度不一致
+ *
+ * 当库为空时 mismatch=false（无需提示）。
+ * 当无法解析当前生效配置（如未登录 + 未配置）时 mismatch=false（前置错误由调用方处理）。
+ */
+export async function checkEmbeddingModelMismatch(): Promise<{
+  mismatch: boolean
+  reason: 'empty' | 'multiple_models' | 'model_changed' | 'config_error' | 'consistent'
+  current?: { model: string; source: 'cloud' | 'local' }
+  legacy?: Array<{ model: string; dim: number; source: string; chunk_count: number }>
+  totalChunks: number
+}> {
+  const meta = getGlobalEmbeddingMeta()
+  const totalChunks = meta.reduce((s, m) => s + m.chunk_count, 0)
+
+  if (meta.length === 0) {
+    return { mismatch: false, reason: 'empty', totalChunks: 0 }
+  }
+
+  let current: { model: string; source: 'cloud' | 'local' } | undefined
+  try {
+    const cfg = await getEmbeddingConfig()
+    current = { model: cfg.model, source: cfg.source }
+  } catch {
+    // 当前生效配置不可用：不触发 mismatch（用户可能正在切换中）
+    return {
+      mismatch: false,
+      reason: 'config_error',
+      legacy: meta.map((m) => ({
+        model: m.embedding_model,
+        dim: m.embedding_dim,
+        source: m.embedding_source,
+        chunk_count: m.chunk_count,
+      })),
+      totalChunks,
+    }
+  }
+
+  // 多种模型并存（旧数据 + 部分新数据混合）→ 必须重向量化
+  if (meta.length > 1) {
+    return {
+      mismatch: true,
+      reason: 'multiple_models',
+      current,
+      legacy: meta.map((m) => ({
+        model: m.embedding_model,
+        dim: m.embedding_dim,
+        source: m.embedding_source,
+        chunk_count: m.chunk_count,
+      })),
+      totalChunks,
+    }
+  }
+
+  // 单一组合：与当前生效模型对比
+  const only = meta[0]
+  // 老数据 model/source 为空时一律视为变更（用户从未带 meta 的版本升级而来）
+  const legacyEmpty = !only.embedding_model
+  const modelChanged = !legacyEmpty && only.embedding_model !== current.model
+  const sourceChanged = !legacyEmpty && only.embedding_source !== current.source
+
+  if (legacyEmpty || modelChanged || sourceChanged) {
+    return {
+      mismatch: true,
+      reason: 'model_changed',
+      current,
+      legacy: [
+        {
+          model: only.embedding_model,
+          dim: only.embedding_dim,
+          source: only.embedding_source,
+          chunk_count: only.chunk_count,
+        },
+      ],
+      totalChunks,
+    }
+  }
+
+  return { mismatch: false, reason: 'consistent', current, totalChunks }
+}
+
+/**
+ * 全量重向量化：清空所有 chunks 并将所有文档置 pending，再依次向量化。
+ * 用于模型变更后的恢复入口。
+ */
+export async function reembedAll(
+  win: BrowserWindow | null,
+): Promise<{ processed: number; failed: number }> {
+  const db = getDatabase()
+
+  // 1. 全量清空 chunks（FTS + 主表）
+  const allKbs = db.prepare('SELECT id FROM knowledge_bases').all() as Array<{ id: string }>
+  for (const kb of allKbs) {
+    deleteChunksByKnowledgeBaseId(kb.id)
+    db.prepare('UPDATE knowledge_bases SET status = ?, chunk_count = 0 WHERE id = ?').run('pending', kb.id)
+  }
+
+  // 2. 顺序重新向量化
+  let processed = 0
+  let failed = 0
+  for (const kb of allKbs) {
+    try {
+      await vectorizeDocument(kb.id, win)
+      processed++
+    } catch (err) {
+      failed++
+      // 致命错误（余额不足等）→ 立即终止全量任务，避免无效重试
+      if (err instanceof EmbeddingUnavailableError) {
+        break
+      }
+    }
+  }
   return { processed, failed }
 }
 
