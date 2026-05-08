@@ -93,6 +93,24 @@ function runMigrations(): void {
   if (ftsCount === 0 && chunkCount > 0) {
     db.exec("INSERT INTO vector_chunks_fts (chunk_id, knowledge_base_id, content) SELECT id, knowledge_base_id, content FROM vector_chunks")
   }
+
+  // gallery 系统默认「创作」分类：AI 生图 / 批量生图 / 画布产图自动归档
+  // 固定 id __sys_creation__ 便于服务端 hardcoded 引用，避免查表开销
+  const sysCreationExists = db
+    .prepare("SELECT id FROM gallery_categories WHERE id = ?")
+    .get('__sys_creation__') as any
+  if (!sysCreationExists) {
+    db.prepare(
+      "INSERT INTO gallery_categories (id, name, description, is_system, sort_order, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+    ).run(
+      '__sys_creation__',
+      '创作',
+      'AI 生图 / 批量生图 / 画布产图自动归档',
+      1,
+      -1000,
+      new Date().toISOString()
+    )
+  }
 }
 
 export function closeDatabase(): void {

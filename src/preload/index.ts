@@ -83,6 +83,10 @@ const api = {
     invoke: (channel: string, ...args: unknown[]) =>
       ipcRenderer.invoke(`canvas:${channel}`, ...args)
   },
+  gallery: {
+    invoke: (channel: string, ...args: unknown[]) =>
+      ipcRenderer.invoke(`gallery:${channel}`, ...args)
+  },
   cloud: {
     setToken: (token: string | null) => ipcRenderer.invoke('cloud:setToken', token),
     getToken: () => ipcRenderer.invoke('cloud:getToken'),
@@ -97,6 +101,18 @@ const api = {
       preferred: string
       active: string
       allowCustomEmbedding: boolean
+    }>,
+    // 上传创作到云端灵感广场（主进程读文件字节 + multipart 上传）
+    uploadInspiration: (params: {
+      resultPath: string
+      title: string
+      categoryId: number
+      promptLang: 'cn' | 'en'
+      promptText: string
+    }) => ipcRenderer.invoke('cloudInspiration:upload', params) as Promise<{
+      ok: boolean
+      error?: string
+      data?: any
     }>
   },
   clipboard: {

@@ -10,6 +10,8 @@ interface Window {
   electron: typeof import('@electron-toolkit/preload').electronAPI
   api: {
     db: { query: (channel: string, ...args: unknown[]) => Promise<unknown> }
+    canvas: { invoke: (channel: string, ...args: unknown[]) => Promise<unknown> }
+    gallery: { invoke: (channel: string, ...args: unknown[]) => Promise<unknown> }
     model: { invoke: (channel: string, ...args: unknown[]) => Promise<unknown> }
     persona: { invoke: (channel: string, ...args: unknown[]) => Promise<unknown> }
     knowledge: { invoke: (channel: string, ...args: unknown[]) => Promise<unknown> }

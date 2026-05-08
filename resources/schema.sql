@@ -257,3 +257,32 @@ CREATE TABLE IF NOT EXISTS canvas_edges (
 );
 
 CREATE INDEX IF NOT EXISTS idx_canvas_edges_project ON canvas_edges(project_id);
+
+CREATE TABLE IF NOT EXISTS gallery_categories (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  is_system INTEGER NOT NULL DEFAULT 0,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS gallery_items (
+  id TEXT PRIMARY KEY,
+  category_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  file_path TEXT NOT NULL,
+  file_type TEXT NOT NULL DEFAULT '',
+  file_size INTEGER NOT NULL DEFAULT 0,
+  width INTEGER NOT NULL DEFAULT 0,
+  height INTEGER NOT NULL DEFAULT 0,
+  source TEXT NOT NULL DEFAULT 'file',
+  folder_root TEXT NOT NULL DEFAULT '',
+  folder_recursive INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (category_id) REFERENCES gallery_categories(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_gallery_items_category ON gallery_items(category_id);
+CREATE INDEX IF NOT EXISTS idx_gallery_items_path ON gallery_items(file_path);
+CREATE INDEX IF NOT EXISTS idx_gallery_items_name ON gallery_items(name);

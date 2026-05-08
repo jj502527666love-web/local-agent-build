@@ -209,16 +209,48 @@
               <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 0 0-2.455 2.456Z" /></svg>
               使用优化后的提示词
             </button>
+            <!-- 分享到灵感广场（需要「灵感大王」权限且有本地图片） -->
+            <button
+              v-if="cloudAuth.permissions.inspiration_uploader && detailItem.result_path && detailItem.prompt"
+              @click="openUploadDialog('original')"
+              class="btn-secondary text-xs flex items-center gap-1.5"
+            >
+              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 8.25H7.5a2.25 2.25 0 0 0-2.25 2.25v9a2.25 2.25 0 0 0 2.25 2.25h9a2.25 2.25 0 0 0 2.25-2.25v-9a2.25 2.25 0 0 0-2.25-2.25H15M9 12l3-3m0 0 3 3m-3-3v12" /></svg>
+              分享原提示词到灵感广场
+            </button>
+            <button
+              v-if="cloudAuth.permissions.inspiration_uploader && detailItem.result_path && detailItem.revised_prompt"
+              @click="openUploadDialog('revised')"
+              class="btn-secondary text-xs flex items-center gap-1.5"
+            >
+              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 8.25H7.5a2.25 2.25 0 0 0-2.25 2.25v9a2.25 2.25 0 0 0 2.25 2.25h9a2.25 2.25 0 0 0 2.25-2.25v-9a2.25 2.25 0 0 0-2.25-2.25H15M9 12l3-3m0 0 3 3m-3-3v12" /></svg>
+              分享优化后提示词到灵感广场
+            </button>
           </div>
         </div>
       </div>
     </div>
+
+    <!-- Upload to inspiration plaza dialog -->
+    <UploadInspirationDialog
+      v-model:open="uploadDialogOpen"
+      :result-path="uploadPayload.resultPath"
+      :prompt-text="uploadPayload.promptText"
+      :ref-images-count="uploadPayload.refImagesCount"
+      :default-title="uploadPayload.defaultTitle"
+      @success="showToast"
+      @error="showToast"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
+import { useCloudAuthStore } from '@/stores/cloud-auth'
+import UploadInspirationDialog from '@/components/UploadInspirationDialog.vue'
+
+const cloudAuth = useCloudAuthStore()
 
 interface ImageGeneration {
   id: string
@@ -421,6 +453,11 @@ function openDetail(item: ImageGeneration) {
 
 const copyToast = ref('')
 
+function showToast(msg: string) {
+  copyToast.value = msg
+  setTimeout(() => { copyToast.value = '' }, 2000)
+}
+
 async function copyImage(path: string) {
   try {
     const res = await window.api.clipboard.writeImage(path)
@@ -463,6 +500,32 @@ function useRevisedPrompt() {
   }
   detailItem.value = null
   router.push({ path: '/image-gen', query })
+}
+
+// 分享到灵感广场弹窗：按按下的按钮切换提示词来源。
+// 弹窗基于 props 通信，关闭 / 上传成功后状态自动重置。
+const uploadDialogOpen = ref(false)
+const uploadPayload = ref<{ resultPath: string; promptText: string; refImagesCount: number; defaultTitle: string }>({
+  resultPath: '',
+  promptText: '',
+  refImagesCount: 0,
+  defaultTitle: ''
+})
+
+function openUploadDialog(source: 'original' | 'revised') {
+  if (!detailItem.value) return
+  const item = detailItem.value
+  const text = source === 'revised' ? item.revised_prompt : item.prompt
+  if (!text) return
+  // 默认标题取提示词前 30 字符，让用户可编辑
+  const defaultTitle = text.length > 30 ? text.slice(0, 30) + '...' : text
+  uploadPayload.value = {
+    resultPath: item.result_path,
+    promptText: text,
+    refImagesCount: item.ref_images?.length || 0,
+    defaultTitle
+  }
+  uploadDialogOpen.value = true
 }
 
 function formatDate(dateStr: string): string {

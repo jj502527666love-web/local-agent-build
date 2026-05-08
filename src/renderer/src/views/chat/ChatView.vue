@@ -233,6 +233,10 @@
                           <svg class="w-4 h-4 text-text-tertiary" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" /></svg>
                           文档
                         </button>
+                        <button @click="openGalleryForChat" class="w-full flex items-center gap-2 px-3 py-2 text-xs text-text-secondary hover:bg-surface-1 transition-colors">
+                          <svg class="w-4 h-4 text-text-tertiary" fill="none" viewBox="0 0 24 24" stroke="currentColor"><rect x="3" y="3" width="18" height="18" rx="2" ry="2" stroke-width="2"/><circle cx="8.5" cy="8.5" r="1.5" stroke-width="2"/><polyline points="21 15 16 10 5 21" stroke-width="2"/></svg>
+                          图库
+                        </button>
                       </div>
                     </div>
                     <button @click="showQuickPrompt = true" class="w-9 h-9 flex items-center justify-center text-text-tertiary hover:text-text-secondary rounded-lg hover:bg-surface-2 transition-all" title="快捷提示词">
@@ -383,6 +387,7 @@
       </div>
     </div>
   </div>
+  <GalleryPicker v-model:visible="showGalleryPicker" :multiple="true" @select="onGallerySelectForChat" />
 </template>
 
 <script setup lang="ts">
@@ -398,6 +403,7 @@ import { usePromptSkillStore } from '@/stores/prompt-skills'
 import { usePromptPresetStore } from '@/stores/prompt-presets'
 import { renderMarkdown } from '@/utils/markdown'
 import { stripImageMetadata } from '@shared/strip-image-metadata'
+import GalleryPicker from '@/components/GalleryPicker.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -426,6 +432,7 @@ const toolbarRef = ref<HTMLElement | null>(null)
 const attachRef = ref<HTMLElement | null>(null)
 const pendingAttachments = ref<{ name: string; type: string; data: string }[]>([])
 const showAttachMenu = ref(false)
+const showGalleryPicker = ref(false)
 const showToolbar = ref(false)
 const toolbarDropdown = ref('')
 const tempKbIds = ref<string[]>([])
@@ -757,6 +764,31 @@ async function pickFile(fileType: 'image' | 'document') {
     }
   } catch (err) {
     console.error('Failed to pick file:', err)
+  } finally {
+    loadingAttachment.value = false
+  }
+}
+
+function openGalleryForChat() {
+  showAttachMenu.value = false
+  showGalleryPicker.value = true
+}
+
+async function onGallerySelectForChat(paths: string[]) {
+  if (!paths.length) return
+  loadingAttachment.value = true
+  try {
+    for (const filePath of paths) {
+      if (!canAddAttachment()) break
+      const name = filePath.split(/[\\/]/).pop() || 'image'
+      const ext = name.split('.').pop()?.toLowerCase() || 'png'
+      const raw = await window.api.chat.invoke('readFileBase64', filePath) as string
+      const dataUri = `data:image/${ext === 'jpg' ? 'jpeg' : ext};base64,${raw}`
+      const compressed = await compressImage(dataUri, 1024, 0.8)
+      pendingAttachments.value.push({ name, type: 'image', data: compressed })
+    }
+  } catch (err) {
+    console.error('Failed to load gallery images:', err)
   } finally {
     loadingAttachment.value = false
   }

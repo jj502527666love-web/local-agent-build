@@ -66,6 +66,14 @@
                     <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.5v15m7.5-7.5h-15" /></svg>
                     <span class="text-[9px] mt-0.5">添加</span>
                   </button>
+                  <button
+                    v-if="refImages.length < 10"
+                    @click="showGalleryPicker = true"
+                    class="w-14 h-14 rounded-lg border-2 border-dashed border-surface-4 flex flex-col items-center justify-center text-text-tertiary hover:text-text-secondary hover:border-surface-5 transition-colors"
+                  >
+                    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><rect x="3" y="3" width="18" height="18" rx="2" ry="2" stroke-width="2"/><circle cx="8.5" cy="8.5" r="1.5" stroke-width="2"/><polyline points="21 15 16 10 5 21" stroke-width="2"/></svg>
+                    <span class="text-[9px] mt-0.5">图库</span>
+                  </button>
                 </div>
               </div>
 
@@ -144,8 +152,27 @@
                 </div>
               </div>
 
-              <!-- Concurrency (only when batchCount > 1) -->
-              <div v-if="batchCount > 1">
+              <!-- Consistency toggle (only when model supports it and batchCount > 1) -->
+              <div v-if="showConsistencyToggle" class="flex items-center justify-between">
+                <div>
+                  <label class="text-xs font-medium text-text-secondary">多图一致性</label>
+                  <p class="text-[10px] text-text-tertiary mt-0.5">同批次图片保持风格/角色一致</p>
+                </div>
+                <button
+                  @click="consistency = !consistency"
+                  :class="['relative inline-flex h-5 w-9 flex-shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out cursor-pointer', consistency ? 'bg-primary-600' : 'bg-surface-4']"
+                  role="switch"
+                  :aria-checked="consistency"
+                >
+                  <span :class="['pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out', consistency ? 'translate-x-4' : 'translate-x-0']" />
+                </button>
+              </div>
+              <div v-if="showConsistencyToggle && consistency && batchCount > consistencyMaxN" class="px-2 py-1.5 text-[10px] text-amber-600 bg-amber-50 rounded-lg">
+                当前模型单次最多生成 {{ consistencyMaxN }} 张一致性图片，超出部分将分批发送
+              </div>
+
+              <!-- Concurrency (only when batchCount > 1 and not in consistency mode) -->
+              <div v-if="batchCount > 1 && !consistency">
                 <div class="flex items-center justify-between mb-1.5">
                   <label class="text-xs font-medium text-text-secondary" title="同时发起的请求数。过高可能触发服务商限流">并发数</label>
                   <span class="text-xs font-semibold text-primary-600">{{ concurrency }}</span>
@@ -444,6 +471,7 @@
     @confirm="confirmRegenerate"
     @cancel="cancelRegenerate"
   />
+  <GalleryPicker v-model:visible="showGalleryPicker" :multiple="true" @select="onGalleryRefSelect" />
 </template>
 
 <script setup lang="ts">
@@ -459,10 +487,11 @@ import { recordUsage, warmHintsCache, getHintsSync } from '@/utils/model-usage-h
 import ImageSizePicker from '@/components/ImageSizePicker.vue'
 import ResolutionTierPicker from '@/components/ResolutionTierPicker.vue'
 import QualityPicker from '@/components/QualityPicker.vue'
-import { DEFAULT_TIER_ID, DEFAULT_QUALITY_ID, hasQualityOptions } from '@shared/image-size'
+import { DEFAULT_TIER_ID, DEFAULT_QUALITY_ID, hasQualityOptions, supportsConsistency, getMaxConsistencyN } from '@shared/image-size'
 import { stripImageMetadata } from '@shared/strip-image-metadata'
 import ErrorDetailDialog from '@/components/ErrorDetailDialog.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
+import GalleryPicker from '@/components/GalleryPicker.vue'
 import type { ImageGeneration } from '@/stores/image-gen'
 
 const route = useRoute()
@@ -531,6 +560,11 @@ const selectedSize = ref('1:1')
 const selectedTier = ref<string>(DEFAULT_TIER_ID)
 const batchCount = ref(1)
 const concurrency = ref(2)
+const consistency = ref(false)
+
+const modelSupportsConsistency = computed(() => supportsConsistency(selectedModelId.value))
+const consistencyMaxN = computed(() => getMaxConsistencyN(selectedModelId.value))
+const showConsistencyToggle = computed(() => modelSupportsConsistency.value && batchCount.value > 1)
 const viewMode = ref<'grid' | 'list'>('grid')
 const previewImage = ref<string | null>(null)
 const optimizing = ref(false)
@@ -749,6 +783,24 @@ async function pickRefImage() {
   }
 }
 
+const showGalleryPicker = ref(false)
+
+async function onGalleryRefSelect(paths: string[]) {
+  if (!paths.length) return
+  try {
+    for (const filePath of paths) {
+      if (refImages.value.length >= 10) break
+      const ext = filePath.split('.').pop()?.toLowerCase() || 'png'
+      const raw = await (window as any).api.chat.invoke('readFileBase64', filePath)
+      const dataUri = `data:image/${ext === 'jpg' ? 'jpeg' : ext};base64,${raw}`
+      const compressed = await compressImage(dataUri, 1024, 0.8)
+      refImages.value.push(compressed)
+    }
+  } catch (e) {
+    console.error('Failed to load gallery ref images:', e)
+  }
+}
+
 function doGenerate() {
   if (!canGenerate.value) return
   store.enqueue({
@@ -760,7 +812,8 @@ function doGenerate() {
     tierId: selectedTier.value,
     quality: hasRefImages.value ? DEFAULT_QUALITY_ID : selectedQuality.value,
     batchCount: batchCount.value,
-    concurrency: concurrency.value
+    concurrency: consistency.value ? 1 : concurrency.value,
+    consistency: consistency.value && showConsistencyToggle.value
   })
   recordUsage('image', selectedProviderId.value, selectedModelId.value)
   hintsTick.value++
@@ -812,6 +865,7 @@ watch(selectedModelId, (v) => {
     window.api.settings.invoke('set', 'imagegen_provider_id', selectedProviderId.value)
     window.api.settings.invoke('set', 'imagegen_model_id', v)
   }
+  if (!supportsConsistency(v)) consistency.value = false
 })
 watch(optimizeModelId, (v) => {
   if (v) {

@@ -22,7 +22,7 @@
             :disabled="!currentProviderModels.length"
           >
             <option value="">-- 选择模型 --</option>
-            <optgroup v-if="modelGroups.recommended.length" label="推荐（视觉）">
+            <optgroup v-if="modelGroups.recommended.length" label="推荐">
               <option v-for="m in modelGroups.recommended" :key="m" :value="m">{{ m }}</option>
             </optgroup>
           </select>
@@ -96,14 +96,24 @@
 
         <!-- Upload -->
         <div>
-          <button
-            @click="pickImages"
-            :disabled="tasks.length >= MAX_TASKS"
-            class="w-full px-3 py-2.5 text-xs font-medium border-2 border-dashed border-surface-4 rounded-lg text-text-tertiary hover:text-text-secondary hover:border-surface-5 transition-colors flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.5v15m7.5-7.5h-15" /></svg>
-            添加图片
-          </button>
+          <div class="flex gap-2">
+            <button
+              @click="pickImages"
+              :disabled="tasks.length >= MAX_TASKS"
+              class="flex-1 px-3 py-2.5 text-xs font-medium border-2 border-dashed border-surface-4 rounded-lg text-text-tertiary hover:text-text-secondary hover:border-surface-5 transition-colors flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.5v15m7.5-7.5h-15" /></svg>
+              添加图片
+            </button>
+            <button
+              @click="showGalleryPicker = true"
+              :disabled="tasks.length >= MAX_TASKS"
+              class="flex-1 px-3 py-2.5 text-xs font-medium border-2 border-dashed border-surface-4 rounded-lg text-text-tertiary hover:text-text-secondary hover:border-surface-5 transition-colors flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><rect x="3" y="3" width="18" height="18" rx="2" ry="2" stroke-width="2"/><circle cx="8.5" cy="8.5" r="1.5" stroke-width="2"/><polyline points="21 15 16 10 5 21" stroke-width="2"/></svg>
+              图库选图
+            </button>
+          </div>
           <p class="text-[10px] text-text-tertiary mt-1 text-center">{{ tasks.length }} / {{ MAX_TASKS }}</p>
         </div>
 
@@ -241,6 +251,7 @@
         <img :src="previewImage" class="max-w-full max-h-[90vh] object-contain" />
       </div>
     </div>
+    <GalleryPicker v-model:visible="showGalleryPicker" :multiple="true" @select="onGalleryPickImages" />
   </div>
 </template>
 
@@ -251,6 +262,7 @@ import { useModelStore } from '@/stores/models'
 import { groupAndSort } from '@/utils/model-caps'
 import { recordUsage, warmHintsCache, getHintsSync } from '@/utils/model-usage-hints'
 import { stripImageMetadata } from '@shared/strip-image-metadata'
+import GalleryPicker from '@/components/GalleryPicker.vue'
 
 interface Task {
   id: string
@@ -412,6 +424,36 @@ async function pickImages() {
   } catch (e) {
     console.error('Failed to pick images:', e)
     showToast('选择图片失败')
+  }
+}
+
+const showGalleryPicker = ref(false)
+
+async function onGalleryPickImages(paths: string[]) {
+  if (!paths.length) return
+  try {
+    for (const filePath of paths) {
+      if (tasks.value.length >= MAX_TASKS) {
+        showToast(`最多支持 ${MAX_TASKS} 张图片`)
+        break
+      }
+      const ext = filePath.split('.').pop()?.toLowerCase() || 'png'
+      const raw = await (window as any).api.chat.invoke('readFileBase64', filePath)
+      const dataUri = `data:image/${ext === 'jpg' ? 'jpeg' : ext};base64,${raw}`
+      const compressed = await compressImage(dataUri, 1280, 0.85)
+      const name = filePath.split(/[\\/]/).pop() || `image-${idCounter + 1}`
+      tasks.value.push(reactive({
+        id: `i2p-${++idCounter}`,
+        image: compressed,
+        name,
+        status: 'pending' as const,
+        result: '',
+        error: ''
+      }))
+    }
+  } catch (e) {
+    console.error('Failed to load gallery images:', e)
+    showToast('从图库加载图片失败')
   }
 }
 

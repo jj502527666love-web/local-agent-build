@@ -12,9 +12,12 @@
       <div v-if="imagePreview" class="mb-2">
         <img :src="imagePreview" class="w-full rounded-lg border border-surface-3" />
       </div>
-      <div v-else class="mb-2 p-4 border-2 border-dashed border-surface-3 rounded-lg text-center transition-colors" :class="data.locked ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer hover:border-emerald-400'" @click="!data.locked && pickImage()" @dragover.prevent @drop.prevent="!data.locked && onDrop($event)">
-        <svg class="w-6 h-6 mx-auto mb-1.5 text-text-disabled" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" /></svg>
-        <p class="text-[10px] text-text-tertiary">点击或拖入图片</p>
+      <div v-else class="mb-2 space-y-1.5">
+        <div class="p-4 border-2 border-dashed border-surface-3 rounded-lg text-center transition-colors" :class="data.locked ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer hover:border-emerald-400'" @click="!data.locked && pickImage()" @dragover.prevent @drop.prevent="!data.locked && onDrop($event)">
+          <svg class="w-6 h-6 mx-auto mb-1.5 text-text-disabled" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" /></svg>
+          <p class="text-[10px] text-text-tertiary">点击或拖入图片</p>
+        </div>
+        <button v-if="!data.locked" @click="showGalleryPicker = true" class="w-full py-1.5 text-[10px] text-text-tertiary hover:text-primary-600 border border-surface-3 rounded-lg hover:bg-surface-2 transition-colors">从图库选择</button>
       </div>
       <button v-if="imagePreview" @click="clearImage" :disabled="data.locked" class="w-full py-1 text-[10px] text-text-tertiary hover:text-red-500 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">清除图片</button>
     </div>
@@ -26,12 +29,14 @@
       @click="(e: MouseEvent) => onHandleClick?.(e, data.nodeId, 'output', 'image')"
     />
   </div>
+  <GalleryPicker v-model:visible="showGalleryPicker" @select="onGallerySelect" />
 </template>
 
 <script setup lang="ts">
-import { computed, inject } from 'vue'
+import { ref, computed, inject } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
 import { useCanvasStore } from '@/stores/canvas'
+import GalleryPicker from '@/components/GalleryPicker.vue'
 
 type HandleClickHandler = (e: MouseEvent, nodeId: string, handleId: string, dataType: 'text' | 'image') => void
 
@@ -66,6 +71,21 @@ async function persistImage(dataUri: string) {
       data: { ...props.data, image_data: dataUri, image_path: '' }
     })
   }
+}
+
+const showGalleryPicker = ref(false)
+
+async function onGallerySelect(paths: string[]) {
+  if (!paths.length) return
+  const filePath = paths[0]
+  const b64 = await api().chat.invoke('readFileBase64', filePath)
+  const ext = (filePath.split('.').pop() || 'png').toLowerCase()
+  const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg'
+    : ext === 'webp' ? 'image/webp'
+    : ext === 'gif' ? 'image/gif'
+    : 'image/png'
+  const dataUri = `data:${mime};base64,${b64}`
+  await persistImage(dataUri)
 }
 
 async function pickImage() {

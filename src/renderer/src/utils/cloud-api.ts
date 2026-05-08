@@ -102,6 +102,8 @@ export const cloudAuth = {
 // 公开端点（无需登录）
 export const cloudPublic = {
   siteConfig: () => request('GET', '/public/site-config'),
+  // 灵感广场分类（桌面端上传时拉取，作为分类下拉数据源）
+  listInspirationCategories: () => request('GET', '/public/inspiration/categories'),
 }
 
 export const cloudClient = {

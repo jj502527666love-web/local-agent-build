@@ -100,13 +100,22 @@
 
         <!-- Add Reference Images -->
         <div>
-          <button
-            @click="pickRefImages"
-            class="w-full px-3 py-2.5 text-xs font-medium border-2 border-dashed border-surface-4 rounded-lg text-text-tertiary hover:text-text-secondary hover:border-surface-5 transition-colors flex items-center justify-center gap-2"
-          >
-            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.5v15m7.5-7.5h-15" /></svg>
-            添加参考图
-          </button>
+          <div class="flex gap-2">
+            <button
+              @click="pickRefImages"
+              class="flex-1 px-3 py-2.5 text-xs font-medium border-2 border-dashed border-surface-4 rounded-lg text-text-tertiary hover:text-text-secondary hover:border-surface-5 transition-colors flex items-center justify-center gap-2"
+            >
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.5v15m7.5-7.5h-15" /></svg>
+              添加参考图
+            </button>
+            <button
+              @click="showGalleryPicker = true"
+              class="flex-1 px-3 py-2.5 text-xs font-medium border-2 border-dashed border-surface-4 rounded-lg text-text-tertiary hover:text-text-secondary hover:border-surface-5 transition-colors flex items-center justify-center gap-2"
+            >
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><rect x="3" y="3" width="18" height="18" rx="2" ry="2" stroke-width="2"/><circle cx="8.5" cy="8.5" r="1.5" stroke-width="2"/><polyline points="21 15 16 10 5 21" stroke-width="2"/></svg>
+              图库选图
+            </button>
+          </div>
         </div>
 
         <!-- Concurrency -->
@@ -311,6 +320,7 @@
       @confirm="confirmRetry"
       @cancel="cancelRetry"
     />
+    <GalleryPicker v-model:visible="showGalleryPicker" :multiple="true" @select="onGalleryRefSelect" />
   </div>
 </template>
 
@@ -329,6 +339,7 @@ import { DEFAULT_TIER_ID, DEFAULT_QUALITY_ID } from '@shared/image-size'
 import { stripImageMetadata } from '@shared/strip-image-metadata'
 import ErrorDetailDialog from '@/components/ErrorDetailDialog.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
+import GalleryPicker from '@/components/GalleryPicker.vue'
 import { translateError } from '@/utils/error-message'
 
 interface BatchTask {
@@ -494,6 +505,33 @@ async function pickRefImages() {
     }
   } catch (e) {
     console.error('Failed to pick ref images:', e)
+  }
+}
+
+const showGalleryPicker = ref(false)
+
+async function onGalleryRefSelect(paths: string[]) {
+  if (!paths.length) return
+  try {
+    for (const filePath of paths) {
+      const ext = filePath.split('.').pop()?.toLowerCase() || 'png'
+      const raw = await (window as any).api.chat.invoke('readFileBase64', filePath)
+      const dataUri = `data:image/${ext === 'jpg' ? 'jpeg' : ext};base64,${raw}`
+      const compressed = await compressImage(dataUri, 1024, 0.8)
+      tasks.value.push(reactive({
+        id: `batch-${++taskIdCounter}`,
+        refImage: compressed,
+        customPrompt: '',
+        customSize: '',
+        status: 'pending' as const,
+        error: '',
+        resultPath: null,
+        genId: null,
+        expanded: false
+      }))
+    }
+  } catch (e) {
+    console.error('Failed to load gallery ref images:', e)
   }
 }
 

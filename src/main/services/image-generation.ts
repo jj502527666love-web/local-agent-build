@@ -8,9 +8,10 @@ import { join } from 'path'
 import { mkdirSync, writeFileSync } from 'fs'
 import { BrowserWindow } from 'electron'
 import { recordUsage } from './usage-stats'
-import { resolveSizeToPixels } from '@shared/image-size'
+import { resolveSizeToPixels, getMaxConsistencyN } from '@shared/image-size'
 import { stripBase64 } from '@shared/strip-image-metadata'
 import { normalizeApiBase } from './api-base-normalize'
+import { addToCreation, removeByRelativePath } from './gallery'
 
 export interface ImageGeneration {
   id: string
@@ -43,6 +44,8 @@ export interface GenerateImageOptions {
   batchCount?: number
   /** Parallel workers within a single batch. 1 = serial (legacy), max 10. */
   concurrency?: number
+  /** 多图一致性：单次 API 请求生成 n 张风格/角色一致的图片 */
+  consistency?: boolean
 }
 
 /** 解析 UI 传入的 size（预设 / 比例 / 像素）为上游 API 接受的 "WxH" 像素串。
@@ -138,6 +141,13 @@ export function clearFailedGenerations(): { deleted: number } {
 
 export function deleteGeneration(id: string): boolean {
   const db = getDatabase()
+  // 联动删除：先清理图库中对应的图片记录（按相对路径）
+  try {
+    const row = db.prepare('SELECT result_path FROM image_generations WHERE id = ?').get(id) as { result_path?: string } | undefined
+    if (row?.result_path) {
+      try { removeByRelativePath(row.result_path) } catch (e) { console.error('Failed to remove from gallery on delete:', e) }
+    }
+  } catch {}
   const result = db.prepare('DELETE FROM image_generations WHERE id = ?').run(id)
   return result.changes > 0
 }
@@ -145,6 +155,16 @@ export function deleteGeneration(id: string): boolean {
 export function deleteGenerations(ids: string[]): number {
   if (!ids.length) return 0
   const db = getDatabase()
+  // 联动删除：先收集所有 result_path 并清理图库
+  try {
+    const placeholders = ids.map(() => '?').join(',')
+    const rows = db.prepare(`SELECT result_path FROM image_generations WHERE id IN (${placeholders})`).all(...ids) as { result_path?: string }[]
+    for (const row of rows) {
+      if (row.result_path) {
+        try { removeByRelativePath(row.result_path) } catch (e) { console.error('Failed to remove from gallery on batch delete:', e) }
+      }
+    }
+  } catch {}
   const placeholders = ids.map(() => '?').join(',')
   const result = db.prepare(`DELETE FROM image_generations WHERE id IN (${placeholders})`).run(...ids)
   return result.changes
@@ -162,6 +182,8 @@ function toRelativePath(absolutePath: string): string {
   return absolutePath.replace(/\\/g, '/').replace(dataDir.replace(/\\/g, '/'), '').replace(/^\//, '')
 }
 
+type ImageAPIResult = { b64_json?: string; url?: string; revised_prompt?: string }
+
 async function callImageAPI(
   providerId: string,
   modelId: string,
@@ -170,10 +192,11 @@ async function callImageAPI(
   quality: string,
   refImages?: string[],
   mask?: string,
-  tierId?: string
-): Promise<{ b64_json?: string; url?: string; revised_prompt?: string }> {
+  tierId?: string,
+  n: number = 1
+): Promise<ImageAPIResult[]> {
   if (providerId.startsWith('cloud:')) {
-    return callCloudImageAPI(modelId, prompt, size, quality, refImages, mask, tierId)
+    return callCloudImageAPI(modelId, prompt, size, quality, refImages, mask, tierId, n)
   }
 
   const provider = getModelProvider(providerId)
@@ -198,7 +221,7 @@ async function callImageAPI(
     const form = new FormData()
     form.append('model', modelId)
     form.append('prompt', prompt)
-    form.append('n', '1')
+    form.append('n', String(n))
     form.append('size', resolvedPx)
     form.append('quality', quality)
     form.append('response_format', 'b64_json')
@@ -233,7 +256,7 @@ async function callImageAPI(
     const body: any = {
       model: modelId,
       prompt,
-      n: 1,
+      n,
       size: resolvedPx,
       quality,
       response_format: 'b64_json'
@@ -262,14 +285,14 @@ async function callImageAPI(
     } catch {}
   }
 
-  const result = data.data?.[0]
-  if (!result) throw new Error('No image data in response')
+  const items = data.data as any[]
+  if (!items || items.length === 0) throw new Error('No image data in response')
 
-  return {
-    b64_json: result.b64_json,
-    url: result.url,
-    revised_prompt: result.revised_prompt
-  }
+  return items.map((item: any) => ({
+    b64_json: item.b64_json,
+    url: item.url,
+    revised_prompt: item.revised_prompt
+  }))
 }
 
 async function callCloudImageAPI(
@@ -279,8 +302,9 @@ async function callCloudImageAPI(
   quality: string,
   refImages?: string[],
   mask?: string,
-  tierId?: string
-): Promise<{ b64_json?: string; url?: string; revised_prompt?: string }> {
+  tierId?: string,
+  n: number = 1
+): Promise<ImageAPIResult[]> {
   const token = getCloudToken()
   if (!token) throw new Error('Cloud login required')
   const gatewayUrl = getCloudGatewayUrl()
@@ -294,7 +318,7 @@ async function callCloudImageAPI(
   const body: any = {
     model: modelId,
     prompt,
-    n: 1,
+    n,
     size: resolvePixels(size, modelId, tierId),
     quality,
     response_format: 'b64_json'
@@ -332,9 +356,9 @@ async function callCloudImageAPI(
   const taskId = submitData.task_id
   if (!taskId) {
     // Direct response (no async)
-    const result = submitData.data?.[0]
-    if (!result) throw new Error('No image data in response')
-    return { b64_json: result.b64_json, url: result.url, revised_prompt: result.revised_prompt }
+    const items = submitData.data as any[]
+    if (!items || items.length === 0) throw new Error('No image data in response')
+    return items.map((item: any) => ({ b64_json: item.b64_json, url: item.url, revised_prompt: item.revised_prompt }))
   }
 
   // Step 2: Poll for result
@@ -358,9 +382,9 @@ async function callCloudImageAPI(
     const statusData = await statusRes.json()
 
     if (statusData.status === 'completed') {
-      const result = statusData.result?.data?.[0]
-      if (!result) throw new Error('No image data in response')
-      return { b64_json: result.b64_json, url: result.url, revised_prompt: result.revised_prompt }
+      const items = (statusData.result?.data || statusData.data) as any[]
+      if (!items || items.length === 0) throw new Error('No image data in response')
+      return items.map((item: any) => ({ b64_json: item.b64_json, url: item.url, revised_prompt: item.revised_prompt }))
     }
 
     if (statusData.status === 'failed') {
@@ -463,9 +487,13 @@ export async function generateImages(
   window?: BrowserWindow | null
 ): Promise<ImageGeneration[]> {
   const sessionId = options.sessionId || getOrCreateDefaultSession()
-  const batchCount = Math.min(Math.max(options.batchCount || 1, 1), 10)
+  const rawBatchCount = Math.min(Math.max(options.batchCount || 1, 1), 10)
   const quality = options.quality || 'auto'
   const results: ImageGeneration[] = []
+  const maxN = getMaxConsistencyN(options.modelId)
+  const useConsistency = !!(options.consistency && rawBatchCount > 1 && maxN > 1)
+  // In consistency mode, clamp to model's maxN (single API call)
+  const batchCount = useConsistency ? Math.min(rawBatchCount, maxN) : rawBatchCount
 
   // Pre-create all generation records as pending
   const genIds: string[] = []
@@ -499,27 +527,25 @@ export async function generateImages(
     })
   }
 
-  const concurrency = Math.min(Math.max(options.concurrency || 1, 1), 10)
-  const ordered: (ImageGeneration | null)[] = new Array(batchCount).fill(null)
-  let cursor = 0
-  let completedCount = 0
-
-  async function runOne(i: number): Promise<void> {
-    const genId = genIds[i]
-    try {
-      updateGenerationStatus(genId, 'generating', {})
+  if (useConsistency) {
+    // -- Consistency mode: single API call with n = batchCount --
+    // Mark all as generating
+    for (let i = 0; i < batchCount; i++) {
+      updateGenerationStatus(genIds[i], 'generating', {})
       if (window) {
         window.webContents.send('imageGen:progress', {
           type: 'generating',
           index: i,
           total: batchCount,
-          completed: completedCount,
-          genId,
+          completed: 0,
+          genId: genIds[i],
           sessionId
         })
       }
+    }
 
-      const apiResult = await callImageAPI(
+    try {
+      const apiResults = await callImageAPI(
         options.modelProviderId,
         options.modelId,
         options.prompt,
@@ -527,76 +553,189 @@ export async function generateImages(
         quality,
         options.refImages,
         options.mask,
-        options.tierId
+        options.tierId,
+        batchCount
       )
 
-      let resultPath = ''
-      let resultUrl = ''
-      if (apiResult.b64_json) {
-        resultPath = saveImageToFile(sessionId, genId, apiResult.b64_json)
-      } else if (apiResult.url) {
-        resultUrl = apiResult.url
-        try {
-          resultPath = await downloadImageToFile(sessionId, genId, apiResult.url)
-        } catch (e) {
-          console.error('Failed to download image, keeping URL only:', e)
+      // Save each result to its corresponding genId
+      for (let i = 0; i < batchCount; i++) {
+        const genId = genIds[i]
+        const apiResult = apiResults[i]
+        if (!apiResult) {
+          updateGenerationStatus(genId, 'error', { error: 'No image data for index ' + i })
+          if (window) {
+            window.webContents.send('imageGen:progress', {
+              type: 'error', index: i, total: batchCount, completed: i + 1,
+              genId, error: 'No image data for index ' + i, sessionId
+            })
+          }
+          continue
+        }
+
+        let resultPath = ''
+        let resultUrl = ''
+        if (apiResult.b64_json) {
+          resultPath = saveImageToFile(sessionId, genId, apiResult.b64_json)
+        } else if (apiResult.url) {
+          resultUrl = apiResult.url
+          try {
+            resultPath = await downloadImageToFile(sessionId, genId, apiResult.url)
+          } catch (e) {
+            console.error('Failed to download image, keeping URL only:', e)
+          }
+        }
+
+        updateGenerationStatus(genId, 'done', {
+          result_path: resultPath,
+          result_url: resultUrl,
+          revised_prompt: apiResult.revised_prompt || ''
+        })
+
+        if (resultPath) {
+          try { addToCreation(resultPath) } catch (e) { console.error('Failed to add to gallery creation:', e) }
+        }
+
+        const gen = getGeneration(genId)!
+        results.push(gen)
+
+        if (window) {
+          window.webContents.send('imageGen:progress', {
+            type: 'completed',
+            index: i,
+            total: batchCount,
+            completed: i + 1,
+            genId,
+            generation: gen,
+            sessionId
+          })
         }
       }
-
-      updateGenerationStatus(genId, 'done', {
-        result_path: resultPath,
-        result_url: resultUrl,
-        revised_prompt: apiResult.revised_prompt || ''
-      })
-
-      const gen = getGeneration(genId)!
-      ordered[i] = gen
-      completedCount++
-
-      if (window) {
-        window.webContents.send('imageGen:progress', {
-          type: 'completed',
-          index: i,
-          total: batchCount,
-          completed: completedCount,
-          genId,
-          generation: gen,
-          sessionId
-        })
-      }
     } catch (e: any) {
+      // Consistency mode: if the single API call fails, mark all as error
       const errorMsg = e?.message || 'Unknown error'
-      updateGenerationStatus(genId, 'error', { error: errorMsg })
-
-      const gen = getGeneration(genId)!
-      ordered[i] = gen
-      completedCount++
-
-      if (window) {
-        window.webContents.send('imageGen:progress', {
-          type: 'error',
-          index: i,
-          total: batchCount,
-          completed: completedCount,
-          genId,
-          error: errorMsg,
-          sessionId
-        })
+      for (let i = 0; i < batchCount; i++) {
+        updateGenerationStatus(genIds[i], 'error', { error: errorMsg })
+        if (window) {
+          window.webContents.send('imageGen:progress', {
+            type: 'error',
+            index: i,
+            total: batchCount,
+            completed: i + 1,
+            genId: genIds[i],
+            error: errorMsg,
+            sessionId
+          })
+        }
       }
     }
-  }
+  } else {
+    // -- Normal mode: independent API calls (n=1 each) --
+    const concurrency = Math.min(Math.max(options.concurrency || 1, 1), 10)
+    const ordered: (ImageGeneration | null)[] = new Array(batchCount).fill(null)
+    let cursor = 0
+    let completedCount = 0
 
-  async function worker(): Promise<void> {
-    while (true) {
-      const i = cursor++
-      if (i >= batchCount) return
-      await runOne(i)
+    async function runOne(i: number): Promise<void> {
+      const genId = genIds[i]
+      try {
+        updateGenerationStatus(genId, 'generating', {})
+        if (window) {
+          window.webContents.send('imageGen:progress', {
+            type: 'generating',
+            index: i,
+            total: batchCount,
+            completed: completedCount,
+            genId,
+            sessionId
+          })
+        }
+
+        const apiResults = await callImageAPI(
+          options.modelProviderId,
+          options.modelId,
+          options.prompt,
+          options.size,
+          quality,
+          options.refImages,
+          options.mask,
+          options.tierId,
+          1
+        )
+        const apiResult = apiResults[0]
+        if (!apiResult) throw new Error('No image data in response')
+
+        let resultPath = ''
+        let resultUrl = ''
+        if (apiResult.b64_json) {
+          resultPath = saveImageToFile(sessionId, genId, apiResult.b64_json)
+        } else if (apiResult.url) {
+          resultUrl = apiResult.url
+          try {
+            resultPath = await downloadImageToFile(sessionId, genId, apiResult.url)
+          } catch (e) {
+            console.error('Failed to download image, keeping URL only:', e)
+          }
+        }
+
+        updateGenerationStatus(genId, 'done', {
+          result_path: resultPath,
+          result_url: resultUrl,
+          revised_prompt: apiResult.revised_prompt || ''
+        })
+
+        if (resultPath) {
+          try { addToCreation(resultPath) } catch (e) { console.error('Failed to add to gallery creation:', e) }
+        }
+
+        const gen = getGeneration(genId)!
+        ordered[i] = gen
+        completedCount++
+
+        if (window) {
+          window.webContents.send('imageGen:progress', {
+            type: 'completed',
+            index: i,
+            total: batchCount,
+            completed: completedCount,
+            genId,
+            generation: gen,
+            sessionId
+          })
+        }
+      } catch (e: any) {
+        const errorMsg = e?.message || 'Unknown error'
+        updateGenerationStatus(genId, 'error', { error: errorMsg })
+
+        const gen = getGeneration(genId)!
+        ordered[i] = gen
+        completedCount++
+
+        if (window) {
+          window.webContents.send('imageGen:progress', {
+            type: 'error',
+            index: i,
+            total: batchCount,
+            completed: completedCount,
+            genId,
+            error: errorMsg,
+            sessionId
+          })
+        }
+      }
     }
-  }
 
-  const workers = Array.from({ length: Math.min(concurrency, batchCount) }, () => worker())
-  await Promise.all(workers)
-  for (const g of ordered) if (g) results.push(g)
+    async function worker(): Promise<void> {
+      while (true) {
+        const i = cursor++
+        if (i >= batchCount) return
+        await runOne(i)
+      }
+    }
+
+    const workers = Array.from({ length: Math.min(concurrency, batchCount) }, () => worker())
+    await Promise.all(workers)
+    for (const g of ordered) if (g) results.push(g)
+  }
 
   // Send done
   if (window) {

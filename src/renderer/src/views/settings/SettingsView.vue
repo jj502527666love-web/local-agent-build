@@ -293,7 +293,17 @@
           </div>
           <div class="card p-5">
             <div class="flex items-center gap-3">
-              <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center">
+              <img
+                v-if="appIconUrl"
+                :src="appIconUrl"
+                class="w-10 h-10 rounded-xl object-cover flex-shrink-0"
+                alt=""
+                draggable="false"
+              />
+              <div
+                v-else
+                class="w-10 h-10 rounded-xl bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center"
+              >
                 <span class="text-white text-xs font-bold leading-none tracking-tight">{{ appAbbr }}</span>
               </div>
               <div class="flex-1">
@@ -333,7 +343,7 @@ import { useThemeStore } from '@/stores/theme'
 import type { ThemeMode } from '@/stores/theme'
 import { useCloudAuthStore } from '@/stores/cloud-auth'
 import { useSiteConfigStore } from '@/stores/site-config'
-import { appName, appAbbr } from '@/utils/branding'
+import { appName, appAbbr, appIconUrl } from '@/utils/branding'
 import { normalizeApiBase } from '@shared/api-base-normalize'
 import ChangelogDialog from './ChangelogDialog.vue'
 

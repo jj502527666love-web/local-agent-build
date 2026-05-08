@@ -1,7 +1,15 @@
 // 从 preload 暴露的 runtimeConfig 派生品牌信息（生产由 inject 注入，dev fallback 默认）
-const _runtimeAppName = (window as unknown as { runtimeConfig?: { appName?: string } }).runtimeConfig?.appName
+const _runtime = (window as unknown as {
+  runtimeConfig?: { appName?: string; iconDataUrl?: string }
+}).runtimeConfig
 
-export const appName = _runtimeAppName || 'LocalAgent'
+export const appName = _runtime?.appName || 'LocalAgent'
+
+/**
+ * 应用图标 data URL（PNG → base64），由 main 进程启动时同步读 resources/icon.png 注入。
+ * 空字符串表示未读到，渲染端应回退到 appAbbr 文字缩写。
+ */
+export const appIconUrl = _runtime?.iconDataUrl || ''
 
 function deriveAbbr(name: string): string {
   const trimmed = name.trim()

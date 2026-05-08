@@ -107,6 +107,12 @@ export const routes: RouteRecordRaw[] = [
         meta: { title: '流式画布编辑' }
       },
       {
+        path: 'gallery',
+        name: 'gallery',
+        component: () => import('@/views/gallery/GalleryView.vue'),
+        meta: { title: '本地图库' }
+      },
+      {
         path: 'prompts',
         name: 'prompts',
         component: () => import('@/views/prompts/PromptManageView.vue'),

@@ -23,6 +23,7 @@ import * as inspirationService from '../services/inspiration'
 import * as promptPresetService from '../services/prompt-preset'
 import * as backupService from '../services/backup'
 import * as canvasService from '../services/canvas'
+import * as galleryService from '../services/gallery'
 import {
   setCloudToken,
   getCloudToken,
@@ -35,6 +36,7 @@ import {
   getAllowCustomEmbedding,
 } from '../services/cloud-token'
 import { getDeviceId } from '../services/device-id'
+import { uploadInspiration as uploadInspirationToCloud } from '../services/cloud-inspiration'
 
 export function registerIpcHandlers(): void {
   // === Model Providers ===
@@ -489,6 +491,12 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('imageGen:fetchOnlineInspirations', (_, options?) =>
     inspirationService.fetchOnlineInspirations(options)
   )
+  ipcMain.handle('imageGen:getInspirationConfig', () =>
+    inspirationService.getInspirationConfig()
+  )
+  ipcMain.handle('imageGen:getInspirationCategories', () =>
+    inspirationService.getInspirationCategories()
+  )
 
   // === Prompt Presets ===
   ipcMain.handle('promptPreset:listCategories', (_, type?: string) =>
@@ -624,6 +632,42 @@ export function registerIpcHandlers(): void {
     canvasService.deleteNodeImage(projectId, nodeId)
   )
 
+  // === Gallery ===
+  ipcMain.handle('gallery:listCategories', () => galleryService.listCategories())
+  ipcMain.handle('gallery:getCategory', (_, id: string) => galleryService.getCategory(id))
+  ipcMain.handle('gallery:createCategory', (_, data: { name: string; description?: string }) =>
+    galleryService.createCategory(data)
+  )
+  ipcMain.handle('gallery:updateCategory', (_, id: string, data: { name?: string; description?: string }) =>
+    galleryService.updateCategory(id, data)
+  )
+  ipcMain.handle('gallery:deleteCategory', (_, id: string) => galleryService.deleteCategory(id))
+  ipcMain.handle('gallery:getCategoryItemCount', (_, categoryId: string) =>
+    galleryService.getCategoryItemCount(categoryId)
+  )
+  ipcMain.handle(
+    'gallery:listItemsPaged',
+    (_, categoryId: string | null, search: string, page: number, pageSize: number) =>
+      galleryService.listItemsPaged(categoryId, search, page, pageSize)
+  )
+  ipcMain.handle('gallery:getItem', (_, id: string) => galleryService.getItem(id))
+  ipcMain.handle('gallery:addFile', (_, categoryId: string, filePath: string) =>
+    galleryService.addFile(categoryId, filePath)
+  )
+  ipcMain.handle(
+    'gallery:addFolder',
+    (_, categoryId: string, folderPath: string, recursive: boolean) =>
+      galleryService.addFolder(categoryId, folderPath, recursive)
+  )
+  ipcMain.handle('gallery:removeItems', (_, ids: string[]) => galleryService.removeItems(ids))
+  ipcMain.handle('gallery:removeByFilePath', (_, filePath: string) =>
+    galleryService.removeByFilePath(filePath)
+  )
+  ipcMain.handle('gallery:sync', (_, categoryId?: string) => galleryService.sync(categoryId))
+  ipcMain.handle('gallery:addToCreation', (_, filePath: string) =>
+    galleryService.addToCreation(filePath)
+  )
+
   // === Cloud Token ===
   ipcMain.handle('cloud:setToken', (_, token: string | null) => setCloudToken(token))
   ipcMain.handle('cloud:getToken', () => getCloudToken())
@@ -643,4 +687,14 @@ export function registerIpcHandlers(): void {
     active: getActiveCloudEmbeddingModelId(),
     allowCustomEmbedding: getAllowCustomEmbedding(),
   }))
+
+  // === Cloud Inspiration（桌面端用户上传创作到灵感广场） ===
+  // 渲染端传入的 resultPath 由主进程拼接数据目录并读字节，避免渲染端直读文件系统
+  ipcMain.handle('cloudInspiration:upload', (_, params: {
+    resultPath: string
+    title: string
+    categoryId: number
+    promptLang: 'cn' | 'en'
+    promptText: string
+  }) => uploadInspirationToCloud(params))
 }

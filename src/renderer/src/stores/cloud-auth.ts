@@ -29,6 +29,8 @@ export interface CloudPermissions {
   allow_image_gen: boolean
   allow_knowledge_base: boolean
   max_context_messages: number
+  // 「灵感大王」：开启后桌面端创作详情可将作品上传到灵感广场
+  inspiration_uploader: boolean
 }
 
 export interface RegisterBonus {
@@ -64,6 +66,7 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
     allow_image_gen: true,
     allow_knowledge_base: true,
     max_context_messages: 50,
+    inspiration_uploader: false,
   })
   const balances = ref<{ type: string; amount: number }[]>([])
   const billingRules = ref<any[]>([])
@@ -129,6 +132,7 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
       allow_image_gen: true,
       allow_knowledge_base: true,
       max_context_messages: 50,
+      inspiration_uploader: false,
     }
     window.api?.cloud?.setPermissions({
       allow_custom_provider: false,

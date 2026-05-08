@@ -27,7 +27,7 @@
           :class="['px-3 py-1.5 text-xs rounded-lg transition-colors', !selectedCategory ? 'bg-primary-600 text-white' : 'bg-surface-2 text-text-secondary hover:bg-surface-3']"
         >全部</button>
         <button
-          v-for="cat in FIXED_CATEGORIES"
+          v-for="cat in displayCategories"
           :key="cat"
           @click="selectedCategory = selectedCategory === cat ? '' : cat"
           :class="['px-3 py-1.5 text-xs rounded-lg transition-colors', selectedCategory === cat ? 'bg-primary-600 text-white' : 'bg-surface-2 text-text-secondary hover:bg-surface-3']"
@@ -64,7 +64,10 @@
           </div>
           <div class="p-3">
             <h4 class="text-xs font-medium text-text-primary truncate">{{ item.title }}</h4>
-            <p class="text-[10px] text-text-tertiary mt-1 line-clamp-1">{{ item.category }}</p>
+            <div class="flex items-center gap-1.5 mt-1">
+              <p class="text-[10px] text-text-tertiary line-clamp-1 flex-1">{{ item.category }}</p>
+              <span v-if="item.uploader_nickname" class="text-[10px] text-text-tertiary truncate flex-shrink-0" :title="`上传者：${item.uploader_nickname}`">@{{ item.uploader_nickname }}</span>
+            </div>
             <div v-if="item.tags?.length" class="flex flex-wrap gap-1 mt-1.5">
               <span v-for="tag in item.tags.slice(0, 3)" :key="tag" class="text-[9px] px-1.5 py-0.5 bg-surface-2 text-text-tertiary rounded">{{ tag }}</span>
             </div>
@@ -84,9 +87,12 @@
           </div>
         </div>
         <div class="p-5 overflow-y-auto flex-1">
-          <div class="flex items-center justify-between mb-4">
-            <h3 class="text-sm font-semibold text-text-primary">{{ detailItem.title }}</h3>
-            <button @click="detailItem = null" class="text-text-tertiary hover:text-text-primary">
+          <div class="flex items-start justify-between mb-4 gap-3">
+            <div class="flex-1 min-w-0">
+              <h3 class="text-sm font-semibold text-text-primary">{{ detailItem.title }}</h3>
+              <p v-if="detailItem.uploader_nickname" class="text-[11px] text-text-tertiary mt-1">by @{{ detailItem.uploader_nickname }}</p>
+            </div>
+            <button @click="detailItem = null" class="text-text-tertiary hover:text-text-primary flex-shrink-0">
               <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
             </button>
           </div>
@@ -141,6 +147,8 @@ interface Inspiration {
   tags: string[]
   ref_image?: string
   cover_image?: string
+  // 用户上传的创作在自定义灵感广场中显示上传者昵称（百度文心默认数据为空）
+  uploader_nickname?: string
 }
 
 let _cachedItems: Inspiration[] = []
@@ -160,7 +168,13 @@ const search = ref('')
 const loading = ref(false)
 const detailItem = ref<Inspiration | null>(null)
 
-const FIXED_CATEGORIES = ['人物', '风景', '动漫', '设计', '创意']
+const DEFAULT_CATEGORIES = ['人物', '风景', '动漫', '设计', '创意']
+const dynamicCategories = ref<string[]>([])
+const isCustomSource = ref(false)
+
+const displayCategories = computed(() => {
+  return isCustomSource.value ? dynamicCategories.value : DEFAULT_CATEGORIES
+})
 
 const filteredItems = computed(() => {
   let list = allItems.value
@@ -184,6 +198,15 @@ async function fetchOnline() {
     const result = await api().imageGen.invoke('fetchOnlineInspirations', { pageSize: 40 })
     allItems.value = result.items
     _cachedItems = result.items
+    // Distinguish source by presence of categories key (not its length)
+    // - undefined => default (ERNIE) source
+    // - array (incl. empty) => custom source from cloud admin
+    if (Array.isArray(result.categories)) {
+      dynamicCategories.value = result.categories
+      isCustomSource.value = true
+    } else {
+      isCustomSource.value = false
+    }
   } catch (e) {
     console.error('Failed to fetch inspirations:', e)
   } finally {

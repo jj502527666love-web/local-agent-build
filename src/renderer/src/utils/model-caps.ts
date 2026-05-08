@@ -109,11 +109,16 @@ export function detectCapsByName(modelId: string): ModelCap[] {
  * 这是云端模型的单一真值，不与名字识别合并。
  *
  * 当前后台支持的 type 取值：chat / image / embedding / tts / asr / rerank / vision
+ *
+ * 注：云控后台目前只配 chat / image 两种 type，没有独立的 vision type。
+ * 主流云端 chat 模型（GPT-4o / Claude-3+ / Gemini / Qwen-VL 等）多数原生支持视觉输入，
+ * 因此 chat 类型同时叠加 vision 标志，让图片反推等 vision 入口能选到云端模型；
+ * 极少数纯文本 chat 模型若被误选会在调用处报错（与本地模型按关键字识别同样的"命中率与简洁性权衡"）。
  */
 export function capsFromCloudType(cloudType: string | undefined): ModelCap[] {
   if (!cloudType) return []
   const t = cloudType.toLowerCase()
-  if (t === 'chat') return ['chat']
+  if (t === 'chat') return ['chat', 'vision']
   if (t === 'image') return ['image']
   if (t === 'embedding') return ['embedding']
   if (t === 'tts') return ['tts']
@@ -127,10 +132,6 @@ export function capsFromCloudType(cloudType: string | undefined): ModelCap[] {
  * 综合识别（按数据来源分流，不做合并）：
  *   - 云端模型（cloudType 有值）→ 完全按 cloud_models.type 识别（单一真值）
  *   - 本地模型（cloudType 为 undefined）→ 按关键字识别表
- *
- * 注：云端 type=chat 的模型（如 GPT-4o）不会自动叠加 vision —
- * 若需在 vision 入口推荐，靠 model-usage-hints 反向自学习；
- * 若云控后台希望该模型同时进 vision 选择器，应将其 type 配为 'vision' 或新增 vision 字段。
  */
 export function getModelCaps(modelId: string, cloudType?: string): ModelCap[] {
   if (cloudType !== undefined) {

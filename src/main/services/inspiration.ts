@@ -2,6 +2,8 @@ import { app } from 'electron'
 import { join } from 'path'
 import { readFileSync, existsSync } from 'fs'
 import https from 'https'
+import http from 'http'
+import { getCloudApiBase } from './cloud-token'
 
 export interface Inspiration {
   id: string
@@ -12,6 +14,8 @@ export interface Inspiration {
   tags: string[]
   ref_image?: string
   cover_image?: string
+  // 自定义数据源中由用户上传的灵感会带上传者昵称（百度文心默认数据为空）
+  uploader_nickname?: string
 }
 
 let cachedInspirations: Inspiration[] | null = null
@@ -105,9 +109,10 @@ function mapErnieItem(item: any): Inspiration {
   }
 }
 
-function fetchJson(url: string): Promise<any> {
+function fetchJson(url: string, timeoutMs = 8000): Promise<any> {
   return new Promise((resolve, reject) => {
-    https.get(url, (res) => {
+    const mod = url.startsWith('https') ? https : http
+    const req = mod.get(url, (res) => {
       let data = ''
       res.on('data', (chunk: string) => (data += chunk))
       res.on('end', () => {
@@ -117,11 +122,33 @@ function fetchJson(url: string): Promise<any> {
           reject(e)
         }
       })
-    }).on('error', reject)
+    })
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error(`Request timeout after ${timeoutMs}ms`))
+    })
+    req.on('error', reject)
   })
 }
 
 export async function fetchOnlineInspirations(options?: {
+  page?: number
+  pageSize?: number
+}): Promise<{ items: Inspiration[]; total: number; categories?: string[] }> {
+  // Check cloud admin config to determine data source
+  const apiBase = getCloudApiBase()
+  try {
+    const configJson = await fetchJson(`${apiBase}/public/inspiration/config`)
+    if (configJson.source === 'custom') {
+      return fetchCustomInspirations(options)
+    }
+  } catch {
+    // Config fetch failed, fall back to ERNIE
+  }
+
+  return fetchErnieInspirations(options)
+}
+
+async function fetchErnieInspirations(options?: {
   page?: number
   pageSize?: number
 }): Promise<{ items: Inspiration[]; total: number }> {
@@ -151,4 +178,66 @@ export async function fetchOnlineInspirations(options?: {
   }
 
   return { items, total: json.result.totalCount || items.length }
+}
+
+async function fetchCustomInspirations(options?: {
+  page?: number
+  pageSize?: number
+}): Promise<{ items: Inspiration[]; total: number; categories?: string[] }> {
+  const apiBase = getCloudApiBase()
+  // Derive the origin (scheme + host) from apiBase for resolving relative image paths
+  const originMatch = apiBase.match(/^(https?:\/\/[^/]+)/)
+  const origin = originMatch ? originMatch[1] : ''
+  const pageSize = options?.pageSize || 40
+  const page = options?.page || 1
+  const url = `${apiBase}/public/inspiration/list?page=${page}&per_page=${pageSize}`
+
+  const json = await fetchJson(url)
+  const rawItems: any[] = json.items || []
+  const items: Inspiration[] = rawItems.map((item) => {
+    let coverImage = item.cover_image || ''
+    // Resolve relative image paths to absolute URLs
+    if (coverImage && coverImage.startsWith('/')) {
+      coverImage = origin + coverImage
+    }
+    return {
+      id: `custom-${item.id}`,
+      title: item.title || '',
+      prompt_cn: item.prompt_cn || '',
+      prompt_en: item.prompt_en || '',
+      category: item.category?.name || '',
+      tags: [],
+      cover_image: coverImage || undefined,
+      uploader_nickname: item.uploader_nickname || ''
+    }
+  })
+
+  // Also fetch categories
+  let categories: string[] = []
+  try {
+    const catJson = await fetchJson(`${apiBase}/public/inspiration/categories`)
+    categories = (catJson.data || []).map((c: any) => c.name)
+  } catch { /* ignore */ }
+
+  return { items, total: json.total || items.length, categories }
+}
+
+export async function getInspirationConfig(): Promise<{ source: string }> {
+  const apiBase = getCloudApiBase()
+  try {
+    const json = await fetchJson(`${apiBase}/public/inspiration/config`)
+    return { source: json.source || 'default' }
+  } catch {
+    return { source: 'default' }
+  }
+}
+
+export async function getInspirationCategories(): Promise<string[]> {
+  const apiBase = getCloudApiBase()
+  try {
+    const json = await fetchJson(`${apiBase}/public/inspiration/categories`)
+    return (json.data || []).map((c: any) => c.name)
+  } catch {
+    return []
+  }
 }

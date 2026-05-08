@@ -23,12 +23,13 @@
         </div>
 
         <div class="px-6 py-5">
-          <!-- 支付方式切换器：pending 状态下可切换，已支付或已关闭后隐藏 -->
+          <!-- 支付方式切换器：pending 状态下可切换，已支付或已关闭后隐藏；只在有 2 个可用渠道时显示 -->
           <div
-            v-if="!status || status === 'pending'"
+            v-if="(!status || status === 'pending') && availableMethodCount === 2"
             class="grid grid-cols-2 gap-2 mb-4"
           >
             <button
+              v-if="siteConfig.payment.wechat"
               type="button"
               class="py-2 text-xs font-medium rounded-lg border transition-colors"
               :class="paymentMethod === 'wechat'
@@ -40,6 +41,7 @@
               微信支付
             </button>
             <button
+              v-if="siteConfig.payment.tianque"
               type="button"
               class="py-2 text-xs font-medium rounded-lg border transition-colors"
               :class="paymentMethod === 'tianque'
@@ -48,12 +50,33 @@
               :disabled="creating || switching"
               @click="switchMethod('tianque')"
             >
-              天阙聚合
+              微信/支付宝
             </button>
           </div>
 
-          <!-- Plan summary -->
-          <div class="flex items-baseline justify-between mb-4">
+          <!-- 都未启用：占位提示，不再尝试创建订单 -->
+          <div
+            v-if="availableMethodCount === 0"
+            class="flex flex-col items-center justify-center py-10 text-center"
+          >
+            <div class="w-12 h-12 rounded-full bg-surface-2 flex items-center justify-center mb-3">
+              <svg class="w-6 h-6 text-text-tertiary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            </div>
+            <p class="text-sm font-semibold text-text-primary mb-1">暂无可用的支付方式</p>
+            <p class="text-xs text-text-tertiary">请联系管理员开启支付通道</p>
+            <button
+              type="button"
+              class="mt-5 px-5 py-2 text-xs font-medium border border-surface-3 rounded-lg text-text-secondary hover:bg-surface-2 transition-colors"
+              @click="handleClose"
+            >
+              关闭
+            </button>
+          </div>
+
+          <!-- Plan summary（仅在有可用渠道时渲染，避免「都未启用」时显示空 plan） -->
+          <div v-if="availableMethodCount > 0" class="flex items-baseline justify-between mb-4">
             <div class="min-w-0">
               <div class="text-sm font-semibold text-text-primary truncate">{{ plan?.name || '加载中...' }}</div>
               <div class="text-[11px] text-text-tertiary mt-0.5">
@@ -68,7 +91,7 @@
 
           <!-- Loading（创建订单中） -->
           <div
-            v-if="creating"
+            v-if="creating && availableMethodCount > 0"
             class="flex flex-col items-center justify-center py-10 text-xs text-text-tertiary"
           >
             <svg class="w-6 h-6 animate-spin text-primary-600 mb-2" fill="none" viewBox="0 0 24 24">
@@ -196,6 +219,7 @@ import { ref, watch, onUnmounted, nextTick, computed } from 'vue'
 import QRCode from 'qrcode'
 import { cloudClient } from '@/utils/cloud-api'
 import { useCloudAuthStore } from '@/stores/cloud-auth'
+import { useSiteConfigStore } from '@/stores/site-config'
 
 interface PlanLite {
   id: number
@@ -229,6 +253,7 @@ const emit = defineEmits<{
 }>()
 
 const store = useCloudAuthStore()
+const siteConfig = useSiteConfigStore()
 
 const creating = ref(false)
 const createError = ref('')
@@ -246,12 +271,27 @@ const copyTip = ref('')
 const pollErrorTip = ref('')
 const qrCanvas = ref<HTMLCanvasElement | null>(null)
 
-// 支付方式：微信走 Native 扫码，天阙走聚合主扫（同一二维码支持多渠道）
+// 支付方式：微信走 Native 扫码，天阙走聚合主扫（同一二维码支持多渠道）。
+// 实际可选项由 siteConfig.payment.{wechat,tianque} 决定（云控后台开关）。
 const paymentMethod = ref<'wechat' | 'tianque'>('wechat')
 const switching = ref(false)
 
+const availableMethodCount = computed(() => {
+  let n = 0
+  if (siteConfig.payment.wechat) n++
+  if (siteConfig.payment.tianque) n++
+  return n
+})
+
+/** 选首个启用的渠道作为默认值（拉取 publicConfig 后调用） */
+function pickDefaultMethod(): 'wechat' | 'tianque' | null {
+  if (siteConfig.payment.wechat) return 'wechat'
+  if (siteConfig.payment.tianque) return 'tianque'
+  return null
+}
+
 const methodTitle = computed(() =>
-  paymentMethod.value === 'wechat' ? '微信支付' : '天阙聚合支付'
+  paymentMethod.value === 'wechat' ? '微信支付' : '微信/支付宝'
 )
 const scanHint = computed(() =>
   paymentMethod.value === 'wechat'
@@ -502,6 +542,21 @@ function resetState() {
 
 async function ensureOrder() {
   if (!props.planId) return
+
+  // 都未启用：直接占位，不创建订单
+  const defaultMethod = pickDefaultMethod()
+  if (!defaultMethod) {
+    resetState()
+    return
+  }
+  // 当前选中渠道若被后台关闭，自动切到可用的那个
+  if (
+    (paymentMethod.value === 'wechat' && !siteConfig.payment.wechat) ||
+    (paymentMethod.value === 'tianque' && !siteConfig.payment.tianque)
+  ) {
+    paymentMethod.value = defaultMethod
+  }
+
   // H5: 并发保护——同一 plan 已有请求 in-flight 时不再重复触发，但显示 loading 让 UI 不空白
   if (inflightPlanId === props.planId) {
     creating.value = true
