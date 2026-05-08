@@ -32,6 +32,9 @@ dev-app-update.yml
 /agent-build/
 /ppt_project_flower/
 
+# Temp build icons (uploaded by agent-build, cleaned up by workflow)
+.build-icons/
+
 # Dev loose files at repo root
 /find_pptmaster.py
 /progress.txt

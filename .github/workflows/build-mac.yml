@@ -19,8 +19,8 @@ on:
         description: 'API domain for the desktop runtime (with scheme)'
         required: true
         type: string
-      icon_url:
-        description: 'Signed URL to download the icon PNG'
+      icon_path:
+        description: 'Repo-relative path to the icon PNG (pre-uploaded by agent-build)'
         required: true
         type: string
       callback_url:
@@ -55,7 +55,7 @@ jobs:
           APP_NAME: ${{ inputs.app_name }}
           DOMAIN: ${{ inputs.domain }}
           API_DOMAIN: ${{ inputs.api_domain }}
-          ICON_URL: ${{ inputs.icon_url }}
+          ICON_LOCAL_PATH: ${{ inputs.icon_path }}
           PLATFORM: mac
 
       - name: Build & Package
@@ -90,3 +90,16 @@ jobs:
             -H "Authorization: Bearer ${{ inputs.callback_token }}" \
             -H "Content-Type: application/json" \
             -d "{\"build_id\":\"${{ inputs.build_id }}\",\"run_id\":${{ github.run_id }},\"status\":\"failed\"}"
+
+      - name: Cleanup temp icon from repo
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ICON_SHA=$(gh api repos/${{ github.repository }}/contents/${{ inputs.icon_path }} --jq '.sha' 2>/dev/null || true)
+          if [ -n "$ICON_SHA" ]; then
+            gh api --method DELETE repos/${{ github.repository }}/contents/${{ inputs.icon_path }} \
+              -f message="chore: cleanup build icon ${{ inputs.build_id }}" \
+              -f sha="$ICON_SHA" \
+              -f branch="${{ github.ref_name }}" || true
+          fi
