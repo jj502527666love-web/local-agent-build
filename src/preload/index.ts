@@ -113,6 +113,8 @@ const api = {
       ok: boolean
       error?: string
       data?: any
+      /** 原图过大触发自动 JPEG 压缩后上传时为 true，前端可据此提示用户 */
+      compressed?: boolean
     }>
   },
   clipboard: {

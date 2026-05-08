@@ -1,5 +1,6 @@
 import { readFileSync, existsSync, statSync } from 'fs'
 import { join, extname } from 'path'
+import { nativeImage } from 'electron'
 import { getDataDir } from './data-path'
 import { getCloudApiBase, getCloudToken } from './cloud-token'
 
@@ -30,6 +31,48 @@ export interface UploadInspirationResult {
   ok: boolean
   error?: string
   data?: any
+  /** 原图超过 MAX_BYTES 触发自动 JPEG 阶梯压缩后上传时为 true，前端可据此提示用户 */
+  compressed?: boolean
+}
+
+/**
+ * 当原图超过 MAX_BYTES 时，使用 Electron 内置 nativeImage 按 85 / 70 / 55 阶梯
+ * 重编码为 JPEG，命中第一个 ≤ MAX_BYTES 的档位即返回。
+ *
+ * 返回 { error } 表示无法决码或所有档位都超限，调用方按对应文案提示。
+ * 注意：toJPEG 会丢失 PNG / WEBP 的 alpha 通道，但 AI 创作图基本不透明，
+ * 这是为了零依赖的合理折中（替代方案 sharp 会带来数十 MB binary 依赖）。
+ */
+function maybeCompress(buf: Buffer, ext: string): {
+  buf: Buffer
+  ext: string
+  mime: string
+  compressed: boolean
+  error?: 'cannot_decode' | 'still_too_large'
+} {
+  if (buf.length <= MAX_BYTES) {
+    return { buf, ext, mime: mimeOfExt(ext), compressed: false }
+  }
+
+  let img
+  try {
+    img = nativeImage.createFromBuffer(buf)
+    if (!img || img.isEmpty()) {
+      return { buf, ext, mime: mimeOfExt(ext), compressed: false, error: 'cannot_decode' }
+    }
+  } catch {
+    return { buf, ext, mime: mimeOfExt(ext), compressed: false, error: 'cannot_decode' }
+  }
+
+  for (const quality of [85, 70, 55]) {
+    let jpeg: Buffer
+    try { jpeg = img.toJPEG(quality) } catch { continue }
+    if (jpeg && jpeg.length > 0 && jpeg.length <= MAX_BYTES) {
+      return { buf: jpeg, ext: 'jpg', mime: 'image/jpeg', compressed: true }
+    }
+  }
+
+  return { buf, ext, mime: mimeOfExt(ext), compressed: false, error: 'still_too_large' }
 }
 
 function mimeOfExt(ext: string): string {
@@ -68,7 +111,6 @@ export async function uploadInspiration(params: UploadInspirationParams): Promis
   let stat: ReturnType<typeof statSync>
   try { stat = statSync(absPath) } catch (e: any) { return { ok: false, error: '读取图片失败：' + (e?.message || e) } }
   if (!stat.isFile()) return { ok: false, error: '路径不是一个文件' }
-  if (stat.size > MAX_BYTES) return { ok: false, error: `图片超过 ${Math.floor(MAX_BYTES / 1024 / 1024)}MB 限制` }
 
   const ext = extname(absPath).slice(1).toLowerCase()
   if (!ALLOWED_EXTS.has(ext)) return { ok: false, error: '仅支持 PNG / JPEG / WEBP 格式' }
@@ -76,9 +118,21 @@ export async function uploadInspiration(params: UploadInspirationParams): Promis
   let buf: Buffer
   try { buf = readFileSync(absPath) } catch (e: any) { return { ok: false, error: '读取图片失败：' + (e?.message || e) } }
 
+  // ---- 过大自动 JPEG 阶梯压缩 ----
+  const cmp = maybeCompress(buf, ext)
+  if (cmp.error === 'cannot_decode') {
+    return { ok: false, error: '图片格式无法解析，请检查文件是否损坏' }
+  }
+  if (cmp.error === 'still_too_large') {
+    return { ok: false, error: `原图过大，自动压缩后仍超过 ${Math.floor(MAX_BYTES / 1024 / 1024)}MB，请手动调整尺寸后重试` }
+  }
+  const finalBuf = cmp.buf
+  const finalExt = cmp.ext
+  const finalMime = cmp.mime
+
   // ---- 构造 multipart/form-data ----
-  const filename = 'creation.' + (ext === 'jpg' ? 'jpg' : ext)
-  const blob = new Blob([new Uint8Array(buf)], { type: mimeOfExt(ext) })
+  const filename = 'creation.' + (finalExt === 'jpg' ? 'jpg' : finalExt)
+  const blob = new Blob([new Uint8Array(finalBuf)], { type: finalMime })
   const fd = new FormData()
   fd.append('category_id', String(categoryId))
   fd.append('title', title.trim())
@@ -122,5 +176,5 @@ export async function uploadInspiration(params: UploadInspirationParams): Promis
     return { ok: false, error: json?.error || `HTTP ${resp.status}` }
   }
 
-  return { ok: true, data: json }
+  return { ok: true, data: json, compressed: cmp.compressed }
 }

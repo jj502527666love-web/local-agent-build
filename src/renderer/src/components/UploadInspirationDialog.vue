@@ -216,7 +216,11 @@ async function handleSubmit() {
     })
     if (res?.ok) {
       emit('uploaded')
-      emit('success', '已上传到灵感广场')
+      // 主进程检测到原图超过 5MB 时会自动 JPEG 阶梯压缩，告知用户避免疑惑
+      const successMsg = res.compressed
+        ? '图片过大，已自动压缩后上传到灵感广场'
+        : '已上传到灵感广场'
+      emit('success', successMsg)
       emit('update:open', false)
     } else {
       errorMsg.value = res?.error || '上传失败'
