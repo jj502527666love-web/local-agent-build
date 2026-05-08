@@ -35,4 +35,5 @@ dev-app-update.yml
 # Dev loose files at repo root
 /find_pptmaster.py
 /progress.txt
+/_dev.bat
 *.log

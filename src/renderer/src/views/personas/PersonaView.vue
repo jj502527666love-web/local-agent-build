@@ -85,7 +85,9 @@
               <label class="form-label">模型</label>
               <select v-model="optimizeModelId" class="select-field" :disabled="!optimizeProviderModels.length">
                 <option value="">-- 选择 --</option>
-                <option v-for="m in optimizeProviderModels" :key="m" :value="m">{{ m }}</option>
+                <optgroup v-if="optimizeModelGroups.recommended.length" label="推荐（对话）">
+                  <option v-for="m in optimizeModelGroups.recommended" :key="m" :value="m">{{ m }}</option>
+                </optgroup>
               </select>
               <input v-if="optimizeProviderId && !optimizeProviderModels.length" v-model="optimizeModelId" placeholder="输入模型名称" class="input-field mt-2" />
             </div>
@@ -135,6 +137,8 @@ import { ref, computed, onMounted } from 'vue'
 import { usePersonaStore, type Persona } from '@/stores/personas'
 import { useModelStore } from '@/stores/models'
 import { usePromptPresetStore } from '@/stores/prompt-presets'
+import { groupAndSort } from '@/utils/model-caps'
+import { warmHintsCache, getHintsSync, recordUsage } from '@/utils/model-usage-hints'
 import builtinPresets from '@/data/persona-presets.json'
 
 const store = usePersonaStore()
@@ -187,10 +191,18 @@ const optimizeModelId = ref('')
 const optimizing = ref(false)
 const optimizeError = ref('')
 
-const optimizeProviderModels = computed(() => {
-  if (!optimizeProviderId.value) return []
-  const p = modelStore.providers.find((p) => p.id === optimizeProviderId.value)
-  return p?.models || []
+const hintsTick = ref(0)
+const optimizeProvider = computed(() =>
+  modelStore.providers.find((p) => p.id === optimizeProviderId.value) || null
+)
+const optimizeProviderModels = computed(() => optimizeProvider.value?.models || [])
+const optimizeModelGroups = computed(() => {
+  hintsTick.value
+  if (!optimizeProvider.value) return { recommended: [], others: [] }
+  return groupAndSort(optimizeProvider.value.models, 'chat', {
+    cloudTypeOf: (mid) => modelStore.cloudTypeOf(optimizeProvider.value!.id, mid),
+    usageHints: getHintsSync('chat', optimizeProvider.value.id)
+  })
 })
 
 function resetForm() { form.value = { name: '', system_prompt: '' } }
@@ -242,6 +254,8 @@ async function doOptimize() {
     if (result) {
       form.value.system_prompt = result
       showOptimizeModal.value = false
+      await recordUsage('chat', optimizeProviderId.value, optimizeModelId.value)
+      hintsTick.value++
     } else {
       optimizeError.value = 'AI 返回了空结果'
     }
@@ -253,6 +267,7 @@ async function doOptimize() {
 }
 
 onMounted(async () => {
-  await Promise.all([store.fetchPersonas(), modelStore.fetchProviders(), presetStore.fetchAll('persona')])
+  await Promise.all([store.fetchPersonas(), modelStore.fetchProviders(), presetStore.fetchAll('persona'), warmHintsCache()])
+  hintsTick.value++
 })
 </script>

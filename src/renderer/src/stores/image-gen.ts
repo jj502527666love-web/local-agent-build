@@ -23,6 +23,25 @@ export interface ImageGeneration {
   created_at: string
 }
 
+export interface GenerateOptions {
+  prompt: string
+  refImages?: string[]
+  modelProviderId: string
+  modelId: string
+  size: string
+  tierId?: string
+  quality?: string
+  batchCount?: number
+  concurrency?: number
+}
+
+export interface QueueItem {
+  id: number
+  options: GenerateOptions
+  /** 队列中摘要显示用 */
+  label: string
+}
+
 const api = () => (window as any).api
 
 /**
@@ -43,8 +62,15 @@ export const useImageGenStore = defineStore('imageGen', () => {
   const loading = ref(false)
 
   const generating = ref(false)
+  /** 防竞态计数器：每次 _runOne() 递增，finally 只在计数匹配时重置 generating */
+  let _genCount = 0
   const progress = ref<{ total: number; completed: number; type: string } | null>(null)
   const lastError = ref('')
+
+  /** 任务队列 */
+  const queue = ref<QueueItem[]>([])
+  let _queueIdSeq = 0
+  let _processing = false
 
   /** 展示列表：inFlight 置顶 + items 分页数据 */
   const displayList = computed<ImageGeneration[]>(() => [...inFlight.value, ...items.value])
@@ -67,32 +93,54 @@ export const useImageGenStore = defineStore('imageGen', () => {
     }
   }
 
-  async function generate(options: {
-    prompt: string
-    refImages?: string[]
-    modelProviderId: string
-    modelId: string
-    size: string
-    /** 分辨率档位 id（1k/2k/4k），主进程据此+modelId 决定最终像素 */
-    tierId?: string
-    quality?: string
-    batchCount?: number
-    concurrency?: number
-  }) {
+  /** 将任务加入队列，若当前无任务在跑则立即开始 */
+  function enqueue(options: GenerateOptions) {
+    const label = options.prompt.slice(0, 30) + (options.prompt.length > 30 ? '...' : '')
+    queue.value.push({ id: ++_queueIdSeq, options, label })
+    _scheduleNext()
+  }
+
+  function removeFromQueue(queueId: number) {
+    queue.value = queue.value.filter(q => q.id !== queueId)
+  }
+
+  function clearQueue() {
+    queue.value = []
+  }
+
+  async function _scheduleNext() {
+    if (_processing) return
+    const next = queue.value.shift()
+    if (!next) return
+    _processing = true
+    await _runOne(next.options)
+    _processing = false
+    // 继续处理队列中的下一个
+    _scheduleNext()
+  }
+
+  async function _runOne(options: GenerateOptions) {
     generating.value = true
+    const myGen = ++_genCount
     lastError.value = ''
     progress.value = { total: options.batchCount || 1, completed: 0, type: 'start' }
     try {
       const results = await api().imageGen.invoke('generate', JSON.parse(JSON.stringify(options))) as ImageGeneration[]
-      // 不再全量 refetch：新生成项通过 listenProgress 的 completed 事件合并进 items
       return results || []
     } catch (e: any) {
       lastError.value = translateError(e.message || '')
       return []
     } finally {
-      generating.value = false
-      progress.value = null
+      if (_genCount === myGen) {
+        generating.value = false
+        progress.value = null
+      }
     }
+  }
+
+  /** 兼容旧接口：等价于 enqueue，但返回 Promise 以兼容老调用方 */
+  async function generate(options: GenerateOptions) {
+    enqueue(options)
   }
 
   async function deleteGeneration(id: string) {
@@ -136,7 +184,8 @@ export const useImageGenStore = defineStore('imageGen', () => {
   function listenProgress() {
     api().imageGen.onProgress((data: any) => {
       if (data.type === 'done') {
-        generating.value = false
+        // generating 状态由 generate() 的 finally 统一管理，此处不再重置
+        // 仅清理 progress 展示
         progress.value = null
       } else {
         progress.value = { total: data.total, completed: data.completed, type: data.type }
@@ -218,9 +267,13 @@ export const useImageGenStore = defineStore('imageGen', () => {
     generating,
     progress,
     lastError,
+    queue,
     // methods
     fetchPage,
     generate,
+    enqueue,
+    removeFromQueue,
+    clearQueue,
     deleteGeneration,
     deleteGenerations,
     listenProgress,

@@ -12,6 +12,16 @@ import {
 } from 'fs'
 
 const CONFIG_FILE = 'data-path.json'
+// 数据目录里的标记文件，用于 isFirstLaunch 双重校验：
+// 即使 userData/data-path.json 被清掉，只要外部数据目录还在并带 marker，
+// 就能识别为"老用户"而不是首次启动。
+const DATA_DIR_MARKER = '.local-agent-data'
+// 迁移时跳过的扩展名：SQLite 临时/锁文件、备份文件等，避免破坏正在运行的 db。
+const MIGRATION_EXCLUDE_EXTS = new Set(['.db-wal', '.db-shm', '.db-journal'])
+// 迁移时跳过的根级条目（目录或文件名）。
+const MIGRATION_EXCLUDE_NAMES = new Set([CONFIG_FILE])
+// 文件数过多时不静默放弃，而是要求 UI 二次确认。
+const MIGRATION_FILE_LIMIT = 10000
 
 let cachedDataDir: string | null = null
 
@@ -23,7 +33,7 @@ function getDefaultDataDir(): string {
   return app.getPath('userData')
 }
 
-function readConfig(): Record<string, string> {
+function readConfig(): Record<string, any> {
   const configPath = getConfigPath()
   if (existsSync(configPath)) {
     try {
@@ -33,8 +43,25 @@ function readConfig(): Record<string, string> {
   return {}
 }
 
-function writeConfig(config: Record<string, string>): void {
+function writeConfig(config: Record<string, any>): void {
   writeFileSync(getConfigPath(), JSON.stringify(config, null, 2), 'utf-8')
+}
+
+function hasExcludedExt(name: string): boolean {
+  const lower = name.toLowerCase()
+  for (const ext of MIGRATION_EXCLUDE_EXTS) {
+    if (lower.endsWith(ext)) return true
+  }
+  return false
+}
+
+function writeMarker(dir: string): void {
+  try {
+    const markerPath = join(dir, DATA_DIR_MARKER)
+    if (!existsSync(markerPath)) {
+      writeFileSync(markerPath, JSON.stringify({ createdAt: new Date().toISOString() }, null, 2), 'utf-8')
+    }
+  } catch {}
 }
 
 export function getDataDir(): string {
@@ -51,10 +78,25 @@ export function getDataDir(): string {
 }
 
 function isRootDir(dir: string): boolean {
-  return /^[A-Z]:\\?$/i.test(dir) || dir === '/'
+  // 处理 Windows 盘根（带或不带斜杠）、UNC 根、Unix 根
+  if (!dir) return true
+  if (dir === '/' || dir === '\\') return true
+  if (/^[A-Z]:[\\/]?$/i.test(dir)) return true
+  if (/^\\\\[^\\]+\\[^\\]+\\?$/.test(dir)) return true
+  return false
 }
 
-export function setDataDir(dir: string): void {
+/**
+ * 写入数据目录配置。
+ *
+ * @param dir 新的数据目录绝对路径
+ * @param options.activate 是否立即把当前进程的 cachedDataDir 切换到新路径。
+ *   默认 false——只写 config，等下次启动重读；让调用方负责触发重启。
+ *   首次启动场景下，如果用户选了与默认不同的目录，也应保持默认 false 由 renderer
+ *   决定是否 relaunch，避免本次会话产生数据切割（DB 在旧目录、文件在新目录）。
+ */
+export function setDataDir(dir: string, options?: { activate?: boolean }): void {
+  const activate = options?.activate === true
   const config = readConfig()
   const currentDir = getDataDir()
   if (currentDir !== dir && !isRootDir(currentDir)) {
@@ -63,17 +105,40 @@ export function setDataDir(dir: string): void {
   config.dataDir = dir
   writeConfig(config)
   mkdirSync(dir, { recursive: true })
-  cachedDataDir = dir
+  writeMarker(dir)
+  if (activate) {
+    cachedDataDir = dir
+  }
 }
 
 export function isFirstLaunch(): boolean {
-  return !existsSync(getConfigPath())
+  // 双重判断：仅 data-path.json 不存在还不够。
+  // 如果 userData 被清空但用户的外部数据目录仍在（带 marker），则不算首次启动。
+  if (existsSync(getConfigPath())) return false
+  // 兜底扫描：检查 userData 自身是否已有 marker（用户从未改过目录的老安装）
+  try {
+    const userData = getDefaultDataDir()
+    if (existsSync(join(userData, DATA_DIR_MARKER))) return false
+    // 老安装可能没有 marker，但有 db 文件 → 也视为非首次
+    if (existsSync(join(userData, 'local-agent.db'))) return false
+  } catch {}
+  return true
 }
 
-export function initDataDir(dir?: string): void {
+export function initDataDir(dir?: string, options?: { activate?: boolean }): void {
   const dataDir = dir || getDefaultDataDir()
   mkdirSync(dataDir, { recursive: true })
-  setDataDir(dataDir)
+  setDataDir(dataDir, options)
+}
+
+/**
+ * 判断"刚被设置的目录"与"当前进程实际正在使用的目录"是否一致。
+ * 用于：renderer 在 confirmSetup / changeDataDir 后判断是否需要触发 relaunch。
+ */
+export function isDataDirActivated(): boolean {
+  const config = readConfig()
+  if (!config.dataDir) return true
+  return cachedDataDir === config.dataDir
 }
 
 // --- Migration ---
@@ -82,9 +147,17 @@ function collectFiles(dir: string, base: string = ''): string[] {
   const results: string[] = []
   if (!existsSync(dir)) return results
   for (const entry of readdirSync(dir)) {
+    // 跳过 sqlite 临时锁文件，以及不应迁移的根级条目（如 data-path.json）
+    if (!base && MIGRATION_EXCLUDE_NAMES.has(entry)) continue
+    if (hasExcludedExt(entry)) continue
     const full = join(dir, entry)
     const rel = base ? join(base, entry) : entry
-    const st = statSync(full)
+    let st
+    try {
+      st = statSync(full)
+    } catch {
+      continue
+    }
     if (st.isDirectory()) {
       results.push(...collectFiles(full, rel))
     } else {
@@ -94,39 +167,82 @@ function collectFiles(dir: string, base: string = ''): string[] {
   return results
 }
 
-export function checkMigration(): { needed: boolean; oldDir: string; newDir: string; fileCount: number } {
+export interface MigrationCheckResult {
+  needed: boolean
+  oldDir: string
+  newDir: string
+  fileCount: number
+  /** 文件数超过 MIGRATION_FILE_LIMIT 时为 true，UI 应展示二次确认。
+   *  保留 oldDataDir 记录，不静默丢弃。 */
+  tooMany: boolean
+  /** 新目录里已存在的、会被覆盖的同名文件相对路径（最多前 50 条）。 */
+  conflicts: string[]
+  conflictCount: number
+}
+
+export function checkMigration(): MigrationCheckResult {
+  const empty = (): MigrationCheckResult => ({
+    needed: false, oldDir: '', newDir: '', fileCount: 0, tooMany: false, conflicts: [], conflictCount: 0
+  })
   const config = readConfig()
   const oldDir = config.oldDataDir
   const newDir = config.dataDir
 
   if (!oldDir || !newDir || oldDir === newDir) {
-    return { needed: false, oldDir: '', newDir: '', fileCount: 0 }
+    return empty()
   }
 
   if (!existsSync(oldDir) || isRootDir(oldDir)) {
+    // 旧目录已不存在或是根目录 —— 这种情况记录已无意义，可安全清理
     clearOldDataDir()
-    return { needed: false, oldDir: '', newDir: '', fileCount: 0 }
+    return empty()
   }
 
   const files = collectFiles(oldDir)
-  if (files.length === 0 || files.length > 10000) {
+  if (files.length === 0) {
+    // 旧目录有效但已无可迁移文件
     clearOldDataDir()
-    return { needed: false, oldDir: '', newDir: '', fileCount: 0 }
+    return empty()
   }
 
-  return { needed: true, oldDir, newDir, fileCount: files.length }
+  const tooMany = files.length > MIGRATION_FILE_LIMIT
+
+  // 计算冲突列表（新目录已有同名文件）
+  const conflicts: string[] = []
+  let conflictCount = 0
+  if (existsSync(newDir)) {
+    for (const rel of files) {
+      const dest = join(newDir, rel)
+      if (existsSync(dest)) {
+        conflictCount++
+        if (conflicts.length < 50) conflicts.push(rel)
+      }
+    }
+  }
+
+  return { needed: true, oldDir, newDir, fileCount: files.length, tooMany, conflicts, conflictCount }
+}
+
+export interface MigrateOptions {
+  /** 同名文件冲突策略：keep-existing 保留新目录已有；overwrite 用旧目录覆盖。默认 keep-existing 更安全。 */
+  conflictStrategy?: 'keep-existing' | 'overwrite'
 }
 
 export function migrateFiles(
-  onProgress: (current: number, total: number, fileName: string) => void
-): { success: boolean; error?: string } {
+  onProgress: (current: number, total: number, fileName: string) => void,
+  options?: MigrateOptions
+): { success: boolean; error?: string; copied: number; skipped: number } {
   const config = readConfig()
   const oldDir = config.oldDataDir
   const newDir = config.dataDir
+  const strategy = options?.conflictStrategy ?? 'keep-existing'
 
   if (!oldDir || !newDir || !existsSync(oldDir)) {
-    return { success: false, error: 'Old directory not found' }
+    return { success: false, error: 'Old directory not found', copied: 0, skipped: 0 }
   }
+
+  let copied = 0
+  let skipped = 0
 
   try {
     const files = collectFiles(oldDir)
@@ -138,13 +254,22 @@ export function migrateFiles(
       const dest = join(newDir, rel)
       const destDir = join(dest, '..')
       if (!existsSync(destDir)) mkdirSync(destDir, { recursive: true })
-      copyFileSync(src, dest)
+
+      if (existsSync(dest) && strategy === 'keep-existing') {
+        skipped++
+      } else {
+        copyFileSync(src, dest)
+        copied++
+      }
       onProgress(i + 1, total, basename(rel))
     }
 
-    return { success: true }
+    // 迁移成功后写 marker，方便 isFirstLaunch 判断
+    writeMarker(newDir)
+
+    return { success: true, copied, skipped }
   } catch (e: any) {
-    return { success: false, error: e?.message || String(e) }
+    return { success: false, error: e?.message || String(e), copied, skipped }
   }
 }
 
@@ -187,6 +312,18 @@ export function clearOldDataDir(): void {
   writeConfig(config)
 }
 
+/**
+ * 跳过本次迁移，但保留 oldDataDir 记录，下次启动仍会提示。
+ * 用户可能只是想"现在不处理，等会再说"，不该静默丢失旧数据位置。
+ */
 export function skipMigration(): void {
+  // 故意空实现：保留 config.oldDataDir，下次启动 checkMigration 仍会返回 needed=true。
+}
+
+/**
+ * 永久放弃旧数据：仅清除 config 中的 oldDataDir 记录，不删除磁盘文件。
+ * 用户可在外部文件管理器手动处理旧目录。
+ */
+export function abandonOldDataDir(): void {
   clearOldDataDir()
 }

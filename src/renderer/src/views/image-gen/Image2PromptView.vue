@@ -25,9 +25,6 @@
             <optgroup v-if="modelGroups.recommended.length" label="推荐（视觉）">
               <option v-for="m in modelGroups.recommended" :key="m" :value="m">{{ m }}</option>
             </optgroup>
-            <optgroup v-if="modelGroups.others.length" label="其他可用">
-              <option v-for="m in modelGroups.others" :key="m" :value="m">{{ m }}</option>
-            </optgroup>
           </select>
           <input
             v-if="visionProviderId && !currentProviderModels.length"

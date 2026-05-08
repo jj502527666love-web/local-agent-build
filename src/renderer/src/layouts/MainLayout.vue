@@ -1,7 +1,7 @@
 <template>
   <div class="flex h-screen w-screen overflow-hidden bg-surface-1">
     <aside class="w-44 flex-shrink-0 bg-surface-0 border-r border-surface-3 flex flex-col">
-      <div class="h-14 flex items-center px-5 app-drag">
+      <div class="h-14 flex items-center px-5" :class="{ 'app-drag': isWin }">
         <div class="flex items-center gap-2.5">
           <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center">
             <span class="text-white text-[11px] font-bold leading-none tracking-tight">{{ appAbbr }}</span>
@@ -41,7 +41,7 @@
       </div>
     </aside>
     <main class="flex-1 overflow-hidden flex flex-col relative">
-      <header class="h-9 flex-shrink-0 flex items-center px-5 pr-40 bg-surface-0 app-drag">
+      <header class="h-9 flex-shrink-0 flex items-center px-5 bg-surface-0" :class="[isWin ? 'pr-40 app-drag' : '']">
         <h1 class="text-sm font-semibold text-text-primary">{{ pageTitle }}</h1>
       </header>
       <div class="absolute top-9 left-0 right-0 h-px bg-surface-3 z-10"></div>
@@ -78,6 +78,10 @@ import { appName, appAbbr } from '@/utils/branding'
 const route = useRoute()
 const cloudAuth = useCloudAuthStore()
 const pageTitle = computed(() => (route.meta?.title as string) || '')
+
+// 平台判断：Win 用自定义无边框 + titleBarOverlay（需 app-drag + 右侧 padding 让位控件按钮），
+// Mac/Linux 用原生标题栏（renderer 区域不被标题栏占据，无需 app-drag 与额外 padding）。
+const isWin = ((window as any).electron?.process?.platform || (window as any).runtimeConfig?.platform || '') === 'win32'
 
 const allNavItems = [
   { path: '/chat', label: '\u5BF9\u8BDD', icon: IconChat },

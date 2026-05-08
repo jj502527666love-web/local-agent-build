@@ -103,9 +103,6 @@
               <optgroup v-if="textModelGroups.recommended.length" label="推荐（对话）">
                 <option v-for="m in textModelGroups.recommended" :key="m" :value="m">{{ m }}</option>
               </optgroup>
-              <optgroup v-if="textModelGroups.others.length" label="其他可用">
-                <option v-for="m in textModelGroups.others" :key="m" :value="m">{{ m }}</option>
-              </optgroup>
             </select>
           </div>
           <div>
@@ -121,9 +118,6 @@
               <option value="">-- 请选择 --</option>
               <optgroup v-if="imageModelGroups.recommended.length" label="推荐（生图）">
                 <option v-for="m in imageModelGroups.recommended" :key="m" :value="m">{{ m }}</option>
-              </optgroup>
-              <optgroup v-if="imageModelGroups.others.length" label="其他可用">
-                <option v-for="m in imageModelGroups.others" :key="m" :value="m">{{ m }}</option>
               </optgroup>
             </select>
           </div>

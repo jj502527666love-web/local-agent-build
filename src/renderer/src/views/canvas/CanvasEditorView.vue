@@ -32,12 +32,12 @@
             <textarea
               v-model="globalPromptText"
               @input="debouncedSaveGlobalPrompt"
-              placeholder="执行时会自动附加到所有生图节点的提示词前..."
+              placeholder="风格前缀，例如：杰作，4K，超细节，柔和光线"
               rows="4"
               class="w-full text-xs text-text-primary bg-surface-1 border border-surface-3 rounded-lg px-3 py-2 resize-none outline-none focus:border-primary-400 transition-colors"
               :disabled="workflowRunning"
             ></textarea>
-            <p class="text-[10px] text-text-disabled mt-1.5">运行时自动拼接到生图提示词前</p>
+            <p class="text-[10px] text-text-disabled mt-1.5">作为风格前缀拼接到每次生图提示词前（用 --- 分隔约束与主题）</p>
           </div>
         </div>
         <!-- AI Orchestrate -->
@@ -157,9 +157,6 @@
               <optgroup v-if="settingsTextGroups.recommended.length" label="推荐（对话）">
                 <option v-for="m in settingsTextGroups.recommended" :key="m" :value="m">{{ m }}</option>
               </optgroup>
-              <optgroup v-if="settingsTextGroups.others.length" label="其他可用">
-                <option v-for="m in settingsTextGroups.others" :key="m" :value="m">{{ m }}</option>
-              </optgroup>
             </select>
           </div>
           <div>
@@ -175,9 +172,6 @@
               <option value="">-- 请选择 --</option>
               <optgroup v-if="settingsImageGroups.recommended.length" label="推荐（生图）">
                 <option v-for="m in settingsImageGroups.recommended" :key="m" :value="m">{{ m }}</option>
-              </optgroup>
-              <optgroup v-if="settingsImageGroups.others.length" label="其他可用">
-                <option v-for="m in settingsImageGroups.others" :key="m" :value="m">{{ m }}</option>
               </optgroup>
             </select>
           </div>

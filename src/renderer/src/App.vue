@@ -14,7 +14,9 @@
 
       <div class="mb-6">
         <label class="block text-sm font-medium text-text-primary mb-2">数据存储目录</label>
-        <p class="text-xs text-text-tertiary mb-3">数据库、技能、工作区等数据将存放在此目录中</p>
+        <p class="text-xs text-text-tertiary mb-3">
+          数据库、技能、工作区等数据将存放在此目录中。会自动在你选择的位置下创建 <span class="font-mono text-text-secondary">local-agent</span> 子目录。
+        </p>
         <div class="flex items-center gap-2">
           <input :value="setupDir" readonly class="flex-1 px-3 py-2.5 text-sm bg-surface-2 border border-surface-3 rounded-lg text-text-primary cursor-default" />
           <button @click="pickSetupDir" class="px-4 py-2.5 text-sm font-medium bg-surface-2 hover:bg-surface-3 border border-surface-3 rounded-lg text-text-secondary transition-colors whitespace-nowrap">
@@ -23,27 +25,63 @@
         </div>
       </div>
 
-      <button @click="confirmSetup" class="w-full py-3 text-sm font-semibold bg-primary-600 hover:bg-primary-700 text-white rounded-xl transition-colors">
-        确认并开始使用
+      <button @click="confirmSetup" :disabled="setupConfirming" class="w-full py-3 text-sm font-semibold bg-primary-600 hover:bg-primary-700 text-white rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+        {{ setupConfirming ? '正在应用...' : '确认并开始使用' }}
       </button>
     </div>
   </div>
 
   <!-- Migration Dialog -->
-  <div v-if="showMigration" class="fixed inset-0 z-[9998] flex items-center justify-center bg-surface-1/80">
+  <div v-if="showMigration" class="fixed inset-0 z-[9998] flex items-center justify-center">
     <div class="w-full max-w-lg bg-surface-0 rounded-2xl shadow-2xl p-8">
       <h2 class="text-base font-bold text-text-primary mb-1">数据迁移</h2>
 
       <!-- Ask to migrate -->
       <template v-if="migrationStep === 'ask'">
         <p class="text-sm text-text-secondary mb-4">检测到旧数据目录中有 {{ migrationInfo.fileCount }} 个文件，是否迁移到新目录?</p>
-        <div class="text-xs text-text-tertiary space-y-1 mb-5 p-3 bg-surface-2 rounded-lg">
+        <div class="text-xs text-text-tertiary space-y-1 mb-3 p-3 bg-surface-2 rounded-lg">
           <div class="flex gap-2"><span class="text-text-secondary font-medium w-10 shrink-0">旧:</span><span class="break-all">{{ migrationInfo.oldDir }}</span></div>
           <div class="flex gap-2"><span class="text-text-secondary font-medium w-10 shrink-0">新:</span><span class="break-all">{{ migrationInfo.newDir }}</span></div>
         </div>
-        <div class="flex gap-3">
+
+        <!-- Too many files warning -->
+        <div v-if="migrationInfo.tooMany" class="mb-3 p-3 rounded-lg bg-amber-50 border border-amber-200">
+          <p class="text-xs text-amber-700">
+            文件数量较多（{{ migrationInfo.fileCount }}），迁移可能较慢。请确认旧目录路径正确无误。
+          </p>
+        </div>
+
+        <!-- Conflicts warning -->
+        <div v-if="migrationInfo.conflictCount > 0" class="mb-3 p-3 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-700">
+          <p class="font-medium mb-1">新目录中已有 {{ migrationInfo.conflictCount }} 个同名文件，请选择处理方式：</p>
+          <label class="flex items-start gap-2 mt-2 cursor-pointer">
+            <input type="radio" v-model="conflictStrategy" value="keep-existing" class="mt-0.5" />
+            <span>保留新目录已有的文件（推荐）</span>
+          </label>
+          <label class="flex items-start gap-2 mt-1 cursor-pointer">
+            <input type="radio" v-model="conflictStrategy" value="overwrite" class="mt-0.5" />
+            <span>用旧目录的文件覆盖（谨慎）</span>
+          </label>
+        </div>
+
+        <div class="flex gap-3 mt-4">
           <button @click="startMigration" class="flex-1 py-2.5 text-sm font-semibold bg-primary-600 hover:bg-primary-700 text-white rounded-xl transition-colors">迁移数据</button>
-          <button @click="skipMigration" class="px-6 py-2.5 text-sm font-medium border border-surface-3 rounded-xl text-text-secondary hover:bg-surface-2 transition-colors">跳过</button>
+          <button @click="skipMigrationOnce" class="px-4 py-2.5 text-sm font-medium border border-surface-3 rounded-xl text-text-secondary hover:bg-surface-2 transition-colors" title="本次不迁移，下次启动仍会提示">下次再说</button>
+        </div>
+        <button @click="confirmAbandon" class="w-full mt-2 py-2 text-xs text-text-tertiary hover:text-red-600 transition-colors">永久放弃旧数据</button>
+      </template>
+
+      <!-- Confirm abandon -->
+      <template v-if="migrationStep === 'confirmAbandon'">
+        <p class="text-sm text-red-600 font-medium mb-3">确认永久放弃旧数据？</p>
+        <p class="text-xs text-text-secondary mb-4">
+          此操作仅删除旧数据目录的位置记录，磁盘上的文件不会被删除（你可以稍后手动处理）。<br>
+          下次启动时将不再提示迁移。
+        </p>
+        <div class="text-xs text-text-tertiary mb-5 p-3 bg-surface-2 rounded-lg break-all">{{ migrationInfo.oldDir }}</div>
+        <div class="flex gap-3">
+          <button @click="abandonOldData" class="flex-1 py-2.5 text-sm font-semibold bg-red-600 hover:bg-red-700 text-white rounded-xl transition-colors">确认放弃</button>
+          <button @click="migrationStep = 'ask'" class="px-6 py-2.5 text-sm font-medium border border-surface-3 rounded-xl text-text-secondary hover:bg-surface-2 transition-colors">返回</button>
         </div>
       </template>
 
@@ -63,20 +101,38 @@
 
       <!-- Done -->
       <template v-if="migrationStep === 'done'">
-        <p class="text-sm text-emerald-600 font-medium mb-4">数据迁移完成</p>
-        <p class="text-sm text-text-secondary mb-5">是否删除旧数据目录?</p>
+        <p class="text-sm text-emerald-600 font-medium mb-2">数据迁移完成</p>
+        <p class="text-xs text-text-secondary mb-3">
+          复制 {{ migrationResult.copied }} 个文件<span v-if="migrationResult.skipped > 0">，跳过 {{ migrationResult.skipped }} 个已存在</span>。
+          应用必须重启以使新数据目录生效。
+        </p>
+        <label class="flex items-center gap-2 mb-4 cursor-pointer">
+          <input type="checkbox" v-model="deleteOldAfterRestart" class="w-3.5 h-3.5" />
+          <span class="text-xs text-text-secondary">同时删除旧目录中的数据</span>
+        </label>
         <div class="text-xs text-text-tertiary mb-5 p-3 bg-surface-2 rounded-lg break-all">{{ migrationInfo.oldDir }}</div>
-        <div class="flex gap-3">
-          <button @click="deleteOldAndClose" class="flex-1 py-2.5 text-sm font-semibold bg-red-600 hover:bg-red-700 text-white rounded-xl transition-colors">删除旧目录</button>
-          <button @click="closeMigration" class="px-6 py-2.5 text-sm font-medium border border-surface-3 rounded-xl text-text-secondary hover:bg-surface-2 transition-colors">保留</button>
-        </div>
+        <button @click="finishMigration" :disabled="finishing" class="w-full py-2.5 text-sm font-semibold bg-primary-600 hover:bg-primary-700 text-white rounded-xl transition-colors disabled:opacity-50">
+          {{ finishing ? '处理中...' : '立即重启' }}
+        </button>
       </template>
 
       <!-- Error -->
       <template v-if="migrationStep === 'error'">
-        <p class="text-sm text-red-500 mb-4">迁移失败: {{ migrationError }}</p>
-        <button @click="closeMigration" class="w-full py-2.5 text-sm font-medium border border-surface-3 rounded-xl text-text-secondary hover:bg-surface-2 transition-colors">关闭</button>
+        <p class="text-sm text-red-500 mb-2">迁移失败: {{ migrationError }}</p>
+        <p class="text-xs text-text-secondary mb-4">数据库已被关闭以避免冲突，应用需要重启恢复正常。</p>
+        <button @click="restartAfterError" class="w-full py-2.5 text-sm font-semibold bg-primary-600 hover:bg-primary-700 text-white rounded-xl transition-colors">立即重启</button>
       </template>
+    </div>
+  </div>
+
+  <!-- Setup Relaunch Confirmation -->
+  <div v-if="showSetupRelaunch" class="fixed inset-0 z-[9999] flex items-center justify-center">
+    <div class="w-full max-w-md bg-surface-0 rounded-2xl shadow-2xl p-6">
+      <h2 class="text-base font-bold text-text-primary mb-2">需要重启应用</h2>
+      <p class="text-sm text-text-secondary mb-5">数据目录配置已保存，应用需要重启以加载新位置的数据。</p>
+      <button @click="relaunchApp" class="w-full py-2.5 text-sm font-semibold bg-primary-600 hover:bg-primary-700 text-white rounded-xl transition-colors">
+        立即重启
+      </button>
     </div>
   </div>
 
@@ -92,7 +148,13 @@
     <div class="px-4 py-3">
       <!-- Available -->
       <template v-if="updateState === 'available'">
-        <p class="text-xs text-text-secondary mb-3">发现新版本 <span class="font-semibold text-primary-600">v{{ updateVersion }}</span></p>
+        <p class="text-xs text-text-secondary mb-2">发现新版本 <span class="font-semibold text-primary-600">v{{ updateVersion }}</span></p>
+        <ul v-if="updateNotes.length" class="mb-3 max-h-32 overflow-y-auto space-y-1 pr-1">
+          <li v-for="(note, idx) in updateNotes" :key="idx" class="text-[11px] text-text-tertiary leading-relaxed flex gap-1.5">
+            <span class="text-text-disabled select-none flex-shrink-0">·</span>
+            <span>{{ note }}</span>
+          </li>
+        </ul>
         <div class="flex gap-2">
           <button @click="startDownload" class="flex-1 py-2 text-xs font-medium bg-primary-600 hover:bg-primary-700 text-white rounded-lg transition-colors">立即更新</button>
           <button @click="dismissUpdate" class="px-3 py-2 text-xs text-text-tertiary hover:text-text-secondary border border-surface-3 rounded-lg transition-colors">稍后</button>
@@ -132,17 +194,31 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import RegisterBonusToast from '@/components/RegisterBonusToast.vue'
 import { appName, appAbbr } from '@/utils/branding'
+import { getReleaseNotes, parseUpstreamReleaseNotes } from '@shared/changelog'
 
 const api = () => (window as any).api
 
 const showSetup = ref(false)
 const setupDir = ref('')
+const setupConfirming = ref(false)
+const showSetupRelaunch = ref(false)
 
 const showMigration = ref(false)
-const migrationStep = ref<'ask' | 'migrating' | 'done' | 'error'>('ask')
-const migrationInfo = ref({ oldDir: '', newDir: '', fileCount: 0 })
+const migrationStep = ref<'ask' | 'confirmAbandon' | 'migrating' | 'done' | 'error'>('ask')
+const migrationInfo = ref<{
+  oldDir: string
+  newDir: string
+  fileCount: number
+  tooMany: boolean
+  conflicts: string[]
+  conflictCount: number
+}>({ oldDir: '', newDir: '', fileCount: 0, tooMany: false, conflicts: [], conflictCount: 0 })
 const migrationProgress = ref({ current: 0, total: 0, fileName: '' })
+const migrationResult = ref({ copied: 0, skipped: 0 })
 const migrationError = ref('')
+const conflictStrategy = ref<'keep-existing' | 'overwrite'>('keep-existing')
+const deleteOldAfterRestart = ref(false)
+const finishing = ref(false)
 
 const progressPercent = computed(() => {
   if (!migrationProgress.value.total) return 0
@@ -152,6 +228,7 @@ const progressPercent = computed(() => {
 // === Auto Update ===
 const updateState = ref<'idle' | 'available' | 'downloading' | 'downloaded' | 'error'>('idle')
 const updateVersion = ref('')
+const updateNotes = ref<string[]>([])
 const downloadPercent = ref(0)
 const updateError = ref('')
 
@@ -160,6 +237,9 @@ function setupUpdaterListeners(): void {
   if (!u) return
   u.onAvailable((data) => {
     updateVersion.value = data.version
+    // 优先使用上游 release notes，缺失时回退本地 changelog
+    const upstream = parseUpstreamReleaseNotes((data as any).releaseNotes)
+    updateNotes.value = upstream.length > 0 ? upstream : (getReleaseNotes(data.version) || [])
     updateState.value = 'available'
   })
   u.onProgress((data) => {
@@ -205,17 +285,38 @@ onMounted(async () => {
   }
 })
 
+// 用 path.join 风格统一分隔符。Windows / Unix 都接受正斜杠输入；
+// 但展示给用户时仍按平台习惯（这里只在主进程做最终规范化，renderer 拼接
+// 用平台原生分隔符，避免出现 D:\foo/local-agent 这种混合形态）。
+function joinPath(base: string, child: string): string {
+  const sep = base.includes('\\') ? '\\' : '/'
+  const trimmed = base.replace(/[\\/]+$/, '')
+  return trimmed + sep + child
+}
+
+function endsWithSegment(path: string, segment: string): boolean {
+  return path.endsWith('\\' + segment) || path.endsWith('/' + segment)
+}
+
 async function pickSetupDir() {
   const picked = await api().dataDir.pick()
   if (!picked) return
-  setupDir.value = picked.endsWith('\\local-agent') || picked.endsWith('/local-agent')
-    ? picked
-    : picked.replace(/[\\/]+$/, '') + '\\local-agent'
+  setupDir.value = endsWithSegment(picked, 'local-agent') ? picked : joinPath(picked, 'local-agent')
 }
 
 async function confirmSetup() {
-  await api().dataDir.init(setupDir.value)
-  showSetup.value = false
+  if (setupConfirming.value) return
+  setupConfirming.value = true
+  try {
+    const result = await api().dataDir.init(setupDir.value) as { needsRelaunch: boolean }
+    showSetup.value = false
+    // 用户选了与默认不同的目录 → 当前进程的 db 仍连旧目录，必须重启避免数据切割
+    if (result?.needsRelaunch) {
+      showSetupRelaunch.value = true
+    }
+  } finally {
+    setupConfirming.value = false
+  }
 }
 
 async function startMigration() {
@@ -223,29 +324,62 @@ async function startMigration() {
   api().migration.onProgress((data: { current: number; total: number; fileName: string }) => {
     migrationProgress.value = data
   })
-  const result = await api().migration.start()
-  api().migration.offProgress()
-  if (result.success) {
-    migrationStep.value = 'done'
-  } else {
-    migrationError.value = result.error || 'Unknown error'
+  try {
+    const result = await api().migration.start({ conflictStrategy: conflictStrategy.value }) as {
+      success: boolean
+      error?: string
+      copied: number
+      skipped: number
+    }
+    if (result.success) {
+      migrationResult.value = { copied: result.copied || 0, skipped: result.skipped || 0 }
+      migrationStep.value = 'done'
+    } else {
+      migrationError.value = result.error || 'Unknown error'
+      migrationStep.value = 'error'
+    }
+  } catch (e: any) {
+    migrationError.value = e?.message || String(e)
     migrationStep.value = 'error'
+  } finally {
+    api().migration.offProgress()
   }
 }
 
-async function skipMigration() {
+async function skipMigrationOnce() {
+  // 仅本次跳过，保留 oldDataDir 记录，下次启动仍提示
   await api().migration.skip()
   showMigration.value = false
 }
 
-async function deleteOldAndClose() {
-  await api().migration.deleteOld()
+function confirmAbandon() {
+  migrationStep.value = 'confirmAbandon'
+}
+
+async function abandonOldData() {
+  await api().migration.abandon()
   showMigration.value = false
 }
 
-async function closeMigration() {
-  await api().migration.skip()
-  showMigration.value = false
+async function finishMigration() {
+  if (finishing.value) return
+  finishing.value = true
+  try {
+    if (deleteOldAfterRestart.value) {
+      await api().migration.deleteOld()
+    }
+    await api().app.relaunch()
+  } finally {
+    finishing.value = false
+  }
+}
+
+async function restartAfterError() {
+  await api().app.relaunch()
+}
+
+async function relaunchApp() {
+  await api().app.relaunch()
 }
 
 onUnmounted(() => {

@@ -41,7 +41,9 @@
       </div>
 
       <!-- My plans -->
-      <MyPlansBox />
+      <div ref="myPlansRef">
+        <MyPlansBox />
+      </div>
 
       <!-- Redeem code -->
       <RedeemBox />
@@ -64,6 +66,23 @@
           </div>
           <div v-if="!store.balances.length" class="text-xs text-text-tertiary">-</div>
         </div>
+        <!-- 最近到期预警：仅当最早到期的生效套餐 < 7 天时显示，避免年卡用户被频繁提醒。
+             3-7 天琥珀，<3 天红色；点击滚动到「我的套餐」看详情。 -->
+        <div
+          v-if="nextExpiring"
+          :class="['mt-3 flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer transition-colors',
+            nextExpiring.severity === 'danger'
+              ? 'bg-red-50 hover:bg-red-100'
+              : 'bg-amber-50 hover:bg-amber-100']"
+          @click="scrollToPlans"
+        >
+          <span :class="['text-xs', nextExpiring.severity === 'danger' ? 'text-red-700' : 'text-amber-700']">
+            最近到期
+            <strong class="mx-1">{{ nextExpiring.plan_name }}</strong>
+            <span class="font-mono">{{ nextExpiring.text }}</span>
+          </span>
+          <span :class="['text-xs', nextExpiring.severity === 'danger' ? 'text-red-600' : 'text-amber-600']">查看 →</span>
+        </div>
         <!-- Billing Rules -->
         <div v-if="store.billingRules.length" class="mt-4 pt-4 border-t border-surface-3">
           <h4 class="text-xs font-medium text-text-secondary mb-2">计费标准</h4>
@@ -72,7 +91,7 @@
               class="flex items-center justify-between px-3 py-2 bg-surface-1 rounded-lg text-xs">
               <span class="text-text-primary font-medium">{{ r.model_name }}</span>
               <span v-if="r.billing_type === 'token'" class="text-text-secondary">
-                {{ r.input_price }} / {{ r.output_price }} {{ siteConfig.labels.token }}/M
+                {{ r.input_price }} / {{ r.output_price }} {{ siteConfig.labels.token }} / M tokens
               </span>
               <span v-else class="text-text-secondary">
                 {{ r.credit_per_call }} {{ siteConfig.labels.credit }}/次
@@ -132,7 +151,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useCloudAuthStore } from '@/stores/cloud-auth'
 import { useSiteConfigStore } from '@/stores/site-config'
@@ -149,6 +168,47 @@ const pwdError = ref('')
 const pwdSuccess = ref('')
 const pwdLoading = ref(false)
 const balanceLogsOpen = ref(false)
+const myPlansRef = ref<HTMLElement | null>(null)
+
+/**
+ * 计算「最近要过期」的生效套餐，仅当剩余 < 7 天时才返回预警信息：
+ * - 过滤：status='active' 且 expires_at 非空（永久套餐不参与）
+ * - 按 expires_at 升序取首个（最近过期的）
+ * - 剩余 >= 7 天返回 null，避免年卡用户被不必要的提醒打扰
+ * - 3-7 天：severity='warn'（3-7 天陈色 / 琥珀色）
+ * - <3 天：severity='danger'（红色高优先）
+ * 与 MyPlansBox 里 remainingClass 阈值保持一致。
+ */
+const nextExpiring = computed(() => {
+  const candidates = (store.plans || [])
+    .filter(p => p.status === 'active' && p.expires_at)
+    .sort((a, b) => new Date(a.expires_at!).getTime() - new Date(b.expires_at!).getTime())
+  if (!candidates.length) return null
+  const p = candidates[0]
+  const diff = new Date(p.expires_at!).getTime() - Date.now()
+  if (diff <= 0) return null  // 已过期但后端还未跨上 status 为 expired，此处不预警避免误导
+  const days = diff / 86400000
+  if (days >= 7) return null
+
+  let text: string
+  const wholeDays = Math.floor(days)
+  if (wholeDays >= 1) {
+    text = `还剩 ${wholeDays} 天`
+  } else {
+    const hours = Math.floor(diff / 3600000)
+    if (hours >= 1) text = `还剩 ${hours} 小时`
+    else text = `还剩 ${Math.max(1, Math.floor(diff / 60000))} 分钟`
+  }
+  return {
+    plan_name: p.plan_name,
+    text,
+    severity: days < 3 ? 'danger' as const : 'warn' as const,
+  }
+})
+
+function scrollToPlans() {
+  myPlansRef.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
 
 async function handleChangePassword() {
   pwdError.value = ''

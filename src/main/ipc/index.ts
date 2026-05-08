@@ -1,4 +1,5 @@
-import { ipcMain, BrowserWindow, dialog, clipboard, nativeImage } from 'electron'
+import { ipcMain, BrowserWindow, dialog, clipboard, nativeImage, app } from 'electron'
+import { closeDatabase } from '../database'
 import * as modelProviderService from '../services/model-provider'
 import * as personaService from '../services/persona'
 import * as knowledgeService from '../services/knowledge'
@@ -286,14 +287,17 @@ export function registerIpcHandlers(): void {
   // === Data Directory ===
   ipcMain.handle('dataDir:get', () => dataPathService.getDataDir())
   ipcMain.handle('dataDir:isFirstLaunch', () => dataPathService.isFirstLaunch())
+  // initDataDir / setDataDir 默认 activate=false，仅写 config 不切换运行时缓存。
+  // 由 renderer 拿到 needsRelaunch 信号后弹"立即重启"对话框，避免本次会话数据切割。
   ipcMain.handle('dataDir:init', (_, dir?: string) => {
     dataPathService.initDataDir(dir)
-    return true
+    return { needsRelaunch: !dataPathService.isDataDirActivated() }
   })
   ipcMain.handle('dataDir:set', async (_, dir: string) => {
     dataPathService.setDataDir(dir)
-    return true
+    return { needsRelaunch: !dataPathService.isDataDirActivated() }
   })
+  ipcMain.handle('dataDir:isActivated', () => dataPathService.isDataDirActivated())
   ipcMain.handle('dataDir:pick', async () => {
     const result = await dialog.showOpenDialog({
       title: '选择数据存储目录',
@@ -306,18 +310,35 @@ export function registerIpcHandlers(): void {
 
   // === Data Migration ===
   ipcMain.handle('migration:check', () => dataPathService.checkMigration())
-  ipcMain.handle('migration:start', (event) => {
+  ipcMain.handle('migration:start', async (event, options?: { conflictStrategy?: 'keep-existing' | 'overwrite' }) => {
     const win = BrowserWindow.fromWebContents(event.sender)
+    // 关键：迁移会复制 sqlite db 文件，必须先关闭已打开的句柄，
+    // 否则 Windows 文件锁会让 copyFileSync 失败，或写入正在使用的页缓存破坏一致性。
+    // 迁移完成后调用方应触发 app:relaunch，让下次启动重新打开正确的 db。
+    try { closeDatabase() } catch (e) { console.error('closeDatabase before migration failed:', e) }
     return dataPathService.migrateFiles((current, total, fileName) => {
       if (win && !win.isDestroyed()) {
         win.webContents.send('migration:progress', { current, total, fileName })
       }
-    })
+    }, options)
   })
   ipcMain.handle('migration:deleteOld', () => dataPathService.deleteOldDir())
   ipcMain.handle('migration:skip', () => {
     dataPathService.skipMigration()
     return true
+  })
+  // 永久放弃旧数据目录记录（与 skip 区分：skip 仅本次不弹，下次启动仍提示）。
+  ipcMain.handle('migration:abandon', () => {
+    dataPathService.abandonOldDataDir()
+    return true
+  })
+
+  // === App Lifecycle ===
+  // 触发应用重启。用于：首次配置/设置页修改数据目录后，让 cachedDataDir 与 db 实例同步。
+  ipcMain.handle('app:relaunch', () => {
+    try { closeDatabase() } catch {}
+    app.relaunch()
+    app.exit(0)
   })
 
   // === Settings ===

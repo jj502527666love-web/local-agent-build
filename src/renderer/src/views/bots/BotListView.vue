@@ -26,7 +26,9 @@
             <label class="form-label">模型</label>
             <select v-if="selectedProviderModels.length" v-model="form.model_id" class="select-field">
               <option value="">-- 选择 --</option>
-              <option v-for="m in selectedProviderModels" :key="m" :value="m">{{ m }}</option>
+              <optgroup v-if="modelGroups.recommended.length" label="推荐（对话）">
+                <option v-for="m in modelGroups.recommended" :key="m" :value="m">{{ m }}</option>
+              </optgroup>
             </select>
             <input v-else v-model="form.model_id" placeholder="e.g. gpt-4o" class="input-field" />
           </div>
@@ -165,6 +167,8 @@ import { useKnowledgeStore } from '@/stores/knowledge'
 import { useSkillStore } from '@/stores/skills'
 import { useMcpStore } from '@/stores/mcps'
 import { usePromptSkillStore } from '@/stores/prompt-skills'
+import { groupAndSort } from '@/utils/model-caps'
+import { warmHintsCache, getHintsSync } from '@/utils/model-usage-hints'
 
 const botStore = useBotStore()
 const modelStore = useModelStore()
@@ -202,10 +206,18 @@ const form = ref({
   tool_approval: 'destructive' as ToolApproval
 })
 
-const selectedProviderModels = computed(() => {
-  if (!form.value.model_provider_id) return []
-  const p = modelStore.providers.find((p) => p.id === form.value.model_provider_id)
-  return p?.models || []
+const hintsTick = ref(0)
+const selectedProvider = computed(() =>
+  modelStore.providers.find((p) => p.id === form.value.model_provider_id) || null
+)
+const selectedProviderModels = computed(() => selectedProvider.value?.models || [])
+const modelGroups = computed(() => {
+  hintsTick.value
+  if (!selectedProvider.value) return { recommended: [], others: [] }
+  return groupAndSort(selectedProvider.value.models, 'chat', {
+    cloudTypeOf: (mid) => modelStore.cloudTypeOf(selectedProvider.value!.id, mid),
+    usageHints: getHintsSync('chat', selectedProvider.value.id)
+  })
 })
 
 function resetForm() {
@@ -259,8 +271,10 @@ onMounted(async () => {
     kbStore.fetchCategories(),
     skillStore.fetchSkills(),
     mcpStore.fetchServers(),
-    promptSkillStore.fetchSkills()
+    promptSkillStore.fetchSkills(),
+    warmHintsCache()
   ])
+  hintsTick.value++
 })
 </script>
 

@@ -13,6 +13,47 @@ export interface WorkflowTask {
 
 const api = () => (window as any).api
 
+/** aiText 节点未设置自定义 system_prompt 时使用的默认模板（中文，扩写为生图提示词）。
+ * 用户可在节点 UI 上清空（空字符串）以让 LLM 按用户输入自由响应。 */
+const AI_TEXT_DEFAULT_SYSTEM_PROMPT =
+  '你是文本助手。请将给定文本改写、扩写或润色，使其适合作为 AI 图像生成的提示词。仅输出改写后的文本，不要其他内容。'
+
+/** 按相对/绝对路径的扩展名推断真实 MIME。后端会按 MIME 决定 stripJpeg/stripPng 分支，
+ * 错误的 MIME 会导致 EXIF/ICC 未被剥离，触发上游严格服务（如带微信 ICC 的图片）拒绝。 */
+function inferImageMime(path: string): string {
+  const lastDot = path.lastIndexOf('.')
+  if (lastDot < 0) return 'image/png'
+  const ext = path.slice(lastDot + 1).toLowerCase().replace(/[?#].*$/, '')
+  if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg'
+  if (ext === 'webp') return 'image/webp'
+  if (ext === 'gif') return 'image/gif'
+  return 'image/png'
+}
+
+/** 把上游 images 列表（可能是 data URI、相对路径、或空字符串）统一解析为可直接
+ * 上传的 data URI 数组。读取失败的图片会被跳过并 console.warn——避免把相对路径
+ * 字符串当作 base64 推到上游导致请求乱码失败。 */
+async function resolveRefImages(images: string[]): Promise<string[]> {
+  const result: string[] = []
+  for (const img of images) {
+    if (!img) continue
+    if (img.startsWith('data:')) {
+      result.push(img)
+      continue
+    }
+    try {
+      const dataDir = await api().dataDir.get()
+      const fullPath = `${dataDir}/${img}`
+      const b64 = await api().chat.invoke('readFileBase64', fullPath)
+      const mime = inferImageMime(img)
+      result.push(`data:${mime};base64,${b64}`)
+    } catch (e) {
+      console.warn('[Canvas] 读取参考图失败，已跳过:', img, e)
+    }
+  }
+  return result
+}
+
 // Module-level singletons so all composable consumers share the same state.
 // - workflowRunning: true while runWorkflow owns the canvas
 // - activeSingleRuns: tracks node IDs currently running via executeSingleNode
@@ -99,7 +140,14 @@ export function useWorkflowEngine() {
           if (text) texts.push(text)
         }
       } else if (outputDef.dataType === 'image') {
-        const img = sourceNode.data.result_path || sourceNode.data.image_data || ''
+        // 读取优先级：result_path（生图节点产出，相对路径） > image_path（refImage
+        // 节点落盘后的相对路径） > image_data（refImage 落盘失败时的内存 base64 兜底）。
+        // 旧实现漏读 image_path，导致 refImage 节点持久化成功后参考图 100% 丢失。
+        const img =
+          sourceNode.data.result_path ||
+          sourceNode.data.image_path ||
+          sourceNode.data.image_data ||
+          ''
         if (img) images.push(img)
       }
     }
@@ -160,21 +208,39 @@ export function useWorkflowEngine() {
 
       case 'aiText': {
         const inputText = upstream.texts.join('\n') || node.data.text || ''
-        if (!inputText) throw new Error('No text input')
+        if (!inputText) throw new Error('AI 文本节点需要输入：请连接上游文本或在节点中填写')
 
         const project = canvasStore.currentProject
         if (!project?.text_provider_id || !project?.text_model_id) {
-          throw new Error('Please configure text provider in canvas settings')
+          throw new Error('请先在画布设置中配置文本模型')
         }
 
         await canvasStore.updateNode(nodeId, {
           data: { ...node.data, status: 'running' }
         })
 
-        const result = await api().llm.invoke('call', project.text_provider_id, project.text_model_id, [
-          { role: 'system', content: 'You are a helpful text assistant. Improve, expand, or refine the given text for use as an AI image generation prompt. Output only the improved text, nothing else.' },
-          { role: 'user', content: inputText }
-        ], { notifyStream: false })
+        // node.data.system_prompt 行为：
+        //   未定义（旧节点 / 新建节点）→ 使用默认中文模板（扩写为图像 prompt）
+        //   空字符串                  → 不传 system 角色，让 LLM 按用户输入自由响应
+        //   非空字符串                → 使用用户自定义系统提示词
+        const customSystemPrompt = node.data.system_prompt
+        const systemPrompt =
+          customSystemPrompt === undefined ? AI_TEXT_DEFAULT_SYSTEM_PROMPT : customSystemPrompt
+
+        const messages: Array<{ role: 'system' | 'user'; content: string }> = systemPrompt
+          ? [
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: inputText }
+            ]
+          : [{ role: 'user', content: inputText }]
+
+        const result = await api().llm.invoke(
+          'call',
+          project.text_provider_id,
+          project.text_model_id,
+          messages,
+          { notifyStream: false }
+        )
 
         await canvasStore.updateNode(nodeId, {
           data: { ...node.data, text: inputText, result: result || inputText, status: 'done' }
@@ -186,19 +252,22 @@ export function useWorkflowEngine() {
       case 'text2img': {
         const project = canvasStore.currentProject
         if (!project?.image_provider_id || !project?.image_model_id) {
-          throw new Error('Please configure image provider in canvas settings')
+          throw new Error('请先在画布设置中配置生图模型')
         }
 
         const globalPrompt = project.system_prompt || ''
         const rawPrompt = upstream.texts.join('\n') || ''
-        if (!rawPrompt) throw new Error('No prompt text connected')
-        const prompt = globalPrompt ? `${globalPrompt}\n${rawPrompt}` : rawPrompt
+        if (!rawPrompt) throw new Error('文生图节点需要提示词：请连接文本输入或 AI 文本节点')
+        // 用 "\n\n---\n\n" 分隔全局风格前缀与本次主题，便于模型区分约束与主题
+        const prompt = globalPrompt ? `${globalPrompt}\n\n---\n\n${rawPrompt}` : rawPrompt
 
         await canvasStore.updateNode(nodeId, {
           data: { ...node.data, status: 'running' }
         })
 
-        // Optional: convert upstream reference images to base64
+        const refImageData =
+          upstream.images.length > 0 ? await resolveRefImages(upstream.images) : []
+
         const genOptions: Record<string, any> = {
           prompt,
           modelProviderId: project.image_provider_id,
@@ -207,23 +276,7 @@ export function useWorkflowEngine() {
           tierId: node.data.tier_id || '2k',
           quality: node.data.quality || 'auto'
         }
-
-        if (upstream.images.length > 0) {
-          const refImageData: string[] = []
-          for (const img of upstream.images) {
-            if (img.startsWith('data:')) {
-              refImageData.push(img)
-            } else {
-              try {
-                const dataDir = await api().dataDir.get()
-                const fullPath = `${dataDir}/${img}`
-                const b64 = await api().chat.invoke('readFileBase64', fullPath)
-                refImageData.push(`data:image/png;base64,${b64}`)
-              } catch {
-                refImageData.push(img)
-              }
-            }
-          }
+        if (refImageData.length > 0) {
           genOptions.refImages = refImageData
         }
 
@@ -237,49 +290,44 @@ export function useWorkflowEngine() {
               status: 'done',
               generation_id: gen.id,
               result_path: gen.result_path,
-              revised_prompt: gen.revised_prompt || ''
+              revised_prompt: gen.revised_prompt || '',
+              ref_image_count: refImageData.length
             }
           })
           await recordUsage('image', project.image_provider_id, project.image_model_id)
         } else {
-          throw new Error(gen?.error || 'Image generation failed')
+          throw new Error(gen?.error || '图像生成失败')
         }
         break
       }
 
       case 'img2img': {
-        const refImages = upstream.images
-        if (!refImages.length) throw new Error('No reference image connected')
+        if (!upstream.images.length) {
+          throw new Error('图生图节点需要参考图：请连接参考图节点或上游图像节点')
+        }
 
         const project = canvasStore.currentProject
         if (!project?.image_provider_id || !project?.image_model_id) {
-          throw new Error('Please configure image provider in canvas settings')
+          throw new Error('请先在画布设置中配置生图模型')
         }
 
         const globalPromptImg = project?.system_prompt || ''
-        const rawPromptImg = upstream.texts.join('\n') || node.data.prompt || 'Generate a variation of this image'
-        const prompt = globalPromptImg ? `${globalPromptImg}\n${rawPromptImg}` : rawPromptImg
+        const rawPromptImg = upstream.texts.join('\n') || node.data.prompt || ''
+        if (!rawPromptImg && !globalPromptImg) {
+          throw new Error('图生图节点需要提示词：请连接文本输入、在节点中填写描述或在画布全局提示词中配置')
+        }
+        const prompt =
+          globalPromptImg && rawPromptImg
+            ? `${globalPromptImg}\n\n---\n\n${rawPromptImg}`
+            : globalPromptImg || rawPromptImg
 
         await canvasStore.updateNode(nodeId, {
           data: { ...node.data, status: 'running' }
         })
 
-        // Convert file paths to base64 for ref images
-        const refImageData: string[] = []
-        for (const img of refImages) {
-          if (img.startsWith('data:')) {
-            refImageData.push(img)
-          } else {
-            // It's a relative path, read as base64
-            try {
-              const dataDir = await api().dataDir.get()
-              const fullPath = `${dataDir}/${img}`
-              const b64 = await api().chat.invoke('readFileBase64', fullPath)
-              refImageData.push(`data:image/png;base64,${b64}`)
-            } catch {
-              refImageData.push(img)
-            }
-          }
+        const refImageData = await resolveRefImages(upstream.images)
+        if (refImageData.length === 0) {
+          throw new Error('参考图读取失败：请检查上游参考图节点是否有效')
         }
 
         const genResults = await api().imageGen.invoke('generate', {
@@ -300,12 +348,13 @@ export function useWorkflowEngine() {
               status: 'done',
               generation_id: gen.id,
               result_path: gen.result_path,
-              revised_prompt: gen.revised_prompt || ''
+              revised_prompt: gen.revised_prompt || '',
+              ref_image_count: refImageData.length
             }
           })
           await recordUsage('image', project.image_provider_id, project.image_model_id)
         } else {
-          throw new Error(gen?.error || 'Image generation failed')
+          throw new Error(gen?.error || '图像生成失败')
         }
         break
       }
@@ -339,7 +388,7 @@ export function useWorkflowEngine() {
           // Source nodes with data are exempt
           if (node.type === 'textInput' && node.data.text) continue
           if (node.type === 'refImage' && (node.data.image_data || node.data.image_path)) continue
-          errors.push(`${def.label} node missing required input: ${input.handle}`)
+          errors.push(`${def.label} 节点缺少必需输入：${input.handle}`)
         }
       }
     }
@@ -355,9 +404,9 @@ export function useWorkflowEngine() {
   }
 
   async function runWorkflow(projectId: string): Promise<{ ok: boolean; message: string }> {
-    if (workflowRunning.value) return { ok: false, message: 'Workflow already running' }
+    if (workflowRunning.value) return { ok: false, message: '工作流正在运行中' }
     if (activeSingleRuns.value.size > 0) {
-      return { ok: false, message: 'Single-node execution in progress, please wait' }
+      return { ok: false, message: '有节点正在单独执行，请稍候' }
     }
     workflowRunning.value = true
     const canvasStore = useCanvasStore()
@@ -372,7 +421,7 @@ export function useWorkflowEngine() {
       const concurrency = Math.max(1, canvasStore.currentProject?.concurrency || 1)
       const projectNodes = canvasStore.nodes.filter((n) => n.project_id === projectId)
       const sorted = topologicalSort(projectId)
-      if (sorted.length === 0) throw new Error('No nodes to execute')
+      if (sorted.length === 0) throw new Error('没有可执行的节点')
 
       // Cycle detection: Kahn's algorithm drops cycle nodes; compare lengths
       if (sorted.length !== projectNodes.length) {
@@ -382,7 +431,7 @@ export function useWorkflowEngine() {
             const def = getNodeTypeDef(n.type)
             return def?.label || n.type
           })
-        throw new Error(`Detected cycle involving nodes: ${inCycle.join(', ')}`)
+        throw new Error(`检测到循环依赖：${inCycle.join('、')}`)
       }
 
       // Initialize statuses
@@ -424,7 +473,7 @@ export function useWorkflowEngine() {
           statusMap.set(nodeId, 'blocked')
           return canvasStore
             .updateNode(nodeId, {
-              data: { ...node.data, status: 'blocked', error: `Missing inputs: ${missing.join(', ')}` }
+              data: { ...node.data, status: 'blocked', error: `缺少必需输入：${missing.join('、')}` }
             })
             .then(() => {})
         }
@@ -437,7 +486,7 @@ export function useWorkflowEngine() {
           .catch(async (e: any) => {
             statusMap.set(nodeId, 'error')
             await canvasStore.updateNode(nodeId, {
-              data: { ...node.data, status: 'error', error: e?.message || 'Unknown error' }
+              data: { ...node.data, status: 'error', error: e?.message || '未知错误' }
             })
           })
       }
@@ -473,7 +522,7 @@ export function useWorkflowEngine() {
           const node = canvasStore.nodes.find((n) => n.id === nodeId)
           if (node) {
             await canvasStore.updateNode(nodeId, {
-              data: { ...node.data, status: 'blocked', error: 'Upstream node failed' }
+              data: { ...node.data, status: 'blocked', error: '上游节点执行失败' }
             })
           }
         }
@@ -505,20 +554,20 @@ export function useWorkflowEngine() {
       const errorCount = [...statusMap.values()].filter((s) => s === 'error').length
       const blockedCount = [...statusMap.values()].filter((s) => s === 'blocked').length
       if (errorCount > 0 || blockedCount > 0) {
-        return { ok: false, message: `${doneCount} done, ${errorCount} error, ${blockedCount} blocked` }
+        return { ok: false, message: `${doneCount} 个完成，${errorCount} 个失败，${blockedCount} 个阻塞` }
       }
-      return { ok: true, message: `${doneCount} nodes done` }
+      return { ok: true, message: `${doneCount} 个节点完成` }
     } catch (e: any) {
       // Global workflow error — surface it on all pending nodes
       const canvasStore2 = useCanvasStore()
       for (const node of canvasStore2.nodes.filter((n) => n.project_id === projectId)) {
         if (!node.data.status || node.data.status === 'pending') {
           await canvasStore2.updateNode(node.id, {
-            data: { ...node.data, status: 'error', error: e?.message || 'Workflow failed' }
+            data: { ...node.data, status: 'error', error: e?.message || '工作流执行失败' }
           })
         }
       }
-      return { ok: false, message: e?.message || 'Workflow failed' }
+      return { ok: false, message: e?.message || '工作流执行失败' }
     } finally {
       workflowRunning.value = false
     }
@@ -536,7 +585,7 @@ export function useWorkflowEngine() {
     const def = getNodeTypeDef(node.type)
     if (!ok && def && def.inputs.some((i) => i.required)) {
       await canvasStore.updateNode(nodeId, {
-        data: { ...node.data, status: 'error', error: `Missing required inputs: ${missing.join(', ')}` }
+        data: { ...node.data, status: 'error', error: `缺少必需输入：${missing.join('、')}` }
       })
       return
     }
@@ -549,7 +598,7 @@ export function useWorkflowEngine() {
       await executeNode(nodeId, projectId)
     } catch (e: any) {
       await canvasStore.updateNode(nodeId, {
-        data: { ...node.data, status: 'error', error: e?.message || 'Unknown error' }
+        data: { ...node.data, status: 'error', error: e?.message || '未知错误' }
       })
     } finally {
       const cleared = new Set(activeSingleRuns.value)

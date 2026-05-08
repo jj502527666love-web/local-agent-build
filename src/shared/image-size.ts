@@ -3,8 +3,8 @@
  *
  * 支持三类 value：
  *  - 预设比例 value（如 "1:1" / "9:21"）→ 走权威像素
- *  - 自定义比例（如 "7:3"）→ 按长边策略换算为 snap-to-8 像素
- *  - 自定义像素（如 "960x1280" / "960×1280"）→ 原样透传（snap 到 8 的倍数）
+ *  - 自定义比例（如 "7:3"）→ 按长边策略换算为 snap 到 PIXEL_SNAP 倍数
+ *  - 自定义像素（如 "960x1280" / "960×1280"）→ 原样透传（snap 到 PIXEL_SNAP 倍数）
  */
 
 export interface ImageSizePreset {
@@ -46,8 +46,8 @@ export const PIXEL_MIN = 64
 export const PIXEL_MAX = 4096
 /** 比例分子/分母上限：避免 "1000:1" 这种不合理输入 */
 export const RATIO_MAX = 64
-/** 像素 snap 基数：多数扩散模型要求尺寸为 8 的倍数 */
-export const PIXEL_SNAP = 8
+/** 像素 snap 基数：上游 gpt-image-2 实测按 16 对齐，使用更小的 step 会被服务端二次降级 */
+export const PIXEL_SNAP = 16
 
 /**
  * 上游模型的"通用能力档位"边界。
@@ -120,7 +120,7 @@ const GPT_IMAGE_QUALITIES: ImageQualityOption[] = [
  * 后续可迁移到管理后台 cloud_models.image_capability 字段。
  */
 const CAPABILITIES: Record<string, ModelImageCapability> = {
-  // 云端网关的 gpt-image-2：实测可出 3840x2160，4096² 会被静默降级到 1254²
+  // 云端网关的 gpt-image-2：实测上限 = 3840×2160 = 8_294_400 像素，超出会被静默降级
   'gpt-image-2': {
     tiers: [
       { id: '1k', label: '1K', longSide: 1024 },
@@ -128,7 +128,7 @@ const CAPABILITIES: Record<string, ModelImageCapability> = {
       { id: '4k', label: '4K', longSide: 3840, note: '较慢' }
     ],
     maxRatio: 4,
-    maxTotalPixels: 8_500_000,
+    maxTotalPixels: 8_294_400,
     qualities: GPT_IMAGE_QUALITIES
   },
   'gpt-image-1': {
@@ -226,16 +226,19 @@ export function parsePixels(v: string): { w: number; h: number } | null {
   return { w, h }
 }
 
-/** snap 到最近的 step 倍数，并 clamp 到 [min, max] */
+/**
+ * snap 到 step 倍数（向下），并 clamp 到 [min, max]。
+ * 向下取整可保证 snap 后的值不会超过 clamp 已经满足的总像素上限。
+ */
 function snap(n: number, step: number, min: number, max: number): number {
-  const v = Math.round(n / step) * step
+  const v = Math.floor(n / step) * step
   return Math.max(min, Math.min(max, v))
 }
 
 export interface ResolveOptions {
   /** 自定义比例换算时的长边。与 modelId+tierId 冲突时后者优先。默认回退 1792。 */
   longSide?: number
-  /** snap 基数，默认 8 */
+  /** snap 基数，默认 PIXEL_SNAP */
   snap?: number
   /** 模型 id，用于查 capability（决定长边上限、总像素上限、比例上限） */
   modelId?: string

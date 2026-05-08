@@ -18,6 +18,17 @@
         </div>
       </div>
       <div class="flex items-center gap-2">
+        <template v-if="selectMode">
+          <span class="text-[11px] text-text-tertiary">{{ selectedIds.size }} 项已选</span>
+          <button @click="toggleSelectAll" class="text-[11px] text-primary-600 hover:text-primary-700">{{ items.length > 0 && items.every(g => selectedIds.has(g.id)) ? '取消本页全选' : '本页全选' }}</button>
+          <button v-if="selectedIds.size > 0" @click="deleteSelected" class="text-[11px] text-red-500 hover:text-red-600">删除所选</button>
+        </template>
+        <button v-if="items.length && !selectMode" @click="toggleSelectMode" class="p-1.5 rounded text-text-tertiary hover:text-text-secondary" title="选择">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" /></svg>
+        </button>
+        <button v-if="selectMode" @click="toggleSelectMode" class="p-1.5 rounded bg-primary-100 text-primary-600" title="退出选择">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" /></svg>
+        </button>
         <button
           v-if="failedCount > 0"
           @click="clearFailed"
@@ -53,10 +64,18 @@
         <div
           v-for="item in items"
           :key="item.id"
-          @click="openDetail(item)"
-          class="cursor-pointer rounded-xl overflow-hidden border border-surface-3 bg-surface-0 shadow-sm hover:shadow-md transition-shadow group"
+          @click="selectMode ? toggleSelect(item.id) : openDetail(item)"
+          :class="['cursor-pointer rounded-xl overflow-hidden border bg-surface-0 shadow-sm hover:shadow-md transition-shadow group', selectedIds.has(item.id) ? 'border-primary-500 ring-1 ring-primary-500' : 'border-surface-3']"
         >
           <div class="aspect-square bg-surface-2 overflow-hidden relative">
+            <div v-if="selectMode" class="absolute top-1.5 left-1.5 z-10">
+              <div :class="['w-5 h-5 rounded-full border-2 flex items-center justify-center transition-colors', selectedIds.has(item.id) ? 'bg-primary-600 border-primary-600' : 'bg-white/80 border-surface-4']">
+                <svg v-if="selectedIds.has(item.id)" class="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="m4.5 12.75 6 6 9-13.5" /></svg>
+              </div>
+            </div>
+            <button v-if="!selectMode" @click.stop="deleteSingle(item.id)" class="absolute top-1.5 right-1.5 z-10 opacity-0 group-hover:opacity-100 w-6 h-6 rounded-full bg-black/40 hover:bg-red-500 text-white flex items-center justify-center transition-all" title="删除">
+              <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18 18 6M6 6l12 12" /></svg>
+            </button>
             <img v-if="item.result_path" :src="localFileUrl(item.result_path)" class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
             <div v-else class="w-full h-full flex items-center justify-center">
               <svg class="w-10 h-10 text-text-disabled" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909M3.75 21h16.5A2.25 2.25 0 0 0 22.5 18.75V5.25A2.25 2.25 0 0 0 20.25 3H3.75A2.25 2.25 0 0 0 1.5 5.25v13.5A2.25 2.25 0 0 0 3.75 21Z" /></svg>
@@ -174,6 +193,10 @@
 
           <!-- Actions -->
           <div class="flex gap-2 flex-wrap">
+            <button @click="deleteFromDetail" class="btn-secondary text-xs flex items-center gap-1.5 text-red-500 hover:text-red-600 hover:bg-red-50">
+              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165" /></svg>
+              删除
+            </button>
             <button v-if="detailItem.result_path" @click="openFolder(detailItem.result_path)" class="btn-secondary text-xs flex items-center gap-1.5">
               <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 0 0-1.883 2.542l.857 6a2.25 2.25 0 0 0 2.227 1.932H19.05a2.25 2.25 0 0 0 2.227-1.932l.857-6a2.25 2.25 0 0 0-1.883-2.542m-16.5 0V6A2.25 2.25 0 0 1 6 3.75h3.879a1.5 1.5 0 0 1 1.06.44l2.122 2.12a1.5 1.5 0 0 0 1.06.44H18A2.25 2.25 0 0 1 20.25 9v.776" /></svg>
               打开所在目录
@@ -331,6 +354,65 @@ async function clearFailed() {
     copyToast.value = '清理失败：' + (e?.message || '')
     setTimeout(() => { copyToast.value = '' }, 2000)
   }
+}
+
+const selectMode = ref(false)
+const selectedIds = ref<Set<string>>(new Set())
+
+function toggleSelectMode() {
+  selectMode.value = !selectMode.value
+  if (!selectMode.value) selectedIds.value = new Set()
+}
+
+function toggleSelect(id: string) {
+  const s = new Set(selectedIds.value)
+  if (s.has(id)) s.delete(id)
+  else s.add(id)
+  selectedIds.value = s
+}
+
+function toggleSelectAll() {
+  const pageIds = items.value.map(g => g.id)
+  const allSelected = pageIds.every(id => selectedIds.value.has(id))
+  const next = new Set(selectedIds.value)
+  if (allSelected) {
+    pageIds.forEach(id => next.delete(id))
+  } else {
+    pageIds.forEach(id => next.add(id))
+  }
+  selectedIds.value = next
+}
+
+async function deleteSingle(id: string) {
+  await api().imageGen.invoke('deleteGeneration', id)
+  items.value = items.value.filter(g => g.id !== id)
+  total.value = Math.max(0, total.value - 1)
+  if (!items.value.length && total.value > 0) {
+    page.value = Math.max(1, Math.min(page.value, Math.ceil(total.value / pageSize)))
+    await fetchData()
+  }
+}
+
+async function deleteSelected() {
+  if (!selectedIds.value.size) return
+  const ids = [...selectedIds.value]
+  await api().imageGen.invoke('deleteGenerations', JSON.parse(JSON.stringify(ids)))
+  const idSet = new Set(ids)
+  items.value = items.value.filter(g => !idSet.has(g.id))
+  total.value = Math.max(0, total.value - ids.length)
+  selectedIds.value = new Set()
+  if (!items.value.length) selectMode.value = false
+  if (!items.value.length && total.value > 0) {
+    page.value = Math.max(1, Math.min(page.value, Math.ceil(total.value / pageSize)))
+    await fetchData()
+  }
+}
+
+async function deleteFromDetail() {
+  if (!detailItem.value) return
+  const id = detailItem.value.id
+  detailItem.value = null
+  await deleteSingle(id)
 }
 
 function openDetail(item: ImageGeneration) {

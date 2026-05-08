@@ -59,18 +59,34 @@ async function request(method: string, path: string, body?: unknown, options: Re
     if (deviceId) headers['X-Device-Id'] = deviceId
   }
 
-  const res = await fetch(`${getCloudApiBase()}${path}`, {
-    method,
-    headers,
-    body: body ? JSON.stringify(body) : undefined
-  })
-
-  if (res.status === 401) {
-    clearCloudAuth()
-    throw new Error('AUTH_EXPIRED')
+  let res: Response
+  try {
+    res = await fetch(`${getCloudApiBase()}${path}`, {
+      method,
+      headers,
+      body: body ? JSON.stringify(body) : undefined
+    })
+  } catch (e: any) {
+    throw new Error(e?.message?.includes('fetch') ? '网络请求失败，请检查网络连接' : (e?.message || '网络异常'))
   }
 
-  const data = await res.json()
+  let data: any
+  try {
+    data = await res.json()
+  } catch {
+    if (!res.ok) throw new Error(`服务器错误 (${res.status})`)
+    throw new Error('服务器返回了无效的响应')
+  }
+
+  if (res.status === 401) {
+    // Auth endpoints (login) return 401 with meaningful error; non-auth 401 means token expired
+    if (data?.error) {
+      throw new Error(data.error)
+    }
+    clearCloudAuth()
+    throw new Error('登录已过期，请重新登录')
+  }
+
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
   return data
 }
@@ -105,8 +121,11 @@ export const cloudClient = {
   redeem: (code: string) => request('POST', '/client/redeem', { code }),
   // 商城列表（所有 active 套餐）
   listStorePlans: () => request('GET', '/client/plans'),
-  // 订单：创建 / 查询 / 取消
+  // 订单：创建 / 查询 / 取消（微信支付通道）
   createOrder: (planId: number) => request('POST', '/client/orders', { plan_id: planId }),
   getOrder: (orderNo: string) => request('GET', `/client/orders/${orderNo}`),
   cancelOrder: (orderNo: string) => request('POST', `/client/orders/${orderNo}/cancel`),
+  // 订单：创建 / 同步（天阙聚合支付通道，无异步 notify 需主动轮询同步）
+  createTianqueOrder: (planId: number) => request('POST', '/client/orders/tianque', { plan_id: planId }),
+  syncTianqueOrder: (orderNo: string) => request('POST', `/client/orders/${orderNo}/tianque-sync`),
 }

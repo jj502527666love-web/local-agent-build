@@ -9,7 +9,7 @@
       >
         <!-- Header -->
         <div class="flex items-center justify-between px-5 py-3 border-b border-surface-2">
-          <h3 class="text-sm font-semibold text-text-primary">微信支付</h3>
+          <h3 class="text-sm font-semibold text-text-primary">{{ methodTitle }}</h3>
           <button
             type="button"
             class="text-text-tertiary hover:text-text-primary"
@@ -23,6 +23,35 @@
         </div>
 
         <div class="px-6 py-5">
+          <!-- 支付方式切换器：pending 状态下可切换，已支付或已关闭后隐藏 -->
+          <div
+            v-if="!status || status === 'pending'"
+            class="grid grid-cols-2 gap-2 mb-4"
+          >
+            <button
+              type="button"
+              class="py-2 text-xs font-medium rounded-lg border transition-colors"
+              :class="paymentMethod === 'wechat'
+                ? 'border-primary-600 bg-primary-50 text-primary-700'
+                : 'border-surface-3 text-text-secondary hover:bg-surface-2'"
+              :disabled="creating || switching"
+              @click="switchMethod('wechat')"
+            >
+              微信支付
+            </button>
+            <button
+              type="button"
+              class="py-2 text-xs font-medium rounded-lg border transition-colors"
+              :class="paymentMethod === 'tianque'
+                ? 'border-primary-600 bg-primary-50 text-primary-700'
+                : 'border-surface-3 text-text-secondary hover:bg-surface-2'"
+              :disabled="creating || switching"
+              @click="switchMethod('tianque')"
+            >
+              天阙聚合
+            </button>
+          </div>
+
           <!-- Plan summary -->
           <div class="flex items-baseline justify-between mb-4">
             <div class="min-w-0">
@@ -65,7 +94,7 @@
               </div>
             </div>
             <p class="text-center text-xs text-text-secondary mb-1">
-              请使用微信扫码支付
+              {{ scanHint }}
             </p>
             <p class="text-center text-[11px] text-text-tertiary">
               剩余 <span class="font-mono text-text-secondary">{{ countdownText }}</span>
@@ -217,6 +246,19 @@ const copyTip = ref('')
 const pollErrorTip = ref('')
 const qrCanvas = ref<HTMLCanvasElement | null>(null)
 
+// 支付方式：微信走 Native 扫码，天阙走聚合主扫（同一二维码支持多渠道）
+const paymentMethod = ref<'wechat' | 'tianque'>('wechat')
+const switching = ref(false)
+
+const methodTitle = computed(() =>
+  paymentMethod.value === 'wechat' ? '微信支付' : '天阙聚合支付'
+)
+const scanHint = computed(() =>
+  paymentMethod.value === 'wechat'
+    ? '请使用微信扫码支付'
+    : '微信 / 支付宝 / 云闪付 / 数字人民币 扫码支付'
+)
+
 let pollTimer: ReturnType<typeof setInterval> | null = null
 let countdownTimer: ReturnType<typeof setInterval> | null = null
 let consecutiveFails = 0
@@ -312,7 +354,11 @@ function startPolling() {
   pollTimer = setInterval(async () => {
     if (!orderNo.value || status.value !== 'pending') return
     try {
-      const data = await cloudClient.getOrder(orderNo.value)
+      // 微信：被动轮询本地状态（服务端有异步 notify 同步）
+      // 天阙：主动调同步接口推动服务端查天阙 + 同步本地
+      const data = paymentMethod.value === 'wechat'
+        ? await cloudClient.getOrder(orderNo.value)
+        : await cloudClient.syncTianqueOrder(orderNo.value)
       consecutiveFails = 0
       pollErrorTip.value = ''
       applyOrderUpdate(data)
@@ -349,7 +395,9 @@ async function handleRefresh() {
   if (!orderNo.value) return
   refreshing.value = true
   try {
-    const data = await cloudClient.getOrder(orderNo.value)
+    const data = paymentMethod.value === 'wechat'
+      ? await cloudClient.getOrder(orderNo.value)
+      : await cloudClient.syncTianqueOrder(orderNo.value)
     pollErrorTip.value = ''
     consecutiveFails = 0
     applyOrderUpdate(data)
@@ -365,7 +413,10 @@ async function handleCancel() {
   if (!orderNo.value || cancelling.value) return
   cancelling.value = true
   try {
-    await cloudClient.cancelOrder(orderNo.value)
+    if (paymentMethod.value === 'wechat') {
+      await cloudClient.cancelOrder(orderNo.value)
+    }
+    // 天阙暂无 cancel 接口：订单 15 分钟后自动过期，本地直接标记关闭
     status.value = 'closed'
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
     if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null }
@@ -383,15 +434,47 @@ function handleClose() {
   emit('update:visible', false)
 
   if (wasPending && closingOrderNo) {
-    // fire-and-forget：检查最新状态、仅当仍是 pending 时 cancel
-    void (async () => {
-      try {
-        const latest = await cloudClient.getOrder(closingOrderNo)
-        if (latest?.status === 'pending') {
+    const closingMethod = paymentMethod.value
+    // 天阙暂无 cancel 接口，依赖服务端 15 分钟过期机制，不需 fire-and-forget
+    if (closingMethod === 'wechat') {
+      // fire-and-forget：检查最新状态、仅当仍是 pending 时 cancel
+      void (async () => {
+        try {
+          const latest = await cloudClient.getOrder(closingOrderNo)
+          if (latest?.status === 'pending') {
+            await cloudClient.cancelOrder(closingOrderNo).catch(() => {})
+          }
+        } catch { /* 网络错误忽略，订单超期后会被定时任务关闭 */ }
+      })()
+    }
+  }
+}
+
+/**
+ * 支付方式切换：如现有 pending 订单先关闭，然后重新创建。
+ * 避免同一用户同一 plan 同时有两个未完成订单。
+ */
+async function switchMethod(m: 'wechat' | 'tianque') {
+  if (m === paymentMethod.value || switching.value || creating.value) return
+  switching.value = true
+  try {
+    // 如果有未完成订单，先关掉（避免不同渠道留两个 pending 订单）
+    if (status.value === 'pending' && orderNo.value) {
+      const closingOrderNo = orderNo.value
+      const closingMethod = paymentMethod.value
+      void (async () => {
+        if (closingMethod === 'wechat') {
           await cloudClient.cancelOrder(closingOrderNo).catch(() => {})
         }
-      } catch { /* 网络错误忽略，订单超期后会被定时任务关闭 */ }
-    })()
+        // 天阙：走服务端过期自清
+      })()
+    }
+    paymentMethod.value = m
+    cleanupTimers()
+    resetState()
+    if (props.planId) await ensureOrder()
+  } finally {
+    switching.value = false
   }
 }
 
@@ -428,7 +511,9 @@ async function ensureOrder() {
   resetState()
   creating.value = true
   try {
-    const data = (await cloudClient.createOrder(props.planId)) as OrderResponse
+    const data = paymentMethod.value === 'wechat'
+      ? (await cloudClient.createOrder(props.planId)) as OrderResponse
+      : (await cloudClient.createTianqueOrder(props.planId)) as OrderResponse
     orderNo.value = data.order_no
     codeUrl.value = data.code_url
     amount.value = data.amount
@@ -437,19 +522,23 @@ async function ensureOrder() {
     expiresAt.value = data.expires_at
     reused.value = !!data.reused
     plan.value = data.plan
-    if (codeUrl.value) await renderQrCode(codeUrl.value)
-    if (status.value === 'pending') {
-      startCountdown()
-      startPolling()
-    } else if (status.value === 'paid') {
-      // 已支付（理论上不会发生，但防御）
-      applyOrderUpdate({ status: 'paid', paid_at: new Date().toISOString() })
-    }
   } catch (e: any) {
     createError.value = e?.message || '创建订单失败'
   } finally {
     creating.value = false
     inflightPlanId = null
+  }
+
+  // 关键：必须等 creating=false 后 canvas DOM 才会从 v-else-if 分支 mount 出来；
+  // 在 try 内调 renderQrCode 时 canvas 还在 v-if="creating" 占位的 loading 块里，
+  // qrCanvas.value === null 会让 QRCode.toCanvas 静默跳过，导致二维码永远空白。
+  if (codeUrl.value && status.value === 'pending') {
+    await renderQrCode(codeUrl.value)
+    startCountdown()
+    startPolling()
+  } else if (status.value === 'paid') {
+    // 已支付（理论上不会发生，但防御）
+    applyOrderUpdate({ status: 'paid', paid_at: new Date().toISOString() })
   }
 }
 

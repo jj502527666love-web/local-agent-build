@@ -135,19 +135,25 @@ const api = {
   dataDir: {
     get: () => ipcRenderer.invoke('dataDir:get'),
     isFirstLaunch: () => ipcRenderer.invoke('dataDir:isFirstLaunch'),
+    isActivated: () => ipcRenderer.invoke('dataDir:isActivated'),
     init: (dir?: string) => ipcRenderer.invoke('dataDir:init', dir),
     set: (dir: string) => ipcRenderer.invoke('dataDir:set', dir),
     pick: () => ipcRenderer.invoke('dataDir:pick')
   },
   migration: {
     check: () => ipcRenderer.invoke('migration:check'),
-    start: () => ipcRenderer.invoke('migration:start'),
+    start: (options?: { conflictStrategy?: 'keep-existing' | 'overwrite' }) =>
+      ipcRenderer.invoke('migration:start', options),
     deleteOld: () => ipcRenderer.invoke('migration:deleteOld'),
     skip: () => ipcRenderer.invoke('migration:skip'),
+    abandon: () => ipcRenderer.invoke('migration:abandon'),
     onProgress: (cb: (data: { current: number; total: number; fileName: string }) => void) => {
       ipcRenderer.on('migration:progress', (_, data) => cb(data))
     },
     offProgress: () => ipcRenderer.removeAllListeners('migration:progress')
+  },
+  app: {
+    relaunch: () => ipcRenderer.invoke('app:relaunch')
   },
   dialog: {
     openFile: (options?: unknown) => ipcRenderer.invoke('dialog:openFile', options)

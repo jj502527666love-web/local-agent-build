@@ -151,7 +151,9 @@
             <label class="text-xs font-medium text-text-secondary mb-1 block">模型</label>
             <select v-model="optimizeModelId" class="w-full px-3 py-2 text-xs border border-surface-3 rounded-lg bg-surface-1 outline-none focus:ring-2 focus:ring-primary-500" :disabled="!optimizeProviderModels.length">
               <option value="">-- 选择模型 --</option>
-              <option v-for="m in optimizeProviderModels" :key="m" :value="m">{{ m }}</option>
+              <optgroup v-if="optimizeModelGroups.recommended.length" label="推荐（对话）">
+                <option v-for="m in optimizeModelGroups.recommended" :key="m" :value="m">{{ m }}</option>
+              </optgroup>
             </select>
             <input v-if="optimizeProviderId && !optimizeProviderModels.length" v-model="optimizeModelId" placeholder="输入模型名称" class="w-full mt-2 px-3 py-2 text-xs border border-surface-3 rounded-lg bg-surface-1 outline-none focus:ring-2 focus:ring-primary-500" />
           </div>
@@ -171,6 +173,8 @@ import { ref, computed, watch, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { usePromptPresetStore, type PromptCategory, type PromptPreset } from '@/stores/prompt-presets'
 import { useModelStore } from '@/stores/models'
+import { groupAndSort } from '@/utils/model-caps'
+import { warmHintsCache, getHintsSync, recordUsage } from '@/utils/model-usage-hints'
 
 const route = useRoute()
 const router = useRouter()
@@ -293,10 +297,18 @@ const optimizing = ref(false)
 const optimizeError = ref('')
 
 const languageProviders = computed(() => modelStore.providers)
-const optimizeProviderModels = computed(() => {
-  if (!optimizeProviderId.value) return []
-  const p = modelStore.providers.find((p) => p.id === optimizeProviderId.value)
-  return p?.models || []
+const hintsTick = ref(0)
+const optimizeProvider = computed(() =>
+  modelStore.providers.find((p) => p.id === optimizeProviderId.value) || null
+)
+const optimizeProviderModels = computed(() => optimizeProvider.value?.models || [])
+const optimizeModelGroups = computed(() => {
+  hintsTick.value
+  if (!optimizeProvider.value) return { recommended: [], others: [] }
+  return groupAndSort(optimizeProvider.value.models, 'chat', {
+    cloudTypeOf: (mid) => modelStore.cloudTypeOf(optimizeProvider.value!.id, mid),
+    usageHints: getHintsSync('chat', optimizeProvider.value.id)
+  })
 })
 
 const OPTIMIZE_SYSTEM_PROMPT = `你是一个专业的 AI 提示词工程师。请优化以下提示词，使其更加清晰、有效。
@@ -323,6 +335,8 @@ async function doOptimize() {
     if (result) {
       presetForm.value.content = result
       showOptimizeModal.value = false
+      await recordUsage('chat', optimizeProviderId.value, optimizeModelId.value)
+      hintsTick.value++
     } else {
       optimizeError.value = 'AI 返回了空结果'
     }
@@ -334,7 +348,8 @@ async function doOptimize() {
 }
 
 onMounted(async () => {
-  await Promise.all([store.fetchAll(), modelStore.fetchProviders()])
+  await Promise.all([store.fetchAll(), modelStore.fetchProviders(), warmHintsCache()])
+  hintsTick.value++
 
   // Auto-open create modal when navigated here with ?action=create
   // (e.g. from Image2PromptView "存入预设")

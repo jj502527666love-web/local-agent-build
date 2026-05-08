@@ -81,9 +81,6 @@
                   <optgroup v-if="selectedModelGroups.recommended.length" label="推荐（生图）">
                     <option v-for="m in selectedModelGroups.recommended" :key="m" :value="m">{{ m }}</option>
                   </optgroup>
-                  <optgroup v-if="selectedModelGroups.others.length" label="其他可用">
-                    <option v-for="m in selectedModelGroups.others" :key="m" :value="m">{{ m }}</option>
-                  </optgroup>
                 </select>
                 <input v-if="selectedProviderId && !selectedProviderModels.length" v-model="selectedModelId" placeholder="输入模型名称" class="w-full mt-2 px-3 py-2 text-xs bg-surface-1 border border-surface-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500" />
               </div>
@@ -99,9 +96,6 @@
                   <option value="">-- 选择模型 --</option>
                   <optgroup v-if="optimizeModelGroups.recommended.length" label="推荐（对话）">
                     <option v-for="m in optimizeModelGroups.recommended" :key="m" :value="m">{{ m }}</option>
-                  </optgroup>
-                  <optgroup v-if="optimizeModelGroups.others.length" label="其他可用">
-                    <option v-for="m in optimizeModelGroups.others" :key="m" :value="m">{{ m }}</option>
                   </optgroup>
                 </select>
                 <input v-if="optimizeProviderId && !optimizeProviderModels.length" v-model="optimizeModelId" placeholder="输入模型名称" class="w-full mt-2 px-3 py-2 text-xs bg-surface-1 border border-surface-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500" />
@@ -168,12 +162,20 @@
             <div class="flex-shrink-0 p-4 border-t border-surface-3">
               <button
                 @click="doGenerate"
-                :disabled="!canGenerate || store.generating"
+                :disabled="!canGenerate"
                 class="w-full py-3 text-sm font-semibold bg-primary-600 hover:bg-primary-700 text-white rounded-xl transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
               >
-                <svg v-if="store.generating" class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
-                {{ store.generating ? `生成中 (${store.progress?.completed || 0}/${store.progress?.total || batchCount})` : '开始生成' }}
+                <svg v-if="store.generating && !store.queue.length" class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                {{ store.generating ? (store.queue.length ? `加入队列 (${store.queue.length + 1})` : `生成中 (${store.progress?.completed || 0}/${store.progress?.total || batchCount})`) : '开始生成' }}
               </button>
+              <!-- Queue indicator -->
+              <div v-if="store.queue.length" class="mt-2 flex items-center justify-between px-1">
+                <div class="flex items-center gap-1.5 text-[11px] text-text-tertiary">
+                  <svg class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                  <span>生成中 ({{ store.progress?.completed || 0 }}/{{ store.progress?.total || '?' }}) + 排队 {{ store.queue.length }}</span>
+                </div>
+                <button @click="store.clearQueue()" class="text-[11px] text-red-500 hover:text-red-600">清空队列</button>
+              </div>
               <div v-if="store.lastError" class="mt-2 px-3 py-1.5 text-[11px] text-red-600 bg-red-50 rounded-lg">{{ store.lastError }}</div>
             </div>
           </div>
@@ -241,8 +243,7 @@
                       </button>
                       <button
                         @click.stop="askRegenerate(gen)"
-                        :disabled="store.generating"
-                        class="w-7 h-7 rounded-lg bg-black/50 hover:bg-black/70 disabled:opacity-40 disabled:cursor-not-allowed text-white flex items-center justify-center"
+                        class="w-7 h-7 rounded-lg bg-black/50 hover:bg-black/70 text-white flex items-center justify-center"
                         title="重新生成"
                       >
                         <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15.5-6.36L21 8" /><path d="M21 3v5h-5" /><path d="M21 12a9 9 0 0 1-15.5 6.36L3 16" /><path d="M3 21v-5h5" /></svg>
@@ -264,8 +265,7 @@
                       <button
                         type="button"
                         @click.stop="askRegenerate(gen)"
-                        :disabled="store.generating"
-                        class="px-2 py-0.5 text-[10px] text-primary-700 border border-primary-300 rounded-md hover:bg-primary-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                        class="px-2 py-0.5 text-[10px] text-primary-700 border border-primary-300 rounded-md hover:bg-primary-50 transition-colors"
                       >重新生成</button>
                     </div>
                   </div>
@@ -316,16 +316,14 @@
                       <button
                         type="button"
                         @click.stop="askRegenerate(gen)"
-                        :disabled="store.generating"
-                        class="px-1.5 py-0.5 text-[10px] text-primary-700 border border-primary-300 rounded-md hover:bg-primary-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                        class="px-1.5 py-0.5 text-[10px] text-primary-700 border border-primary-300 rounded-md hover:bg-primary-50 transition-colors"
                       >重新生成</button>
                     </div>
                   </div>
                   <div v-if="!selectMode" class="flex items-start gap-1">
                     <button
                       @click.stop="askRegenerate(gen)"
-                      :disabled="store.generating"
-                      class="opacity-0 group-hover:opacity-100 p-1.5 text-text-tertiary hover:text-primary-600 rounded-lg hover:bg-surface-2 disabled:opacity-20 disabled:cursor-not-allowed transition-all"
+                      class="opacity-0 group-hover:opacity-100 p-1.5 text-text-tertiary hover:text-primary-600 rounded-lg hover:bg-surface-2 transition-all"
                       title="重新生成"
                     >
                       <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15.5-6.36L21 8" /><path d="M21 3v5h-5" /><path d="M21 12a9 9 0 0 1-15.5 6.36L3 16" /><path d="M3 21v-5h5" /></svg>
@@ -489,23 +487,21 @@ const confirmDialog = ref<{ visible: boolean; pending: ImageGeneration | null }>
   pending: null
 })
 function askRegenerate(gen: ImageGeneration) {
-  if (store.generating) return
   confirmDialog.value = { visible: true, pending: gen }
 }
-async function confirmRegenerate() {
+function confirmRegenerate() {
   const gen = confirmDialog.value.pending
   confirmDialog.value = { visible: false, pending: null }
   if (!gen) return
-  await regenerate(gen)
+  regenerate(gen)
 }
 function cancelRegenerate() {
   confirmDialog.value = { visible: false, pending: null }
 }
 
 // 重新生成：以原记录的参数再生成一条新的生成记录，原记录保留供对比
-async function regenerate(gen: ImageGeneration) {
-  if (store.generating) return
-  await store.generate({
+function regenerate(gen: ImageGeneration) {
+  store.enqueue({
     prompt: gen.prompt,
     refImages: gen.ref_images || [],
     modelProviderId: gen.model_provider_id,
@@ -753,28 +749,21 @@ async function pickRefImage() {
   }
 }
 
-async function doGenerate() {
-  if (!canGenerate.value || store.generating) return
-  try {
-    await store.generate({
-      prompt: prompt.value,
-      refImages: refImages.value.length ? refImages.value : undefined,
-      modelProviderId: selectedProviderId.value,
-      modelId: selectedModelId.value,
-      size: selectedSize.value,
-      tierId: selectedTier.value,
-      quality: hasRefImages.value ? DEFAULT_QUALITY_ID : selectedQuality.value,
-      batchCount: batchCount.value,
-      concurrency: concurrency.value
-    })
-    await recordUsage('image', selectedProviderId.value, selectedModelId.value)
-    hintsTick.value++
-    // 生成后刷新失败计数（任一条失败即计入全局）
-    await refreshFailedCount()
-  } catch (e) {
-    // store handles its own error state; hints only update on real success
-    throw e
-  }
+function doGenerate() {
+  if (!canGenerate.value) return
+  store.enqueue({
+    prompt: prompt.value,
+    refImages: refImages.value.length ? refImages.value : undefined,
+    modelProviderId: selectedProviderId.value,
+    modelId: selectedModelId.value,
+    size: selectedSize.value,
+    tierId: selectedTier.value,
+    quality: hasRefImages.value ? DEFAULT_QUALITY_ID : selectedQuality.value,
+    batchCount: batchCount.value,
+    concurrency: concurrency.value
+  })
+  recordUsage('image', selectedProviderId.value, selectedModelId.value)
+  hintsTick.value++
 }
 
 const copyToast = ref('')

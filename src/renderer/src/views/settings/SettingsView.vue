@@ -147,7 +147,7 @@
                 <button @click="changeDataDir" class="btn-secondary whitespace-nowrap">更改</button>
                 <button @click="openDataDir" class="btn-secondary whitespace-nowrap">打开</button>
               </div>
-              <p class="text-[11px] text-text-tertiary mt-1.5">数据库、技能、工作区等数据存放位置</p>
+              <p class="text-[11px] text-text-tertiary mt-1.5">数据库、技能、工作区等数据存放位置。更改后会自动追加 <span class="font-mono">local-agent</span> 子目录。</p>
             </div>
             <div v-if="dataDirChanged" class="flex items-center gap-2 pt-1 text-xs text-amber-600 font-medium">
               <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z" /></svg>
@@ -155,6 +155,20 @@
             </div>
           </div>
         </section>
+
+        <!-- Data Dir Relaunch Confirmation -->
+        <div v-if="showDataDirRelaunch" class="fixed inset-0 z-[9999] flex items-center justify-center">
+          <div class="w-full max-w-md bg-surface-0 rounded-2xl shadow-2xl p-6">
+            <h2 class="text-base font-bold text-text-primary mb-2">需要重启应用</h2>
+            <p class="text-sm text-text-secondary mb-2">数据目录已更改为：</p>
+            <div class="text-xs text-text-tertiary mb-4 p-3 bg-surface-2 rounded-lg break-all font-mono">{{ dataDir }}</div>
+            <p class="text-xs text-text-secondary mb-5">应用必须重启以加载新位置的数据。如果旧目录中有数据，重启后会提示是否迁移。</p>
+            <div class="flex gap-3">
+              <button @click="relaunchForDataDir" class="flex-1 py-2.5 text-sm font-semibold bg-primary-600 hover:bg-primary-700 text-white rounded-xl transition-colors">立即重启</button>
+              <button @click="showDataDirRelaunch = false" class="px-6 py-2.5 text-sm font-medium border border-surface-3 rounded-xl text-text-secondary hover:bg-surface-2 transition-colors">稍后</button>
+            </div>
+          </div>
+        </div>
 
         <!-- Data Backup -->
         <section>
@@ -282,15 +296,34 @@
               <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center">
                 <span class="text-white text-xs font-bold leading-none tracking-tight">{{ appAbbr }}</span>
               </div>
-              <div>
+              <div class="flex-1">
                 <div class="text-sm font-semibold text-text-primary">{{ appName }}</div>
                 <div class="text-xs text-text-tertiary">v{{ appVersion }} · 本地智能体平台</div>
               </div>
+            </div>
+            <div class="mt-4 pt-4 border-t border-surface-2 flex items-center gap-2 flex-wrap">
+              <button
+                @click="checkForUpdate"
+                :disabled="checkingUpdate"
+                class="px-3 py-1.5 text-xs font-medium border border-surface-3 text-text-secondary rounded-lg hover:bg-surface-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {{ checkingUpdate ? '检查中...' : '检查更新' }}
+              </button>
+              <button
+                @click="showChangelog = true"
+                class="px-3 py-1.5 text-xs font-medium border border-surface-3 text-text-secondary rounded-lg hover:bg-surface-2 transition-colors"
+              >
+                更新日志
+              </button>
+              <span v-if="updateMessage" class="text-[11px] text-text-tertiary ml-auto">{{ updateMessage }}</span>
             </div>
           </div>
         </section>
       </div>
     </div>
+
+    <!-- 更新日志弹窗 -->
+    <ChangelogDialog v-if="showChangelog" :current-version="appVersion" @close="showChangelog = false" />
   </div>
 </template>
 
@@ -302,9 +335,56 @@ import { useCloudAuthStore } from '@/stores/cloud-auth'
 import { useSiteConfigStore } from '@/stores/site-config'
 import { appName, appAbbr } from '@/utils/branding'
 import { normalizeApiBase } from '@shared/api-base-normalize'
+import ChangelogDialog from './ChangelogDialog.vue'
 
 declare const __APP_VERSION__: string
 const appVersion = __APP_VERSION__
+
+// === 更新检查与日志 ===
+const checkingUpdate = ref(false)
+const updateMessage = ref('')
+const showChangelog = ref(false)
+let updateMessageTimer: number | null = null
+
+function setUpdateMessage(msg: string, autoClearMs = 5000) {
+  updateMessage.value = msg
+  if (updateMessageTimer !== null) {
+    clearTimeout(updateMessageTimer)
+    updateMessageTimer = null
+  }
+  if (autoClearMs > 0) {
+    updateMessageTimer = window.setTimeout(() => {
+      updateMessage.value = ''
+      updateMessageTimer = null
+    }, autoClearMs)
+  }
+}
+
+async function checkForUpdate(): Promise<void> {
+  // dev 模式下主进程未注册 updater IPC，提前提示并避免报错
+  if (import.meta.env.DEV) {
+    setUpdateMessage('开发模式下不可用')
+    return
+  }
+  checkingUpdate.value = true
+  setUpdateMessage('正在检查...', 0)
+  try {
+    const result: any = await (window as any).api?.updater?.check()
+    if (!result) {
+      setUpdateMessage('无法访问更新服务')
+    } else if (result.error) {
+      setUpdateMessage(`检查失败：${result.error}`)
+    } else if (result.latestVersion && result.latestVersion !== result.currentVersion) {
+      setUpdateMessage(`发现新版本 v${result.latestVersion}`)
+    } else {
+      setUpdateMessage('已是最新版本')
+    }
+  } catch (e: any) {
+    setUpdateMessage(`检查失败：${e?.message || e}`)
+  } finally {
+    checkingUpdate.value = false
+  }
+}
 
 const themeStore = useThemeStore()
 const cloudAuth = useCloudAuthStore()
@@ -353,6 +433,7 @@ const vectorTestOk = ref(false)
 const generalSaved = ref(false)
 const dataDir = ref('')
 const dataDirChanged = ref(false)
+const showDataDirRelaunch = ref(false)
 
 interface BackupInfo {
   fileName: string
@@ -470,15 +551,34 @@ function onClickOutsideMenu() {
   }
 }
 
+// 平台原生分隔符（与主进程的 Windows 路径保持一致），避免出现混合分隔符
+function joinPath(base: string, child: string): string {
+  const sep = base.includes('\\') ? '\\' : '/'
+  const trimmed = base.replace(/[\\/]+$/, '')
+  return trimmed + sep + child
+}
+
+function endsWithSegment(path: string, segment: string): boolean {
+  return path.endsWith('\\' + segment) || path.endsWith('/' + segment)
+}
+
 async function changeDataDir() {
   const picked = await (window as any).api.dataDir.pick() as string | null
   if (!picked) return
-  const finalDir = picked.endsWith('\\local-agent') || picked.endsWith('/local-agent')
-    ? picked
-    : picked.replace(/[\\/]+$/, '') + '\\local-agent'
-  await (window as any).api.dataDir.set(finalDir)
+  const finalDir = endsWithSegment(picked, 'local-agent') ? picked : joinPath(picked, 'local-agent')
+  if (finalDir === dataDir.value) return // 选了同样的目录，不需要任何动作
+  // 仅写 config，不更新当前进程的 cachedDataDir，避免文件操作走新目录、db 仍在旧目录
+  // 造成数据切割。提示用户立即重启以使变更生效。
+  const result = await (window as any).api.dataDir.set(finalDir) as { needsRelaunch: boolean }
   dataDir.value = finalDir
   dataDirChanged.value = true
+  if (result?.needsRelaunch) {
+    showDataDirRelaunch.value = true
+  }
+}
+
+async function relaunchForDataDir() {
+  await (window as any).api.app.relaunch()
 }
 
 function openDataDir() {
@@ -635,5 +735,9 @@ onMounted(() => {
 
 onUnmounted(() => {
   document.removeEventListener('click', onClickOutsideMenu)
+  if (updateMessageTimer !== null) {
+    clearTimeout(updateMessageTimer)
+    updateMessageTimer = null
+  }
 })
 </script>

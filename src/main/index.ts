@@ -34,26 +34,36 @@ function createAppIcon(): Electron.NativeImage {
 }
 
 function createWindow(): void {
-  const mainWindow = new BrowserWindow({
+  const isWin = process.platform === 'win32'
+  // Windows 使用 hidden 标题栏 + titleBarOverlay 方案：保留右上角最小/最大/关闭按钮，
+  // UI 顶栏自渲染并 app-drag 实现窗口拖动。
+  // macOS 使用原生标题栏（含红黄绿 traffic light + 标题文字）：避免 traffic light
+  // 与 sidebar logo 重叠的视觉冲突，符合 Mac 用户习惯。
+  // Linux 同 Mac，用原生标题栏。
+  const winOptions: Electron.BrowserWindowConstructorOptions = {
     width: 1280,
     height: 800,
     minWidth: 960,
     minHeight: 600,
+    title: getRuntimeConfig().appName || 'LocalAgent',
     icon: createAppIcon(),
     show: false,
-    frame: false,
-    titleBarStyle: 'hidden',
-    titleBarOverlay: {
-      color: '#ffffff',
-      symbolColor: '#212529',
-      height: 36
-    },
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
       webSecurity: false
     }
-  })
+  }
+  if (isWin) {
+    winOptions.frame = false
+    winOptions.titleBarStyle = 'hidden'
+    winOptions.titleBarOverlay = {
+      color: '#ffffff',
+      symbolColor: '#212529',
+      height: 36
+    }
+  }
+  const mainWindow = new BrowserWindow(winOptions)
 
   mainWindow.on('ready-to-show', () => {
     mainWindow.show()

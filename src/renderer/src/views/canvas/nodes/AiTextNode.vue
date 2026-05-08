@@ -9,6 +9,43 @@
       </button>
     </div>
     <div class="node-body">
+      <!-- 系统提示词可折叠区域：默认折叠，点击展开以自定义默认行为 -->
+      <div class="mb-2">
+        <button
+          @click.stop="showSystemPrompt = !showSystemPrompt"
+          :disabled="data.locked"
+          class="w-full flex items-center justify-between gap-1.5 px-1 py-0.5 text-[10px] text-text-tertiary hover:text-text-secondary transition-colors disabled:opacity-50"
+        >
+          <span class="flex items-center gap-1">
+            <svg class="w-2.5 h-2.5 transition-transform" :class="{ 'rotate-90': showSystemPrompt }" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+            </svg>
+            系统提示词
+          </span>
+          <span class="text-[9px] opacity-70">{{ systemPromptStatusLabel }}</span>
+        </button>
+        <div v-if="showSystemPrompt" class="mt-1.5">
+          <textarea
+            v-model="systemPromptModel"
+            @change="saveSystemPrompt"
+            placeholder="默认：扩写为图像生成提示词。留空可让 AI 按输入自由响应。"
+            rows="3"
+            class="node-textarea nodrag nopan w-full"
+            :disabled="data.locked"
+          ></textarea>
+          <div class="flex items-center justify-between mt-1">
+            <span class="text-[9px] text-text-disabled">留空让 AI 按用户输入自由响应</span>
+            <button
+              v-if="data.system_prompt !== undefined"
+              @click.stop="resetSystemPrompt"
+              :disabled="data.locked"
+              class="text-[9px] text-text-tertiary hover:text-primary-600 transition-colors disabled:opacity-50"
+            >
+              恢复默认
+            </button>
+          </div>
+        </div>
+      </div>
       <div v-if="data.status === 'running'" class="flex items-center gap-1.5 text-[10px] text-amber-600 mb-2">
         <svg class="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
         AI 润色中...
@@ -35,7 +72,7 @@
 </template>
 
 <script setup lang="ts">
-import { inject } from 'vue'
+import { ref, computed, inject, watch } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
 import { useCanvasStore } from '@/stores/canvas'
 import { useWorkflowEngine } from '../composables/useWorkflowEngine'
@@ -46,6 +83,42 @@ const props = defineProps<{ data: Record<string, any> }>()
 const canvasStore = useCanvasStore()
 const { executeSingleNode } = useWorkflowEngine()
 const onHandleClick = inject<HandleClickHandler | null>('onHandleClick', null)
+
+// system_prompt 状态微妙三态：
+//   undefined  → 默认模板（兑底中文 system prompt）
+//   ''         → 不传 system，让 LLM 自由响应
+//   '其他'      → 用户自定义
+const showSystemPrompt = ref(false)
+const systemPromptModel = ref<string>(props.data.system_prompt ?? '')
+
+watch(
+  () => props.data.system_prompt,
+  (val) => {
+    systemPromptModel.value = val ?? ''
+  }
+)
+
+const systemPromptStatusLabel = computed(() => {
+  const v = props.data.system_prompt
+  if (v === undefined) return '默认'
+  if (v === '') return '已禁用'
+  return '已自定义'
+})
+
+function saveSystemPrompt() {
+  if (!props.data.nodeId) return
+  canvasStore.updateNode(props.data.nodeId, {
+    data: { ...props.data, system_prompt: systemPromptModel.value }
+  })
+}
+
+function resetSystemPrompt() {
+  if (!props.data.nodeId) return
+  const next = { ...props.data }
+  delete next.system_prompt
+  canvasStore.updateNode(props.data.nodeId, { data: next })
+  systemPromptModel.value = ''
+}
 
 async function runAiText() {
   if (!props.data.nodeId || !props.data.projectId) return

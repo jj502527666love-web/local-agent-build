@@ -106,6 +106,23 @@ watch(rememberPassword, (v) => {
   if (!v) localStorage.removeItem('login_saved_password')
 })
 
+const LOGIN_ERROR_MAP: Record<string, string> = {
+  'Invalid credentials': '用户名或密码错误',
+  'Account disabled': '账号已被禁用，请联系管理员',
+  'Old password incorrect': '原密码不正确',
+  'AUTH_EXPIRED': '登录已过期，请重新登录',
+  'The username has already been taken': '该用户名已被注册',
+  'Failed to fetch': '网络请求失败，请检查网络连接',
+}
+
+function translateLoginError(msg: string): string {
+  if (!msg) return '操作失败'
+  for (const [key, val] of Object.entries(LOGIN_ERROR_MAP)) {
+    if (msg.includes(key)) return val
+  }
+  return msg
+}
+
 async function handleSubmit() {
   error.value = ''
   if (!form.value.username.trim() || !form.value.password.trim()) {
@@ -130,7 +147,7 @@ async function handleSubmit() {
     else localStorage.removeItem('login_saved_password')
     router.replace('/chat')
   } catch (e: any) {
-    error.value = e.message || '\u64cd\u4f5c\u5931\u8d25'
+    error.value = translateLoginError(e.message || '操作失败')
   } finally {
     submitting.value = false
   }

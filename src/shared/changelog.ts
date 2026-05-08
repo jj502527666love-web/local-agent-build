@@ -1,0 +1,73 @@
+/**
+ * 应用更新日志数据源
+ *
+ * 维护规则：
+ * - 每次发版前在 CHANGELOG 数组开头插入新条目（最新版本在前）
+ * - 文案面向最终用户：简短、不带技术术语、说清"我能感受到的变化"
+ * - 一条 note 一句话，不超过 50 字
+ *
+ * 当 electron-updater 上游 release 自带 releaseNotes 时优先使用上游，
+ * 此处作为兜底（同时也用于设置页"更新日志"弹窗的全量历史展示）。
+ */
+
+export interface ReleaseNote {
+  /** 版本号，如 "0.5.7" */
+  version: string
+  /** 发布日期 "YYYY-MM-DD" */
+  date: string
+  /** 用户视角的更新描述 */
+  notes: string[]
+}
+
+export const CHANGELOG: ReleaseNote[] = [
+  {
+    version: '0.5.8',
+    date: '2026-05-08',
+    notes: [
+      '修复购买套餐扫码支付时二维码不显示导致无法完成支付的问题',
+      '「我的套餐」用「还剩 X 天」显示剩余有效期，附进度条直观展示流逝程度，永久套餐单独标识',
+      '账户页面在最早过期套餐少于 7 天时高亮预警，点击可直接定位到套餐详情',
+      '计费标准更清晰显示「每 1M tokens 的价格」',
+      '修复流式画布参考图无法生效的问题，文生图、图生图现在能正确基于上游图片生成',
+      'AI 文本节点支持自定义系统提示词，可用于翻译、总结等通用任务',
+      '生图节点会显示已使用的参考图数量，方便确认参考图是否生效',
+      '修复部分图片（如带微信水印的图）在生成时偶发失败的问题',
+      '画布全局风格前缀与本次主题之间用分隔线区分，模型理解更准确',
+      '画布所有提示信息改为中文',
+      '「我的创作」支持单张删除、批量选择删除和详情页删除',
+      'AI 生图支持任务队列，生成中可继续提交新任务排队执行',
+      '修复生图偶发出现重复任务的竞态问题',
+      '登录页错误提示优化，网络异常、密码错误等场景均有明确中文提示'
+    ]
+  }
+]
+
+/** 按版本号查找对应的更新说明，找不到返回 null */
+export function getReleaseNotes(version: string): string[] | null {
+  const entry = CHANGELOG.find((e) => e.version === version)
+  return entry ? entry.notes : null
+}
+
+/**
+ * 解析 electron-updater 上游下发的 releaseNotes。
+ * 可能是字符串（含 \n 换行 / Markdown 列表）或对象数组。
+ * 输出按条切分的纯文本数组。
+ */
+export function parseUpstreamReleaseNotes(raw: unknown): string[] {
+  if (!raw) return []
+  if (typeof raw === 'string') {
+    return raw
+      .split('\n')
+      .map((line) => line.replace(/^[\s\-*•·#>]+/, '').trim())
+      .filter(Boolean)
+  }
+  if (Array.isArray(raw)) {
+    const items: string[] = []
+    for (const r of raw) {
+      const text = typeof r === 'string' ? r : (r as any)?.note ?? (r as any)?.notes ?? ''
+      items.push(...parseUpstreamReleaseNotes(text))
+    }
+    return items
+  }
+  return []
+}
