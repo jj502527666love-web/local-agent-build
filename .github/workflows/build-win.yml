@@ -98,6 +98,11 @@ jobs:
       - name: Upload artifacts to Tencent COS (coscmd)
         shell: bash
         env:
+          # 禁用 Git Bash (MSYS) 的路径转换，否则以 / 开头的 cos object key
+          # 会被改写成 "C:/Program Files/Git/..." 前缀，导致畸形 COS key
+          # 而服务端 HEAD 时用正确的相对 key 找不到对象 → 422 cos_object_missing
+          MSYS_NO_PATHCONV: '1'
+          MSYS2_ARG_CONV_EXCL: '*'
           COS_SECRET_ID: ${{ secrets.TENCENT_COS_SECRET_ID }}
           COS_SECRET_KEY: ${{ secrets.TENCENT_COS_SECRET_KEY }}
           COS_BUCKET: ${{ secrets.TENCENT_COS_BUCKET }}
