@@ -64,24 +64,63 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: false
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+      - name: Compute artifact files metadata
+        id: files
+        shell: bash
+        working-directory: ./dist
+        run: |
+          PRIMARY_EXT=".dmg"
+          files_json="["
+          first=true
+          for f in *; do
+            [ -f "$f" ] || continue
+            role=""
+            lower=$(echo "$f" | tr '[:upper:]' '[:lower:]')
+            case "$lower" in
+              *"$PRIMARY_EXT") role="primary" ;;
+              *.blockmap)      role="blockmap" ;;
+              latest*.yml)     role="metadata" ;;
+              *) continue ;;
+            esac
+            size=$(stat -c%s "$f" 2>/dev/null || stat -f%z "$f")
+            sha=$(sha256sum "$f" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$f" | awk '{print $1}')
+            [ "$first" = true ] && first=false || files_json="$files_json,"
+            files_json="$files_json{\"filename\":\"$f\",\"size\":$size,\"sha256\":\"$sha\",\"role\":\"$role\"}"
+          done
+          files_json="$files_json]"
+          echo "files=$files_json" >> "$GITHUB_OUTPUT"
+          echo "Generated metadata: $files_json"
+
+      - name: Upload artifacts to Tencent COS
+        uses: TencentCloud/cos-action@v1
         with:
-          name: build-output-${{ inputs.build_id }}
-          retention-days: 1
-          path: |
-            dist/*.dmg
-            dist/*.dmg.blockmap
-            dist/*-mac.zip
-            dist/latest-mac.yml
+          secret_id: ${{ secrets.TENCENT_COS_SECRET_ID }}
+          secret_key: ${{ secrets.TENCENT_COS_SECRET_KEY }}
+          cos_bucket: ${{ secrets.TENCENT_COS_BUCKET }}
+          cos_region: ${{ secrets.TENCENT_COS_REGION }}
+          local_path: ./dist/
+          remote_path: /build-artifacts/${{ inputs.build_id }}/
+          accelerate: true
+          clean: false
 
       - name: Notify agent-build (success)
         if: success()
+        shell: bash
         run: |
           curl -fsS -X POST "${{ inputs.callback_url }}" \
             -H "Authorization: Bearer ${{ inputs.callback_token }}" \
             -H "Content-Type: application/json" \
-            -d "{\"build_id\":\"${{ inputs.build_id }}\",\"run_id\":${{ github.run_id }},\"status\":\"success\",\"artifact_name\":\"build-output-${{ inputs.build_id }}\"}"
+            -d "$(cat <<EOF
+          {
+            "build_id": "${{ inputs.build_id }}",
+            "run_id": ${{ github.run_id }},
+            "status": "success",
+            "artifact_storage": "cos",
+            "cos_object_prefix": "build-artifacts/${{ inputs.build_id }}/",
+            "files": ${{ steps.files.outputs.files }}
+          }
+          EOF
+          )"
 
       - name: Notify agent-build (failure)
         if: failure()
