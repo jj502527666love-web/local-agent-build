@@ -57,6 +57,11 @@ mac:
       arch:
         - x64
         - arm64
+    # zip 兜底：hdiutil 偶发失败时仍能产出可分发包；同时也是 electron-updater 的增量更新载体
+    - target: zip
+      arch:
+        - x64
+        - arm64
 dmg:
   artifactName: ${name}-${version}.${ext}
 publish:

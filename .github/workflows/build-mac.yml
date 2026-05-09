@@ -59,6 +59,8 @@ jobs:
           PLATFORM: mac
 
       - name: Build & Package
+        # hdiutil 偶发失败不阻断：dmg 产不出但 zip 仍会产出，后续 step 会检查是否至少有一个可分发产物
+        continue-on-error: true
         run: npm run dist
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -69,18 +71,42 @@ jobs:
         shell: bash
         working-directory: ./dist
         run: |
+          set -uo pipefail
+          echo "=== dist contents ==="
+          ls -la
+          # 优先用 dmg 作为 primary；hdiutil 失败时 dmg 未产出，退回用 zip
           PRIMARY_EXT=".dmg"
+          if ! ls *.dmg >/dev/null 2>&1; then
+            PRIMARY_EXT=".zip"
+            echo "WARN: no .dmg produced (likely hdiutil failure), falling back to .zip as primary"
+          fi
+          echo "PRIMARY_EXT=$PRIMARY_EXT"
+
           mkdir -p ../cos-upload
           files_json="["
           first=true
+          have_primary=false
           for f in *; do
             [ -f "$f" ] || continue
             role=""
             lower=$(echo "$f" | tr '[:upper:]' '[:lower:]')
             case "$lower" in
-              *"$PRIMARY_EXT") role="primary" ;;
-              *.blockmap)      role="blockmap" ;;
-              latest*.yml)     role="metadata" ;;
+              *"$PRIMARY_EXT")
+                role="primary"
+                have_primary=true
+                ;;
+              *.blockmap)
+                role="blockmap"
+                ;;
+              latest*.yml)
+                role="metadata"
+                ;;
+              *.dmg|*.zip)
+                # 非 primary 的 dmg/zip：仍上传到 cos（latest-mac.yml 里会索引这些文件供 auto-updater 增量下载）
+                # 但不进 files_json，避免后端看到多个 primary
+                cp "$f" ../cos-upload/
+                continue
+                ;;
               *) continue ;;
             esac
             cp "$f" ../cos-upload/
@@ -90,6 +116,13 @@ jobs:
             files_json="$files_json{\"filename\":\"$f\",\"size\":$size,\"sha256\":\"$sha\",\"role\":\"$role\"}"
           done
           files_json="$files_json]"
+
+          # 至少要产出一个可分发产物，否则认为 build 真的完全失败
+          if [ "$have_primary" != "true" ]; then
+            echo "ERROR: neither .dmg nor .zip produced — build truly failed"
+            exit 1
+          fi
+
           echo "files=$files_json" >> "$GITHUB_OUTPUT"
           echo "Generated metadata: $files_json"
           echo "--- Staged files in ./cos-upload ---"
