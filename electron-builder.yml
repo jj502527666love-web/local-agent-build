@@ -22,8 +22,17 @@ files:
   - '!node_modules/better-sqlite3/src/**/*'
   - '!node_modules/better-sqlite3/docs/**/*'
   - '!node_modules/better-sqlite3/benchmark/**/*'
-  # Source maps from runtime deps (~10MB combined)
+  # fabric: src/ already bundled in dist/, extensions/ in dist-extensions/, scripts/lib/.agents not runtime
+  - '!node_modules/fabric/src/**/*'
+  - '!node_modules/fabric/extensions/**/*'
+  - '!node_modules/fabric/scripts/**/*'
+  - '!node_modules/fabric/lib/**/*'
+  - '!node_modules/fabric/.agents/**/*'
+  # Source maps + TypeScript declaration files (runtime not needed)
   - '!**/*.map'
+  - '!**/*.d.ts'
+  - '!**/*.d.mts'
+  - '!**/*.d.cts'
 electronLanguages:
   - en-US
   - zh-CN
