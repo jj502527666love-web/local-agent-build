@@ -95,16 +95,42 @@ jobs:
           echo "--- Staged files in ./cos-upload ---"
           ls -la ../cos-upload/
 
-      - name: Upload artifacts to Tencent COS
-        uses: TencentCloud/cos-action@v1
-        with:
-          secret_id: ${{ secrets.TENCENT_COS_SECRET_ID }}
-          secret_key: ${{ secrets.TENCENT_COS_SECRET_KEY }}
-          cos_bucket: ${{ secrets.TENCENT_COS_BUCKET }}
-          cos_region: ${{ secrets.TENCENT_COS_REGION }}
-          local_path: cos-upload
-          remote_path: /build-artifacts/${{ inputs.build_id }}/
-          clean: false
+      - name: Upload artifacts to Tencent COS (coscmd)
+        shell: bash
+        env:
+          COS_SECRET_ID: ${{ secrets.TENCENT_COS_SECRET_ID }}
+          COS_SECRET_KEY: ${{ secrets.TENCENT_COS_SECRET_KEY }}
+          COS_BUCKET: ${{ secrets.TENCENT_COS_BUCKET }}
+          COS_REGION: ${{ secrets.TENCENT_COS_REGION }}
+          BUILD_ID: ${{ inputs.build_id }}
+        run: |
+          set -euo pipefail
+          echo "=== Install coscmd ==="
+          python3 -m pip install --quiet --upgrade pip
+          python3 -m pip install --quiet coscmd
+          coscmd --version
+          echo ""
+          echo "=== Validate required env (length-only, values masked) ==="
+          echo "SECRET_ID length: ${#COS_SECRET_ID}"
+          echo "SECRET_KEY length: ${#COS_SECRET_KEY}"
+          echo "BUCKET: $COS_BUCKET"
+          echo "REGION: $COS_REGION"
+          test -n "$COS_SECRET_ID" || { echo "ERROR: TENCENT_COS_SECRET_ID is empty"; exit 1; }
+          test -n "$COS_SECRET_KEY" || { echo "ERROR: TENCENT_COS_SECRET_KEY is empty"; exit 1; }
+          test -n "$COS_BUCKET" || { echo "ERROR: TENCENT_COS_BUCKET is empty"; exit 1; }
+          test -n "$COS_REGION" || { echo "ERROR: TENCENT_COS_REGION is empty"; exit 1; }
+          echo ""
+          echo "=== Configure coscmd ==="
+          coscmd config -a "$COS_SECRET_ID" -s "$COS_SECRET_KEY" -b "$COS_BUCKET" -r "$COS_REGION"
+          echo ""
+          echo "=== List bucket root (verifies credentials before upload) ==="
+          coscmd list / || { echo "!!! bucket access failed; credentials or permissions wrong"; exit 1; }
+          echo ""
+          echo "=== Upload ./cos-upload/ to build-artifacts/${BUILD_ID}/ ==="
+          coscmd upload -r ./cos-upload/ "/build-artifacts/${BUILD_ID}/"
+          echo ""
+          echo "=== Verify uploaded objects ==="
+          coscmd list "/build-artifacts/${BUILD_ID}/"
 
       - name: Notify agent-build (success)
         if: success()
