@@ -16,21 +16,28 @@
           <label class="block text-xs font-medium text-text-secondary mb-1.5">用户名</label>
           <input v-model="form.username" type="text" required autocomplete="username"
             class="w-full px-3 py-2.5 text-sm bg-surface-2 border border-surface-3 rounded-lg text-text-primary outline-none focus:border-primary-500 transition-colors"
-            placeholder="请输入用户名" />
+            :placeholder="isRegister ? '中文 / 英文 / 数字 / 下划线，6-16 位' : '请输入用户名'" />
         </div>
 
         <div v-if="isRegister">
           <label class="block text-xs font-medium text-text-secondary mb-1.5">昵称</label>
           <input v-model="form.nickname" type="text"
             class="w-full px-3 py-2.5 text-sm bg-surface-2 border border-surface-3 rounded-lg text-text-primary outline-none focus:border-primary-500 transition-colors"
-            placeholder="请输入昵称" />
+            placeholder="中文 / 英文 / 数字 / 下划线，2-30 位（选填，不填默认用用户名）" />
+        </div>
+
+        <div v-if="isRegister">
+          <label class="block text-xs font-medium text-text-secondary mb-1.5">手机号 <span class="text-text-tertiary">(选填)</span></label>
+          <input v-model="form.phone" type="tel" autocomplete="tel"
+            class="w-full px-3 py-2.5 text-sm bg-surface-2 border border-surface-3 rounded-lg text-text-primary outline-none focus:border-primary-500 transition-colors"
+            placeholder="请输入手机号" />
         </div>
 
         <div>
           <label class="block text-xs font-medium text-text-secondary mb-1.5">密码</label>
           <input v-model="form.password" type="password" required autocomplete="current-password"
             class="w-full px-3 py-2.5 text-sm bg-surface-2 border border-surface-3 rounded-lg text-text-primary outline-none focus:border-primary-500 transition-colors"
-            placeholder="请输入密码" />
+            :placeholder="isRegister ? '至少 6 位' : '请输入密码'" />
         </div>
 
         <div v-if="isRegister">
@@ -80,9 +87,12 @@ const store = useCloudAuthStore()
 const isRegister = ref(false)
 const submitting = ref(false)
 const error = ref('')
-const form = ref({ username: '', password: '', confirmPassword: '', nickname: '' })
+const form = ref({ username: '', password: '', confirmPassword: '', nickname: '', phone: '' })
 const rememberUsername = ref(false)
 const rememberPassword = ref(false)
+
+// 与云控端 UserController/AuthController 保持一致：中/英/数/下划线
+const NAME_REGEX = /^[a-zA-Z0-9_\u4e00-\u9fa5]+$/
 
 onMounted(() => {
   const ru = localStorage.getItem('login_remember_username')
@@ -112,6 +122,8 @@ const LOGIN_ERROR_MAP: Record<string, string> = {
   'Old password incorrect': '原密码不正确',
   'AUTH_EXPIRED': '登录已过期，请重新登录',
   'The username has already been taken': '该用户名已被注册',
+  'The nickname has already been taken': '该昵称已被使用',
+  'The email has already been taken': '该邮箱已被使用',
   'Failed to fetch': '网络请求失败，请检查网络连接',
 }
 
@@ -123,21 +135,49 @@ function translateLoginError(msg: string): string {
   return msg
 }
 
+function validateRegisterForm(): string | null {
+  const username = form.value.username.trim()
+  const nickname = form.value.nickname.trim()
+  const phone = form.value.phone.trim()
+
+  if (username.length < 6 || username.length > 16) return '用户名长度需 6-16 个字符'
+  if (!NAME_REGEX.test(username)) return '用户名只能包含中文 / 英文 / 数字 / 下划线'
+
+  if (nickname) {
+    if (nickname.length < 2 || nickname.length > 30) return '昵称长度需 2-30 个字符'
+    if (!NAME_REGEX.test(nickname)) return '昵称只能包含中文 / 英文 / 数字 / 下划线'
+  }
+
+  if (phone && phone.length > 20) return '手机号最多 20 位'
+
+  if (form.value.password.length < 6) return '密码至少 6 位'
+  if (form.value.password !== form.value.confirmPassword) return '两次密码不一致'
+  return null
+}
+
 async function handleSubmit() {
   error.value = ''
   if (!form.value.username.trim() || !form.value.password.trim()) {
     error.value = '\u8bf7\u586b\u5199\u7528\u6237\u540d\u548c\u5bc6\u7801'
     return
   }
-  if (isRegister.value && form.value.password !== form.value.confirmPassword) {
-    error.value = '\u4e24\u6b21\u5bc6\u7801\u4e0d\u4e00\u81f4'
-    return
+  if (isRegister.value) {
+    const msg = validateRegisterForm()
+    if (msg) {
+      error.value = msg
+      return
+    }
   }
 
   submitting.value = true
   try {
     if (isRegister.value) {
-      await store.register(form.value.username, form.value.password, form.value.nickname || undefined)
+      await store.register(
+        form.value.username.trim(),
+        form.value.password,
+        form.value.nickname.trim() || undefined,
+        form.value.phone.trim() || undefined,
+      )
     } else {
       await store.login(form.value.username, form.value.password)
     }

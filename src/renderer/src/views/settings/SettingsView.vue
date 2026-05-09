@@ -148,6 +148,11 @@
                 <button @click="openDataDir" class="btn-secondary whitespace-nowrap">打开</button>
               </div>
               <p class="text-[11px] text-text-tertiary mt-1.5">数据库、技能、工作区等数据存放位置。更改后会自动追加 <span class="font-mono">local-agent</span> 子目录。</p>
+              <p class="text-[11px] text-text-tertiary mt-1">请勿选择应用安装目录（如 <span class="font-mono">Program Files</span>）或系统目录，否则升级/卸载时数据会被清空。</p>
+            </div>
+            <div v-if="dataDirError" class="flex items-start gap-2 pt-1 text-xs text-red-500 font-medium">
+              <svg class="w-3.5 h-3.5 mt-0.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" /></svg>
+              <span class="break-all">{{ dataDirError }}</span>
             </div>
             <div v-if="dataDirChanged" class="flex items-center gap-2 pt-1 text-xs text-amber-600 font-medium">
               <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z" /></svg>
@@ -196,15 +201,16 @@
                   </select>
                 </div>
               </div>
-              <p class="text-[11px] text-text-tertiary mt-1.5">启动时自动备份，时间段内多次启动不重复备份，自动备份仅备份数据库</p>
+              <p class="text-[11px] text-text-tertiary mt-1.5">启动时自动备份，时间段内多次启动不重复备份。自动备份仅备份数据库；完整备份含技能与图片等用户文件。</p>
             </div>
 
-            <div class="flex items-center gap-2 pt-2">
+            <!-- 操作按钮区 -->
+            <div class="flex items-center gap-2 pt-2 flex-wrap">
               <div class="relative">
-                <button @click.stop="showBackupMenu = !showBackupMenu" :disabled="backupRunning" class="btn-primary flex items-center gap-1.5">
-                  <svg v-if="backupRunning" class="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" class="opacity-25" /><path d="M4 12a8 8 0 018-8" stroke="currentColor" stroke-width="3" stroke-linecap="round" class="opacity-75" /></svg>
+                <button @click.stop="showBackupMenu = !showBackupMenu" :disabled="taskRunning" class="btn-primary flex items-center gap-1.5">
+                  <svg v-if="taskRunning" class="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" class="opacity-25" /><path d="M4 12a8 8 0 018-8" stroke="currentColor" stroke-width="3" stroke-linecap="round" class="opacity-75" /></svg>
                   <span>{{ backupRunning ? '备份中...' : '立即备份' }}</span>
-                  <svg v-if="!backupRunning" class="w-3 h-3 ml-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.5 8.25l-7.5 7.5-7.5-7.5" /></svg>
+                  <svg v-if="!taskRunning" class="w-3 h-3 ml-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.5 8.25l-7.5 7.5-7.5-7.5" /></svg>
                 </button>
                 <div v-if="showBackupMenu" class="absolute left-0 top-full mt-1 w-56 bg-surface-0 rounded-lg shadow-lg border border-surface-3 py-1 z-10">
                   <button @click="doBackup('db')" class="w-full text-left px-3 py-2 text-xs text-text-primary hover:bg-surface-2 transition-colors">
@@ -217,7 +223,23 @@
                   </button>
                 </div>
               </div>
+              <button @click="restoreFromExternal" :disabled="taskRunning" class="btn-secondary">从文件恢复...</button>
               <span v-if="backupMessage" :class="['text-xs font-medium', backupMessageOk ? 'text-emerald-600' : 'text-red-500']">{{ backupMessage }}</span>
+            </div>
+
+            <!-- 进度区域：备份或恢复进行中显示 -->
+            <div v-if="taskRunning && progress" class="pt-3 border-t border-surface-3">
+              <div class="flex items-center justify-between mb-1.5">
+                <span class="text-xs text-text-secondary font-medium">{{ phaseLabel(progress.phase) }}</span>
+                <span class="text-[11px] text-text-tertiary">{{ progress.current }} / {{ progress.total }}</span>
+              </div>
+              <div class="h-1.5 bg-surface-2 rounded-full overflow-hidden">
+                <div class="h-full bg-primary-500 transition-all duration-200" :style="{ width: progressPercent + '%' }"></div>
+              </div>
+              <div class="flex items-center justify-between mt-1.5">
+                <span class="text-[11px] text-text-tertiary truncate flex-1 mr-2">{{ progress.fileName }}</span>
+                <button v-if="backupRunning" @click="cancelTask" class="text-[11px] text-red-500 hover:text-red-600 font-medium flex-shrink-0">取消</button>
+              </div>
             </div>
 
             <div v-if="backups.length > 0" class="pt-3 border-t border-surface-3">
@@ -225,13 +247,16 @@
               <div class="grid grid-cols-2 gap-2">
                 <div v-for="b in pagedBackups" :key="b.fileName" class="flex flex-col gap-1.5 px-3 py-2 rounded-lg bg-surface-1 text-xs">
                   <div class="flex items-center gap-2">
-                    <span :class="['inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium', b.type === 'full' ? 'bg-sky-100 text-sky-700' : 'bg-surface-3 text-text-secondary']">{{ b.type === 'full' ? '完整' : '自动' }}</span>
-                    <span class="text-text-secondary flex-1">{{ formatTime(b.createdAt) }}</span>
-                    <span class="text-text-tertiary">{{ formatSize(b.size) }}</span>
+                    <span :class="['inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium', b.type === 'full' ? 'bg-sky-100 text-sky-700' : 'bg-surface-3 text-text-secondary']">{{ b.type === 'full' ? '完整' : '数据库' }}</span>
+                    <span v-if="b.format === 'legacy'" class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-100 text-amber-700" title="旧格式备份，无完整性校验">旧格式</span>
+                    <span class="text-text-secondary flex-1 truncate">{{ formatTime(b.createdAt) }}</span>
+                    <span class="text-text-tertiary flex-shrink-0">{{ formatSize(b.size) }}</span>
                   </div>
+                  <div v-if="b.appVersion" class="text-[10px] text-text-tertiary">v{{ b.appVersion }}</div>
                   <div class="flex items-center gap-2 justify-end">
-                    <button @click="confirmRestore(b)" class="text-primary-600 hover:text-primary-700 font-medium">恢复</button>
-                    <button @click="removeBackup(b.fileName)" class="text-text-tertiary hover:text-red-500">删除</button>
+                    <button @click="confirmRestore(b)" :disabled="taskRunning" class="text-primary-600 hover:text-primary-700 font-medium disabled:opacity-40">恢复</button>
+                    <button @click="exportBackup(b)" :disabled="taskRunning" class="text-text-secondary hover:text-text-primary disabled:opacity-40">导出</button>
+                    <button @click="removeBackup(b.fileName)" :disabled="taskRunning" class="text-text-tertiary hover:text-red-500 disabled:opacity-40">删除</button>
                   </div>
                 </div>
               </div>
@@ -248,13 +273,58 @@
 
           <!-- Restore Confirm Dialog -->
           <div v-if="restoreTarget" class="fixed inset-0 flex items-center justify-center z-50">
-            <div class="bg-surface-0 rounded-xl shadow-2xl border border-surface-3 p-6 max-w-sm w-full mx-4">
-              <h3 class="text-sm font-semibold text-text-primary mb-2">确认恢复</h3>
-              <p class="text-xs text-text-secondary mb-1">{{ restoreTarget.type === 'full' ? '将恢复所有数据和文件，当前数据将被覆盖。' : '将恢复对话、Bot、知识库等配置数据，技能文件和图片不受影响。' }}</p>
-              <p class="text-xs text-amber-600 font-medium mb-4">恢复后需要重启应用才能生效。</p>
+            <div class="bg-surface-0 rounded-xl shadow-2xl border border-surface-3 p-6 max-w-md w-full mx-4">
+              <h3 class="text-sm font-semibold text-text-primary mb-3">确认恢复</h3>
+
+              <!-- 备份信息预览 -->
+              <div class="bg-surface-1 rounded-lg px-3 py-2.5 mb-3 space-y-1">
+                <div class="flex items-center justify-between text-xs">
+                  <span class="text-text-tertiary">类型</span>
+                  <span class="text-text-primary font-medium">{{ restoreTarget.type === 'full' ? '完整备份' : '数据库备份' }}</span>
+                </div>
+                <div class="flex items-center justify-between text-xs">
+                  <span class="text-text-tertiary">创建时间</span>
+                  <span class="text-text-primary">{{ formatTime(restoreTarget.createdAt) }}</span>
+                </div>
+                <div v-if="restoreTarget.appVersion" class="flex items-center justify-between text-xs">
+                  <span class="text-text-tertiary">应用版本</span>
+                  <span class="text-text-primary">v{{ restoreTarget.appVersion }}</span>
+                </div>
+                <div class="flex items-center justify-between text-xs">
+                  <span class="text-text-tertiary">大小</span>
+                  <span class="text-text-primary">{{ formatSize(restoreTarget.size) }}</span>
+                </div>
+                <div v-if="verifyInfo?.manifest" class="flex items-center justify-between text-xs">
+                  <span class="text-text-tertiary">文件数</span>
+                  <span class="text-text-primary">{{ verifyInfo.manifest.files.length }}</span>
+                </div>
+              </div>
+
+              <!-- 校验状态 -->
+              <div v-if="verifyChecking" class="mb-3 text-xs text-text-tertiary flex items-center gap-1.5">
+                <svg class="w-3 h-3 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" class="opacity-25" /><path d="M4 12a8 8 0 018-8" stroke="currentColor" stroke-width="3" stroke-linecap="round" class="opacity-75" /></svg>
+                正在校验备份文件...
+              </div>
+              <div v-else-if="verifyInfo && !verifyInfo.ok" class="mb-3 text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+                <div class="font-medium mb-0.5">备份不可恢复</div>
+                <div>{{ verifyInfo.error }}</div>
+              </div>
+              <div v-else-if="verifyInfo?.compat?.level === 'warning'" class="mb-3 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                <div class="font-medium mb-0.5">兼容性警告</div>
+                <div>{{ verifyInfo.compat.reason }}</div>
+              </div>
+              <div v-else-if="verifyInfo?.legacy" class="mb-3 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                <div class="font-medium mb-0.5">旧格式备份</div>
+                <div>无法做完整性校验，建议恢复后立即创建新格式的备份。</div>
+              </div>
+
+              <!-- 影响说明 -->
+              <p class="text-xs text-text-secondary mb-1">{{ restoreTarget.type === 'full' ? '将恢复所有数据和文件，当前数据将被归档保留 7 天供反悔。' : '将恢复数据库（对话、Bot、知识库配置等），技能文件和图片不受影响。' }}</p>
+              <p class="text-xs text-amber-600 font-medium mb-4">恢复完成后应用将自动重启。</p>
+
               <div class="flex justify-end gap-2">
-                <button @click="restoreTarget = null" class="btn-secondary">取消</button>
-                <button @click="doRestore" :disabled="restoreRunning" class="btn-primary flex items-center gap-1.5">
+                <button @click="cancelRestoreDialog" :disabled="restoreRunning" class="btn-secondary">取消</button>
+                <button @click="doRestore" :disabled="restoreRunning || verifyChecking || !verifyInfo?.ok" class="btn-primary flex items-center gap-1.5">
                   <svg v-if="restoreRunning" class="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" class="opacity-25" /><path d="M4 12a8 8 0 018-8" stroke="currentColor" stroke-width="3" stroke-linecap="round" class="opacity-75" /></svg>
                   <span>{{ restoreRunning ? '恢复中...' : '确认恢复' }}</span>
                 </button>
@@ -443,13 +513,45 @@ const vectorTestOk = ref(false)
 const generalSaved = ref(false)
 const dataDir = ref('')
 const dataDirChanged = ref(false)
+const dataDirError = ref('')
 const showDataDirRelaunch = ref(false)
+
+// === 备份与恢复 ===
+//
+// 后端 API（主进程 services/backup）：
+//   list                                → BackupInfo[]
+//   db / full                           → 创建备份；进度通过 'backup:progress' 推送
+//   cancel                              → 取消当前任务（仅备份阶段；恢复中途取消会破坏一致性）
+//   verify(fileName)                    → 兼容性 + 完整性预检
+//   restore(fileName)                   → 从已有记录恢复；成功后主进程自动 relaunch
+//   restoreFromExternal                 → 弹文件选择器导入 .zip 并恢复
+//   exportTo(fileName)                  → 弹保存对话框导出备份到外部位置
+//   delete(fileName)                    → 删除备份
+//   getSettings / setSettings           → 自动备份开关 + 保留份数
 
 interface BackupInfo {
   fileName: string
   type: 'auto' | 'full'
   size: number
   createdAt: string
+  appVersion?: string
+  format?: 'v1' | 'legacy'
+}
+
+interface ProgressData {
+  phase: 'snapshot' | 'pack' | 'verify' | 'extract' | 'apply'
+  current: number
+  total: number
+  fileName: string
+  bytes?: number
+}
+
+interface VerifyInfo {
+  ok: boolean
+  manifest?: { files: { path: string; size: number; sha256: string }[]; appVersion: string; type: string }
+  compat?: { level: 'ok' | 'warning' | 'blocked'; reason?: string }
+  error?: string
+  legacy?: boolean
 }
 
 const backups = ref<BackupInfo[]>([])
@@ -461,8 +563,30 @@ const backupMessageOk = ref(false)
 const showBackupMenu = ref(false)
 const restoreTarget = ref<BackupInfo | null>(null)
 const restoreRunning = ref(false)
+const verifyChecking = ref(false)
+const verifyInfo = ref<VerifyInfo | null>(null)
+const progress = ref<ProgressData | null>(null)
 const backupPage = ref(1)
 const BACKUP_PAGE_SIZE = 8
+
+// taskRunning 涵盖所有阻塞性任务：备份和恢复都禁用同区域其他按钮
+const taskRunning = computed(() => backupRunning.value || restoreRunning.value)
+
+const progressPercent = computed(() => {
+  if (!progress.value || !progress.value.total) return 0
+  return Math.min(100, Math.round((progress.value.current / progress.value.total) * 100))
+})
+
+function phaseLabel(phase: ProgressData['phase']): string {
+  switch (phase) {
+    case 'snapshot': return '生成数据库快照'
+    case 'pack': return '打包文件'
+    case 'verify': return '校验完整性'
+    case 'extract': return '解压备份'
+    case 'apply': return '写入数据目录'
+    default: return '处理中'
+  }
+}
 
 const pagedBackups = computed(() => {
   const start = (backupPage.value - 1) * BACKUP_PAGE_SIZE
@@ -481,19 +605,25 @@ async function loadBackups() {
 }
 
 async function saveBackupSettings() {
-  await window.api.backup.invoke('setSettings', backupInterval.value, backupMaxCount.value)
+  const result = (await window.api.backup.invoke(
+    'setSettings',
+    backupInterval.value,
+    backupMaxCount.value
+  )) as { success: boolean; error?: string }
+  if (result && !result.success) {
+    backupMessageOk.value = false
+    backupMessage.value = `保存设置失败: ${result.error}`
+    setTimeout(() => { backupMessage.value = '' }, 4000)
+  }
 }
 
 async function doBackup(type: 'db' | 'full') {
   showBackupMenu.value = false
   backupRunning.value = true
   backupMessage.value = ''
+  progress.value = null
   try {
-    if (type === 'db') {
-      await window.api.backup.invoke('db')
-    } else {
-      await window.api.backup.invoke('full')
-    }
+    await window.api.backup.invoke(type === 'db' ? 'db' : 'full')
     backupMessageOk.value = true
     backupMessage.value = '备份完成'
     await loadBackups()
@@ -502,43 +632,128 @@ async function doBackup(type: 'db' | 'full') {
     backupMessage.value = `备份失败: ${e?.message || e}`
   } finally {
     backupRunning.value = false
+    progress.value = null
     setTimeout(() => { backupMessage.value = '' }, 4000)
   }
 }
 
-function confirmRestore(b: BackupInfo) {
+async function cancelTask() {
+  // 仅在备份阶段允许取消；恢复中途取消会留下半完成的状态由主进程的 staging 机制兜底
+  try {
+    await window.api.backup.invoke('cancel')
+  } catch {}
+}
+
+async function confirmRestore(b: BackupInfo) {
   restoreTarget.value = b
+  verifyInfo.value = null
+  verifyChecking.value = true
+  try {
+    verifyInfo.value = (await window.api.backup.invoke('verify', b.fileName)) as VerifyInfo
+  } catch (e: any) {
+    verifyInfo.value = { ok: false, error: e?.message || String(e) }
+  } finally {
+    verifyChecking.value = false
+  }
+}
+
+function cancelRestoreDialog() {
+  if (restoreRunning.value) return
+  restoreTarget.value = null
+  verifyInfo.value = null
 }
 
 async function doRestore() {
   if (!restoreTarget.value) return
   restoreRunning.value = true
+  progress.value = null
   try {
     const b = restoreTarget.value
-    let result: { success: boolean; error?: string }
-    if (b.type === 'full') {
-      result = (await window.api.backup.invoke('restoreFull', b.fileName)) as any
-    } else {
-      result = (await window.api.backup.invoke('restoreDb', b.fileName)) as any
+    const result = (await window.api.backup.invoke('restore', b.fileName)) as {
+      success: boolean
+      error?: string
     }
     if (result.success) {
       backupMessageOk.value = true
-      backupMessage.value = '恢复完成，请重启应用'
+      backupMessage.value = '恢复成功，应用即将重启...'
+      // 主进程会在 200ms 后 app.relaunch + exit；UI 不再操作
     } else {
       backupMessageOk.value = false
       backupMessage.value = `恢复失败: ${result.error}`
+      restoreRunning.value = false
+      restoreTarget.value = null
+      verifyInfo.value = null
+      progress.value = null
+      setTimeout(() => { backupMessage.value = '' }, 5000)
     }
   } catch (e: any) {
     backupMessageOk.value = false
     backupMessage.value = `恢复失败: ${e?.message || e}`
-  } finally {
     restoreRunning.value = false
     restoreTarget.value = null
+    verifyInfo.value = null
+    progress.value = null
     setTimeout(() => { backupMessage.value = '' }, 5000)
   }
 }
 
+async function restoreFromExternal() {
+  if (taskRunning.value) return
+  restoreRunning.value = true
+  backupMessage.value = ''
+  progress.value = null
+  try {
+    const result = (await window.api.backup.invoke('restoreFromExternal')) as {
+      success: boolean
+      error?: string
+    }
+    if (result.success) {
+      backupMessageOk.value = true
+      backupMessage.value = '恢复成功，应用即将重启...'
+      // 成功路径：保持 restoreRunning=true，主进程会在 200ms 后强制 relaunch，UI 状态不需要复位
+      return
+    }
+    // 失败 / 取消：复位 UI 状态
+    if (result.error !== 'cancelled') {
+      backupMessageOk.value = false
+      backupMessage.value = `恢复失败: ${result.error}`
+      setTimeout(() => { backupMessage.value = '' }, 5000)
+    }
+  } catch (e: any) {
+    backupMessageOk.value = false
+    backupMessage.value = `恢复失败: ${e?.message || e}`
+    setTimeout(() => { backupMessage.value = '' }, 5000)
+  }
+  // 任何非"成功并即将重启"的分支都到这里复位
+  restoreRunning.value = false
+  progress.value = null
+}
+
+async function exportBackup(b: BackupInfo) {
+  if (taskRunning.value) return
+  try {
+    const result = (await window.api.backup.invoke('exportTo', b.fileName)) as {
+      success: boolean
+      error?: string
+      exportedPath?: string
+    }
+    if (result.success) {
+      backupMessageOk.value = true
+      backupMessage.value = '已导出'
+    } else if (result.error !== 'cancelled') {
+      backupMessageOk.value = false
+      backupMessage.value = `导出失败: ${result.error}`
+    }
+  } catch (e: any) {
+    backupMessageOk.value = false
+    backupMessage.value = `导出失败: ${e?.message || e}`
+  } finally {
+    setTimeout(() => { backupMessage.value = '' }, 4000)
+  }
+}
+
 async function removeBackup(fileName: string) {
+  if (taskRunning.value) return
   await window.api.backup.invoke('delete', fileName)
   await loadBackups()
 }
@@ -573,16 +788,24 @@ function endsWithSegment(path: string, segment: string): boolean {
 }
 
 async function changeDataDir() {
+  dataDirError.value = ''
   const picked = await (window as any).api.dataDir.pick() as string | null
   if (!picked) return
   const finalDir = endsWithSegment(picked, 'local-agent') ? picked : joinPath(picked, 'local-agent')
   if (finalDir === dataDir.value) return // 选了同样的目录，不需要任何动作
   // 仅写 config，不更新当前进程的 cachedDataDir，避免文件操作走新目录、db 仍在旧目录
   // 造成数据切割。提示用户立即重启以使变更生效。
-  const result = await (window as any).api.dataDir.set(finalDir) as { needsRelaunch: boolean }
+  // 主进程会先校验路径合法性（拒绝安装目录/系统目录/磁盘根），失败时返回 reason 给 UI 展示。
+  const result = await (window as any).api.dataDir.set(finalDir) as
+    | { ok: false; reason: string }
+    | { ok: true; needsRelaunch: boolean }
+  if (!result?.ok) {
+    dataDirError.value = result?.reason || '设置数据目录失败'
+    return
+  }
   dataDir.value = finalDir
   dataDirChanged.value = true
-  if (result?.needsRelaunch) {
+  if (result.needsRelaunch) {
     showDataDirRelaunch.value = true
   }
 }
@@ -737,14 +960,22 @@ async function saveGeneralSettings() {
   setTimeout(() => { generalSaved.value = false }, 2000)
 }
 
+function handleBackupProgress(data: ProgressData): void {
+  // 主进程在备份/恢复过程中持续推送进度事件，仅当任务进行中时显示
+  if (taskRunning.value) progress.value = data
+}
+
 onMounted(() => {
   loadSettings()
   loadBackups()
   document.addEventListener('click', onClickOutsideMenu)
+  // 订阅备份/恢复进度，让 UI 进度条与主进程实际状态同步
+  window.api.backup.onProgress(handleBackupProgress)
 })
 
 onUnmounted(() => {
   document.removeEventListener('click', onClickOutsideMenu)
+  window.api.backup.offProgress()
   if (updateMessageTimer !== null) {
     clearTimeout(updateMessageTimer)
     updateMessageTimer = null

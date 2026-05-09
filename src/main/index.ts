@@ -9,7 +9,7 @@ import { backfillCreationGallery } from './services/gallery'
 import { getThumbnailBytes } from './services/thumbnail'
 import { stopAllMcpServers } from './services/mcp-server'
 import { getDataDir } from './services/data-path'
-import { runAutoBackupIfNeeded } from './services/backup'
+import { runStartupTasks as runBackupStartupTasks } from './services/backup'
 import { getRuntimeConfig } from './services/runtime-config'
 
 if (is.dev) {
@@ -89,6 +89,21 @@ protocol.registerSchemesAsPrivileged([
 
 app.commandLine.appendSwitch('ignore-certificate-errors')
 
+// Windows 专用：屏蔽 Xbox Game Bar overlay 探测导致的「需要使用新应用以打开此
+// ms-gamingoverlay 链接」弹窗。
+// 触发场景：用户系统精简了 Xbox Game Bar UWP 包，但残留 ms-gamingoverlay 协议
+// 注册表项；Electron 内嵌 Chromium 的 GPU 进程启动时探测 Game Bar 兼容性，
+// Shell 找不到处理程序就弹窗。
+if (process.platform === 'win32') {
+  // 1) 减少 Chromium GPU 进程触发 Game Bar 探测的频率
+  app.commandLine.appendSwitch('disable-features', 'HardwareMediaKeyHandling')
+  // 2) 兜底：把自己注册成 ms-gamingoverlay 协议处理器，让 Shell 总能找到处理者
+  //    Chromium 探测通常只查注册表项是否存在，几乎不会真正启动协议
+  try {
+    app.setAsDefaultProtocolClient('ms-gamingoverlay')
+  } catch {}
+}
+
 app.whenReady().then(async () => {
   electronApp.setAppUserModelId(getRuntimeConfig().appId)
 
@@ -163,8 +178,8 @@ app.whenReady().then(async () => {
   // Register all IPC handlers
   registerIpcHandlers()
 
-  // Auto backup check (non-blocking)
-  runAutoBackupIfNeeded().catch((e) => console.error('Auto backup error:', e))
+  // Backup startup tasks: 清理上次崩溃残骸 + 异步触发自动备份（如配置）
+  runBackupStartupTasks().catch((e) => console.error('Backup startup error:', e))
 
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)

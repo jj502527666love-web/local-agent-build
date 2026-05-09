@@ -146,8 +146,15 @@ const api = {
   backup: {
     invoke: (channel: string, ...args: unknown[]) =>
       ipcRenderer.invoke(`backup:${channel}`, ...args),
-    onProgress: (callback: (data: { current: number; total: number; fileName: string }) => void) =>
-      ipcRenderer.on('backup:progress', (_, data) => callback(data)),
+    onProgress: (
+      callback: (data: {
+        phase: 'snapshot' | 'pack' | 'verify' | 'extract' | 'apply'
+        current: number
+        total: number
+        fileName: string
+        bytes?: number
+      }) => void
+    ) => ipcRenderer.on('backup:progress', (_, data) => callback(data)),
     offProgress: () => ipcRenderer.removeAllListeners('backup:progress')
   },
   dataDir: {

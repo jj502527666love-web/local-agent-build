@@ -1,5 +1,6 @@
 import { ipcMain, BrowserWindow, dialog, clipboard, nativeImage, app } from 'electron'
 import { closeDatabase } from '../database'
+import { stopAllMcpServers } from '../services/mcp-server'
 import * as modelProviderService from '../services/model-provider'
 import * as personaService from '../services/persona'
 import * as knowledgeService from '../services/knowledge'
@@ -292,12 +293,14 @@ export function registerIpcHandlers(): void {
   // initDataDir / setDataDir 默认 activate=false，仅写 config 不切换运行时缓存。
   // 由 renderer 拿到 needsRelaunch 信号后弹"立即重启"对话框，避免本次会话数据切割。
   ipcMain.handle('dataDir:init', (_, dir?: string) => {
-    dataPathService.initDataDir(dir)
-    return { needsRelaunch: !dataPathService.isDataDirActivated() }
+    const result = dataPathService.initDataDir(dir)
+    if (!result.ok) return { ok: false, reason: result.reason }
+    return { ok: true, needsRelaunch: !dataPathService.isDataDirActivated() }
   })
   ipcMain.handle('dataDir:set', async (_, dir: string) => {
-    dataPathService.setDataDir(dir)
-    return { needsRelaunch: !dataPathService.isDataDirActivated() }
+    const result = dataPathService.setDataDir(dir)
+    if (!result.ok) return { ok: false, reason: result.reason }
+    return { ok: true, needsRelaunch: !dataPathService.isDataDirActivated() }
   })
   ipcMain.handle('dataDir:isActivated', () => dataPathService.isDataDirActivated())
   ipcMain.handle('dataDir:pick', async () => {
@@ -549,36 +552,118 @@ export function registerIpcHandlers(): void {
   })
 
   // === Backup ===
+  //
+  // 进度事件统一通过 'backup:progress' channel 发送 ProgressEvent 对象。
+  // 取消由 'backup:cancel' channel 触发，主进程 service 内部维护单一 token。
+  // 恢复成功后强制 relaunch，避免 service 在新 db 上跑 migration+seed 污染恢复结果。
+
+  /**
+   * 恢复完成后重启应用。
+   *
+   * 关键：必须显式停止 MCP 子进程 + 关闭 db，再 relaunch + exit。
+   * `app.exit(0)` 不会触发 'before-quit' 事件，所以原本绑定在那里的清理逻辑都被跳过：
+   *   - MCP 子进程会变成孤儿进程残留在系统里
+   *   - SQLite 句柄虽然被 OS 回收但跳过了 close 流程
+   * 这里手动复刻 before-quit 的行为，保证恢复后的新进程能干净启动。
+   */
+  function relaunchAfterRestore(): void {
+    try { stopAllMcpServers() } catch (e) { console.error('[restore] stopAllMcpServers failed:', e) }
+    try { closeDatabase() } catch (e) { console.error('[restore] closeDatabase failed:', e) }
+    app.relaunch()
+    app.exit(0)
+  }
+
+  function makeProgressForwarder(event: Electron.IpcMainInvokeEvent) {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    return (ev: backupService.ProgressEvent) => {
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('backup:progress', ev)
+      }
+    }
+  }
+
   ipcMain.handle('backup:list', () => backupService.listBackups())
-  ipcMain.handle('backup:db', () => backupService.backupDatabase())
+
+  ipcMain.handle('backup:db', (event) => {
+    return backupService.backupDatabase(makeProgressForwarder(event))
+  })
+
   ipcMain.handle('backup:full', (event) => {
-    const win = BrowserWindow.fromWebContents(event.sender)
-    return backupService.backupFull((current, total, fileName) => {
-      if (win && !win.isDestroyed()) {
-        win.webContents.send('backup:progress', { current, total, fileName })
-      }
-    })
+    return backupService.backupFull(makeProgressForwarder(event))
   })
-  ipcMain.handle('backup:restoreDb', (_, fileName: string) =>
-    backupService.restoreDatabase(fileName)
+
+  ipcMain.handle('backup:cancel', () => backupService.cancelCurrent())
+
+  ipcMain.handle('backup:verify', (_, fileName: string) =>
+    backupService.verifyBackup(fileName)
   )
-  ipcMain.handle('backup:restoreFull', (event, fileName: string) => {
+
+  ipcMain.handle('backup:restore', async (event, fileName: string) => {
+    const result = await backupService.restoreFromRecord(fileName, makeProgressForwarder(event))
+    // 恢复成功必须 relaunch，否则 services 调 getDatabase() 会在恢复后的 db 上跑 migration+seed 污染数据
+    if (result.success) {
+      setTimeout(() => {
+        try { closeDatabase() } catch {}
+        app.relaunch()
+        app.exit(0)
+      }, 200)
+    }
+    return result
+  })
+
+  ipcMain.handle('backup:restoreFromExternal', async (event) => {
     const win = BrowserWindow.fromWebContents(event.sender)
-    return backupService.restoreFull(fileName, (current, total, fn) => {
-      if (win && !win.isDestroyed()) {
-        win.webContents.send('backup:progress', { current, total, fileName: fn })
-      }
+    if (!win) return { success: false, error: '窗口不可用' }
+    const picked = await dialog.showOpenDialog(win, {
+      title: '选择备份文件',
+      filters: [{ name: 'LocalAgent 备份', extensions: ['zip'] }],
+      properties: ['openFile']
     })
+    if (picked.canceled || picked.filePaths.length === 0) {
+      return { success: false, error: 'cancelled' }
+    }
+    const result = await backupService.restoreFromExternal(
+      picked.filePaths[0],
+      makeProgressForwarder(event)
+    )
+    if (result.success) {
+      setTimeout(() => relaunchAfterRestore(), 200)
+    }
+    return result
   })
+
+  ipcMain.handle('backup:exportTo', async (event, fileName: string) => {
+    // IPC 层只负责弹保存对话框，文件复制委托给 backup service
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (!win) return { success: false, error: '窗口不可用' }
+    const picked = await dialog.showSaveDialog(win, {
+      title: '导出备份',
+      defaultPath: fileName,
+      filters: [{ name: 'LocalAgent 备份', extensions: ['zip'] }]
+    })
+    if (picked.canceled || !picked.filePath) {
+      return { success: false, error: 'cancelled' }
+    }
+    const result = backupService.exportBackupTo(fileName, picked.filePath)
+    return result.success
+      ? { success: true, exportedPath: picked.filePath }
+      : { success: false, error: result.error }
+  })
+
   ipcMain.handle('backup:delete', (_, fileName: string) => backupService.deleteBackup(fileName))
-  ipcMain.handle('backup:getSettings', () => ({
-    interval: backupService.getAutoBackupInterval(),
-    maxCount: backupService.getMaxBackupCount()
-  }))
-  ipcMain.handle('backup:setSettings', (_, interval: string, maxCount: number) => {
-    backupService.setAutoBackupInterval(interval)
-    backupService.setMaxBackupCount(maxCount)
-  })
+
+  ipcMain.handle('backup:getSettings', () => backupService.getSettings())
+  ipcMain.handle(
+    'backup:setSettings',
+    (_, interval: backupService.BackupSettings['interval'], maxCount: number) => {
+      try {
+        backupService.setSettings({ interval, maxCount })
+        return { success: true }
+      } catch (e: any) {
+        return { success: false, error: e?.message || String(e) }
+      }
+    }
+  )
 
   // === Window Controls ===
   ipcMain.on('window:minimize', (event) => {

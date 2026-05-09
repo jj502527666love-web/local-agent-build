@@ -1,5 +1,5 @@
 import { app } from 'electron'
-import { join, basename } from 'path'
+import { join, basename, resolve, sep, dirname } from 'path'
 import {
   existsSync,
   readFileSync,
@@ -86,6 +86,104 @@ function isRootDir(dir: string): boolean {
   return false
 }
 
+// === 数据目录安全校验 ===
+//
+// 核心原则：数据目录必须与应用安装目录、系统保留目录完全隔离，否则：
+//   - 升级/卸载时数据会被 NSIS 连带清空
+//   - Program Files 等系统目录需要管理员权限，非管理员写入会被 UAC VirtualStore 静默重定向，
+//     导致"应用看到的路径"与"实际写入的路径"错位
+
+/**
+ * 将路径规范化为"可比较形式"：
+ * - resolve 为绝对路径（消除相对路径、. / .. 等）
+ * - 小写（Windows 文件系统不区分大小写；Linux 虽区分但这里偏保守更安全）
+ * - 去尾部分隔符
+ */
+function normalizeForCompare(dir: string): string {
+  return resolve(dir).toLowerCase().replace(/[\\/]+$/, '')
+}
+
+/**
+ * 判断 child 是否位于 parent 目录内（含相等）。
+ *
+ * 关键点：必须用 `parent + sep` 做前缀匹配，
+ * 否则 'C:\Program Files2' 会被误判为 'C:\Program Files' 的子目录。
+ */
+function isPathUnder(child: string, parent: string): boolean {
+  if (!parent) return false
+  const c = normalizeForCompare(child)
+  const p = normalizeForCompare(parent)
+  if (c === p) return true
+  return c.startsWith(p + sep.toLowerCase())
+}
+
+export interface UnsafeCheck {
+  unsafe: boolean
+  reason?: string
+}
+
+/**
+ * 判断目录作为数据目录是否安全。
+ *
+ * 拦截场景：
+ *   1. 磁盘根 / 系统根 —— 权限问题 + 误伤风险
+ *   2. 应用安装目录（app path / exe 目录 / resources）及其子目录 —— 升级/卸载被清空
+ *   3. 系统保留目录（Program Files / Windows 等）及其子目录 —— 权限 + VirtualStore 陷阱
+ *
+ * 注意：前端会自动把 "C:\Program Files" 补成 "C:\Program Files\local-agent"，
+ * 因此校验必须走"前缀包含"语义，不能只做精确相等比较。
+ */
+export function isUnsafeDataDir(dir: string): UnsafeCheck {
+  if (!dir || !dir.trim()) return { unsafe: true, reason: '路径为空' }
+
+  if (isRootDir(dir)) {
+    return { unsafe: true, reason: '不能使用磁盘根目录作为数据目录' }
+  }
+
+  // 应用安装目录及子目录
+  const installCandidates: string[] = []
+  try { installCandidates.push(app.getAppPath()) } catch {}
+  try { installCandidates.push(dirname(app.getPath('exe'))) } catch {}
+  if (process.resourcesPath) installCandidates.push(process.resourcesPath)
+
+  for (const c of installCandidates) {
+    if (c && isPathUnder(dir, c)) {
+      return {
+        unsafe: true,
+        reason: '该位置位于应用安装目录内，升级或卸载时数据会被清空，请选择其他位置'
+      }
+    }
+  }
+
+  // 系统保留目录（从环境变量拿，兼容非 C 盘系统/32 位应用在 64 位系统上的差异）
+  if (process.platform === 'win32') {
+    const sysRoots = [
+      process.env.ProgramFiles,
+      process.env['ProgramFiles(x86)'],
+      process.env.ProgramW6432,
+      process.env.windir,
+      process.env.SystemRoot
+    ].filter((p): p is string => !!p && p.length > 0)
+
+    for (const root of sysRoots) {
+      if (isPathUnder(dir, root)) {
+        return {
+          unsafe: true,
+          reason: '该位置位于系统保留目录内（如 Program Files、Windows），不适合作为数据目录'
+        }
+      }
+    }
+  }
+
+  return { unsafe: false }
+}
+
+export interface SetDataDirResult {
+  ok: boolean
+  /** 失败时的原因，用于前端 UI 展示 */
+  reason?: string
+}
+
 /**
  * 写入数据目录配置。
  *
@@ -95,7 +193,20 @@ function isRootDir(dir: string): boolean {
  *   首次启动场景下，如果用户选了与默认不同的目录，也应保持默认 false 由 renderer
  *   决定是否 relaunch，避免本次会话产生数据切割（DB 在旧目录、文件在新目录）。
  */
-export function setDataDir(dir: string, options?: { activate?: boolean }): void {
+export function setDataDir(dir: string, options?: { activate?: boolean }): SetDataDirResult {
+  const check = isUnsafeDataDir(dir)
+  if (check.unsafe) {
+    return { ok: false, reason: check.reason }
+  }
+
+  // 先 mkdir 再写 config，避免 mkdir 失败时 data-path.json 已记录"幽灵 dataDir"，
+  // 下次启动 getDataDir() 虽有 existsSync 兜底回退默认目录，但 oldDataDir 可能误触发迁移弹窗。
+  try {
+    mkdirSync(dir, { recursive: true })
+  } catch (e: any) {
+    return { ok: false, reason: `无法创建数据目录：${e?.message || String(e)}` }
+  }
+
   const activate = options?.activate === true
   const config = readConfig()
   const currentDir = getDataDir()
@@ -104,11 +215,11 @@ export function setDataDir(dir: string, options?: { activate?: boolean }): void 
   }
   config.dataDir = dir
   writeConfig(config)
-  mkdirSync(dir, { recursive: true })
   writeMarker(dir)
   if (activate) {
     cachedDataDir = dir
   }
+  return { ok: true }
 }
 
 export function isFirstLaunch(): boolean {
@@ -125,10 +236,11 @@ export function isFirstLaunch(): boolean {
   return true
 }
 
-export function initDataDir(dir?: string, options?: { activate?: boolean }): void {
+export function initDataDir(dir?: string, options?: { activate?: boolean }): SetDataDirResult {
   const dataDir = dir || getDefaultDataDir()
-  mkdirSync(dataDir, { recursive: true })
-  setDataDir(dataDir, options)
+  // 默认 userData 永远安全；只有用户显式传入路径时才需要校验。
+  // setDataDir 内部还会再做一次校验作为兜底，这里提前判断只为提供更清晰的错误流。
+  return setDataDir(dataDir, options)
 }
 
 /**

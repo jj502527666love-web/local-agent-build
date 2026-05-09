@@ -80,7 +80,15 @@ interface Window {
     }
     backup: {
       invoke: (channel: string, ...args: unknown[]) => Promise<unknown>
-      onProgress: (callback: (data: { current: number; total: number; fileName: string }) => void) => void
+      onProgress: (
+        callback: (data: {
+          phase: 'snapshot' | 'pack' | 'verify' | 'extract' | 'apply'
+          current: number
+          total: number
+          fileName: string
+          bytes?: number
+        }) => void
+      ) => void
       offProgress: () => void
     }
     dialog: { openFile: (options?: unknown) => Promise<unknown> }

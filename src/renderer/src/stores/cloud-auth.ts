@@ -96,10 +96,10 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
     }
   }
 
-  async function register(username: string, password: string, nickname?: string) {
+  async function register(username: string, password: string, nickname?: string, phone?: string) {
     loading.value = true
     try {
-      const data = await cloudAuth.register({ username, password, nickname })
+      const data = await cloudAuth.register({ username, password, nickname, phone })
       setCloudToken(data.token)
       user.value = data.user
       localStorage.setItem('cloud_user', JSON.stringify(data.user))

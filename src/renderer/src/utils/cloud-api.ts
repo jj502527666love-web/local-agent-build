@@ -93,7 +93,7 @@ async function request(method: string, path: string, body?: unknown, options: Re
 
 export const cloudAuth = {
   login: (username: string, password: string) => request('POST', '/auth/login', { username, password }, { withDeviceId: true }),
-  register: (data: { username: string; password: string; nickname?: string }) => request('POST', '/auth/register', data, { withDeviceId: true }),
+  register: (data: { username: string; password: string; nickname?: string; phone?: string }) => request('POST', '/auth/register', data, { withDeviceId: true }),
   me: () => request('GET', '/auth/me'),
   changePassword: (old_password: string, new_password: string) => request('POST', '/auth/password', { old_password, new_password }),
   refresh: () => request('POST', '/auth/refresh'),

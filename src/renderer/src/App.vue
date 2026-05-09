@@ -23,6 +23,13 @@
             更改
           </button>
         </div>
+        <p class="text-[11px] text-text-tertiary mt-2">
+          请勿选择应用安装目录（如 <span class="font-mono">Program Files</span>）或系统目录，否则升级/卸载时数据会被清空。
+        </p>
+        <div v-if="setupError" class="flex items-start gap-2 mt-3 p-2.5 rounded-lg bg-red-50 border border-red-200 text-xs text-red-600 font-medium">
+          <svg class="w-3.5 h-3.5 mt-0.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" /></svg>
+          <span class="break-all">{{ setupError }}</span>
+        </div>
       </div>
 
       <button @click="confirmSetup" :disabled="setupConfirming" class="w-full py-3 text-sm font-semibold bg-primary-600 hover:bg-primary-700 text-white rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
@@ -201,6 +208,7 @@ const api = () => (window as any).api
 const showSetup = ref(false)
 const setupDir = ref('')
 const setupConfirming = ref(false)
+const setupError = ref('')
 const showSetupRelaunch = ref(false)
 
 const showMigration = ref(false)
@@ -302,16 +310,27 @@ async function pickSetupDir() {
   const picked = await api().dataDir.pick()
   if (!picked) return
   setupDir.value = endsWithSegment(picked, 'local-agent') ? picked : joinPath(picked, 'local-agent')
+  // 重新选择路径时清空旧错误，避免误导
+  setupError.value = ''
 }
 
 async function confirmSetup() {
   if (setupConfirming.value) return
   setupConfirming.value = true
+  setupError.value = ''
   try {
-    const result = await api().dataDir.init(setupDir.value) as { needsRelaunch: boolean }
+    // 主进程会先校验路径合法性（拒绝安装目录/系统目录/磁盘根），
+    // 失败时返回 { ok: false, reason } 给 UI 展示，并保持 setup 界面不关闭。
+    const result = await api().dataDir.init(setupDir.value) as
+      | { ok: false; reason: string }
+      | { ok: true; needsRelaunch: boolean }
+    if (!result?.ok) {
+      setupError.value = result?.reason || '设置数据目录失败'
+      return
+    }
     showSetup.value = false
     // 用户选了与默认不同的目录 → 当前进程的 db 仍连旧目录，必须重启避免数据切割
-    if (result?.needsRelaunch) {
+    if (result.needsRelaunch) {
       showSetupRelaunch.value = true
     }
   } finally {
