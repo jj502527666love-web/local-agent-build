@@ -79,7 +79,7 @@
 
               <!-- Model Selection -->
               <div>
-                <label class="text-xs font-medium text-text-secondary mb-1.5 block">模型</label>
+                <label class="text-xs font-medium text-text-secondary mb-1.5 block">生图模型</label>
                 <select v-model="selectedProviderId" @change="selectedModelId = ''" class="w-full px-3 py-2 text-xs bg-surface-1 border border-surface-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 mb-2">
                   <option value="">-- 选择服务商 --</option>
                   <option v-for="p in modelStore.providers" :key="p.id" :value="p.id">{{ p.name }}</option>
@@ -476,8 +476,10 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { storeToRefs } from 'pinia'
 import { useRoute, useRouter } from 'vue-router'
 import { useImageGenStore } from '@/stores/image-gen'
+import { useImageGenFormStore } from '@/stores/image-gen-form'
 import { useModelStore } from '@/stores/models'
 import { usePromptPresetStore } from '@/stores/prompt-presets'
 import { useHandoffStore } from '@/stores/handoff'
@@ -487,7 +489,7 @@ import { recordUsage, warmHintsCache, getHintsSync } from '@/utils/model-usage-h
 import ImageSizePicker from '@/components/ImageSizePicker.vue'
 import ResolutionTierPicker from '@/components/ResolutionTierPicker.vue'
 import QualityPicker from '@/components/QualityPicker.vue'
-import { DEFAULT_TIER_ID, DEFAULT_QUALITY_ID, hasQualityOptions, supportsConsistency, getMaxConsistencyN } from '@shared/image-size'
+import { DEFAULT_QUALITY_ID, hasQualityOptions, supportsConsistency, getMaxConsistencyN } from '@shared/image-size'
 import { stripImageMetadata } from '@shared/strip-image-metadata'
 import ErrorDetailDialog from '@/components/ErrorDetailDialog.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
@@ -500,6 +502,24 @@ const store = useImageGenStore()
 const handoff = useHandoffStore()
 const modelStore = useModelStore()
 const presetStore = usePromptPresetStore()
+
+// 会话级表单草稿：路由切换不丢，重启 app 后重置
+const formStore = useImageGenFormStore()
+const {
+  prompt,
+  refImages,
+  selectedProviderId,
+  selectedModelId,
+  optimizeProviderId,
+  optimizeModelId,
+  selectedSize,
+  selectedTier,
+  selectedQuality,
+  batchCount,
+  concurrency,
+  consistency,
+  viewMode,
+} = storeToRefs(formStore)
 
 // 错误详情弹窗：仅存原文，友好翻译由 ErrorDetailDialog 内部派生
 const errorDialog = ref<{ visible: boolean; rawError: string }>({
@@ -543,7 +563,6 @@ function regenerate(gen: ImageGeneration) {
 
 const promptPresets = computed(() => presetStore.visibleGrouped('image_gen'))
 
-const prompt = ref('')
 function localFileUrl(path: string): string {
   // 兼容旧绝对路径数据：以盘符或 / 开头视为绝对路径
   const isAbsolute = /^[A-Za-z]:|^\//.test(path)
@@ -551,21 +570,9 @@ function localFileUrl(path: string): string {
   return 'local-file://img?' + param + '=' + encodeURIComponent(path)
 }
 
-const refImages = ref<string[]>([])
-const selectedProviderId = ref('')
-const selectedModelId = ref('')
-const optimizeProviderId = ref('')
-const optimizeModelId = ref('')
-const selectedSize = ref('1:1')
-const selectedTier = ref<string>(DEFAULT_TIER_ID)
-const batchCount = ref(1)
-const concurrency = ref(2)
-const consistency = ref(false)
-
 const modelSupportsConsistency = computed(() => supportsConsistency(selectedModelId.value))
 const consistencyMaxN = computed(() => getMaxConsistencyN(selectedModelId.value))
 const showConsistencyToggle = computed(() => modelSupportsConsistency.value && batchCount.value > 1)
-const viewMode = ref<'grid' | 'list'>('grid')
 const previewImage = ref<string | null>(null)
 const optimizing = ref(false)
 const optimizeError = ref('')
@@ -621,7 +628,6 @@ async function deleteSingle(id: string) {
 // recommended section re-sorts without a full reload.
 const hintsTick = ref(0)
 
-const selectedQuality = ref(DEFAULT_QUALITY_ID)
 const hasRefImages = computed(() => refImages.value.length > 0)
 const qualitiesAvailable = computed(() => hasQualityOptions(selectedModelId.value))
 

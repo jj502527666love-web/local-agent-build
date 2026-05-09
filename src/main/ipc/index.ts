@@ -717,6 +717,75 @@ export function registerIpcHandlers(): void {
     canvasService.deleteNodeImage(projectId, nodeId)
   )
 
+  // 流式画布导出：弹保存对话框 → 写 .lacanvas.json 文件
+  // 仅 prompt + 节点结构，不打包图片字节，跨设备分享用
+  ipcMain.handle('canvas:exportProjects', async (event, ids: string[]) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (!win) return { success: false, error: '窗口不可用' }
+    if (!ids || !Array.isArray(ids) || ids.length === 0) {
+      return { success: false, error: '未选中项目' }
+    }
+
+    const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+    const defaultName = ids.length === 1
+      ? `画布-${stamp}.lacanvas.json`
+      : `画布-${ids.length}个-${stamp}.lacanvas.json`
+
+    const picked = await dialog.showSaveDialog(win, {
+      title: '导出流式画布',
+      defaultPath: defaultName,
+      filters: [
+        { name: 'Local Agent 画布', extensions: ['lacanvas.json', 'json'] },
+        { name: '全部文件', extensions: ['*'] },
+      ],
+    })
+    if (picked.canceled || !picked.filePath) {
+      return { success: false, canceled: true }
+    }
+
+    try {
+      const file = canvasService.exportProjects(ids, app.getVersion())
+      const { writeFileSync } = require('fs') as typeof import('fs')
+      writeFileSync(picked.filePath, JSON.stringify(file, null, 2), 'utf-8')
+      return {
+        success: true,
+        filePath: picked.filePath,
+        projectCount: file.projects.length,
+      }
+    } catch (e: any) {
+      return { success: false, error: e?.message || '导出失败' }
+    }
+  })
+
+  // 流式画布导入：弹打开对话框 → 读 JSON → 在本机生成新项目
+  // 永远生成新 UUID + 新标题（带导入后缀），不覆盖已有项目
+  ipcMain.handle('canvas:importProjects', async (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (!win) return { success: false, error: '窗口不可用' }
+
+    const picked = await dialog.showOpenDialog(win, {
+      title: '导入流式画布',
+      filters: [
+        { name: 'Local Agent 画布', extensions: ['lacanvas.json', 'json'] },
+        { name: '全部文件', extensions: ['*'] },
+      ],
+      properties: ['openFile'],
+    })
+    if (picked.canceled || !picked.filePaths || picked.filePaths.length === 0) {
+      return { success: false, canceled: true }
+    }
+
+    try {
+      const { readFileSync } = require('fs') as typeof import('fs')
+      const raw = readFileSync(picked.filePaths[0], 'utf-8')
+      const parsed = JSON.parse(raw)
+      const result = canvasService.importProjects(parsed)
+      return { success: true, ...result }
+    } catch (e: any) {
+      return { success: false, error: e?.message || '导入失败' }
+    }
+  })
+
   // === Gallery ===
   ipcMain.handle('gallery:listCategories', () => galleryService.listCategories())
   ipcMain.handle('gallery:getCategory', (_, id: string) => galleryService.getCategory(id))

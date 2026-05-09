@@ -257,39 +257,40 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, reactive } from 'vue'
+import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
 import { useModelStore } from '@/stores/models'
+import { useImage2PromptStore } from '@/stores/image2prompt'
+import type { Task as Image2PromptTask } from '@/stores/image2prompt'
 import { groupAndSort } from '@/utils/model-caps'
 import { recordUsage, warmHintsCache, getHintsSync } from '@/utils/model-usage-hints'
 import { stripImageMetadata } from '@shared/strip-image-metadata'
 import GalleryPicker from '@/components/GalleryPicker.vue'
 
-interface Task {
-  id: string
-  image: string
-  name: string
-  status: 'pending' | 'running' | 'done' | 'error'
-  result: string
-  error: string
-}
+// Task 类型已提到 stores/image2prompt.ts，下面作为本地别名使用
+type Task = Image2PromptTask
 
 const router = useRouter()
 const modelStore = useModelStore()
 
 const MAX_TASKS = 20
 
-const visionProviderId = ref('')
-const visionModelId = ref('')
-const outputLang = ref<'cn' | 'en'>('cn')
-const stylePreset = ref<'general' | 'sd_phrase' | 'sd_tag' | 'mj' | 'danbooru'>('general')
-const systemPrompt = ref('')
-const concurrency = ref(2)
-const tasks = ref<Task[]>([])
+// 会话级表单+任务草稿：路由切换不丢，重启 app 后重置
+const formStore = useImage2PromptStore()
+const {
+  visionProviderId,
+  visionModelId,
+  outputLang,
+  stylePreset,
+  systemPrompt,
+  concurrency,
+  tasks,
+  idCounter,
+} = storeToRefs(formStore)
+
 const running = ref(false)
 const previewImage = ref<string | null>(null)
 const toast = ref('')
-
-let idCounter = 0
 
 // ---- Vision model grouping (via shared util) ----
 // We show ALL providers and ALL their models, grouping recommended vision models
@@ -411,9 +412,9 @@ async function pickImages() {
       const raw = await (window as any).api.chat.invoke('readFileBase64', filePath)
       const dataUri = `data:image/${ext === 'jpg' ? 'jpeg' : ext};base64,${raw}`
       const compressed = await compressImage(dataUri, 1280, 0.85)
-      const name = filePath.split(/[\\/]/).pop() || `image-${idCounter + 1}`
+      const name = filePath.split(/[\\/]/).pop() || `image-${idCounter.value + 1}`
       tasks.value.push(reactive({
-        id: `i2p-${++idCounter}`,
+        id: `i2p-${++idCounter.value}`,
         image: compressed,
         name,
         status: 'pending' as const,
@@ -441,9 +442,9 @@ async function onGalleryPickImages(paths: string[]) {
       const raw = await (window as any).api.chat.invoke('readFileBase64', filePath)
       const dataUri = `data:image/${ext === 'jpg' ? 'jpeg' : ext};base64,${raw}`
       const compressed = await compressImage(dataUri, 1280, 0.85)
-      const name = filePath.split(/[\\/]/).pop() || `image-${idCounter + 1}`
+      const name = filePath.split(/[\\/]/).pop() || `image-${idCounter.value + 1}`
       tasks.value.push(reactive({
-        id: `i2p-${++idCounter}`,
+        id: `i2p-${++idCounter.value}`,
         image: compressed,
         name,
         status: 'pending' as const,

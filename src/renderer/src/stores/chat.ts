@@ -23,6 +23,30 @@ export interface Message {
   _collapsed?: boolean
 }
 
+/**
+ * 对话输入草稿（per-conversation）。会话级维护，重启 app 后丢失，
+ * 切换对话 不丢，切走页面 不丢。
+ */
+export interface ChatDraft {
+  inputText: string
+  attachments: any[]
+  tempKbIds: string[]
+  tempSkillIds: string[]
+  tempMcpIds: string[]
+  tempPromptSkillDirs: string[]
+}
+
+function emptyChatDraft(): ChatDraft {
+  return {
+    inputText: '',
+    attachments: [],
+    tempKbIds: [],
+    tempSkillIds: [],
+    tempMcpIds: [],
+    tempPromptSkillDirs: [],
+  }
+}
+
 export const useChatStore = defineStore('chat', () => {
   const conversations = ref<Conversation[]>([])
   const messages = ref<Message[]>([])
@@ -30,6 +54,8 @@ export const useChatStore = defineStore('chat', () => {
   const currentBotId = ref<string | null>(null)
   const streamingConvIds = ref<Set<string>>(new Set())
   const streamContent = ref('')
+  /** 会话级草稿 Map：切走页面 / 切换对话不丢。重启 app 后重置。 */
+  const drafts = ref<Record<string, ChatDraft>>({})
 
   const streaming = computed(() =>
     currentConversationId.value ? streamingConvIds.value.has(currentConversationId.value) : false
@@ -61,6 +87,37 @@ export const useChatStore = defineStore('chat', () => {
     if (currentConversationId.value === id) {
       currentConversationId.value = null
       messages.value = []
+    }
+    // 同步清理该对话的草稿（避免微小的内存泄露）
+    if (drafts.value[id]) {
+      const next = { ...drafts.value }
+      delete next[id]
+      drafts.value = next
+    }
+  }
+
+  /**
+   * 读取某对话的草稿。不存在时实时创建空草稿并写回 map，调用方可直接 mutate 返回值。
+   */
+  function getDraft(convId: string): ChatDraft {
+    if (!drafts.value[convId]) {
+      drafts.value[convId] = emptyChatDraft()
+    }
+    return drafts.value[convId]
+  }
+
+  /** 批量设置草稿字段。适用于从 view 本地 ref 同步回 store 的场景。 */
+  function setDraft(convId: string, patch: Partial<ChatDraft>): void {
+    if (!drafts.value[convId]) drafts.value[convId] = emptyChatDraft()
+    Object.assign(drafts.value[convId], patch)
+  }
+
+  /** 清除某对话的草稿。其他场景（如 send 后手动重置）可能需要。 */
+  function clearDraft(convId: string): void {
+    if (drafts.value[convId]) {
+      const next = { ...drafts.value }
+      delete next[convId]
+      drafts.value = next
     }
   }
 
@@ -207,6 +264,7 @@ export const useChatStore = defineStore('chat', () => {
     currentBotId.value = null
     streamingConvIds.value = new Set()
     streamContent.value = ''
+    drafts.value = {}
   }
 
   function isConversationStreaming(convId: string): boolean {
@@ -228,6 +286,7 @@ export const useChatStore = defineStore('chat', () => {
     streamContent,
     isConversationStreaming,
     currentConversation,
+    drafts,
     fetchConversations,
     createConversation,
     selectConversation,
@@ -237,6 +296,9 @@ export const useChatStore = defineStore('chat', () => {
     stopListenTitleUpdates,
     sendMessage,
     cancel,
+    getDraft,
+    setDraft,
+    clearDraft,
     reset
   }
 })

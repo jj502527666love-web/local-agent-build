@@ -638,6 +638,44 @@ watch(() => chatStore.messages.length, scrollToBottom)
 watch(() => chatStore.streamContent, scrollToBottom)
 watch(() => chatStore.currentConversationId, scrollToBottom)
 
+// === Per-conversation 草稿同步　===
+// 文字 / 附件 / 临时工具选择 都与当前对话绑定。
+// 路由切走： onUnmounted save 。
+// 路由进入： onMounted load（需等着对话 id 已在 store 中）。
+// 切换对话：下面 watch 同时 save 旧 + load 新。
+function saveDraftFor(convId: string) {
+  chatStore.setDraft(convId, {
+    inputText: inputText.value,
+    attachments: JSON.parse(JSON.stringify(pendingAttachments.value)),
+    tempKbIds: [...tempKbIds.value],
+    tempSkillIds: [...tempSkillIds.value],
+    tempMcpIds: [...tempMcpIds.value],
+    tempPromptSkillDirs: [...tempPromptSkillDirs.value],
+  })
+}
+function loadDraftFor(convId: string) {
+  const d = chatStore.getDraft(convId)
+  inputText.value = d.inputText
+  pendingAttachments.value = JSON.parse(JSON.stringify(d.attachments))
+  tempKbIds.value = [...d.tempKbIds]
+  tempSkillIds.value = [...d.tempSkillIds]
+  tempMcpIds.value = [...d.tempMcpIds]
+  tempPromptSkillDirs.value = [...d.tempPromptSkillDirs]
+}
+function clearLocalDraft() {
+  inputText.value = ''
+  pendingAttachments.value = []
+  tempKbIds.value = []
+  tempSkillIds.value = []
+  tempMcpIds.value = []
+  tempPromptSkillDirs.value = []
+}
+watch(() => chatStore.currentConversationId, (newId, oldId) => {
+  if (oldId) saveDraftFor(oldId)
+  if (newId) loadDraftFor(newId)
+  else clearLocalDraft()
+})
+
 async function newConversation() {
   if (!selectedBotId.value) return
   const conv = await chatStore.createConversation(selectedBotId.value)
@@ -915,10 +953,21 @@ onMounted(async () => {
     restoringState.value = true
     selectedBotId.value = chatStore.currentBotId
   }
+
+  // 路由进入后恢复当前对话的未发送草稿。watch 只在 currentConversationId
+  // 变化时触发；如果 chat 页面重新进入但对话 id 未变，需要这里手动 load。
+  if (chatStore.currentConversationId) {
+    loadDraftFor(chatStore.currentConversationId)
+  }
+
   scrollToBottom()
 })
 
 onUnmounted(() => {
+  // 路由离开前保存当前对话的草稿到 store（仅会话级，重启 app 后丢失）
+  if (chatStore.currentConversationId) {
+    saveDraftFor(chatStore.currentConversationId)
+  }
   document.removeEventListener('click', onClickOutside)
   chatStore.stopListenTitleUpdates()
   window.api.chat.offToolApproval()

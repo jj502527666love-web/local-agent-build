@@ -3,6 +3,16 @@ import { v4 as uuid } from 'uuid'
 import { join } from 'path'
 import { existsSync, mkdirSync, writeFileSync, rmSync, readdirSync } from 'fs'
 import { getDataDir } from './data-path'
+import {
+  CANVAS_EXPORT_SCHEMA_VERSION,
+  type CanvasExportFile,
+  type ExportedEdge,
+  type ExportedNode,
+  type ExportedProject,
+  freshRuntimeFields,
+  stripRuntimeFields,
+  validateExportFile,
+} from '../../shared/canvas-export'
 
 export interface CanvasProject {
   id: string
@@ -324,4 +334,249 @@ export function saveProjectState(projectId: string, nodes: { id: string; positio
 function touchProject(projectId: string): void {
   const db = getDatabase()
   db.prepare('UPDATE canvas_projects SET updated_at = ? WHERE id = ?').run(new Date().toISOString(), projectId)
+}
+
+// === Export / Import (v1) ===
+//
+// 设计参见 src/shared/canvas-export.ts。核心要点：
+//   - 文件 JSON-only，不打包图片字节（用户明确选择「只要 prompt + 节点结构」）
+//   - provider/model 按显示名导出/匹配，跨设备共享时本地 UUID 不会失配
+//   - edge 用节点数组下标引用，避免 ID 映射表
+//   - node.data 由 stripRuntimeFields/freshRuntimeFields 通用处理（黑名单方式）
+
+/**
+ * 通过 provider id 反查 provider 显示名 + 该 provider 内 model 的显示名。
+ * model_providers.models 字段是 JSON 数组，元素可能是 string 也可能是 { id, name } 对象。
+ */
+function resolveProviderModelNames(
+  providerId: string,
+  modelId: string
+): { providerName: string; modelName: string } {
+  if (!providerId) return { providerName: '', modelName: '' }
+  const db = getDatabase()
+  const row = db
+    .prepare('SELECT name, models FROM model_providers WHERE id = ?')
+    .get(providerId) as { name: string; models: string } | undefined
+  if (!row) return { providerName: '', modelName: '' }
+  let modelName = ''
+  try {
+    const models = JSON.parse(row.models || '[]')
+    if (Array.isArray(models)) {
+      for (const m of models) {
+        const mid = typeof m === 'string' ? m : m?.id ?? ''
+        if (mid === modelId) {
+          modelName = typeof m === 'string' ? m : (m?.name ?? mid)
+          break
+        }
+      }
+    }
+  } catch {
+    // ignore parse errors
+  }
+  return { providerName: row.name, modelName: modelName || modelId }
+}
+
+/**
+ * 按显示名反查本机 provider id + model id。匹配不上返回空字符串，
+ * 由前端提示用户在导入后手工重选 provider/model。
+ */
+function resolveProviderModelIds(
+  providerName: string,
+  modelName: string
+): { providerId: string; modelId: string } {
+  if (!providerName) return { providerId: '', modelId: '' }
+  const db = getDatabase()
+  const row = db
+    .prepare('SELECT id, models FROM model_providers WHERE name = ?')
+    .get(providerName) as { id: string; models: string } | undefined
+  if (!row) return { providerId: '', modelId: '' }
+  if (!modelName) return { providerId: row.id, modelId: '' }
+  let modelId = ''
+  try {
+    const models = JSON.parse(row.models || '[]')
+    if (Array.isArray(models)) {
+      for (const m of models) {
+        const name = typeof m === 'string' ? m : (m?.name ?? m?.id ?? '')
+        const id = typeof m === 'string' ? m : (m?.id ?? '')
+        if (name === modelName || id === modelName) {
+          modelId = id
+          break
+        }
+      }
+    }
+  } catch {
+    // ignore parse errors
+  }
+  return { providerId: row.id, modelId }
+}
+
+/**
+ * 导出一组项目为可分享的 JSON 文件结构。不写盘，由 IPC handler 弹保存对话框后写盘。
+ *
+ * @param ids 要导出的 project_id 列表（顺序保持）
+ * @param appVersion 写入文件 exportedFrom 字段的程序版本号
+ */
+export function exportProjects(ids: string[], appVersion: string): CanvasExportFile {
+  const projects: ExportedProject[] = []
+
+  for (const id of ids) {
+    const project = getProject(id)
+    if (!project) continue
+
+    const textRefs = resolveProviderModelNames(project.text_provider_id, project.text_model_id)
+    const imageRefs = resolveProviderModelNames(project.image_provider_id, project.image_model_id)
+
+    const nodes = listNodes(id)
+    const edges = listEdges(id)
+
+    const exportedNodes: ExportedNode[] = nodes.map((n) => ({
+      type: n.type,
+      position_x: n.position_x,
+      position_y: n.position_y,
+      width: n.width,
+      height: n.height,
+      data: stripRuntimeFields(n.data || {}),
+    }))
+
+    const nodeIndexById = new Map<string, number>()
+    nodes.forEach((n, idx) => nodeIndexById.set(n.id, idx))
+
+    const exportedEdges: ExportedEdge[] = edges.flatMap((e) => {
+      const si = nodeIndexById.get(e.source_node_id)
+      const ti = nodeIndexById.get(e.target_node_id)
+      if (si === undefined || ti === undefined) return []
+      return [{
+        source_node_index: si,
+        target_node_index: ti,
+        source_handle: e.source_handle,
+        target_handle: e.target_handle,
+      }]
+    })
+
+    projects.push({
+      title: project.title,
+      system_prompt: project.system_prompt || '',
+      concurrency: project.concurrency || 1,
+      text_provider_name: textRefs.providerName,
+      text_model_name: textRefs.modelName,
+      image_provider_name: imageRefs.providerName,
+      image_model_name: imageRefs.modelName,
+      nodes: exportedNodes,
+      edges: exportedEdges,
+    })
+  }
+
+  return {
+    schemaVersion: CANVAS_EXPORT_SCHEMA_VERSION,
+    exportedAt: new Date().toISOString(),
+    exportedFrom: `local-agent ${appVersion}`,
+    projects,
+  }
+}
+
+export interface ImportUnmatchedRef {
+  project: string
+  field: 'text_provider' | 'text_model' | 'image_provider' | 'image_model'
+  name: string
+}
+
+export interface ImportResult {
+  newProjectIds: string[]
+  newProjectTitles: string[]
+  unmatched: ImportUnmatchedRef[]
+}
+
+/**
+ * 导入一份已校验的 export 文件。每个项目都会生成新 UUID + 新 title 后缀，
+ * 永远不覆盖已有项目，避免误操作。
+ */
+export function importProjects(file: CanvasExportFile): ImportResult {
+  const error = validateExportFile(file)
+  if (error) throw new Error(error)
+
+  const newProjectIds: string[] = []
+  const newProjectTitles: string[] = []
+  const unmatched: ImportUnmatchedRef[] = []
+
+  for (const exported of file.projects) {
+    const textRefs = resolveProviderModelIds(exported.text_provider_name, exported.text_model_name)
+    const imageRefs = resolveProviderModelIds(exported.image_provider_name, exported.image_model_name)
+
+    if (exported.text_provider_name && !textRefs.providerId) {
+      unmatched.push({ project: exported.title, field: 'text_provider', name: exported.text_provider_name })
+    }
+    if (exported.text_model_name && !textRefs.modelId) {
+      unmatched.push({ project: exported.title, field: 'text_model', name: exported.text_model_name })
+    }
+    if (exported.image_provider_name && !imageRefs.providerId) {
+      unmatched.push({ project: exported.title, field: 'image_provider', name: exported.image_provider_name })
+    }
+    if (exported.image_model_name && !imageRefs.modelId) {
+      unmatched.push({ project: exported.title, field: 'image_model', name: exported.image_model_name })
+    }
+
+    const newTitle = makeUniqueImportTitle(exported.title)
+
+    const project = createProject({
+      title: newTitle,
+      text_provider_id: textRefs.providerId,
+      text_model_id: textRefs.modelId,
+      image_provider_id: imageRefs.providerId,
+      image_model_id: imageRefs.modelId,
+      concurrency: exported.concurrency || 1,
+      system_prompt: exported.system_prompt || '',
+    })
+
+    // 节点：导出的下标 → 新 nodeId 映射
+    const newNodeIds: string[] = []
+    for (const en of exported.nodes) {
+      const refilled = freshRuntimeFields(en.type, en.data || {})
+      const created = createNode(project.id, {
+        type: en.type,
+        position_x: en.position_x,
+        position_y: en.position_y,
+        width: en.width || 240,
+        height: en.height || 0,
+        data: refilled,
+      })
+      newNodeIds.push(created.id)
+    }
+
+    // 边：用下标查新 nodeId
+    for (const ee of exported.edges) {
+      const sourceId = newNodeIds[ee.source_node_index]
+      const targetId = newNodeIds[ee.target_node_index]
+      if (!sourceId || !targetId) continue
+      try {
+        createEdge(project.id, {
+          source_node_id: sourceId,
+          source_handle: ee.source_handle,
+          target_node_id: targetId,
+          target_handle: ee.target_handle,
+        })
+      } catch {
+        // 跳过单条冲突边，不阻塞整批导入
+      }
+    }
+
+    newProjectIds.push(project.id)
+    newProjectTitles.push(newTitle)
+  }
+
+  return { newProjectIds, newProjectTitles, unmatched }
+}
+
+/**
+ * 生成不和已有项目重名的标题。第一次冲突加 " (导入)"，再冲突加 " (导入 2)" / " (导入 3)" ...
+ */
+function makeUniqueImportTitle(base: string): string {
+  const db = getDatabase()
+  const stmt = db.prepare('SELECT id FROM canvas_projects WHERE title = ?')
+  let candidate = `${base} (导入)`
+  if (!stmt.get(candidate)) return candidate
+  for (let n = 2; n < 1000; n++) {
+    candidate = `${base} (导入 ${n})`
+    if (!stmt.get(candidate)) return candidate
+  }
+  return `${base} (导入 ${Date.now()})`
 }

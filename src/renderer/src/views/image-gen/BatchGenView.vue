@@ -46,7 +46,7 @@
 
         <!-- Model Selection -->
         <div>
-          <label class="text-xs font-medium text-text-secondary mb-1.5 block">模型</label>
+          <label class="text-xs font-medium text-text-secondary mb-1.5 block">生图模型</label>
           <select v-model="selectedProviderId" @change="selectedModelId = ''" class="w-full px-3 py-2 text-xs bg-surface-1 border border-surface-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 mb-2">
             <option value="">-- 选择服务商 --</option>
             <option v-for="p in modelStore.providers" :key="p.id" :value="p.id">{{ p.name }}</option>
@@ -326,8 +326,11 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted, reactive } from 'vue'
+import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
 import { useImageGenStore } from '@/stores/image-gen'
+import { useBatchGenFormStore } from '@/stores/batch-gen-form'
+import type { BatchTask as BatchGenTask } from '@/stores/batch-gen-form'
 import { useModelStore } from '@/stores/models'
 import { usePromptPresetStore } from '@/stores/prompt-presets'
 import { useHandoffStore } from '@/stores/handoff'
@@ -335,31 +338,37 @@ import { groupAndSort } from '@/utils/model-caps'
 import { recordUsage, warmHintsCache, getHintsSync } from '@/utils/model-usage-hints'
 import ImageSizePicker from '@/components/ImageSizePicker.vue'
 import ResolutionTierPicker from '@/components/ResolutionTierPicker.vue'
-import { DEFAULT_TIER_ID, DEFAULT_QUALITY_ID } from '@shared/image-size'
+import { DEFAULT_QUALITY_ID } from '@shared/image-size'
 import { stripImageMetadata } from '@shared/strip-image-metadata'
 import ErrorDetailDialog from '@/components/ErrorDetailDialog.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import GalleryPicker from '@/components/GalleryPicker.vue'
 import { translateError } from '@/utils/error-message'
 
-interface BatchTask {
-  id: string
-  refImage: string
-  customPrompt: string
-  customSize: string
-  status: 'pending' | 'generating' | 'done' | 'error'
-  /** 后端错误原文。UI 展示时调 translateError 转换为友好文案 */
-  error: string
-  resultPath: string | null
-  genId: string | null
-  expanded: boolean
-}
+// BatchTask 类型已提到 stores/batch-gen-form.ts，下面作为本地别名使用
+type BatchTask = BatchGenTask
 
 const router = useRouter()
 const store = useImageGenStore()
 const modelStore = useModelStore()
 const presetStore = usePromptPresetStore()
 const handoff = useHandoffStore()
+
+// 会话级表单+任务草稿：路由切换不丢，重启 app 后重置
+const formStore = useBatchGenFormStore()
+const {
+  defaultPrompt,
+  selectedProviderId,
+  selectedModelId,
+  optimizeProviderId,
+  optimizeModelId,
+  defaultSize,
+  defaultTier,
+  concurrency,
+  batchRunning,
+  tasks,
+  taskIdCounter,
+} = storeToRefs(formStore)
 
 // 错误详情弹窗：仅存原文，友好翻译由 ErrorDetailDialog 内部派生
 const errorDialog = ref<{ visible: boolean; rawError: string }>({
@@ -392,19 +401,9 @@ function cancelRetry() {
 
 const promptPresets = computed(() => presetStore.visibleGrouped('image_gen'))
 
-const defaultPrompt = ref('')
-const selectedProviderId = ref('')
-const selectedModelId = ref('')
-const optimizeProviderId = ref('')
-const optimizeModelId = ref('')
-const defaultSize = ref('1:1')
-const defaultTier = ref<string>(DEFAULT_TIER_ID)
 const optimizing = ref(false)
 const showPresetPopup = ref(false)
-const batchRunning = ref(false)
-const concurrency = ref(2)
 const previewImage = ref<string | null>(null)
-const tasks = ref<BatchTask[]>([])
 
 function localFileUrl(path: string): string {
   const isAbsolute = /^[A-Za-z]:|^\//.test(path)
@@ -475,7 +474,6 @@ function compressImage(dataUri: string, maxSize: number, quality: number): Promi
   })
 }
 
-let taskIdCounter = 0
 
 async function pickRefImages() {
   try {
@@ -492,7 +490,7 @@ async function pickRefImages() {
       const dataUri = `data:image/${ext === 'jpg' ? 'jpeg' : ext};base64,${raw}`
       const compressed = await compressImage(dataUri, 1024, 0.8)
       tasks.value.push(reactive({
-        id: `batch-${++taskIdCounter}`,
+        id: `batch-${++taskIdCounter.value}`,
         refImage: compressed,
         customPrompt: '',
         customSize: '',
@@ -519,7 +517,7 @@ async function onGalleryRefSelect(paths: string[]) {
       const dataUri = `data:image/${ext === 'jpg' ? 'jpeg' : ext};base64,${raw}`
       const compressed = await compressImage(dataUri, 1024, 0.8)
       tasks.value.push(reactive({
-        id: `batch-${++taskIdCounter}`,
+        id: `batch-${++taskIdCounter.value}`,
         refImage: compressed,
         customPrompt: '',
         customSize: '',
