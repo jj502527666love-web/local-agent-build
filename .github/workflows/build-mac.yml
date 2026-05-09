@@ -45,6 +45,14 @@ jobs:
         with:
           node-version: 22
 
+      # macos-latest 现在是基于 Apple Silicon 的 macos-14，默认 Python 是 Homebrew 管的，
+      # 会触发 PEP 668 "externally-managed-environment" 报错。装个独立 Python 避开这个问题，
+      # 后面 coscmd 的 pip install 会走这个独立环境。
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
       - name: Install dependencies
         run: npm ci
 
