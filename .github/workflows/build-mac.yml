@@ -64,12 +64,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: false
 
-      - name: Compute artifact files metadata
+      - name: Stage artifacts and compute metadata
         id: files
         shell: bash
         working-directory: ./dist
         run: |
           PRIMARY_EXT=".dmg"
+          mkdir -p ../cos-upload
           files_json="["
           first=true
           for f in *; do
@@ -82,6 +83,7 @@ jobs:
               latest*.yml)     role="metadata" ;;
               *) continue ;;
             esac
+            cp "$f" ../cos-upload/
             size=$(stat -c%s "$f" 2>/dev/null || stat -f%z "$f")
             sha=$(sha256sum "$f" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$f" | awk '{print $1}')
             [ "$first" = true ] && first=false || files_json="$files_json,"
@@ -90,6 +92,8 @@ jobs:
           files_json="$files_json]"
           echo "files=$files_json" >> "$GITHUB_OUTPUT"
           echo "Generated metadata: $files_json"
+          echo "--- Staged files in ./cos-upload ---"
+          ls -la ../cos-upload/
 
       - name: Upload artifacts to Tencent COS
         uses: TencentCloud/cos-action@v1
@@ -98,9 +102,8 @@ jobs:
           secret_key: ${{ secrets.TENCENT_COS_SECRET_KEY }}
           cos_bucket: ${{ secrets.TENCENT_COS_BUCKET }}
           cos_region: ${{ secrets.TENCENT_COS_REGION }}
-          local_path: ./dist/
+          local_path: ./cos-upload/
           remote_path: /build-artifacts/${{ inputs.build_id }}/
-          accelerate: true
           clean: false
 
       - name: Notify agent-build (success)
