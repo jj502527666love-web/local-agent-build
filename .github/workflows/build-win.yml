@@ -102,7 +102,7 @@ jobs:
           secret_key: ${{ secrets.TENCENT_COS_SECRET_KEY }}
           cos_bucket: ${{ secrets.TENCENT_COS_BUCKET }}
           cos_region: ${{ secrets.TENCENT_COS_REGION }}
-          local_path: ./cos-upload/
+          local_path: cos-upload
           remote_path: /build-artifacts/${{ inputs.build_id }}/
           clean: false
 
