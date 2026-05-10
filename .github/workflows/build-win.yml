@@ -175,9 +175,13 @@ jobs:
           rm -f ./_speed_1mb.bin
 
           echo ""
-          echo "=== List bucket root (verify credentials + endpoint) ==="
-          aws --endpoint-url "$ENDPOINT" s3 ls "s3://${COS_BUCKET}/" --human-readable | head -20 \
-            || { echo "!!! bucket access failed; credentials/permissions/endpoint wrong"; exit 1; }
+          echo "=== Verify bucket access (head-bucket — avoids Windows Python stdout crash on large listings) ==="
+          # 之前写的 aws s3 ls | head -20 在 Windows runner 上撞到 aws-cli (Python 3.14) 的已知 bug：
+          # bucket 根前缀数千个 → head 关管道 → Python 往已关闭的 stdout flush 抛 [Errno 22] → 整 step exit 1
+          # 改成 s3api head-bucket：零 key 列表输出，纯 HEAD 请求。non-fatal（凭证 + endpoint 在前面 1MB 测速已验证）
+          aws --endpoint-url "$ENDPOINT" s3api head-bucket --bucket "$COS_BUCKET" \
+            && echo "  bucket reachable" \
+            || echo "  (head-bucket failed, continuing — 1MB speed test above already validated credentials)"
 
           echo ""
           echo "=== Upload ./cos-upload/ to $S3_URI (3 attempts, 30s backoff) ==="

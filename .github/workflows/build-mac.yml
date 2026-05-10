@@ -196,9 +196,12 @@ jobs:
           rm -f ./_speed_1mb.bin
 
           echo ""
-          echo "=== List bucket root (verify credentials + endpoint) ==="
-          aws --endpoint-url "$ENDPOINT" s3 ls "s3://${COS_BUCKET}/" --human-readable | head -20 \
-            || { echo "!!! bucket access failed; credentials/permissions/endpoint wrong"; exit 1; }
+          echo "=== Verify bucket access (head-bucket — keeps mac in sync with win to dodge Python stdout pipe bug) ==="
+          # mac runner 本身不一定触发 Windows 那个 [Errno 22]，但 s3 ls | head -20 同样会因 SIGPIPE 让
+          # aws-cli exit 非 0，从而让 step false-positive 失败。head-bucket 零输出、纯 HEAD、non-fatal。
+          aws --endpoint-url "$ENDPOINT" s3api head-bucket --bucket "$COS_BUCKET" \
+            && echo "  bucket reachable" \
+            || echo "  (head-bucket failed, continuing — 1MB speed test above already validated credentials)"
 
           echo ""
           echo "=== Upload ./cos-upload/ to $S3_URI (3 attempts, 30s backoff) ==="
