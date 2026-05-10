@@ -7,12 +7,13 @@ files:
   - '!src/*'
   - '!electron.vite.config.*'
   - '!{.eslintignore,.eslintrc.cjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
-  - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json,tsconfig.node.tsbuildinfo}'
+  - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json,tsconfig.node.tsbuildinfo,tsconfig.web.tsbuildinfo}'
   # Backend (Laravel + React admin) is deployed separately to agent-admin.o455.com — do NOT bundle
   - '!agent-admin/**/*'
   # Dev-only loose files at repo root
   - '!find_pptmaster.py'
   - '!progress.txt'
+  - '!_dev.bat'
   - '!*.md'
   # better-sqlite3 build debug artifacts (~30MB) — only the .node binary is needed at runtime
   - '!node_modules/better-sqlite3/build/Release/obj/**/*'
@@ -22,12 +23,10 @@ files:
   - '!node_modules/better-sqlite3/src/**/*'
   - '!node_modules/better-sqlite3/docs/**/*'
   - '!node_modules/better-sqlite3/benchmark/**/*'
-  # fabric: src/ already bundled in dist/, extensions/ in dist-extensions/, scripts/lib/.agents not runtime
-  - '!node_modules/fabric/src/**/*'
-  - '!node_modules/fabric/extensions/**/*'
-  - '!node_modules/fabric/scripts/**/*'
-  - '!node_modules/fabric/lib/**/*'
-  - '!node_modules/fabric/.agents/**/*'
+  # Python bytecode caches (from bundled-skills/ppt-master/scripts/*) — never runtime-needed
+  - '!**/__pycache__/**/*'
+  - '!**/*.pyc'
+  - '!**/*.pyo'
   # Source maps + TypeScript declaration files (runtime not needed)
   - '!**/*.map'
   - '!**/*.d.ts'
@@ -52,23 +51,26 @@ nsis:
   deleteAppDataOnUninstall: true
 mac:
   executableName: LocalAgent
+  # 只打 zip：
+  # 1. electron-updater 在 mac 上只认 zip 作为 auto-update 载体
+  # 2. 未签名场景下 dmg 的"图形化挂载体验"会被 Gatekeeper 拦截抵消，相比 zip 无优势
+  # 3. hdiutil 在 macos-latest (Apple Silicon) runner 上高频抽风，dmg 构建不稳定
+  # 4. 跳过 hdiutil 后构建耗时降低 ~40%、磁盘压力减半
   target:
-    - target: dmg
-      arch:
-        - x64
-        - arm64
-    # zip 兜底：hdiutil 偶发失败时仍能产出可分发包；同时也是 electron-updater 的增量更新载体
     - target: zip
       arch:
         - x64
         - arm64
-dmg:
-  artifactName: ${name}-${version}.${ext}
 publish:
   provider: generic
   url: https://agent-up.o455.com/releases/
 extraResources:
   - from: './resources/'
     to: './'
+    filter:
+      - '**/*'
+      - '!**/__pycache__/**/*'
+      - '!**/*.pyc'
+      - '!**/*.pyo'
   - from: './build/icon.png'
     to: './icon.png'

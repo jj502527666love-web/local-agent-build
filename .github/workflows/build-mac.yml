@@ -67,8 +67,6 @@ jobs:
           PLATFORM: mac
 
       - name: Build & Package
-        # hdiutil 偶发失败不阻断：dmg 产不出但 zip 仍会产出，后续 step 会检查是否至少有一个可分发产物
-        continue-on-error: true
         run: npm run dist
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -82,14 +80,9 @@ jobs:
           set -uo pipefail
           echo "=== dist contents ==="
           ls -la
-          # 优先用 dmg 作为 primary；hdiutil 失败时 dmg 未产出，退回用 zip
-          PRIMARY_EXT=".dmg"
-          if ! ls *.dmg >/dev/null 2>&1; then
-            PRIMARY_EXT=".zip"
-            echo "WARN: no .dmg produced (likely hdiutil failure), falling back to .zip as primary"
-          fi
-          echo "PRIMARY_EXT=$PRIMARY_EXT"
 
+          # mac 只打 zip（见 electron-builder.yml mac.target 注释），primary 后缀固定为 .zip
+          # 三件套：*.zip (primary) + *.zip.blockmap (blockmap) + latest-mac.yml (metadata)
           mkdir -p ../cos-upload
           files_json="["
           first=true
@@ -99,21 +92,15 @@ jobs:
             role=""
             lower=$(echo "$f" | tr '[:upper:]' '[:lower:]')
             case "$lower" in
-              *"$PRIMARY_EXT")
-                role="primary"
-                have_primary=true
-                ;;
               *.blockmap)
                 role="blockmap"
                 ;;
               latest*.yml)
                 role="metadata"
                 ;;
-              *.dmg|*.zip)
-                # 非 primary 的 dmg/zip：仍上传到 cos（latest-mac.yml 里会索引这些文件供 auto-updater 增量下载）
-                # 但不进 files_json，避免后端看到多个 primary
-                cp "$f" ../cos-upload/
-                continue
+              *.zip)
+                role="primary"
+                have_primary=true
                 ;;
               *) continue ;;
             esac
@@ -125,9 +112,10 @@ jobs:
           done
           files_json="$files_json]"
 
-          # 至少要产出一个可分发产物，否则认为 build 真的完全失败
+          # 防御性校验：build step 已经成功才会到这里，正常情况一定有 zip 产出；
+          # 如果没有说明 electron-builder 行为意外变化，显式失败方便排查。
           if [ "$have_primary" != "true" ]; then
-            echo "ERROR: neither .dmg nor .zip produced — build truly failed"
+            echo "ERROR: no .zip artifact produced — electron-builder behavior unexpected"
             exit 1
           fi
 
