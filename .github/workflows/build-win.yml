@@ -32,6 +32,11 @@ on:
         required: true
         type: string
 
+permissions:
+  # 0.5.0：softprops/action-gh-release@v2 创建 release 需要 contents:write；
+  # 默认 GITHUB_TOKEN 在 2023+ 创建的 repo 是 read-only，必须显式声明。
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
@@ -87,7 +92,7 @@ jobs:
         working-directory: ./dist
         run: |
           PRIMARY_EXT=".exe"
-          mkdir -p ../cos-upload
+          mkdir -p ../release-upload
           files_json="["
           first=true
           for f in *; do
@@ -100,7 +105,7 @@ jobs:
               latest*.yml)     role="metadata" ;;
               *) continue ;;
             esac
-            cp "$f" ../cos-upload/
+            cp "$f" ../release-upload/
             size=$(stat -c%s "$f" 2>/dev/null || stat -f%z "$f")
             sha=$(sha256sum "$f" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$f" | awk '{print $1}')
             [ "$first" = true ] && first=false || files_json="$files_json,"
@@ -109,105 +114,52 @@ jobs:
           files_json="$files_json]"
           echo "files=$files_json" >> "$GITHUB_OUTPUT"
           echo "Generated metadata: $files_json"
-          echo "--- Staged files in ./cos-upload ---"
-          ls -la ../cos-upload/
+          echo "--- Staged files in ./release-upload ---"
+          ls -la ../release-upload/
 
-      - name: Upload artifacts to Tencent COS (S3 protocol)
-        # 用 aws-cli + COS S3 兼容协议取代 coscmd：aws-cli 是预装二进制（不需 pip），
-        # 重试/超时/分片参数都是产品级实现，跨境网络下稳定性明显优于 coscmd。
-        # Step 级 30 分钟兜底 + 内部 3 次重试（间隔 30s）吃掉偏发抖动。
-        timeout-minutes: 30
+      - name: Upload artifacts to GitHub Release
+        id: release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ inputs.build_id }}
+          name: "Build ${{ inputs.app_name }} (${{ inputs.build_id }}) [win]"
+          prerelease: true
+          make_latest: 'false'
+          target_commitish: ${{ github.sha }}
+          files: release-upload/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Enrich file metadata with GitHub Release asset URLs
+        id: enrich_files
         shell: bash
         env:
-          # 禁用 Git Bash (MSYS) 路径转换，避免 s3:// URI 被改写
-          MSYS_NO_PATHCONV: '1'
-          MSYS2_ARG_CONV_EXCL: '*'
-          # COS S3 兼容协议复用 aws-cli，凭证按 AWS_* 名字注入即可
-          AWS_ACCESS_KEY_ID: ${{ secrets.TENCENT_COS_SECRET_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.TENCENT_COS_SECRET_KEY }}
-          # aws-cli 必填 region，COS 不用但要给个值
-          AWS_DEFAULT_REGION: us-east-1
-          # aws-cli v2.23+ 默认发 x-amz-checksum-* header，COS 兼容不完美，关掉免却 SignatureDoesNotMatch
-          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
-          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
-          COS_BUCKET: ${{ secrets.TENCENT_COS_BUCKET }}
-          COS_REGION: ${{ secrets.TENCENT_COS_REGION }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BUILD_ID: ${{ inputs.build_id }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          ENDPOINT="https://cos.${COS_REGION}.myqcloud.com"
-          S3_URI="s3://${COS_BUCKET}/build-artifacts/${BUILD_ID}/"
 
-          echo "=== aws-cli version ==="
-          aws --version
-          echo ""
-          echo "=== Validate required env (length-only) ==="
-          echo "ACCESS_KEY length: ${#AWS_ACCESS_KEY_ID}"
-          echo "SECRET_KEY length: ${#AWS_SECRET_ACCESS_KEY}"
-          echo "BUCKET: $COS_BUCKET"
-          echo "REGION: $COS_REGION"
-          echo "ENDPOINT: $ENDPOINT"
-          test -n "$AWS_ACCESS_KEY_ID" || { echo "ERROR: TENCENT_COS_SECRET_ID is empty"; exit 1; }
-          test -n "$AWS_SECRET_ACCESS_KEY" || { echo "ERROR: TENCENT_COS_SECRET_KEY is empty"; exit 1; }
-          test -n "$COS_BUCKET" || { echo "ERROR: TENCENT_COS_BUCKET is empty"; exit 1; }
-          test -n "$COS_REGION" || { echo "ERROR: TENCENT_COS_REGION is empty"; exit 1; }
+          assets=$(gh release view "build-${BUILD_ID}" --repo "$REPO" --json assets --jq '.assets')
 
-          echo ""
-          echo "=== Tune aws-cli s3 transfer params (serial + small chunks for cross-border) ==="
-          # 这几个参数只能从 ~/.aws/config 读，用 env 设不上，须 aws configure set
-          aws configure set default.s3.max_concurrent_requests 1
-          aws configure set default.s3.multipart_chunksize 10MB
-          aws configure set default.s3.multipart_threshold 50MB
-          aws configure set default.s3.max_bandwidth 100MB/s
+          files='${{ steps.files.outputs.files }}'
+          merged=$(jq -nc \
+            --argjson files "$files" \
+            --argjson assets "$assets" \
+            '[ $files[] as $f | ($assets[] | select(.name == $f.filename)) as $a |
+               $f + {asset_id: $a.id, asset_url: $a.apiUrl} ]')
 
-          echo ""
-          echo "=== Probe: cross-border latency to COS endpoint ==="
-          curl -o /dev/null -s -w "  dns=%{time_namelookup}s connect=%{time_connect}s ttfb=%{time_starttransfer}s total=%{time_total}s\n" \
-            "$ENDPOINT/$COS_BUCKET" || echo "  (probe curl failed, continuing)"
+          files_count=$(jq 'length' <<< "$files")
+          merged_count=$(jq 'length' <<< "$merged")
+          if [ "$files_count" -ne "$merged_count" ]; then
+            echo "ERROR: file/asset count mismatch (files=$files_count, merged=$merged_count)"
+            echo "files=$files"
+            echo "assets=$assets"
+            exit 1
+          fi
 
-          echo ""
-          echo "=== Probe: 1MB upload speed test ==="
-          # 走相对路径避免 Win Git Bash 下 /tmp 被 MSYS 转换后 aws-cli 找不到
-          dd if=/dev/urandom of=./_speed_1mb.bin bs=1048576 count=1 2>/dev/null
-          time aws --endpoint-url "$ENDPOINT" s3 cp ./_speed_1mb.bin \
-            "s3://${COS_BUCKET}/build-artifacts/_speedtest/${BUILD_ID}.bin" \
-            --no-progress || echo "  (speed test failed, continuing)"
-          rm -f ./_speed_1mb.bin
-
-          echo ""
-          echo "=== Verify bucket access (head-bucket — avoids Windows Python stdout crash on large listings) ==="
-          # 之前写的 aws s3 ls | head -20 在 Windows runner 上撞到 aws-cli (Python 3.14) 的已知 bug：
-          # bucket 根前缀数千个 → head 关管道 → Python 往已关闭的 stdout flush 抛 [Errno 22] → 整 step exit 1
-          # 改成 s3api head-bucket：零 key 列表输出，纯 HEAD 请求。non-fatal（凭证 + endpoint 在前面 1MB 测速已验证）
-          aws --endpoint-url "$ENDPOINT" s3api head-bucket --bucket "$COS_BUCKET" \
-            && echo "  bucket reachable" \
-            || echo "  (head-bucket failed, continuing — 1MB speed test above already validated credentials)"
-
-          echo ""
-          echo "=== Upload ./cos-upload/ to $S3_URI (3 attempts, 30s backoff) ==="
-          n=0
-          until [ $n -ge 3 ]; do
-            n=$((n+1))
-            echo "--- attempt $n/3 ---"
-            if aws --endpoint-url "$ENDPOINT" s3 cp ./cos-upload/ "$S3_URI" \
-                --recursive \
-                --no-progress \
-                --cli-read-timeout 60 \
-                --cli-connect-timeout 30; then
-              echo "--- attempt $n succeeded ---"
-              break
-            fi
-            echo "--- attempt $n failed ---"
-            if [ $n -lt 3 ]; then
-              echo "sleep 30s before retry..."
-              sleep 30
-            fi
-          done
-          [ $n -lt 3 ] && true || { echo "!!! all 3 upload attempts failed"; exit 1; }
-
-          echo ""
-          echo "=== Verify uploaded objects ==="
-          aws --endpoint-url "$ENDPOINT" s3 ls "$S3_URI" --human-readable
+          echo "files=$merged" >> "$GITHUB_OUTPUT"
+          echo "Enriched files: $merged"
 
       - name: Notify agent-build (success)
         if: success()
@@ -221,9 +173,9 @@ jobs:
             "build_id": "${{ inputs.build_id }}",
             "run_id": ${{ github.run_id }},
             "status": "success",
-            "artifact_storage": "cos",
-            "cos_object_prefix": "build-artifacts/${{ inputs.build_id }}/",
-            "files": ${{ steps.files.outputs.files }}
+            "artifact_storage": "github_release",
+            "release_tag": "build-${{ inputs.build_id }}",
+            "files": ${{ steps.enrich_files.outputs.files }}
           }
           EOF
           )"
@@ -236,6 +188,18 @@ jobs:
             -H "Authorization: Bearer ${{ inputs.callback_token }}" \
             -H "Content-Type: application/json" \
             -d "{\"build_id\":\"${{ inputs.build_id }}\",\"run_id\":${{ github.run_id }},\"status\":\"failed\"}"
+
+      - name: Cleanup partial GitHub Release on failure
+        # GHA 失败时也可能已创建部分 release（如 softprops upload 中途 abort）。
+        # 这里无条件尝试删一次，release 不存在则全部 || true 吞下，避免 GitHub 存储泄漏。
+        if: failure()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUILD_ID: ${{ inputs.build_id }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh release delete "build-${BUILD_ID}" --repo "$REPO" --yes --cleanup-tag 2>/dev/null || true
 
       - name: Cleanup temp icon from repo
         if: always()
