@@ -40,6 +40,14 @@ files:
   - '!**/*.d.ts'
   - '!**/*.d.mts'
   - '!**/*.d.cts'
+  # CI build-time caches written to workspace by build-{win,mac}.yml
+  # (ELECTRON_CACHE / ELECTRON_BUILDER_CACHE = ${{ github.workspace }}/.cache/...).
+  # Without this exclude, the ~110MB electron prebuilt zip leaks into app.asar
+  # and inflates the installer by the same amount.
+  - '!.cache/**/*'
+  # Chromium 三方许可 HTML（~9.5MB）。运行时不读，仅用于法律披露；
+  # 如果分发要求合规可以单独存档，无需打入安装包。
+  - '!**/LICENSES.chromium.html'
 electronLanguages:
   - en-US
   - zh-CN
