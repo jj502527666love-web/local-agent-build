@@ -38,6 +38,23 @@ router.beforeEach((to, _from, next) => {
 
 app.mount('#app')
 
+// === 云端 auth 失效事件统一处理 ===
+// 由 cloud-api.ts 在业务请求 401 且 refresh 失败时派发。
+// 必须在 useCloudAuthStore().init() 之前注册：init 内会调 fetchMe / fetchCloudData，
+// token 失效时它们会立即派发事件，监听器需提前就位才能捕获。
+// 注意：cloud-api.ts 的 request() 内已经先 clearCloudAuth() 再 dispatchAuthExpired()，
+// 这里 store.logout() 是在已清空 localStorage 的基础上同步 store 内存状态（user/models/permissions/...）。
+window.addEventListener('cloud-auth-expired', (event) => {
+  const reason = (event as CustomEvent<{ reason?: string }>)?.detail?.reason || ''
+  console.warn('[CloudAuth] auth expired:', reason)
+  useCloudAuthStore().logout()
+  // 用户停留在需 auth 的页面时，beforeEach 不会触发；这里主动跳转登录页。
+  const cur = router.currentRoute.value
+  if (cur.matched.some((r) => r.meta?.requiresAuth)) {
+    router.replace({ path: '/login', query: { reason: 'expired' } })
+  }
+})
+
 // Initialize stores after mount (pinia must be installed first)
 useThemeStore()
 useCloudAuthStore().init()

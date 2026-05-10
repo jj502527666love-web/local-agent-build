@@ -50,7 +50,79 @@ interface RequestOptions {
   withDeviceId?: boolean
 }
 
-async function request(method: string, path: string, body?: unknown, options: RequestOptions = {}): Promise<any> {
+// === 单飞 token 自动刷新 ===
+//
+// 后端 (config/jwt.php)：JWT_TTL=24h、JWT_REFRESH_TTL=14d。
+// 即 token 过期后 14 天内仍可凭旧 token 调 /auth/refresh 换发新 token，
+// 所以业务请求遇到 401 'Token expired' 时应先尝试 refresh + 重试，对用户无感。
+//
+// 多个并发业务请求可能同时撞 401，必须单飞：只发一次 refresh，其余请求等结果。
+// JWTAuth::refresh() 会把旧 token 加入 blacklist，旧 token 重复 refresh 会失败。
+let refreshing: Promise<string | null> | null = null
+
+async function refreshToken(): Promise<string | null> {
+  if (refreshing) return refreshing
+
+  refreshing = (async () => {
+    const startToken = getCloudToken()
+    if (!startToken) return null
+
+    try {
+      const res = await fetch(`${getCloudApiBase()}/auth/refresh`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${startToken}`,
+        },
+      })
+      if (!res.ok) return null
+      const data = await res.json().catch(() => null)
+      if (!data?.token) return null
+      // race guard：refresh 期间用户可能主动 logout（getCloudToken 变 null），
+      // 不要把已清掉的 token 复活，否则 UI 显示已登出但其实又活了。
+      if (getCloudToken() !== startToken) return null
+      setCloudToken(data.token)
+      return data.token
+    } catch {
+      return null
+    }
+  })()
+
+  try {
+    return await refreshing
+  } finally {
+    refreshing = null
+  }
+}
+
+// 后端 JwtAuthMiddleware 的 401 错误标签（必须与 backend/app/Http/Middleware/JwtAuthMiddleware.php 同步）：
+//   'Token expired'      ← JWT 已过期，仍在 refresh 窗口（可 refresh）
+//   'Token not provided' ← 客户端没带 Authorization 头（也尝试 refresh：本地状态错乱时兜底）
+//   'Token invalid'      ← 签名无效 / 已 blacklist（不可 refresh，直接登出）
+//   'User not found'     ← 用户被删（不可 refresh，直接登出）
+function isRefreshableErrorMessage(msg: string): boolean {
+  return msg === 'Token expired' || msg === 'Token not provided'
+}
+
+// 不允许触发自动 refresh 的端点：
+// 1. /auth/login、/auth/register 的 401 是业务错误（"用户名或密码错误"），不该触发登出
+// 2. /auth/refresh 自身 401 不能再 refresh，否则无限循环
+const NO_AUTO_REFRESH_PATHS = new Set(['/auth/login', '/auth/register', '/auth/refresh'])
+
+// 派发全局 auth 失效事件，由 main.ts 统一监听 → store.logout() + router.replace('/login')
+function dispatchAuthExpired(reason: string): void {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('cloud-auth-expired', { detail: { reason } }))
+  }
+}
+
+async function request(
+  method: string,
+  path: string,
+  body?: unknown,
+  options: RequestOptions = {},
+  attempt = 0,
+): Promise<any> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   const t = getCloudToken()
   if (t) headers['Authorization'] = `Bearer ${t}`
@@ -70,21 +142,44 @@ async function request(method: string, path: string, body?: unknown, options: Re
     throw new Error(e?.message?.includes('fetch') ? '网络请求失败，请检查网络连接' : (e?.message || '网络异常'))
   }
 
+  // === 401 处理 ===
+  if (res.status === 401) {
+    let errMsg = ''
+    try {
+      const cloned = await res.clone().json()
+      errMsg = cloned?.error || ''
+    } catch {}
+
+    const isAuthEndpoint = NO_AUTO_REFRESH_PATHS.has(path)
+
+    // 业务端点 + 可 refresh 的标签 + 第一次尝试 → 走 refresh + retry
+    if (!isAuthEndpoint && attempt === 0 && isRefreshableErrorMessage(errMsg)) {
+      const newToken = await refreshToken()
+      if (newToken) {
+        // 重试一次（attempt=1 防止再次进入此分支造成循环）
+        return request(method, path, body, options, 1)
+      }
+      // refresh 失败 fall through 到下面的"全局登出"分支
+    }
+
+    if (isAuthEndpoint) {
+      // 登录/注册/refresh 的 401 是调用方该处理的业务错误，不触发全局事件
+      throw new Error(errMsg || '认证失败')
+    }
+
+    // 业务端点 401：refresh 失败 / 不可 refresh / retry 仍失败
+    // → 清状态 + 派发事件让 store + router 同步登出 + 跳转登录页
+    clearCloudAuth()
+    dispatchAuthExpired(errMsg || 'unknown')
+    throw new Error('AUTH_EXPIRED')
+  }
+
   let data: any
   try {
     data = await res.json()
   } catch {
     if (!res.ok) throw new Error(`服务器错误 (${res.status})`)
     throw new Error('服务器返回了无效的响应')
-  }
-
-  if (res.status === 401) {
-    // Auth endpoints (login) return 401 with meaningful error; non-auth 401 means token expired
-    if (data?.error) {
-      throw new Error(data.error)
-    }
-    clearCloudAuth()
-    throw new Error('登录已过期，请重新登录')
   }
 
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)

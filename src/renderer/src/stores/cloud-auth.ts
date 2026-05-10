@@ -149,6 +149,8 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
       user.value = data
       localStorage.setItem('cloud_user', JSON.stringify(data))
     } catch (e: any) {
+      // AUTH_EXPIRED 同步兜底：cloud-api.ts 内部 refresh 失败时已派发事件让 main.ts 调 logout()；
+      // 这里再调一次保证调用方 await fetchMe() 后能立即拿到一致的 store 状态（logout 幂等）。
       if (e.message === 'AUTH_EXPIRED') logout()
       throw e
     }
@@ -191,6 +193,7 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
       }
     } catch (e: any) {
       console.error('[CloudAuth] fetchCloudData error:', e.message, e)
+      // AUTH_EXPIRED 同步兜底，参见 fetchMe 注释
       if (e.message === 'AUTH_EXPIRED') logout()
     }
   }
@@ -218,7 +221,8 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
         await fetchMe()
         await fetchCloudData()
       } catch {
-        // Token expired
+        // Token 失效或网络异常：cloud-api.ts 已自动尝试 refresh，失败时已通过事件 + 同步兜底完成 logout，
+        // 此处不需要做额外处理，吞错避免污染启动流程。
       }
     }
   }
