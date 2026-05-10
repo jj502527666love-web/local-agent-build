@@ -143,11 +143,17 @@ jobs:
           assets=$(gh release view "build-${BUILD_ID}" --repo "$REPO" --json assets --jq '.assets')
 
           files='${{ steps.files.outputs.files }}'
+          # 注意：gh CLI `--json assets` 里 .id 是 GraphQL node_id 字符串（如 "RA_kw..."），
+          # 不是 REST API 的数字 id。从 apiUrl 末尾正则提取数字 id 才是 REST 通用形式。
+          # 例：https://api.github.com/.../releases/assets/416817002 → 416817002
           merged=$(jq -nc \
             --argjson files "$files" \
             --argjson assets "$assets" \
             '[ $files[] as $f | ($assets[] | select(.name == $f.filename)) as $a |
-               $f + {asset_id: $a.id, asset_url: $a.apiUrl} ]')
+               $f + {
+                 asset_id: ($a.apiUrl | capture("/assets/(?<id>[0-9]+)$") | .id | tonumber),
+                 asset_url: $a.apiUrl
+               } ]')
 
           files_count=$(jq 'length' <<< "$files")
           merged_count=$(jq 'length' <<< "$merged")
