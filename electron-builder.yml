@@ -56,6 +56,12 @@ mac:
   # 2. 未签名场景下 dmg 的"图形化挂载体验"会被 Gatekeeper 拦截抵消，相比 zip 无优势
   # 3. hdiutil 在 macos-latest (Apple Silicon) runner 上高频抽风，dmg 构建不稳定
   # 4. 跳过 hdiutil 后构建耗时降低 ~40%、磁盘压力减半
+  #
+  # artifactName 必须强制 ASCII：
+  # ${productName} 默认包含 APP_NAME（白标可能含中文），中文 filename 会让
+  # cos 上传/PHP HEAD 时编码不一致 → callback HEAD 校验找不到对象 → HTTP 422 cos_object_missing
+  # 用 ${name}（package.json.name = inject-build-params 强制 ASCII 小写）规避
+  artifactName: ${name}-${version}-${arch}-mac.${ext}
   target:
     - target: zip
       arch:
