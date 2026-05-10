@@ -1,18 +1,18 @@
 <template>
   <div class="h-full flex flex-col">
     <header class="page-header">
-      <button class="btn-primary" @click="showForm = true; editingId = null; resetForm()">+ 新建机器人</button>
+      <button class="btn-primary" @click="showForm = true; editingId = null; resetForm()">+ 新建智能体</button>
     </header>
     <div class="page-body">
       <!-- Form -->
       <div v-if="showForm" class="max-w-xl mb-6 form-card">
         <div>
           <label class="form-label">名称</label>
-          <input v-model="form.name" class="input-field" placeholder="给你的机器人起个名字" />
+          <input v-model="form.name" class="input-field" placeholder="给你的智能体起个名字" />
         </div>
         <div>
           <label class="form-label">描述</label>
-          <input v-model="form.description" class="input-field" placeholder="简要描述机器人的用途" />
+          <input v-model="form.description" class="input-field" placeholder="简要描述智能体的用途" />
         </div>
         <div class="grid grid-cols-2 gap-4">
           <div>
@@ -122,8 +122,8 @@
         <div class="w-16 h-16 rounded-2xl bg-surface-2 flex items-center justify-center mb-4">
           <svg class="w-8 h-8 text-text-disabled" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 0 0-2.456 2.456ZM16.894 20.567 16.5 21.75l-.394-1.183a2.25 2.25 0 0 0-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 0 0 1.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 0 0 1.423 1.423l1.183.394-1.183.394a2.25 2.25 0 0 0-1.423 1.423Z" /></svg>
         </div>
-        <p class="text-sm font-medium text-text-secondary mb-1">暂无机器人</p>
-        <p class="text-xs">创建你的第一个智能机器人，绑定模型和知识库</p>
+        <p class="text-sm font-medium text-text-secondary mb-1">暂无智能体</p>
+        <p class="text-xs">创建你的第一个智能体，绑定模型和知识库</p>
       </div>
 
       <!-- Bot Cards Grid -->

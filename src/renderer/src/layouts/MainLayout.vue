@@ -122,7 +122,7 @@ const isWin = ((window as any).electron?.process?.platform || (window as any).ru
 
 const allNavItems = [
   { path: '/chat', label: '\u5BF9\u8BDD', icon: IconChat },
-  { path: '/bots', label: '\u673A\u5668\u4EBA', icon: IconBot },
+  { path: '/bots', label: '\u667A\u80FD\u4F53', icon: IconBot },
   { path: '/knowledge', label: '\u77E5\u8BC6\u5E93', icon: IconKnowledge },
   { path: '/models', label: '\u6A21\u578B\u670D\u52A1', icon: IconModel, requirePermission: 'allow_custom_provider' },
   { path: '/personas', label: '\u4EBA\u683C\u89C4\u5219', icon: IconPersona },

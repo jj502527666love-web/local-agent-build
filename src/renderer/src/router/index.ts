@@ -14,7 +14,7 @@ export const routes: RouteRecordRaw[] = [
     children: [
       { path: '', redirect: '/chat' },
       { path: 'chat', name: 'chat', component: () => import('@/views/chat/ChatView.vue'), meta: { title: '对话' } },
-      { path: 'bots', name: 'bots', component: () => import('@/views/bots/BotListView.vue'), meta: { title: '机器人' } },
+      { path: 'bots', name: 'bots', component: () => import('@/views/bots/BotListView.vue'), meta: { title: '智能体' } },
       {
         path: 'knowledge',
         name: 'knowledge',

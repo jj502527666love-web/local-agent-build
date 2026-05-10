@@ -23,7 +23,7 @@
           <svg class="w-8 h-8 text-text-disabled" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 6.042A8.967 8.967 0 0 0 6 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 0 1 6 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 0 1 6-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0 0 18 18a8.967 8.967 0 0 0-6 2.292m0-14.25v14.25" /></svg>
         </div>
         <p class="text-sm font-medium text-text-secondary mb-1">暂无知识库分类</p>
-        <p class="text-xs text-text-tertiary mb-4">创建分类并上传文档，让机器人拥有专属知识</p>
+        <p class="text-xs text-text-tertiary mb-4">创建分类并上传文档，让智能体拥有专属知识</p>
         <button class="btn-primary text-sm" @click="openCatDialog()">立即创建分类</button>
       </div>
 
