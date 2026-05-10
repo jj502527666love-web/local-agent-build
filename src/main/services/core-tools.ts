@@ -4,6 +4,10 @@ import { listModelProviders } from './model-provider'
 import { getDataDir } from './data-path'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync } from 'fs'
 import { join, basename } from 'path'
+import { listCategories, listKnowledgeBases, type KnowledgeBase } from './knowledge'
+import { embedText, EmbeddingUnavailableError } from './embedding'
+import { searchHybrid } from './vector-store'
+import { getVectorStatsForUI } from './vectorize'
 
 const PREVIEW_MAX_BYTES = 200_000
 
@@ -86,7 +90,14 @@ function backupBeforeWrite(args: any, sandboxDir?: string): void {
   }
 }
 
-export const CORE_TOOL_NAMES = ['file_ops', 'run_command', 'image_gen']
+export const CORE_TOOL_NAMES = ['file_ops', 'run_command', 'image_gen', 'kb_list', 'kb_search', 'kb_stats']
+
+export const KB_TOOL_NAMES = ['kb_list', 'kb_search', 'kb_stats']
+
+export interface KbToolContext {
+  /** 当前对话启用的 KB 分类 id 列表（已 resolve 过 override） */
+  kbCategoryIds: string[]
+}
 
 export const coreToolDefs = [
   {
@@ -153,6 +164,46 @@ export const coreToolDefs = [
           ref_images: { type: 'array', items: { type: 'string' }, description: '可选，参考图片的 base64 data URI 数组（用于图片编辑/风格参考）' }
         },
         required: ['action']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'kb_list',
+      description: '列出当前对话已启用的知识库分类与文档清单。当用户询问"知识库里有什么/有哪些文档/库内目录"等元问题时调用。返回的 documents 包含 status 字段：仅 status="就绪"的文档可被 kb_search 检索到；pending/processing/error 状态仅供诊断，不要向用户承诺这些文档能被查到。',
+      parameters: {
+        type: 'object',
+        properties: {
+          category_id: { type: 'string', description: '可选，限定只列出指定分类下的文档；不传则列出所有已启用分类的文档汇总' }
+        }
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'kb_search',
+      description: '在已启用的知识库中按语义+关键词混合检索。当被动注入的初次召回内容与用户问题不相关、相关度（score）偏低，或用户后续追问的话题偏离首次召回时，应主动用重写过的更精准的 query 重新检索。返回片段附 score 与来源文档名。',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: '检索 query。建议根据用户最新问题进行重写，去掉对话噪声，保留核心实体与意图' },
+          top_k: { type: 'number', description: '返回片段数（默认 5，最大 20）' },
+          category_ids: { type: 'array', items: { type: 'string' }, description: '可选，限定在指定分类内检索；不传则在当前对话启用的全部分类内检索' }
+        },
+        required: ['query']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'kb_stats',
+      description: '查看当前对话已启用知识库的统计概览：每个分类的文档总数、已就绪/待处理/失败数量、向量切片数与 token 数。用于回答"知识库规模/状态"类问题。',
+      parameters: {
+        type: 'object',
+        properties: {}
       }
     }
   }
@@ -240,7 +291,8 @@ function withWorkspace(result: any, sandboxDir?: string): any {
 export async function executeCoreToolCall(
   functionName: string,
   args: any,
-  sandboxDir?: string
+  sandboxDir?: string,
+  kbContext?: KbToolContext
 ): Promise<{ handled: boolean; result?: any }> {
   if (functionName === 'file_ops') {
     backupBeforeWrite(args, sandboxDir)
@@ -257,7 +309,156 @@ export async function executeCoreToolCall(
     const result = await executeImageGen(args, sandboxDir)
     return { handled: true, result: withWorkspace(result, sandboxDir) }
   }
+  if (KB_TOOL_NAMES.includes(functionName)) {
+    const result = await executeKbTool(functionName, args, kbContext)
+    return { handled: true, result }
+  }
   return { handled: false }
+}
+
+// === Knowledge base tools ===
+const KB_LIST_MAX_DOCS_PER_CATEGORY = 50
+const KB_SEARCH_DEFAULT_TOP_K = 5
+const KB_SEARCH_MAX_TOP_K = 20
+const KB_SEARCH_THRESHOLD = 0.3
+const KB_SNIPPET_MAX_CHARS = 800
+
+function formatKbStatus(status: string): string {
+  switch (status) {
+    case 'ready': return '就绪'
+    case 'pending': return '待向量化'
+    case 'processing': return '向量化中'
+    case 'error': return '失败'
+    default: return status || '未知'
+  }
+}
+
+function describeKnowledgeBase(kb: KnowledgeBase): { name: string; status: string; chunks: number } {
+  // 不返回 file_path：避免将本地绝对路径随 tool result 泄露给云端模型
+  return {
+    name: kb.name,
+    status: formatKbStatus(kb.status),
+    chunks: kb.chunk_count || 0
+  }
+}
+
+async function executeKbTool(
+  functionName: string,
+  args: any,
+  kbContext?: KbToolContext
+): Promise<any> {
+  const enabledIds = kbContext?.kbCategoryIds || []
+  if (enabledIds.length === 0) {
+    return { error: '当前对话未启用任何知识库分类，无法使用知识库工具。请用户在 bot 设置中绑定分类，或在对话工具栏临时勾选。' }
+  }
+
+  if (functionName === 'kb_list') {
+    try {
+      const allCats = listCategories()
+      const enabledCats = allCats.filter((c) => enabledIds.includes(c.id))
+      const filterId = (args && typeof args.category_id === 'string' && args.category_id) ? args.category_id : ''
+      const targets = filterId ? enabledCats.filter((c) => c.id === filterId) : enabledCats
+      if (filterId && targets.length === 0) {
+        return { error: `分类 ${filterId} 未启用或不存在。已启用分类：${enabledCats.map((c) => `${c.name}(${c.id})`).join(', ') || '无'}` }
+      }
+
+      const categories = targets.map((cat) => {
+        const allKbs = listKnowledgeBases(cat.id)
+        const total = allKbs.length
+        const truncated = allKbs.length > KB_LIST_MAX_DOCS_PER_CATEGORY
+        const docs = allKbs.slice(0, KB_LIST_MAX_DOCS_PER_CATEGORY).map(describeKnowledgeBase)
+        return {
+          category_id: cat.id,
+          category_name: cat.name,
+          description: cat.description || '',
+          total_docs: total,
+          ready_docs: allKbs.filter((kb) => kb.status === 'ready').length,
+          documents: docs,
+          truncated,
+          truncated_remaining: truncated ? total - KB_LIST_MAX_DOCS_PER_CATEGORY : 0
+        }
+      })
+
+      return { categories, scope: filterId ? 'single_category' : 'all_enabled' }
+    } catch (e: any) {
+      return { error: `读取知识库失败: ${e.message || String(e)}` }
+    }
+  }
+
+  if (functionName === 'kb_search') {
+    const query = String(args?.query || '').trim()
+    if (!query) return { error: '缺少 query 参数' }
+    const requestedTopK = Number(args?.top_k) || KB_SEARCH_DEFAULT_TOP_K
+    const topK = Math.max(1, Math.min(KB_SEARCH_MAX_TOP_K, requestedTopK))
+
+    // Resolve target category ids: explicit > all enabled
+    let targetCategoryIds = enabledIds
+    if (Array.isArray(args?.category_ids) && args.category_ids.length > 0) {
+      const requested = args.category_ids.map(String)
+      const allowed = requested.filter((id: string) => enabledIds.includes(id))
+      if (allowed.length === 0) {
+        return { error: `指定的 category_ids 均未启用。已启用分类: ${enabledIds.join(', ')}` }
+      }
+      targetCategoryIds = allowed
+    }
+
+    // Collect ready KB ids in scope
+    const kbIds: string[] = []
+    const kbNameMap = new Map<string, string>()
+    for (const catId of targetCategoryIds) {
+      const kbs = listKnowledgeBases(catId)
+      for (const kb of kbs) {
+        if (kb.status === 'ready') {
+          kbIds.push(kb.id)
+          kbNameMap.set(kb.id, kb.name)
+        }
+      }
+    }
+    if (kbIds.length === 0) {
+      return { results: [], total: 0, message: '当前启用的分类下没有已就绪（ready）的文档，请先完成向量化' }
+    }
+
+    let queryEmbed: { embedding: number[] }
+    try {
+      queryEmbed = await embedText(query)
+    } catch (e: any) {
+      if (e instanceof EmbeddingUnavailableError) {
+        return { error: `向量服务不可用 (${e.code}): ${e.message}` }
+      }
+      return { error: `向量化 query 失败: ${e.message || String(e)}` }
+    }
+
+    let hits: ReturnType<typeof searchHybrid>
+    try {
+      hits = searchHybrid(queryEmbed.embedding, query, kbIds, topK, KB_SEARCH_THRESHOLD)
+    } catch (e: any) {
+      return { error: `检索失败: ${e.message || String(e)}` }
+    }
+
+    const results = hits.map((h, i) => {
+      const content = h.chunk.content || ''
+      const truncated = content.length > KB_SNIPPET_MAX_CHARS
+      return {
+        rank: i + 1,
+        score: Math.round(h.score * 1000) / 1000,
+        source: kbNameMap.get(h.chunk.knowledge_base_id) || '未知文档',
+        content: truncated ? content.slice(0, KB_SNIPPET_MAX_CHARS) + '...' : content,
+        truncated
+      }
+    })
+    return { results, total: results.length, query, top_k: topK, scanned_documents: kbIds.length }
+  }
+
+  if (functionName === 'kb_stats') {
+    try {
+      const stats = getVectorStatsForUI().filter((s) => enabledIds.includes(s.category_id))
+      return { categories: stats, total_categories: stats.length }
+    } catch (e: any) {
+      return { error: `读取统计失败: ${e.message || String(e)}` }
+    }
+  }
+
+  return { error: `未知的知识库工具: ${functionName}` }
 }
 
 const IMAGE_KEYWORDS = ['image', 'dall-e', 'flux', 'stable-diffusion', 'sdxl', 'cogview', 'wanx', 'kolors']

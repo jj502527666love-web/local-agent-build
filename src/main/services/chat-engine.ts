@@ -12,11 +12,11 @@ import { getMcpServer } from './mcp-server'
 import { getSummary, upsertSummary } from './conversation-summary'
 import { embedText, embedBatch, cosineSimilarity } from './embedding'
 import { searchHybrid } from './vector-store'
-import { listKnowledgeBases } from './knowledge'
+import { listKnowledgeBases, listCategories, type KnowledgeBase } from './knowledge'
 import { executeSkillSandbox } from './skill-sandbox'
 import { callMcpTool } from './mcp-server'
 import { listPromptSkills, getPromptSkillByName } from './prompt-skill'
-import { coreToolDefs, executeCoreToolCall, CORE_TOOL_NAMES, previewFileWrite, type FileWritePreview } from './core-tools'
+import { coreToolDefs, executeCoreToolCall, CORE_TOOL_NAMES, KB_TOOL_NAMES, previewFileWrite, type FileWritePreview } from './core-tools'
 
 // Per-model context-window table. Values are the *total* model context (prompt + completion).
 // We reserve ~25% for the response and pass the rest as the prompt budget.
@@ -279,6 +279,40 @@ function estimateMessagesTokens(msgs: ChatMessage[]): number {
   }, 0)
 }
 
+// 写入 system prompt 的 KB 清单上限：避免 prompt 过长撑爆上下文
+const KB_SUMMARY_DOCS_PER_CATEGORY = 20
+
+/**
+ * 给 system prompt 用的知识库清单：分类名 + 每分类前 N 个文档名（截断时附"等 M 个"）。
+ * 让模型直接知道库里大致有什么，能正确回答"知识库里有什么"这类元问题。
+ * kbDataByCategory 由 sendMessage 预读传入，避免重复 IO。
+ */
+function buildKbInventorySummary(
+  categoryIds: string[],
+  kbDataByCategory: Map<string, KnowledgeBase[]>
+): string {
+  if (categoryIds.length === 0) return ''
+  try {
+    const allCats = listCategories()
+    const cats = allCats.filter((c) => categoryIds.includes(c.id))
+    if (cats.length === 0) return `知识库: 已启用 (${categoryIds.length} 个分类，但分类不可读)`
+    const lines: string[] = [`知识库: 已启用 ${cats.length} 个分类`]
+    for (const cat of cats) {
+      const kbs = kbDataByCategory.get(cat.id) || []
+      const ready = kbs.filter((kb) => kb.status === 'ready')
+      const head = ready.slice(0, KB_SUMMARY_DOCS_PER_CATEGORY).map((kb) => kb.name).join(', ')
+      const remaining = ready.length - Math.min(KB_SUMMARY_DOCS_PER_CATEGORY, ready.length)
+      const headStr = head ? `: ${head}${remaining > 0 ? `, 等 ${remaining} 个` : ''}` : ''
+      const pendingHint = kbs.length > ready.length ? `, 另 ${kbs.length - ready.length} 个待向量化` : ''
+      lines.push(`- 分类「${cat.name}」(${ready.length} 个就绪文档${pendingHint})${headStr}`)
+    }
+    lines.push('当用户询问"知识库里有什么/有哪些文档"时调用 kb_list；当首次召回不够准确时调用 kb_search 用重写后的 query 重查。')
+    return lines.join('\n')
+  } catch {
+    return `知识库: 已启用 (${categoryIds.length} 个分类)`
+  }
+}
+
 export interface SendMessageOptions {
   conversationId: string
   botId: string
@@ -317,6 +351,14 @@ export async function sendMessage(
   const effectiveMcpIds = options.overrideMcpIds ?? bot.mcp_ids
   const effectivePromptSkillDirs = options.overridePromptSkillDirs ?? (bot.prompt_skill_dirs || [])
 
+  // 预读启用分类下的全部 KB 数据，供 system prompt 清单 + RAG 检索 + 召回片段来源标注三处复用，避免重复 IO
+  const kbDataByCategory = new Map<string, KnowledgeBase[]>()
+  if (effectiveKbCategoryIds.length > 0) {
+    for (const catId of effectiveKbCategoryIds) {
+      kbDataByCategory.set(catId, listKnowledgeBases(catId))
+    }
+  }
+
   // Base system prompt: tool usage guidance + bot identity
   const baseSystemParts: string[] = [
     '你是一个具备工具调用能力的AI助手。当任务需要读写文件、执行命令或调用其他工具时，直接调用对应工具完成操作，不要仅描述步骤或给出建议。'
@@ -326,7 +368,9 @@ export async function sendMessage(
   const capSummary: string[] = []
   capSummary.push(`名称: ${bot.name}`)
   capSummary.push(`模型: ${bot.model_id}`)
-  if (effectiveKbCategoryIds.length > 0) capSummary.push(`知识库: 已启用 (${effectiveKbCategoryIds.length} 个分类)`)
+  if (effectiveKbCategoryIds.length > 0) {
+    capSummary.push(buildKbInventorySummary(effectiveKbCategoryIds, kbDataByCategory))
+  }
   if (effectiveSkillIds.length > 0) {
     const allSkills = listSkills()
     const skillNames = allSkills.filter(s => effectiveSkillIds.includes(s.id) && s.enabled).map(s => s.function_def?.name || s.name)
@@ -371,10 +415,10 @@ export async function sendMessage(
   // RAG: retrieve relevant knowledge base context
   if (effectiveKbCategoryIds.length > 0) {
     try {
-      // Collect all KB IDs for the bot's categories
+      // Collect all KB IDs for the bot's categories（复用预读数据）
       const kbIds: string[] = []
       for (const catId of effectiveKbCategoryIds) {
-        const kbs = listKnowledgeBases(catId)
+        const kbs = kbDataByCategory.get(catId) || []
         for (const kb of kbs) {
           if (kb.status === 'ready') kbIds.push(kb.id)
         }
@@ -396,16 +440,52 @@ export async function sendMessage(
         const results = searchHybrid(queryEmbed.embedding, options.content, kbIds, 5, 0.3)
 
         if (results.length > 0) {
-          const context = results.map((r, i) => `[${i + 1}] ${r.chunk.content}`).join('\n\n')
+          // 收集 KB id → name 映射，便于在召回片段里附上"来源文档名"（复用预读数据）
+          const kbNameMap = new Map<string, string>()
+          for (const catId of effectiveKbCategoryIds) {
+            for (const kb of kbDataByCategory.get(catId) || []) {
+              if (kb.status === 'ready') kbNameMap.set(kb.id, kb.name)
+            }
+          }
+          const context = results
+            .map((r, i) => {
+              const score = Math.round(r.score * 1000) / 1000
+              const source = kbNameMap.get(r.chunk.knowledge_base_id) || '未知文档'
+              return `[${i + 1}] (相关度 ${score}, 来源: ${source})\n${r.chunk.content}`
+            })
+            .join('\n\n')
           messages.push({
             role: 'system',
-            content: `以下是从知识库中检索到的相关内容，请参考这些内容回答用户问题：\n\n${context}`
+            content:
+              `以下是从知识库初次检索到的 ${results.length} 个片段（按相关性降序）：\n\n${context}\n\n` +
+              '使用规则：\n' +
+              '- 若上述片段已能回答用户问题，请基于片段直接回答，并在结尾用「来源：xxx」形式标注被引用的文档；\n' +
+              '- 若上述片段相关度普遍偏低（score < 0.4）或与用户当前问题方向不符，请调用 kb_search 用重写过的 query 重新检索；\n' +
+              '- 若用户问的是"知识库里有什么/有哪些文档"等元问题，请调用 kb_list 列出清单；不要凭这 5 个片段瞎猜全库内容。'
           })
-          console.log(`[chat] RAG: found ${results.length} relevant chunks from ${kbIds.length} KBs`)
+          const topScore = Math.round(results[0].score * 1000) / 1000
+          console.log(`[chat] RAG: found ${results.length} relevant chunks from ${kbIds.length} KBs (top score=${topScore})`)
+        } else {
+          // 0 命中也要告知模型，避免它误以为"没注入就是没启用"
+          messages.push({
+            role: 'system',
+            content:
+              '本次基于用户问题的初次检索未命中任何知识库片段（topK=5, threshold=0.3）。\n' +
+              '如果用户问题确实与知识库主题相关，请调用 kb_search 用重写过的 query 重新检索；' +
+              '如果是元问题（"库里有什么"），请调用 kb_list。'
+          })
+          console.log(`[chat] RAG: 0 chunks matched from ${kbIds.length} KBs`)
         }
       }
     } catch (e: any) {
+      // 静默失败会让用户误以为"模型在用知识库实际没用"。把失败原因通过 system 告诉模型，让它能向用户澄清。
       console.log(`[chat] RAG retrieval failed: ${e.message}`)
+      messages.push({
+        role: 'system',
+        content:
+          `本次知识库初次检索失败（原因：${e.message || '未知错误'}）。\n` +
+          '如果用户问题与知识库相关，请调用 kb_search 重试；如果重试仍失败，请明确告知用户"知识库检索暂时不可用"，不要假装查到了内容。'
+      })
     }
 
     // Knowledge-base-only constraint
@@ -413,7 +493,10 @@ export async function sendMessage(
       messages.push({
         role: 'system',
         content:
-          '重要约束：你只能根据提供的知识库内容来回答问题。如果知识库中没有相关信息，请明确告知用户“知识库中未找到相关信息”，不要编造或推测答案。'
+          '重要约束：你只能根据知识库内容回答问题。\n' +
+          '- 如果初次召回的片段足够准确，直接基于片段回答并标注来源；\n' +
+          '- 如果初次召回不足或不相关，必须先调用 kb_search 至少一次用重写过的 query 重新检索后再判断；\n' +
+          '- 仅当多次检索仍无相关内容时，才回答"知识库中未找到相关信息"，不要凭常识或预训练知识编造或推测答案。'
       })
     }
   }
@@ -516,8 +599,8 @@ export async function sendMessage(
   }
   messages.push(...included)
 
-  // Build tools list from skills and MCP
-  const tools = buildToolsList(effectiveSkillIds, effectiveMcpIds, effectivePromptSkillDirs)
+  // Build tools list from skills and MCP (KB tools auto-included when KB enabled)
+  const tools = buildToolsList(effectiveSkillIds, effectiveMcpIds, effectivePromptSkillDirs, effectiveKbCategoryIds)
 
   const systemCount = messages.length - included.length
   console.log(`[chat] context: ${systemCount} system + ${included.length} history msgs, ~${estimateMessagesTokens([...messages])} tokens, ${tools.length} tools`)
@@ -615,7 +698,7 @@ export async function sendMessage(
       const pendingExecs = plans.map(async (p) => {
         if (p.resultStr !== undefined) return p
         if (signal.aborted) throw new AbortedError()
-        const result = await executeToolCall(p.toolCall, effectiveSkillIds, effectiveMcpIds, options.conversationId)
+        const result = await executeToolCall(p.toolCall, effectiveSkillIds, effectiveMcpIds, options.conversationId, effectiveKbCategoryIds)
         const resultStr = JSON.stringify(result)
         if (window) {
           const summary = typeof result === 'string'
@@ -809,8 +892,17 @@ async function maybeGenerateSummary(
   }
 }
 
-function buildToolsList(skillIds: string[], mcpIds: string[], promptSkillDirs: string[] = []): any[] {
-  const tools: any[] = [...coreToolDefs]
+function buildToolsList(
+  skillIds: string[],
+  mcpIds: string[],
+  promptSkillDirs: string[] = [],
+  kbCategoryIds: string[] = []
+): any[] {
+  // Core tools 默认全量加入；当未启用知识库时剔除 kb_* 工具，避免给模型展示无意义入口
+  const filteredCore = kbCategoryIds.length > 0
+    ? coreToolDefs
+    : coreToolDefs.filter((t: any) => !KB_TOOL_NAMES.includes(t?.function?.name))
+  const tools: any[] = [...filteredCore]
 
   // Add user skills as tools (skip core tool names to avoid duplicates)
   const allSkills = listSkills()
@@ -870,7 +962,8 @@ async function executeToolCall(
   toolCall: any,
   skillIds: string[],
   mcpIds: string[],
-  conversationId?: string
+  conversationId?: string,
+  kbCategoryIds: string[] = []
 ): Promise<any> {
   const functionName = toolCall.function?.name
   let args: any = {}
@@ -895,7 +988,8 @@ async function executeToolCall(
 
   // Try core tools first
   const sandboxDir = conversationId ? getWorkspaceDir(conversationId) : undefined
-  const coreResult = await executeCoreToolCall(functionName, args, sandboxDir)
+  const kbContext = { kbCategoryIds }
+  const coreResult = await executeCoreToolCall(functionName, args, sandboxDir, kbContext)
   if (coreResult.handled) return coreResult.result
 
   // Try user skills
