@@ -1,6 +1,72 @@
 import { marked } from 'marked'
-import hljs from 'highlight.js'
+import hljs from 'highlight.js/lib/core'
+import bash from 'highlight.js/lib/languages/bash'
+import c from 'highlight.js/lib/languages/c'
+import cpp from 'highlight.js/lib/languages/cpp'
+import csharp from 'highlight.js/lib/languages/csharp'
+import css from 'highlight.js/lib/languages/css'
+import go from 'highlight.js/lib/languages/go'
+import java from 'highlight.js/lib/languages/java'
+import javascript from 'highlight.js/lib/languages/javascript'
+import json from 'highlight.js/lib/languages/json'
+import kotlin from 'highlight.js/lib/languages/kotlin'
+import markdown from 'highlight.js/lib/languages/markdown'
+import php from 'highlight.js/lib/languages/php'
+import plaintext from 'highlight.js/lib/languages/plaintext'
+import powershell from 'highlight.js/lib/languages/powershell'
+import python from 'highlight.js/lib/languages/python'
+import ruby from 'highlight.js/lib/languages/ruby'
+import rust from 'highlight.js/lib/languages/rust'
+import scss from 'highlight.js/lib/languages/scss'
+import shell from 'highlight.js/lib/languages/shell'
+import sql from 'highlight.js/lib/languages/sql'
+import swift from 'highlight.js/lib/languages/swift'
+import typescript from 'highlight.js/lib/languages/typescript'
+import xml from 'highlight.js/lib/languages/xml'
+import yaml from 'highlight.js/lib/languages/yaml'
 import DOMPurify from 'dompurify'
+
+// 按需注册常用语言，避免全量 hljs（~900KB gz）进入 ChatView bundle。
+// xml 语言在 hljs 里同时覆盖 html，shell 同时覆盖 console/sh。
+hljs.registerLanguage('bash', bash)
+hljs.registerLanguage('c', c)
+hljs.registerLanguage('cpp', cpp)
+hljs.registerLanguage('csharp', csharp)
+hljs.registerLanguage('css', css)
+hljs.registerLanguage('go', go)
+hljs.registerLanguage('java', java)
+hljs.registerLanguage('javascript', javascript)
+hljs.registerLanguage('json', json)
+hljs.registerLanguage('kotlin', kotlin)
+hljs.registerLanguage('markdown', markdown)
+hljs.registerLanguage('php', php)
+hljs.registerLanguage('plaintext', plaintext)
+hljs.registerLanguage('powershell', powershell)
+hljs.registerLanguage('python', python)
+hljs.registerLanguage('ruby', ruby)
+hljs.registerLanguage('rust', rust)
+hljs.registerLanguage('scss', scss)
+hljs.registerLanguage('shell', shell)
+hljs.registerLanguage('sql', sql)
+hljs.registerLanguage('swift', swift)
+hljs.registerLanguage('typescript', typescript)
+hljs.registerLanguage('xml', xml)
+hljs.registerLanguage('yaml', yaml)
+// 常见别名
+hljs.registerAliases(['js', 'mjs', 'cjs'], { languageName: 'javascript' })
+hljs.registerAliases(['ts', 'tsx'], { languageName: 'typescript' })
+hljs.registerAliases(['py'], { languageName: 'python' })
+hljs.registerAliases(['sh', 'zsh', 'console'], { languageName: 'bash' })
+hljs.registerAliases(['ps', 'ps1', 'pwsh'], { languageName: 'powershell' })
+hljs.registerAliases(['html', 'xhtml', 'svg', 'vue'], { languageName: 'xml' })
+hljs.registerAliases(['yml'], { languageName: 'yaml' })
+hljs.registerAliases(['md'], { languageName: 'markdown' })
+hljs.registerAliases(['rs'], { languageName: 'rust' })
+hljs.registerAliases(['rb'], { languageName: 'ruby' })
+hljs.registerAliases(['cs'], { languageName: 'csharp' })
+hljs.registerAliases(['kt', 'kts'], { languageName: 'kotlin' })
+hljs.registerAliases(['c++', 'cc', 'hpp', 'h'], { languageName: 'cpp' })
+hljs.registerAliases(['text', 'txt'], { languageName: 'plaintext' })
 
 marked.setOptions({
   breaks: true,
