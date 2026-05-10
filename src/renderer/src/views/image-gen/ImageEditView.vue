@@ -477,6 +477,9 @@ const tools = [
 const showRightPanel = computed(() => ['crop', 'rotate', 'filter', 'text', 'draw', 'inpaint'].includes(activeTool.value))
 
 // ---- Lifecycle ----
+// Bug #6: 用 unsubscribe 模式，避免 offProgress() removeAllListeners 误清其他视图监听
+let unsubscribeImageProgress: (() => void) | null = null
+
 onMounted(async () => {
   const id = route.params.id as string
   if (!id) { router.back(); return }
@@ -496,7 +499,7 @@ onMounted(async () => {
     await initCanvas(absPath)
 
     window.addEventListener('keydown', handleKeyDown)
-    api().imageGen.onProgress(handleImageGenProgress)
+    unsubscribeImageProgress = api().imageGen.onProgress(handleImageGenProgress)
   } catch (e: any) {
     showToast('加载失败: ' + (e.message || ''))
     console.error(e)
@@ -505,7 +508,10 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleKeyDown)
-  try { api().imageGen.offProgress() } catch {}
+  if (unsubscribeImageProgress) {
+    try { unsubscribeImageProgress() } catch {}
+    unsubscribeImageProgress = null
+  }
   if (fabricCanvas) {
     fabricCanvas.dispose()
     fabricCanvas = null

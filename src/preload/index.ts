@@ -75,8 +75,17 @@ const api = {
   imageGen: {
     invoke: (channel: string, ...args: unknown[]) =>
       ipcRenderer.invoke(`imageGen:${channel}`, ...args),
-    onProgress: (callback: (data: unknown) => void) =>
-      ipcRenderer.on('imageGen:progress', (_event, data) => callback(data)),
+    /**
+     * 注册 progress 回调，返回 unsubscribe 函数。
+     * 多视图（ImageGenView / BatchGenView / ImageEditView）共用此信道时，
+     * 调用 unsubscribe 只移除自己的监听器，不影响其他视图。
+     */
+    onProgress: (callback: (data: unknown) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, data: unknown) => callback(data)
+      ipcRenderer.on('imageGen:progress', handler)
+      return () => ipcRenderer.off('imageGen:progress', handler)
+    },
+    /** @deprecated 改用 onProgress 返回的 unsubscribe，避免误清其他视图的监听 */
     offProgress: () => ipcRenderer.removeAllListeners('imageGen:progress')
   },
   canvas: {

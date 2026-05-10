@@ -1,5 +1,5 @@
 import { join } from 'path'
-import { existsSync, mkdirSync, writeFileSync, readdirSync, readFileSync } from 'fs'
+import { mkdirSync, writeFileSync, readdirSync, readFileSync } from 'fs'
 import { getDataDir } from './data-path'
 
 async function extractZipNative(zipPath: string, destDir: string): Promise<void> {

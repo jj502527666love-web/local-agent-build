@@ -64,15 +64,15 @@ export const useImageGenStore = defineStore('imageGen', () => {
   const loading = ref(false)
 
   const generating = ref(false)
-  /** 防竞态计数器：每次 _runOne() 递增，finally 只在计数匹配时重置 generating */
-  let _genCount = 0
   const progress = ref<{ total: number; completed: number; type: string } | null>(null)
   const lastError = ref('')
 
-  /** 任务队列 */
+  /** 任务队列（仅供 enqueue 路径，限制 ImageGenView 重复点击串行执行） */
   const queue = ref<QueueItem[]>([])
   let _queueIdSeq = 0
   let _processing = false
+  /** progress 事件取消函数（Bug #6） */
+  let _unsubscribeProgress: (() => void) | null = null
 
   /** 展示列表：inFlight 置顶 + items 分页数据 */
   const displayList = computed<ImageGeneration[]>(() => [...inFlight.value, ...items.value])
@@ -121,28 +121,44 @@ export const useImageGenStore = defineStore('imageGen', () => {
     _scheduleNext()
   }
 
+  /**
+   * 队列内部调度器（仅 enqueue 路径走这里）。
+   * Bug #8：原 “_genCount 防竞态” 计数器是死代码，_processing 锁已保证串行，删除。
+   */
   async function _runOne(options: GenerateOptions) {
     generating.value = true
-    const myGen = ++_genCount
     lastError.value = ''
     progress.value = { total: options.batchCount || 1, completed: 0, type: 'start' }
+    try {
+      await api().imageGen.invoke('generate', JSON.parse(JSON.stringify(options))) as ImageGeneration[]
+    } catch (e: any) {
+      lastError.value = translateError(e.message || '')
+    } finally {
+      generating.value = false
+      progress.value = null
+    }
+  }
+
+  /**
+   * 直接调用后端生图 API 并返回结果，绕过 store 队列。
+   *
+   * Bug #1 修复：原实现只调用 enqueue 不返回结果，BatchGenView 等依赖返回值的
+   * 调用方永远拿到 undefined。现在 generate() 直接 invoke，返回真实生成结果。
+   *
+   * Bug #2 修复：BatchGenView 的 worker 不再入 store 队列（_processing 锁会串行），
+   * 可真并发。后端 semaphore（Bug #3）负责全局上限。
+   *
+   * 需要队列报守行为（ImageGenView 重复点击报名）请用 enqueue()。
+   */
+  async function generate(options: GenerateOptions): Promise<ImageGeneration[]> {
+    lastError.value = ''
     try {
       const results = await api().imageGen.invoke('generate', JSON.parse(JSON.stringify(options))) as ImageGeneration[]
       return results || []
     } catch (e: any) {
       lastError.value = translateError(e.message || '')
-      return []
-    } finally {
-      if (_genCount === myGen) {
-        generating.value = false
-        progress.value = null
-      }
+      throw e
     }
-  }
-
-  /** 兼容旧接口：等价于 enqueue，但返回 Promise 以兼容老调用方 */
-  async function generate(options: GenerateOptions) {
-    enqueue(options)
   }
 
   async function deleteGeneration(id: string) {
@@ -164,27 +180,32 @@ export const useImageGenStore = defineStore('imageGen', () => {
   }
 
   function mergeCompleted(gen: ImageGeneration) {
-    // 从 inFlight 移除
+    // Bug #7: 幂等处理。只有“首次从 inFlight 迁出”才计为新增；同事件重复送达
+    // 或 generation 已在 items 中时，不重复 +1。
+    const wasInFlight = inFlight.value.some(g => g.id === gen.id)
     inFlight.value = inFlight.value.filter(g => g.id !== gen.id)
     if (currentPage.value === 1) {
       const idx = items.value.findIndex(g => g.id === gen.id)
       if (idx >= 0) {
         items.value[idx] = gen
+        // 已在列表：处理为幂等更新，total 不动
       } else {
         items.value = [gen, ...items.value]
         if (items.value.length > pageSize.value) {
           items.value = items.value.slice(0, pageSize.value)
         }
-        total.value += 1
+        if (wasInFlight) total.value += 1
       }
     } else {
-      // 非首页不改动 items，让用户切回首页时 fetchPage 自然看到新数据
-      total.value += 1
+      // 非首页不改动 items，仅在首次完成时 +1
+      if (wasInFlight) total.value += 1
     }
   }
 
   function listenProgress() {
-    api().imageGen.onProgress((data: any) => {
+    // Bug #6: 重复调用不重复注册；采用 unsubscribe 模式隔离其他视图的监听器
+    if (_unsubscribeProgress) return
+    _unsubscribeProgress = api().imageGen.onProgress((data: any) => {
       if (data.type === 'done') {
         // generating 状态由 generate() 的 finally 统一管理，此处不再重置
         // 仅清理 progress 展示
@@ -252,7 +273,11 @@ export const useImageGenStore = defineStore('imageGen', () => {
   }
 
   function stopListenProgress() {
-    api().imageGen.offProgress()
+    // Bug #6: 只取消自己注册的监听器，不调 removeAllListeners 误清其他视图
+    if (_unsubscribeProgress) {
+      _unsubscribeProgress()
+      _unsubscribeProgress = null
+    }
   }
 
   return {

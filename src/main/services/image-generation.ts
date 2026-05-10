@@ -5,13 +5,84 @@ import { createImageSession } from './image-session'
 import { getDataDir } from './data-path'
 import { getCloudToken, getCloudGatewayUrl } from './cloud-token'
 import { join } from 'path'
-import { mkdirSync, writeFileSync } from 'fs'
+import { mkdirSync, writeFileSync, unlinkSync, existsSync } from 'fs'
 import { BrowserWindow } from 'electron'
 import { recordUsage } from './usage-stats'
 import { resolveSizeToPixels, getMaxConsistencyN } from '@shared/image-size'
 import { stripBase64 } from '@shared/strip-image-metadata'
 import { normalizeApiBase } from './api-base-normalize'
 import { addToCreation, removeByRelativePath } from './gallery'
+
+// ---- Global concurrency limit (Bug #3) ----
+// 所有入口（ImageGenView / BatchGenView / ImageEditView / Canvas / Chat 工具）共享此上限，
+// 防止多入口同时打到上游服务商触发 429 / 账号风控。
+// 6 是经验值：常见服务商单账号 RPM 限制 30~60，单请求 5~30s，6 并发约 1~3 RPS。
+const MAX_CONCURRENT_API_CALLS = 6
+let _activeApiCalls = 0
+const _apiWaitQueue: Array<() => void> = []
+
+async function acquireApiSlot(): Promise<void> {
+  if (_activeApiCalls < MAX_CONCURRENT_API_CALLS) {
+    _activeApiCalls++
+    return
+  }
+  return new Promise<void>((resolve) => {
+    _apiWaitQueue.push(() => {
+      _activeApiCalls++
+      resolve()
+    })
+  })
+}
+
+function releaseApiSlot(): void {
+  _activeApiCalls--
+  const next = _apiWaitQueue.shift()
+  if (next) next()
+}
+
+// ---- fetch with timeout (Bug #4) ----
+/**
+ * 带超时的 fetch。AbortController 触发后 fetch 抛 AbortError，
+ * 上层用 wrapFetchError 转成更可读的"请求超时"。
+ */
+async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    return await fetch(url, { ...options, signal: controller.signal })
+  } catch (e: any) {
+    if (e?.name === 'AbortError') {
+      throw new Error(`请求超时 (${timeoutMs}ms): ${url}`)
+    }
+    throw e
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/** 错误信息截断（Bug #9）：上游可能返回几 MB HTML，避免污染 DB / IPC / UI */
+function truncateError(text: string, max = 500): string {
+  if (!text) return ''
+  return text.length <= max ? text : text.slice(0, max) + `... (truncated, total ${text.length} chars)`
+}
+
+// ---- Disk file cleanup (Bug #5) ----
+/** 安全删除一个绝对路径下的文件；不存在或失败都吞掉，仅日志 */
+function safeDeleteFile(absPath: string): void {
+  try {
+    if (existsSync(absPath)) unlinkSync(absPath)
+  } catch (e) {
+    console.error('[ImageGen] Failed to delete file:', absPath, e)
+  }
+}
+
+/** 按数据库存的相对路径删除磁盘文件；兼容旧数据中残留的绝对路径 */
+function deleteImageByRelPath(relPath: string | null | undefined): void {
+  if (!relPath) return
+  const isAbs = /^[A-Za-z]:|^\//.test(relPath)
+  const absPath = isAbs ? relPath : join(getDataDir(), relPath)
+  safeDeleteFile(absPath)
+}
 
 export interface ImageGeneration {
   id: string
@@ -135,17 +206,28 @@ export function countFailedGenerations(): number {
 
 export function clearFailedGenerations(): { deleted: number } {
   const db = getDatabase()
+  // Bug #5: 清理磁盘上残留的失败图片（罕见但保险）
+  try {
+    const rows = db.prepare("SELECT result_path FROM image_generations WHERE status = 'error'").all() as { result_path?: string }[]
+    for (const row of rows) {
+      if (row.result_path) {
+        try { removeByRelativePath(row.result_path) } catch {}
+        deleteImageByRelPath(row.result_path)
+      }
+    }
+  } catch {}
   const result = db.prepare('DELETE FROM image_generations WHERE status = ?').run('error')
   return { deleted: result.changes }
 }
 
 export function deleteGeneration(id: string): boolean {
   const db = getDatabase()
-  // 联动删除：先清理图库中对应的图片记录（按相对路径）
+  // 联动删除：清理图库引用 + 磁盘文件（Bug #5）+ 数据库行
   try {
     const row = db.prepare('SELECT result_path FROM image_generations WHERE id = ?').get(id) as { result_path?: string } | undefined
     if (row?.result_path) {
       try { removeByRelativePath(row.result_path) } catch (e) { console.error('Failed to remove from gallery on delete:', e) }
+      deleteImageByRelPath(row.result_path)
     }
   } catch {}
   const result = db.prepare('DELETE FROM image_generations WHERE id = ?').run(id)
@@ -155,13 +237,14 @@ export function deleteGeneration(id: string): boolean {
 export function deleteGenerations(ids: string[]): number {
   if (!ids.length) return 0
   const db = getDatabase()
-  // 联动删除：先收集所有 result_path 并清理图库
+  // 联动删除：图库引用 + 磁盘文件（Bug #5）+ 数据库行
   try {
     const placeholders = ids.map(() => '?').join(',')
     const rows = db.prepare(`SELECT result_path FROM image_generations WHERE id IN (${placeholders})`).all(...ids) as { result_path?: string }[]
     for (const row of rows) {
       if (row.result_path) {
         try { removeByRelativePath(row.result_path) } catch (e) { console.error('Failed to remove from gallery on batch delete:', e) }
+        deleteImageByRelPath(row.result_path)
       }
     }
   } catch {}
@@ -184,6 +267,9 @@ function toRelativePath(absolutePath: string): string {
 
 type ImageAPIResult = { b64_json?: string; url?: string; revised_prompt?: string }
 
+/** 单次生图 API 调用的超时上限（毫秒）：覆盖最慢的 4K + 高质量场景 */
+const IMAGE_API_TIMEOUT_MS = 180_000
+
 async function callImageAPI(
   providerId: string,
   modelId: string,
@@ -195,104 +281,112 @@ async function callImageAPI(
   tierId?: string,
   n: number = 1
 ): Promise<ImageAPIResult[]> {
-  if (providerId.startsWith('cloud:')) {
-    return callCloudImageAPI(modelId, prompt, size, quality, refImages, mask, tierId, n)
-  }
-
-  const provider = getModelProvider(providerId)
-  if (!provider) throw new Error(`Model provider not found: ${providerId}`)
-  const apiBase = normalizeApiBase(provider.api_base)
-  const apiKey = provider.api_key
-
-  const hasRefImages = refImages && refImages.length > 0
-  const url = hasRefImages ? `${apiBase}/images/edits` : `${apiBase}/images/generations`
-
-  const headers: Record<string, string> = {}
-  if (apiKey) {
-    headers['Authorization'] = `Bearer ${apiKey}`
-  }
-
-  let fetchOptions: RequestInit
-
-  let resolvedPx: string | null = null
-  if (hasRefImages) {
-    // Use multipart form for /images/edits
-    resolvedPx = resolvePixels(size, modelId, tierId)
-    const form = new FormData()
-    form.append('model', modelId)
-    form.append('prompt', prompt)
-    form.append('n', String(n))
-    form.append('size', resolvedPx)
-    form.append('quality', quality)
-    form.append('response_format', 'b64_json')
-
-    for (const img of refImages) {
-      // Strip data URI prefix if present, and remove EXIF/ICC/XMP/COM segments
-      // to avoid upstream rejecting non-standard ICC v4 profiles (e.g. WeChat images).
-      const match = img.match(/^data:([^;]+);base64,/)
-      const mimeType = match ? match[1] : 'image/png'
-      const raw = match ? img.slice(match[0].length) : img
-      const format: 'jpeg' | 'png' = mimeType.includes('png') ? 'png' : 'jpeg'
-      const cleaned = stripBase64(raw, format)
-      const buffer = Buffer.from(cleaned, 'base64')
-      const blob = new Blob([buffer], { type: mimeType })
-      const ext = format === 'png' ? 'png' : 'jpg'
-      form.append('image', blob, `ref.${ext}`)
+  // Bug #3: 全局 semaphore — 所有入口共享上限
+  await acquireApiSlot()
+  try {
+    if (providerId.startsWith('cloud:')) {
+      return await callCloudImageAPI(modelId, prompt, size, quality, refImages, mask, tierId, n)
     }
 
-    if (mask) {
-      const maskMatch = mask.match(/^data:([^;]+);base64,/)
-      const maskRaw = maskMatch ? mask.slice(maskMatch[0].length) : mask
-      const cleanedMask = stripBase64(maskRaw, 'png')
-      const maskBuffer = Buffer.from(cleanedMask, 'base64')
-      const maskBlob = new Blob([maskBuffer], { type: 'image/png' })
-      form.append('mask', maskBlob, 'mask.png')
+    const provider = getModelProvider(providerId)
+    if (!provider) throw new Error(`Model provider not found: ${providerId}`)
+    const apiBase = normalizeApiBase(provider.api_base)
+    const apiKey = provider.api_key
+
+    const hasRefImages = refImages && refImages.length > 0
+    const url = hasRefImages ? `${apiBase}/images/edits` : `${apiBase}/images/generations`
+
+    const headers: Record<string, string> = {}
+    if (apiKey) {
+      headers['Authorization'] = `Bearer ${apiKey}`
     }
 
-    fetchOptions = { method: 'POST', headers, body: form }
-  } else {
-    headers['Content-Type'] = 'application/json'
-    resolvedPx = resolvePixels(size, modelId, tierId)
-    const body: any = {
-      model: modelId,
-      prompt,
-      n,
-      size: resolvedPx,
-      quality,
-      response_format: 'b64_json'
+    let fetchOptions: RequestInit
+
+    let resolvedPx: string | null = null
+    if (hasRefImages) {
+      // Use multipart form for /images/edits
+      resolvedPx = resolvePixels(size, modelId, tierId)
+      const form = new FormData()
+      form.append('model', modelId)
+      form.append('prompt', prompt)
+      form.append('n', String(n))
+      form.append('size', resolvedPx)
+      form.append('quality', quality)
+      form.append('response_format', 'b64_json')
+
+      for (const img of refImages) {
+        // Strip data URI prefix if present, and remove EXIF/ICC/XMP/COM segments
+        // to avoid upstream rejecting non-standard ICC v4 profiles (e.g. WeChat images).
+        const match = img.match(/^data:([^;]+);base64,/)
+        const mimeType = match ? match[1] : 'image/png'
+        const raw = match ? img.slice(match[0].length) : img
+        const format: 'jpeg' | 'png' = mimeType.includes('png') ? 'png' : 'jpeg'
+        const cleaned = stripBase64(raw, format)
+        const buffer = Buffer.from(cleaned, 'base64')
+        const blob = new Blob([buffer], { type: mimeType })
+        const ext = format === 'png' ? 'png' : 'jpg'
+        form.append('image', blob, `ref.${ext}`)
+      }
+
+      if (mask) {
+        const maskMatch = mask.match(/^data:([^;]+);base64,/)
+        const maskRaw = maskMatch ? mask.slice(maskMatch[0].length) : mask
+        const cleanedMask = stripBase64(maskRaw, 'png')
+        const maskBuffer = Buffer.from(cleanedMask, 'base64')
+        const maskBlob = new Blob([maskBuffer], { type: 'image/png' })
+        form.append('mask', maskBlob, 'mask.png')
+      }
+
+      fetchOptions = { method: 'POST', headers, body: form }
+    } else {
+      headers['Content-Type'] = 'application/json'
+      resolvedPx = resolvePixels(size, modelId, tierId)
+      const body: any = {
+        model: modelId,
+        prompt,
+        n,
+        size: resolvedPx,
+        quality,
+        response_format: 'b64_json'
+      }
+      fetchOptions = { method: 'POST', headers, body: JSON.stringify(body) }
     }
-    fetchOptions = { method: 'POST', headers, body: JSON.stringify(body) }
+
+    // Bug #4: 加超时
+    const response = await fetchWithTimeout(url, fetchOptions, IMAGE_API_TIMEOUT_MS)
+
+    if (!response.ok) {
+      const errorText = await response.text()
+      // Bug #9: 截断超长错误响应
+      throw new Error(`Image API error ${response.status}: ${truncateError(errorText)}`)
+    }
+
+    const data = await response.json()
+
+    if (data.usage) {
+      try {
+        recordUsage(
+          providerId,
+          modelId,
+          data.usage.prompt_tokens || 0,
+          data.usage.completion_tokens || 0,
+          data.usage.total_tokens || 0
+        )
+      } catch {}
+    }
+
+    const items = data.data as any[]
+    if (!items || items.length === 0) throw new Error('No image data in response')
+
+    return items.map((item: any) => ({
+      b64_json: item.b64_json,
+      url: item.url,
+      revised_prompt: item.revised_prompt
+    }))
+  } finally {
+    releaseApiSlot()
   }
-
-  const response = await fetch(url, fetchOptions)
-
-  if (!response.ok) {
-    const errorText = await response.text()
-    throw new Error(`Image API error ${response.status}: ${errorText}`)
-  }
-
-  const data = await response.json()
-
-  if (data.usage) {
-    try {
-      recordUsage(
-        providerId,
-        modelId,
-        data.usage.prompt_tokens || 0,
-        data.usage.completion_tokens || 0,
-        data.usage.total_tokens || 0
-      )
-    } catch {}
-  }
-
-  const items = data.data as any[]
-  if (!items || items.length === 0) throw new Error('No image data in response')
-
-  return items.map((item: any) => ({
-    b64_json: item.b64_json,
-    url: item.url,
-    revised_prompt: item.revised_prompt
-  }))
 }
 
 async function callCloudImageAPI(
@@ -340,16 +434,16 @@ async function callCloudImageAPI(
     body.mask = stripBase64(maskRaw, 'png')
   }
 
-  // Step 1: Submit task
-  const submitRes = await fetch(`${gatewayUrl}${endpoint}`, {
+  // Step 1: Submit task (Bug #4: 60s 提交超时)
+  const submitRes = await fetchWithTimeout(`${gatewayUrl}${endpoint}`, {
     method: 'POST',
     headers,
     body: JSON.stringify(body)
-  })
+  }, 60_000)
 
   if (!submitRes.ok) {
     const errorText = await submitRes.text()
-    throw new Error(`Image API error ${submitRes.status}: ${errorText}`)
+    throw new Error(`Image API error ${submitRes.status}: ${truncateError(errorText)}`)
   }
 
   const submitData = await submitRes.json()
@@ -363,20 +457,21 @@ async function callCloudImageAPI(
 
   // Step 2: Poll for result
   console.log('[ImageGen] Cloud task submitted:', taskId)
-  const maxWait = 300000 // 5 minutes
-  const pollInterval = 3000
+  const maxWait = 300_000 // 5 minutes 总等待
+  const pollInterval = 3_000
+  const pollTimeout = 30_000 // Bug #4: 单次 status 请求 30s 超时
   const start = Date.now()
 
   while (Date.now() - start < maxWait) {
     await new Promise(r => setTimeout(r, pollInterval))
 
-    const statusRes = await fetch(`${gatewayUrl}/images/status/${taskId}`, {
+    const statusRes = await fetchWithTimeout(`${gatewayUrl}/images/status/${taskId}`, {
       method: 'GET',
       headers: { 'Authorization': `Bearer ${token}` }
-    })
+    }, pollTimeout)
 
     if (!statusRes.ok) {
-      throw new Error(`Image API error ${statusRes.status}: ${await statusRes.text()}`)
+      throw new Error(`Image API error ${statusRes.status}: ${truncateError(await statusRes.text())}`)
     }
 
     const statusData = await statusRes.json()
@@ -388,7 +483,7 @@ async function callCloudImageAPI(
     }
 
     if (statusData.status === 'failed') {
-      throw new Error(statusData.error || 'Image generation failed')
+      throw new Error(truncateError(statusData.error || 'Image generation failed'))
     }
   }
 
@@ -415,7 +510,8 @@ function saveImageToFile(sessionId: string, genId: string, b64Data: string): str
 }
 
 async function downloadImageToFile(sessionId: string, genId: string, imageUrl: string): Promise<string> {
-  const response = await fetch(imageUrl)
+  // Bug #4: 下载也加超时（120s 覆盖大文件）
+  const response = await fetchWithTimeout(imageUrl, { method: 'GET' }, 120_000)
   if (!response.ok) throw new Error(`Failed to download image: ${response.status}`)
   const buffer = Buffer.from(await response.arrayBuffer())
   const contentType = response.headers.get('content-type') || 'image/png'
@@ -775,6 +871,14 @@ export function saveEditedImage(id: string, base64Data: string): ImageGeneration
   writeFileSync(filePath, Buffer.from(rawBase64, 'base64'))
 
   const relPath = toRelativePath(filePath)
+
+  // Bug #5: 如旧 result_path 是不同扩展名的 _edited 衍生品，删除孤儿文件。
+  // 不删原始 ${id}.${ext}（保留作为重置基准）。
+  const oldPath = gen.result_path
+  if (oldPath && oldPath !== relPath && oldPath.includes('_edited.')) {
+    deleteImageByRelPath(oldPath)
+  }
+
   const db = getDatabase()
   db.prepare('UPDATE image_generations SET result_path = ? WHERE id = ?').run(relPath, id)
 
