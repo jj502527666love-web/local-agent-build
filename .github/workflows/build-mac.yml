@@ -41,12 +41,6 @@ jobs:
   build:
     runs-on: macos-latest
 
-    # Electron 缓存路径：让 electron-builder 把 electron 运行时与 builder 缓存写到 workspace 下，
-    # 配合 actions/cache 跨 run 复用，避免每次 build 重复下载 80MB+ electron 二进制。
-    env:
-      ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
-      ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -57,12 +51,26 @@ jobs:
           node-version: 22
           cache: 'npm'
 
+      # Electron 缓存路径：写到 runner.temp（GHA runner 的临时目录），不在 github.workspace 内。
+      # 关键原因：electron-builder 默认 files 规则会把 workspace 内未被 ! 排除的内容打进 app.asar，
+      # 之前用 ${{ github.workspace }}/.cache/electron 时，~110MB 的 electron prebuilt zip
+      # 被泄漏到 app.asar 里。改到 runner.temp 后从根因杜绝（builder 看不到这个路径）。
+      #
+      # 用 step 写 $GITHUB_ENV 而不是 job-level env: 是因为 GHA 的 ${{ runner.temp }} 在
+      # job-level env 评估阶段尚未可用（runner 信息在 job 调度时才确定），那么写 lint 报错。
+      # $RUNNER_TEMP 是 runner 启动时注入的 shell 环境变量，shell 内可直接使用。
+      - name: Configure Electron cache paths (out of workspace)
+        shell: bash
+        run: |
+          echo "ELECTRON_CACHE=$RUNNER_TEMP/electron-cache" >> "$GITHUB_ENV"
+          echo "ELECTRON_BUILDER_CACHE=$RUNNER_TEMP/electron-builder-cache" >> "$GITHUB_ENV"
+
       - name: Cache Electron binaries
         uses: actions/cache@v4
         with:
           path: |
-            .cache/electron
-            .cache/electron-builder
+            ${{ runner.temp }}/electron-cache
+            ${{ runner.temp }}/electron-builder-cache
           key: ${{ runner.os }}-electron-${{ hashFiles('package-lock.json') }}
           restore-keys: |
             ${{ runner.os }}-electron-
@@ -88,6 +96,33 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      # 包体积预算自检：mac 出 zip（双架构 x64/arm64），各自校验。
+      # 阈值 130MB（mac zip 基线略高于 win nsis）。超阈值通过 ::warning:: 上 GHA Annotation。
+      - name: Validate installer size budget
+        shell: bash
+        working-directory: ./dist
+        run: |
+          set -uo pipefail
+          SIZE_BUDGET_MB=130
+          OVER=0
+          for ZIP in *.zip; do
+            [ -f "$ZIP" ] || continue
+            SIZE_BYTES=$(stat -f%z "$ZIP" 2>/dev/null || stat -c%s "$ZIP")
+            SIZE_MB=$(( SIZE_BYTES / 1024 / 1024 ))
+            echo "Installer: $ZIP = ${SIZE_MB} MB (budget ${SIZE_BUDGET_MB} MB)"
+            if [ "$SIZE_MB" -gt "$SIZE_BUDGET_MB" ]; then
+              echo "::warning::Installer ${ZIP} is ${SIZE_MB}MB, exceeds budget ${SIZE_BUDGET_MB}MB."
+              OVER=$(( OVER + 1 ))
+            fi
+          done
+          if [ "$OVER" -gt 0 ]; then
+            ASAR=$(find . -path '*mac*/*.app/Contents/Resources/app.asar' 2>/dev/null | head -n1 || true)
+            if [ -n "$ASAR" ]; then
+              echo "=== Top 200 entries inside app.asar (first arch) ==="
+              npx --yes @electron/asar list "$ASAR" 2>/dev/null | head -200 || true
+            fi
+          fi
 
       - name: Stage artifacts and compute metadata
         id: files
