@@ -605,10 +605,31 @@ function toggleSelectAll() {
   selectedIds.value = next
 }
 
+/**
+ * 判断一个 generation 是否处于“还在跑”状态。generating / pending 时后端 worker 可能还在调用上游，
+ * 这时删后端 row 会产生孤儿状态：worker 后续的 progress 事件会重新把该 generation 插回 items，
+ * 与“已被删除”语义冲突。遇到这种只隐藏占位卡。
+ */
+function isInFlightStatus(s: string): boolean {
+  return s === 'generating' || s === 'pending'
+}
+
 async function deleteSelected() {
   if (!selectedIds.value.size) return
   const ids = [...selectedIds.value]
-  await store.deleteGenerations(ids)
+  // 拆分：还在跑的仅隐藏占位；完成/失败的走后端删除
+  const inFlightIds: string[] = []
+  const persistedIds: string[] = []
+  for (const id of ids) {
+    const gen = store.displayList.find(g => g.id === id)
+    if (gen && isInFlightStatus(gen.status)) {
+      inFlightIds.push(id)
+    } else {
+      persistedIds.push(id)
+    }
+  }
+  if (inFlightIds.length) store.dismissInFlight(inFlightIds)
+  if (persistedIds.length) await store.deleteGenerations(persistedIds)
   selectedIds.value = new Set()
   if (!store.displayList.length) selectMode.value = false
   await refreshFailedCount()
@@ -620,6 +641,12 @@ async function deleteSelected() {
 }
 
 async function deleteSingle(id: string) {
+  const gen = store.displayList.find(g => g.id === id)
+  if (gen && isInFlightStatus(gen.status)) {
+    // 生成中/排队中的占位卡：仅隐藏，不动后端与磁盘，避免后端 worker 完成后出现“幽灵卡”
+    store.dismissInFlight([id])
+    return
+  }
   await store.deleteGeneration(id)
   await refreshFailedCount()
 }

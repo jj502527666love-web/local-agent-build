@@ -169,6 +169,19 @@ export const useImageGenStore = defineStore('imageGen', () => {
     if (wasInItems) total.value = Math.max(0, total.value - 1)
   }
 
+  /**
+   * 仅从 inFlight 隐藏占位卡片，不动后端 row 与磁盘文件。
+   *
+   * 场景：用户看到一张生图任务卡住不动（如多米 5min 轮询未返），想从界面上去掉。
+   * 后端 worker 可能还在跑，取消请求会在完成/失败后走原压能量：inFlight 已不含该 id，
+   * mergeCompleted / error 到达时 wasInFlight=false，items 不会被二次插入。
+   */
+  function dismissInFlight(ids: string[]) {
+    if (!ids.length) return
+    const set = new Set(ids)
+    inFlight.value = inFlight.value.filter(g => !set.has(g.id))
+  }
+
   async function deleteGenerations(ids: string[]) {
     await api().imageGen.invoke('deleteGenerations', JSON.parse(JSON.stringify(ids)))
     const idSet = new Set(ids)
@@ -303,6 +316,7 @@ export const useImageGenStore = defineStore('imageGen', () => {
     clearQueue,
     deleteGeneration,
     deleteGenerations,
+    dismissInFlight,
     listenProgress,
     stopListenProgress
   }

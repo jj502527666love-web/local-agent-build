@@ -18,7 +18,7 @@
             <select v-model="form.type" class="select-field">
               <option value="openai_compatible">OpenAI 兼容</option>
               <option value="openai">OpenAI</option>
-              <option value="anthropic">Anthropic</option>
+              <option value="duomi">多米 API</option>
             </select>
           </div>
           <div>
@@ -31,57 +31,70 @@
           </div>
           <div>
             <label class="form-label">模型列表</label>
-            <div class="flex gap-2 mb-2">
-              <button
-                type="button"
-                @click="fetchModels"
-                :disabled="fetchingModels || !form.api_base"
-                class="btn-secondary text-xs flex items-center gap-1.5"
-              >
-                <svg v-if="fetchingModels" class="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" class="opacity-25" /><path d="M4 12a8 8 0 018-8" stroke="currentColor" stroke-width="3" stroke-linecap="round" class="opacity-75" /></svg>
-                <span>{{ fetchingModels ? '获取中...' : '从 API 获取模型' }}</span>
-              </button>
-              <span v-if="fetchError" class="text-xs text-red-500 self-center">{{ fetchError }}</span>
-            </div>
-            <!-- Search + Select -->
-            <div v-if="remoteModels.length" class="border border-surface-3 rounded-lg overflow-hidden">
-              <input
-                v-model="modelSearch"
-                placeholder="搜索模型..."
-                class="w-full px-3 py-2 text-xs border-b border-surface-3 bg-surface-0 outline-none focus:bg-white"
-              />
-              <div class="max-h-40 overflow-y-auto p-2 space-y-0.5">
-                <label v-if="filteredRemoteModels.length" class="flex items-center gap-2 px-2 py-1.5 rounded-md text-xs cursor-pointer hover:bg-surface-2 transition-colors font-medium border-b border-surface-3 mb-1 pb-1.5">
-                  <input type="checkbox" :checked="isAllFilteredSelected" @change="toggleSelectAll" class="rounded" />
-                  <span>全选</span>
-                  <span class="text-text-tertiary font-normal">({{ filteredRemoteModels.length }})</span>
-                </label>
-                <label
-                  v-for="m in filteredRemoteModels"
-                  :key="m"
-                  class="flex items-center gap-2 px-2 py-1.5 rounded-md text-xs cursor-pointer hover:bg-surface-2 transition-colors"
-                >
-                  <input type="checkbox" :value="m" v-model="selectedModels" class="rounded" />
-                  <span class="truncate">{{ m }}</span>
-                </label>
-                <div v-if="!filteredRemoteModels.length" class="text-xs text-text-tertiary px-2 py-1">无匹配模型</div>
+
+            <!-- 多米 API：固定只支持 gpt-image-2，不提供获取 / 手输入口 -->
+            <div v-if="form.type === 'duomi'" class="text-xs space-y-1">
+              <div class="flex items-center gap-2 px-3 py-2 bg-surface-1 rounded-lg border border-surface-3">
+                <span class="text-text-tertiary">固定支持模型：</span>
+                <span class="px-2 py-0.5 bg-primary-50 text-primary-700 rounded-md font-medium">gpt-image-2</span>
               </div>
+              <p class="text-text-tertiary leading-relaxed">多米 API 不提供 /v1/models 端点，且现阶段仅支持 gpt-image-2，无需手动配置。</p>
             </div>
-            <!-- Manual fallback -->
-            <div v-else class="mt-1">
-              <input v-model="modelsInput" placeholder="手动输入（逗号分隔）: gpt-4o, gpt-4o-mini" class="input-field" />
-            </div>
-            <!-- Selected models tags -->
-            <div v-if="selectedModels.length" class="flex flex-wrap gap-1.5 mt-2">
-              <span
-                v-for="m in selectedModels"
-                :key="m"
-                class="inline-flex items-center gap-1 px-2 py-0.5 bg-primary-50 text-primary-700 rounded-md text-xs"
-              >
-                {{ m }}
-                <button @click="selectedModels = selectedModels.filter(x => x !== m)" class="hover:text-primary-900">&times;</button>
-              </span>
-            </div>
+
+            <!-- 其他类型：原有获取 + 列表 + 手动输入 -->
+            <template v-else>
+              <div class="flex gap-2 mb-2">
+                <button
+                  type="button"
+                  @click="fetchModels"
+                  :disabled="fetchingModels || !form.api_base"
+                  class="btn-secondary text-xs flex items-center gap-1.5"
+                >
+                  <svg v-if="fetchingModels" class="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" class="opacity-25" /><path d="M4 12a8 8 0 018-8" stroke="currentColor" stroke-width="3" stroke-linecap="round" class="opacity-75" /></svg>
+                  <span>{{ fetchingModels ? '获取中...' : '从 API 获取模型' }}</span>
+                </button>
+                <span v-if="fetchError" class="text-xs text-red-500 self-center">{{ fetchError }}</span>
+              </div>
+              <!-- Search + Select -->
+              <div v-if="remoteModels.length" class="border border-surface-3 rounded-lg overflow-hidden">
+                <input
+                  v-model="modelSearch"
+                  placeholder="搜索模型..."
+                  class="w-full px-3 py-2 text-xs border-b border-surface-3 bg-surface-0 outline-none focus:bg-white"
+                />
+                <div class="max-h-40 overflow-y-auto p-2 space-y-0.5">
+                  <label v-if="filteredRemoteModels.length" class="flex items-center gap-2 px-2 py-1.5 rounded-md text-xs cursor-pointer hover:bg-surface-2 transition-colors font-medium border-b border-surface-3 mb-1 pb-1.5">
+                    <input type="checkbox" :checked="isAllFilteredSelected" @change="toggleSelectAll" class="rounded" />
+                    <span>全选</span>
+                    <span class="text-text-tertiary font-normal">({{ filteredRemoteModels.length }})</span>
+                  </label>
+                  <label
+                    v-for="m in filteredRemoteModels"
+                    :key="m"
+                    class="flex items-center gap-2 px-2 py-1.5 rounded-md text-xs cursor-pointer hover:bg-surface-2 transition-colors"
+                  >
+                    <input type="checkbox" :value="m" v-model="selectedModels" class="rounded" />
+                    <span class="truncate">{{ m }}</span>
+                  </label>
+                  <div v-if="!filteredRemoteModels.length" class="text-xs text-text-tertiary px-2 py-1">无匹配模型</div>
+                </div>
+              </div>
+              <!-- Manual fallback -->
+              <div v-else class="mt-1">
+                <input v-model="modelsInput" placeholder="手动输入（逗号分隔）: gpt-4o, gpt-4o-mini" class="input-field" />
+              </div>
+              <!-- Selected models tags -->
+              <div v-if="selectedModels.length" class="flex flex-wrap gap-1.5 mt-2">
+                <span
+                  v-for="m in selectedModels"
+                  :key="m"
+                  class="inline-flex items-center gap-1 px-2 py-0.5 bg-primary-50 text-primary-700 rounded-md text-xs"
+                >
+                  {{ m }}
+                  <button @click="selectedModels = selectedModels.filter(x => x !== m)" class="hover:text-primary-900">&times;</button>
+                </span>
+              </div>
+            </template>
           </div>
           <div class="flex gap-3 pt-2">
             <button @click="saveProvider" class="btn-primary">{{ editingId ? '更新' : '创建' }}</button>
@@ -99,9 +112,9 @@
             <div class="text-xs font-semibold text-text-primary mb-1">OpenAI</div>
             <p class="text-xs text-text-tertiary leading-relaxed">直接对接 OpenAI 官方 API，支持 GPT-4o、GPT-4o-mini 等模型，需使用官方 API Key。</p>
           </div>
-          <div :class="['p-3 rounded-xl border transition-colors', form.type === 'anthropic' ? 'border-primary-300 bg-primary-50/50' : 'border-surface-3 bg-surface-0']">
-            <div class="text-xs font-semibold text-text-primary mb-1">Anthropic</div>
-            <p class="text-xs text-text-tertiary leading-relaxed">对接 Anthropic Claude 系列模型，支持 Claude 3.5 Sonnet、Claude 3 Opus 等，需使用 Anthropic API Key。</p>
+          <div :class="['p-3 rounded-xl border transition-colors', form.type === 'duomi' ? 'border-primary-300 bg-primary-50/50' : 'border-surface-3 bg-surface-0']">
+            <div class="text-xs font-semibold text-text-primary mb-1">多米 API</div>
+            <p class="text-xs text-text-tertiary leading-relaxed">duomiapi.com 中转服务，仅支持图片生成（gpt-image-2 异步路径）。提交后内部轮询任务直至完成。不支持参考图（多米只接受图片 URL）与单次多图。</p>
           </div>
         </div>
       </div>
@@ -235,7 +248,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useModelStore, type ModelProvider } from '@/stores/models'
 import { normalizeApiBase } from '@shared/api-base-normalize'
 
@@ -248,6 +261,30 @@ const showForm = ref(false)
 const editingId = ref<string | null>(null)
 const modelsInput = ref('')
 const form = ref({ name: '', type: 'openai_compatible', api_base: '', api_key: '' })
+
+// 某些服务商类型有固定接入地址，选中后为空则自动填充；已填写过不覆盖。
+const PROVIDER_DEFAULT_API_BASE: Record<string, string> = {
+  duomi: 'https://duomiapi.com/v1'
+}
+// 某些服务商类型有固定模型清单，选中后强制锁定。
+const PROVIDER_FIXED_MODELS: Record<string, string[]> = {
+  duomi: ['gpt-image-2']
+}
+// 不用 immediate：handler 里会访问下面才声明的 selectedModels / remoteModels / fetchError（TDZ）；
+// editProvider 进入老 duomi provider 时 type 未变不会触发 watch，在 editProvider 内手动兼底。
+watch(() => form.value.type, (t) => {
+  const def = PROVIDER_DEFAULT_API_BASE[t]
+  if (def && !form.value.api_base.trim()) {
+    form.value.api_base = def
+  }
+  const fixed = PROVIDER_FIXED_MODELS[t]
+  if (fixed) {
+    selectedModels.value = [...fixed]
+    remoteModels.value = []
+    modelsInput.value = ''
+    fetchError.value = ''
+  }
+})
 
 const remoteModels = ref<string[]>([])
 const selectedModels = ref<string[]>([])
@@ -377,17 +414,30 @@ function resetForm() {
   fetchError.value = ''
 }
 
+const SUPPORTED_PROVIDER_TYPES = ['openai_compatible', 'openai', 'duomi']
+
 function editProvider(provider: ModelProvider) {
   editingId.value = provider.id
+  // 老数据（如历史 anthropic）type 不在白名单内时回落 openai_compatible，避免 select 显示空白
+  const safeType = SUPPORTED_PROVIDER_TYPES.includes(provider.type) ? provider.type : 'openai_compatible'
   form.value = {
     name: provider.name,
-    type: provider.type,
+    type: safeType,
     api_base: provider.api_base,
     api_key: provider.api_key
   }
-  modelsInput.value = provider.models.join(', ')
-  selectedModels.value = [...provider.models]
-  remoteModels.value = [...provider.models]
+  // duomi 等固定模型清单的类型：忽略 provider.models（可能是老数据不规范），强制锁定。
+  // type 未变 watch 不会触发，需要这里手动兼底。
+  const fixed = PROVIDER_FIXED_MODELS[safeType]
+  if (fixed) {
+    modelsInput.value = ''
+    selectedModels.value = [...fixed]
+    remoteModels.value = []
+  } else {
+    modelsInput.value = provider.models.join(', ')
+    selectedModels.value = [...provider.models]
+    remoteModels.value = [...provider.models]
+  }
   modelSearch.value = ''
   fetchError.value = ''
   showForm.value = true

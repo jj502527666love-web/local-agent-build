@@ -290,6 +290,12 @@ async function callImageAPI(
 
     const provider = getModelProvider(providerId)
     if (!provider) throw new Error(`Model provider not found: ${providerId}`)
+
+    // 多米 API：与 OpenAI 协议差异大（裸 token 鉴权 + 强制异步 + 轮询 /tasks/{id}），走专用函数
+    if (provider.type === 'duomi') {
+      return await callDuoMiImageAPI(provider, modelId, prompt, size, refImages, tierId, n)
+    }
+
     const apiBase = normalizeApiBase(provider.api_base)
     const apiKey = provider.api_key
 
@@ -488,6 +494,118 @@ async function callCloudImageAPI(
   }
 
   throw new Error('Image generation timed out')
+}
+
+/**
+ * 多米 API（duomiapi.com）图片生成。与 OpenAI 协议的差异点：
+ *   1. 鉴权头是裸 token（`Authorization: <key>`），不带 Bearer 前缀
+ *   2. 仅支持异步：POST /v1/images/generations?async=true 返回 { id }，再 GET /v1/tasks/{id} 轮询
+ *   3. size 同时接比例与像素；为让 UI 档位（1k/2k/4k）生效，这里走 resolvePixels 转成像素串后发出。
+ *   4. 不支持 n>1、不支持 base64 参考图（多米只接受参考图 URL）。
+ *
+ * 返回形态：[{ url }]，上层 generateImages 会调 downloadImageToFile 下载到本地。
+ */
+async function callDuoMiImageAPI(
+  provider: { api_base: string; api_key: string },
+  modelId: string,
+  prompt: string,
+  size: string,
+  refImages?: string[],
+  tierId?: string,
+  n: number = 1
+): Promise<ImageAPIResult[]> {
+  const apiBase = normalizeApiBase(provider.api_base)
+  const apiKey = provider.api_key
+
+  if (refImages && refImages.length > 0) {
+    throw new Error('多米 API 参考图需要公网 URL，桌面端只有 base64。请改为纯文生图，或通过云控端中转使用。')
+  }
+
+  if (n > 1) {
+    console.warn('[ImageGen] 多米 API 不支持单次 n>1，已强制 n=1（上层 batchCount 路径会多次调用）')
+    n = 1
+  }
+
+  // 把 UI 的 size 预设 / 比例 / 像素输入按模型能力域 + tierId 档位解析为像素串（多米 gpt-image-2 与云端同 capability）
+  const resolvedPx = resolvePixels(size, modelId, tierId)
+
+  const submitUrl = `${apiBase}/images/generations?async=true`
+  const submitBody = { model: modelId, prompt, size: resolvedPx }
+  const submitRes = await fetchWithTimeout(submitUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': apiKey
+    },
+    body: JSON.stringify(submitBody)
+  }, 60_000)
+
+  if (!submitRes.ok) {
+    const errorText = await submitRes.text()
+    throw new Error(`多米 API 提交失败 ${submitRes.status}: ${truncateError(errorText)}`)
+  }
+
+  const submitData = await submitRes.json()
+  const taskId: string | undefined = submitData?.id
+  if (!taskId) {
+    throw new Error(`多米 API 响应缺少 task id：${truncateError(JSON.stringify(submitData))}`)
+  }
+
+  // 轮询任务状态
+  console.log('[ImageGen] DuoMi task submitted:', taskId)
+  const maxWait = 300_000      // 5 分钟总等待（与云控端 gateway.timeouts.image 默认同档）
+  const pollInterval = 3_000   // 每 3s 轮询一次
+  const pollTimeout = 30_000   // 单次轮询请求 30s 超时
+  const start = Date.now()
+  let lastState: string | undefined
+
+  while (Date.now() - start < maxWait) {
+    await new Promise(r => setTimeout(r, pollInterval))
+
+    let statusRes: Response
+    try {
+      statusRes = await fetchWithTimeout(`${apiBase}/tasks/${taskId}`, {
+        method: 'GET',
+        headers: { 'Authorization': apiKey }
+      }, pollTimeout)
+    } catch (e: any) {
+      // 单次轮询异常（含超时）不立即结束，继续重试到 deadline
+      console.log('[ImageGen] DuoMi poll transient error:', e?.message || e)
+      continue
+    }
+
+    if (statusRes.status === 401) {
+      throw new Error('多米 API 鉴权失败（HTTP 401）：API Key 无效或已过期')
+    }
+    if (!statusRes.ok) {
+      // 中间态 4xx/5xx 不立即失败，多米偶发 502 是常见现象
+      continue
+    }
+
+    const statusData = await statusRes.json()
+    const state: string | undefined = statusData?.state
+    lastState = state
+
+    if (state === 'succeeded') {
+      const images = Array.isArray(statusData?.data?.images) ? statusData.data.images : []
+      const out: ImageAPIResult[] = []
+      for (const img of images) {
+        if (img?.url) out.push({ url: String(img.url) })
+      }
+      if (out.length === 0) {
+        throw new Error(`多米 API 任务声明成功但未返回图片 URL（task_id=${taskId}）`)
+      }
+      return out
+    }
+
+    if (state === 'failed' || state === 'error' || state === 'cancelled') {
+      const msg = statusData?.data?.description || statusData?.message || '任务执行失败'
+      throw new Error(`多米 API 任务失败（state=${state}, task_id=${taskId}）：${truncateError(String(msg))}`)
+    }
+    // pending / running / processing / queued / 未知 → 继续轮询
+  }
+
+  throw new Error(`多米 API 任务超时（>${maxWait / 1000}s 未完成，task_id=${taskId}，last_state=${lastState || 'unknown'}）`)
 }
 
 function saveImageToFile(sessionId: string, genId: string, b64Data: string): string {
