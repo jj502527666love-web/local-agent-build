@@ -242,7 +242,7 @@
 
             <button
               @click="runInpaint"
-              :disabled="inpainting || !inpaintPrompt.trim() || compareMode !== 'none'"
+              :disabled="inpainting"
               class="w-full px-2 py-2 text-xs bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {{ inpainting ? (inpaintProgress.message || '重绘中...') : '开始重绘' }}
@@ -452,7 +452,7 @@ const maskShapeOptions: Array<{ id: MaskShape; label: string }> = [
   { id: 'ellipse', label: '椭圆' }
 ]
 
-const promptTemplates: Array<{ id: string; label: string; placeholder: string; wrap: (p: string) => string }> = [
+const promptTemplates: Array<{ id: string; label: string; placeholder: string; allowEmpty?: boolean; wrap: (p: string) => string }> = [
   {
     id: 'replace',
     label: '替换',
@@ -463,6 +463,7 @@ const promptTemplates: Array<{ id: string; label: string; placeholder: string; w
     id: 'remove',
     label: '移除',
     placeholder: '可留空，或描述要填补的背景',
+    allowEmpty: true,
     wrap: (p) => p.trim()
       ? `Seamlessly remove the object in the masked region and fill with: ${p}. Match the surrounding texture, lighting, and style naturally.`
       : `Seamlessly remove the object in the masked region and fill it with the surrounding background content. Preserve lighting and style continuity.`
@@ -733,7 +734,7 @@ async function initCanvas(imagePath: string) {
   // Load base image
   await setBaseImage(dataUrl, canvasW, canvasH)
 
-  // O7：滚轮缩放（以鼠标位置为中心）；min 0.2x ~ max 5x，缩放同时刷新画笔圆圈光标尺寸
+  // O7：滚轮缩放（以画布中心为锚点）；min 0.2x ~ max 5x，缩放同时刷新画笔圆圈光标尺寸
   fabricCanvas.on('mouse:wheel', (opt: any) => {
     if (!fabricCanvas) return
     const delta = opt.e.deltaY
@@ -741,7 +742,9 @@ async function initCanvas(imagePath: string) {
     zoom *= 0.999 ** delta
     if (zoom > 5) zoom = 5
     if (zoom < 0.2) zoom = 0.2
-    fabricCanvas.zoomToPoint(new Point(opt.e.offsetX, opt.e.offsetY), zoom)
+    const cx = fabricCanvas.getWidth() / 2
+    const cy = fabricCanvas.getHeight() / 2
+    fabricCanvas.zoomToPoint(new Point(cx, cy), zoom)
     opt.e.preventDefault()
     opt.e.stopPropagation()
     refreshBrushCursor()
@@ -1820,9 +1823,28 @@ function onModelConfirm(payload: { providerId: string; modelId: string }) {
   showToast(`已设置：${modelStore.formatModelLabel(payload.providerId, payload.modelId)}`)
 }
 
+// 校验生图模型是否已配置；未配置时自动打开模型选择弹窗并提示，返回 false 阻断后续动作
+function ensureEditModelConfigured(): boolean {
+  const provider = editProviderId.value || generation.value?.model_provider_id
+  const model = editModelId.value || generation.value?.model_id
+  if (!provider || !model) {
+    showToast('请先选择生图模型')
+    modelDialogVisible.value = true
+    return false
+  }
+  return true
+}
+
 // ---- Main inpaint function ----
 async function runInpaint() {
-  if (!generation.value || !inpaintPrompt.value.trim()) return
+  if (!generation.value) return
+  if (!ensureEditModelConfigured()) return
+  // 模板允许留空时跳过提示词校验（如「移除」模板会自动用背景填补）
+  const allowEmpty = usePromptTemplate.value && currentTemplate().allowEmpty === true
+  if (!allowEmpty && !inpaintPrompt.value.trim()) {
+    showToast('请输入重绘提示词')
+    return
+  }
   if (compareMode.value !== 'none') {
     showToast('请先确认或取消当前对比')
     return
