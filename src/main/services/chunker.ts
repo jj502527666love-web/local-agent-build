@@ -112,24 +112,33 @@ export function chunkText(text: string, options?: ChunkOptions): Chunk[] {
   return chunks
 }
 
-export function chunkFile(filePath: string, options?: ChunkOptions): Chunk[] {
+export async function chunkFile(filePath: string, options?: ChunkOptions): Promise<Chunk[]> {
   const ext = filePath.split('.').pop()?.toLowerCase() || ''
 
   let text: string
-  switch (ext) {
-    case 'txt':
-    case 'md':
-    case 'csv':
-    case 'json':
-      text = readFileSync(filePath, 'utf-8')
-      break
-    default:
-      // For unsupported formats, try reading as text
-      try {
+  // 二进制办公文档（PDF/DOCX/DOC/XLS/XLSX）走专用解析器；其他扩展名 utf-8 直读。
+  // 之前 default 分支强行 utf-8 读 PDF 等会得到乱码再向量化，检索完全无意义。
+  const { isBinaryDocument, parseDocument } = await import('./document-parser')
+  if (isBinaryDocument(filePath)) {
+    const parsed = await parseDocument(filePath)
+    if (!parsed.ok) throw new Error(parsed.error || `文档解析失败: ${ext}`)
+    text = parsed.text
+  } else {
+    switch (ext) {
+      case 'txt':
+      case 'md':
+      case 'csv':
+      case 'json':
         text = readFileSync(filePath, 'utf-8')
-      } catch {
-        throw new Error(`Unsupported file format: ${ext}`)
-      }
+        break
+      default:
+        // 其他未知扩展名：尝试 utf-8 直读，失败则抛错
+        try {
+          text = readFileSync(filePath, 'utf-8')
+        } catch {
+          throw new Error(`Unsupported file format: ${ext}`)
+        }
+    }
   }
 
   return chunkText(text, options)

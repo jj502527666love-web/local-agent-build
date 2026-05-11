@@ -75,8 +75,28 @@
       </div>
     </aside>
     <main class="flex-1 overflow-hidden flex flex-col relative">
-      <header class="h-9 flex-shrink-0 flex items-center px-5 bg-surface-0" :class="[isWin ? 'pr-40 app-drag' : '']">
+      <header class="h-9 flex-shrink-0 flex items-center px-5 bg-surface-0 gap-3" :class="[isWin ? 'pr-40 app-drag' : '']">
         <h1 class="text-sm font-semibold text-text-primary">{{ pageTitle }}</h1>
+        <!-- 全局画布任务徽标：anyRunning 时显示，跨页面可见，让用户知道任务仍在后台执行 -->
+        <div
+          v-if="canvasAnyRunning && !isCanvasRoute"
+          class="ml-auto flex items-center gap-1 px-2 py-1 rounded-md bg-amber-50 border border-amber-200 text-amber-700 dark:bg-amber-900/20 dark:border-amber-700/40 dark:text-amber-300"
+        >
+          <span class="inline-block w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>
+          <button
+            type="button"
+            class="text-[11px] font-medium hover:underline"
+            @click="goToRunningCanvas"
+            :title="canvasRunningProjectId ? '回到正在运行的画布' : '画布有节点在生成'"
+          >画布生成中{{ canvasActiveCount > 0 ? ` (${canvasActiveCount})` : '' }}</button>
+          <button
+            v-if="canvasWorkflowRunning"
+            type="button"
+            class="text-[11px] px-1.5 py-0.5 rounded border border-amber-300 hover:bg-amber-100 dark:border-amber-700/60 dark:hover:bg-amber-900/30"
+            @click="onCancelCanvas"
+            title="停止画布工作流（已开始的节点会跑完）"
+          >停止</button>
+        </div>
       </header>
       <div class="absolute top-9 left-0 right-0 h-px bg-surface-3 z-10"></div>
       <div class="flex-1 overflow-hidden flex flex-col">
@@ -88,7 +108,8 @@
 
 <script setup lang="ts">
 import { computed, ref, watchEffect } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
+import { useWorkflowEngine } from '@/views/canvas/composables/useWorkflowEngine'
 import IconChat from '@/components/icons/IconChat.vue'
 import IconBot from '@/components/icons/IconBot.vue'
 import IconKnowledge from '@/components/icons/IconKnowledge.vue'
@@ -113,8 +134,39 @@ import { useCloudAuthStore } from '@/stores/cloud-auth'
 import { appName, appAbbr, appIconUrl } from '@/utils/branding'
 
 const route = useRoute()
+const router = useRouter()
 const cloudAuth = useCloudAuthStore()
 const pageTitle = computed(() => (route.meta?.title as string) || '')
+
+// 画布任务全局徽标：useWorkflowEngine 是 module-level singleton，
+// MainLayout 内 mount 时取到的就是任何位置（节点 / CanvasEditorView）共享的状态。
+const {
+  anyRunning: canvasAnyRunning,
+  workflowRunning: canvasWorkflowRunning,
+  activeSingleRuns: canvasActiveSingleRuns,
+  runningProjectId: canvasRunningProjectId,
+  cancelWorkflow: cancelCanvasWorkflow
+} = useWorkflowEngine()
+
+const canvasActiveCount = computed(() => {
+  // workflow 模式下统计所有节点过于复杂，简化为：workflow 模式不显示数字、单节点模式显示数量
+  if (canvasWorkflowRunning.value) return 0
+  return canvasActiveSingleRuns.value.size
+})
+
+const isCanvasRoute = computed(() => route.path.startsWith('/canvas'))
+
+function goToRunningCanvas() {
+  if (canvasRunningProjectId.value) {
+    router.push(`/canvas/${canvasRunningProjectId.value}`)
+  } else {
+    router.push('/canvas')
+  }
+}
+
+function onCancelCanvas() {
+  cancelCanvasWorkflow()
+}
 
 // 平台判断：Win 用自定义无边框 + titleBarOverlay（需 app-drag + 右侧 padding 让位控件按钮），
 // Mac/Linux 用原生标题栏（renderer 区域不被标题栏占据，无需 app-drag 与额外 padding）。

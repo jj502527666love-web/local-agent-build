@@ -10,7 +10,7 @@
     </div>
     <div class="node-body">
       <div v-if="imageSrc" class="mb-2">
-        <img :src="imageSrc" class="w-full rounded-lg border border-surface-3 cursor-pointer" @click="openInFolder" />
+        <img :src="imageSrc" class="w-full rounded-lg border border-surface-3 cursor-pointer" @click.stop="previewSrc = imageSrc" />
         <div class="flex gap-1 mt-1.5">
           <button @click="copyImage" class="flex-1 py-1 text-[10px] font-medium border border-surface-3 rounded-lg text-text-secondary hover:bg-surface-2 transition-colors">复制</button>
           <button @click="openInFolder" class="flex-1 py-1 text-[10px] font-medium border border-surface-3 rounded-lg text-text-secondary hover:bg-surface-2 transition-colors">定位</button>
@@ -23,16 +23,24 @@
     </div>
     <Handle type="target" :position="Position.Left" id="input" class="handle-image" />
   </div>
+  <ImageLightbox
+    :src="previewSrc"
+    :on-copy="copyImage"
+    :on-locate="openInFolder"
+    @close="previewSrc = null"
+  />
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { ref, computed } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
 import { useCanvasStore } from '@/stores/canvas'
+import ImageLightbox from '@/components/ImageLightbox.vue'
 
 const props = defineProps<{ data: Record<string, any> }>()
 const canvasStore = useCanvasStore()
 const api = () => (window as any).api
+const previewSrc = ref<string | null>(null)
 
 const imageSrc = computed(() => {
   if (props.data.result_path) {

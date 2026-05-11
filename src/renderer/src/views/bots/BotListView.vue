@@ -27,7 +27,7 @@
             <select v-if="selectedProviderModels.length" v-model="form.model_id" class="select-field">
               <option value="">-- 选择 --</option>
               <optgroup v-if="modelGroups.recommended.length" label="推荐（对话）">
-                <option v-for="m in modelGroups.recommended" :key="m" :value="m">{{ m }}</option>
+                <option v-for="m in modelGroups.recommended" :key="m" :value="m">{{ modelStore.optionLabel(form.model_provider_id, m) }}</option>
               </optgroup>
             </select>
             <input v-else v-model="form.model_id" placeholder="e.g. gpt-4o" class="input-field" />
@@ -136,7 +136,7 @@
               </div>
               <div class="min-w-0">
                 <div class="font-semibold text-sm text-text-primary truncate">{{ bot.name }}</div>
-                <div class="text-xs text-text-tertiary mt-0.5 truncate">{{ bot.model_id || '未配置模型' }}</div>
+                <div class="text-xs text-text-tertiary mt-0.5 truncate">{{ bot.model_id ? modelStore.formatModelLabel(bot.model_provider_id, bot.model_id) : '未配置模型' }}</div>
               </div>
             </div>
           </div>
@@ -162,6 +162,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useBotStore, type Bot } from '@/stores/bots'
 import { useModelStore } from '@/stores/models'
+import { stripModelId } from '@shared/model-id'
 import { usePersonaStore } from '@/stores/personas'
 import { useKnowledgeStore } from '@/stores/knowledge'
 import { useSkillStore } from '@/stores/skills'
@@ -226,11 +227,15 @@ function resetForm() {
 
 function editBot(bot: Bot) {
   editingId.value = bot.id
+  const inferredProviderId = bot.model_provider_id || (bot.model_id && modelStore.providers.some(p => p.isCloud && p.models.some(m => stripModelId(m) === bot.model_id)) ? 'cloud:default' : '')
+  // 云端 provider 的 select option 用复合 key 作为 :value，editBot 时把 DB 里的纯 model_id 升级为复合 key
+  // 让 select 能命中具体某家服务商的 option；其他 provider 直接用纯 model_id。
+  const isCloudProvider = inferredProviderId === 'cloud:default'
   form.value = {
     name: bot.name,
     description: bot.description,
-    model_provider_id: bot.model_provider_id || (bot.model_id && modelStore.providers.some(p => p.isCloud && p.models.includes(bot.model_id)) ? 'cloud:default' : ''),
-    model_id: bot.model_id,
+    model_provider_id: inferredProviderId,
+    model_id: isCloudProvider ? modelStore.upgradeToCompositeKey(bot.model_id) : bot.model_id,
     persona_id: bot.persona_id || '',
     kb_only: bot.kb_only || 0,
     kb_category_ids: [...bot.kb_category_ids],
@@ -248,6 +253,7 @@ async function saveBot() {
     const data = {
       ...form.value,
       model_provider_id: (form.value.model_provider_id && !isCloud) ? form.value.model_provider_id : null,
+      model_id: stripModelId(form.value.model_id),
       persona_id: form.value.persona_id || null
     }
     if (editingId.value) {

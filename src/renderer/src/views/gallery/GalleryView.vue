@@ -84,8 +84,25 @@
             <svg v-if="selectedIds.has(item.id)" class="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
           </div>
           <!-- Name overlay -->
-          <div class="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/50 to-transparent p-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+          <div class="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/50 to-transparent p-1.5 opacity-0 group-hover:opacity-100 transition-opacity pr-24">
             <p class="text-xs text-white truncate">{{ item.name }}</p>
+          </div>
+          <!-- 操作按钮组（非选择模式）：复制 / 编辑 / 作为参考图。
+               hover 时显示，覆盖在 name overlay 之上 -->
+          <div v-if="!selectMode" class="absolute bottom-1.5 right-1.5 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity z-10">
+            <button @click.stop="copyImage(item.file_path)" class="w-7 h-7 rounded-lg bg-black/50 hover:bg-black/70 text-white flex items-center justify-center transition-colors" title="复制图片">
+              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 0 1-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 0 1 1.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 0 0-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.375H9.375a1.125 1.125 0 0 1-1.125-1.125v-9.25m12 6.625v-1.875a3.375 3.375 0 0 0-3.375-3.375h-1.5a1.125 1.125 0 0 1-1.125-1.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H9.75" /></svg>
+            </button>
+            <button @click.stop="editImage(item)" class="w-7 h-7 rounded-lg bg-black/50 hover:bg-black/70 text-white flex items-center justify-center transition-colors" title="编辑">
+              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Z" /></svg>
+            </button>
+            <button @click.stop="useAsRefImage(item)" class="w-7 h-7 rounded-lg bg-black/50 hover:bg-black/70 text-white flex items-center justify-center transition-colors" title="作为参考图生图">
+              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.25 15.75l5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909m-18 3.75h16.5a1.5 1.5 0 0 0 1.5-1.5V6a1.5 1.5 0 0 0-1.5-1.5H3.75A1.5 1.5 0 0 0 2.25 6v12a1.5 1.5 0 0 0 1.5 1.5Zm10.5-11.25h.008v.008h-.008V8.25Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z" /></svg>
+            </button>
+          </div>
+          <!-- 操作反馈 toast -->
+          <div v-if="copyToast === item.id" class="absolute top-1.5 left-1/2 -translate-x-1/2 px-2 py-1 text-[10px] bg-black/70 text-white rounded-md pointer-events-none">
+            {{ copyToastMessage }}
           </div>
         </div>
       </div>
@@ -147,7 +164,8 @@
             <img
               :src="toLocalUrl(detailItem.file_path)"
               :alt="detailItem.name"
-              class="max-w-full max-h-full object-contain rounded"
+              class="max-w-full max-h-full object-contain rounded cursor-pointer"
+              @click="openLightbox(detailItem.file_path)"
             />
           </div>
           <div class="w-56 flex-shrink-0 border-l border-surface-3 p-4 space-y-3 text-xs overflow-y-auto">
@@ -251,12 +269,72 @@
         </div>
       </div>
     </div>
+
+    <!-- Lightbox: 详情 modal 上叠加一层可缩放全屏预览 -->
+    <ImageLightbox
+      :src="lightboxSrc"
+      :on-locate="lightboxLocate"
+      @close="closeLightbox"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { useGalleryStore, type GalleryCategory, type GalleryItem } from '@/stores/gallery'
+import ImageLightbox from '@/components/ImageLightbox.vue'
+
+const router = useRouter()
+const api = () => (window as any).api
+
+// 复制/参考图操作的轻量级 toast：记录当前操作的 item.id 用于卡片上提示
+const copyToast = ref<string | null>(null)
+const copyToastMessage = ref('')
+function showCardToast(itemId: string, msg: string, ms = 1500) {
+  copyToast.value = itemId
+  copyToastMessage.value = msg
+  setTimeout(() => {
+    if (copyToast.value === itemId) copyToast.value = null
+  }, ms)
+}
+
+// 复制图片到剪贴板
+async function copyImage(filePath: string) {
+  try {
+    const res = await api().clipboard.writeImage(filePath)
+    if (res?.success) showCardToast(filePath, '已复制')
+    else showCardToast(filePath, '复制失败')
+  } catch (e) {
+    console.error('Copy gallery image failed:', e)
+    showCardToast(filePath, '复制失败')
+  }
+}
+
+// 编辑：跳转到 ImageEditView 的 _local 模式（不依赖 image_generation 记录）
+function editImage(item: GalleryItem) {
+  router.push({ path: '/image-edit/_local', query: { path: item.file_path } })
+}
+
+// 作为参考图：读取图片为 base64 → 存 sessionStorage → 跳转到 AI 生图
+// 复用 ImageGenView 现有的 query.hasRefImages + sessionStorage 'imageGen:refImages' 入口
+async function useAsRefImage(item: GalleryItem) {
+  try {
+    const ext = (item.file_path.split('.').pop() || 'png').toLowerCase()
+    const mime = ext === 'jpg' || ext === 'jpeg' ? 'jpeg' : ext === 'webp' ? 'webp' : 'png'
+    const b64 = await api().chat.invoke('readFileBase64', item.file_path)
+    if (!b64) {
+      showCardToast(item.id, '读取失败')
+      return
+    }
+    const dataUri = `data:image/${mime};base64,${b64}`
+    sessionStorage.setItem('imageGen:refImages', JSON.stringify([dataUri]))
+    router.push({ path: '/image-gen', query: { hasRefImages: '1' } })
+  } catch (e) {
+    console.error('Use as ref image failed:', e)
+    showCardToast(item.id, '操作失败')
+  }
+}
 
 const store = useGalleryStore()
 
@@ -334,6 +412,20 @@ async function doSync() {
 
 // ────── Detail ──────
 const detailItem = ref<GalleryItem | null>(null)
+const lightboxSrc = ref<string | null>(null)
+const lightboxPath = ref<string>('')
+
+function openLightbox(filePath: string) {
+  lightboxPath.value = filePath
+  lightboxSrc.value = toLocalUrl(filePath)
+}
+function closeLightbox() {
+  lightboxSrc.value = null
+  lightboxPath.value = ''
+}
+function lightboxLocate() {
+  if (lightboxPath.value) openInFolder(lightboxPath.value)
+}
 
 const detailIndex = computed(() => {
   if (!detailItem.value) return -1

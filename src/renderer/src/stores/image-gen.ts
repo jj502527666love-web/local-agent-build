@@ -97,6 +97,8 @@ export const useImageGenStore = defineStore('imageGen', () => {
 
   /** 将任务加入队列，若当前无任务在跑则立即开始 */
   function enqueue(options: GenerateOptions) {
+    // modelId 可能是复合 key `{model_id}#@{provider_name}`：透传给主进程，
+    // 主进程在调云端 API 前内部 strip，DB 保留原始复合 key 用于后续展示位精确还原服务商。
     const label = options.prompt.slice(0, 30) + (options.prompt.length > 30 ? '...' : '')
     queue.value.push({ id: ++_queueIdSeq, options, label })
     _scheduleNext()

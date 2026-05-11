@@ -65,16 +65,38 @@
             </button>
           </div>
         </div>
-        <!-- Run workflow -->
+        <!-- 整理布局：dagre 拓扑分层；带 5 秒撤销窗口 -->
+        <template v-if="layoutUndoCountdown > 0">
+          <button
+            @click="undoAutoLayout"
+            class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-amber-300 rounded-lg text-amber-700 hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-colors"
+            :title="`撤销整理（${layoutUndoCountdown}s 内有效）`"
+          >
+            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 14L4 9l5-5M4 9h10.5a5.5 5.5 0 0 1 0 11H10" /></svg>
+            撤销整理 ({{ layoutUndoCountdown }}s)
+          </button>
+        </template>
         <button
-          @click="runWorkflow"
-          :disabled="anyRunning || canvasStore.nodes.length === 0"
-          class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-surface-3 rounded-lg hover:bg-surface-2 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-          :class="workflowRunning ? 'text-amber-600' : 'text-text-secondary'"
+          v-else
+          @click="onAutoLayout"
+          :disabled="anyRunning || canvasStore.nodes.length < 2"
+          class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-surface-3 rounded-lg text-text-secondary hover:bg-surface-2 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          title="一键整理布局：按工作流方向自动分层、对齐、去除堆叠"
         >
-          <svg v-if="workflowRunning" class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" /></svg>
+          整理布局
+        </button>
+        <!-- Run / Cancel workflow：运行中点击触发软取消（已开始的节点跑完，未开始的不发） -->
+        <button
+          @click="onRunOrCancel"
+          :disabled="!workflowRunning && (anyRunning || canvasStore.nodes.length === 0)"
+          class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border rounded-lg disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          :class="workflowRunning ? 'border-red-300 text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20' : 'border-surface-3 text-text-secondary hover:bg-surface-2'"
+          :title="workflowRunning ? '停止工作流（已开始的节点会继续完成）' : '执行工作流'"
+        >
+          <svg v-if="workflowRunning" class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5" /></svg>
           <svg v-else class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 0 1 0 1.972l-11.54 6.347a1.125 1.125 0 0 1-1.667-.986V5.653Z" /></svg>
-          {{ workflowRunning ? '执行中...' : '执行工作流' }}
+          {{ workflowRunning ? '停止' : '执行工作流' }}
         </button>
         <!-- Settings -->
         <button @click="openSettings" :disabled="workflowRunning" class="p-1.5 rounded-lg text-text-tertiary hover:text-text-primary hover:bg-surface-2 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" title="画布设置">
@@ -130,7 +152,34 @@
         @connect="onConnect"
         @viewport-change="onViewportChange"
         @node-drag-stop="onNodeDragStop"
+        @node-drag="onNodeDrag"
       >
+        <!-- 右下角全局缩略预览：可拖拽小地图直接平移视口；节点用类型色着色便于辨识。
+             暗色模式下 mask-color 需要适配（在 :style 里用主题色），避免遮罩太亮 -->
+        <MiniMap
+          position="bottom-right"
+          pannable
+          zoomable
+          :node-color="getMinimapNodeColor"
+          :node-stroke-color="getMinimapNodeStroke"
+          :node-stroke-width="2"
+          :node-border-radius="3"
+          mask-color="rgba(120, 130, 145, 0.18)"
+          class="canvas-minimap"
+        />
+        <!-- 拖动节点时顶边对齐参考线（仅水平线；参考节点的 position_y 边） -->
+        <div
+          v-if="alignGuide.visible"
+          class="absolute pointer-events-none"
+          :style="{
+            left: '0',
+            right: '0',
+            top: alignGuide.screenY + 'px',
+            height: '0',
+            borderTop: '1px dashed #6366f1',
+            zIndex: 50
+          }"
+        ></div>
       </VueFlow>
     </div>
 
@@ -155,7 +204,7 @@
             <select v-model="settingsForm.text_model_id" class="select-field">
               <option value="">-- 请选择 --</option>
               <optgroup v-if="settingsTextGroups.recommended.length" label="推荐（对话）">
-                <option v-for="m in settingsTextGroups.recommended" :key="m" :value="m">{{ m }}</option>
+                <option v-for="m in settingsTextGroups.recommended" :key="m" :value="m">{{ modelStore.optionLabel(settingsForm.text_provider_id, m) }}</option>
               </optgroup>
             </select>
           </div>
@@ -171,7 +220,7 @@
             <select v-model="settingsForm.image_model_id" class="select-field">
               <option value="">-- 请选择 --</option>
               <optgroup v-if="settingsImageGroups.recommended.length" label="推荐（生图）">
-                <option v-for="m in settingsImageGroups.recommended" :key="m" :value="m">{{ m }}</option>
+                <option v-for="m in settingsImageGroups.recommended" :key="m" :value="m">{{ modelStore.optionLabel(settingsForm.image_provider_id, m) }}</option>
               </optgroup>
             </select>
           </div>
@@ -220,16 +269,21 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, nextTick, markRaw, provide, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute, useRouter, onBeforeRouteLeave } from 'vue-router'
 import { VueFlow, useVueFlow, ConnectionMode, type Node as FlowNode, type Edge, type Connection } from '@vue-flow/core'
+import { MiniMap } from '@vue-flow/minimap'
 import '@vue-flow/core/dist/style.css'
 import '@vue-flow/core/dist/theme-default.css'
+import '@vue-flow/minimap/dist/style.css'
 import { useCanvasStore } from '@/stores/canvas'
 import { useModelStore } from '@/stores/models'
+import { stripModelId } from '@shared/model-id'
 import { useHandoffStore } from '@/stores/handoff'
 import { groupAndSort } from '@/utils/model-caps'
 import { warmHintsCache, getHintsSync } from '@/utils/model-usage-hints'
 import { NODE_TYPE_DEFS, getHandleType, getNodeTypeDef, type NodeTypeDef } from './composables/useNodeTypes'
+import { useAutoLayout } from './composables/useAutoLayout'
+import type { LayoutSnapshot } from './composables/useAutoLayout'
 import { useWorkflowEngine } from './composables/useWorkflowEngine'
 
 import TextInputNode from './nodes/TextInputNode.vue'
@@ -332,12 +386,16 @@ const settingsImageGroups = computed(() => {
 function openSettings() {
   const proj = canvasStore.currentProject
   if (!proj) return
+  // 云端 provider 的 select option 用复合 key 作 :value，DB 里存的是纯 model_id，
+  // openSettings 时把纯 model_id 升级为复合 key 让 select 能命中具体某家服务商的 option。
+  const isCloudText = proj.text_provider_id === 'cloud:default'
+  const isCloudImage = proj.image_provider_id === 'cloud:default'
   settingsForm.value = {
     title: proj.title,
     text_provider_id: proj.text_provider_id || '',
-    text_model_id: proj.text_model_id || '',
+    text_model_id: isCloudText ? modelStore.upgradeToCompositeKey(proj.text_model_id || '') : (proj.text_model_id || ''),
     image_provider_id: proj.image_provider_id || '',
-    image_model_id: proj.image_model_id || '',
+    image_model_id: isCloudImage ? modelStore.upgradeToCompositeKey(proj.image_model_id || '') : (proj.image_model_id || ''),
     concurrency: proj.concurrency || 1
   }
   showSettings.value = true
@@ -361,15 +419,15 @@ async function saveSettings() {
   await canvasStore.updateProject(projectId.value, {
     title: settingsForm.value.title.trim() || canvasStore.currentProject?.title,
     text_provider_id: settingsForm.value.text_provider_id,
-    text_model_id: settingsForm.value.text_model_id,
+    text_model_id: stripModelId(settingsForm.value.text_model_id),
     image_provider_id: settingsForm.value.image_provider_id,
-    image_model_id: settingsForm.value.image_model_id,
+    image_model_id: stripModelId(settingsForm.value.image_model_id),
     concurrency
   })
   showSettings.value = false
 }
 
-const { zoomIn: vfZoomIn, zoomOut: vfZoomOut, fitView: vfFitView, getViewport } = useVueFlow()
+const { zoomIn: vfZoomIn, zoomOut: vfZoomOut, fitView: vfFitView, getViewport, getNode: vfGetNode } = useVueFlow()
 
 const currentZoom = ref(1)
 const zoomPercent = computed(() => Math.round(currentZoom.value * 100))
@@ -455,7 +513,9 @@ const flowEdges = computed<Edge[]>(() =>
 const {
   workflowRunning,
   anyRunning,
-  runWorkflow: executeWorkflow
+  runWorkflow: executeWorkflow,
+  cancelWorkflow,
+  refImageWarnings
 } = useWorkflowEngine()
 
 // === Handle click-to-create menu ===
@@ -770,6 +830,7 @@ async function onConnect(connection: Connection) {
 }
 
 function onNodeDragStop(event: any) {
+  alignGuide.value.visible = false  // 清除对齐参考线
   const draggedNodes = Array.isArray(event) ? event : [event]
   const updates: { id: string; position_x: number; position_y: number }[] = []
   for (const item of draggedNodes) {
@@ -786,6 +847,123 @@ function onNodeDragStop(event: any) {
   if (updates.length > 0) {
     canvasStore.updateNodePositions(updates)
   }
+}
+
+// === #1 节点顶边对齐吸附（拖动期间实时） ===
+// 拖动节点时扫描其他节点的 position_y，差值 < 阈值则吸附到该 y，并在画布上显示一条
+// 水平虚线提示用户。仅对齐 top 边（DB 没存真实 height，无法可靠对齐 bottom/center）。
+// 与 snap-grid=[16,16] 共存：grid 是默认行为，对齐吸附覆盖时手动改 node.position.y。
+const ALIGN_SNAP_THRESHOLD = 8 // 屏幕世界坐标差，超过则不吸附
+const alignGuide = ref<{ visible: boolean; screenY: number }>({ visible: false, screenY: 0 })
+
+function onNodeDrag(event: any) {
+  const item = Array.isArray(event) ? event[0] : event
+  const node = item?.node || item
+  if (!node?.id || !node.position) return
+
+  const draggedY = node.position.y
+  let snapY: number | null = null
+  let bestDiff = Infinity
+  for (const peer of canvasStore.nodes) {
+    if (peer.id === node.id) continue
+    const diff = Math.abs(peer.position_y - draggedY)
+    if (diff < ALIGN_SNAP_THRESHOLD && diff < bestDiff) {
+      bestDiff = diff
+      snapY = peer.position_y
+    }
+  }
+
+  if (snapY !== null) {
+    // 吸附：直接覆盖 vue-flow 节点的 position.y。VueFlow 内部 reactivity
+    // 会让节点立即移动到该位置；onNodeDragStop 时 node.position.y 已经是吸附值。
+    node.position.y = snapY
+    // 屏幕坐标 = 世界坐标 * zoom + viewport offset，用于参考线 absolute 定位
+    const vp = getViewport()
+    alignGuide.value = { visible: true, screenY: snapY * vp.zoom + vp.y }
+  } else {
+    if (alignGuide.value.visible) alignGuide.value.visible = false
+  }
+}
+
+// === #3 MiniMap 节点颜色映射 ===
+// 复用 useNodeTypes 中每种节点类型的主题色：填充用淡色（25% 不透明），
+// 描边保留纯色作为类型区分，避免小地图色块过于浓重抢眼。
+function getMinimapNodeColor(node: FlowNode): string {
+  const def = getNodeTypeDef(node.type as string)
+  // 6 位 hex + '40' 后缀 = 约 25% 不透明度（SVG fill 支持 #RRGGBBAA）
+  return def?.color ? def.color + '40' : '#cbd5e140'
+}
+function getMinimapNodeStroke(node: FlowNode): string {
+  const def = getNodeTypeDef(node.type as string)
+  return def?.color || '#94a3b8'
+}
+
+// === #2 一键整理布局（dagre 拓扑分层）+ 5 秒撤销窗口 ===
+const { computeLayout, applySnapshot } = useAutoLayout()
+const layoutUndoCountdown = ref(0)
+let _layoutSnapshot: LayoutSnapshot | null = null
+let _layoutCountdownTimer: ReturnType<typeof setInterval> | null = null
+
+function _clearLayoutCountdown() {
+  if (_layoutCountdownTimer) {
+    clearInterval(_layoutCountdownTimer)
+    _layoutCountdownTimer = null
+  }
+  layoutUndoCountdown.value = 0
+  _layoutSnapshot = null
+}
+
+async function onAutoLayout() {
+  if (!projectId.value || anyRunning.value) return
+  if (canvasStore.nodes.length < 2) {
+    showToast('画布节点不足，无需整理', 'success', 2000)
+    return
+  }
+  // 整理前清掉一次旧的撤销窗口（如果用户连续点）
+  _clearLayoutCountdown()
+
+  // 用 VueFlow 运行时实测尺寸喂给 dagre，DB 的 height=0 对孤儿节点不可靠
+  const { newPositions, snapshot } = computeLayout(projectId.value, {
+    rankdir: 'LR',
+    nodesep: 60,
+    ranksep: 120,
+    getNodeDimensions: (id) => {
+      // VueFlow 1.48 的 getNode 是 ComputedRef<fn>，需要 .value 解包再调用
+      const fn = (vfGetNode as any)?.value || vfGetNode
+      const n = typeof fn === 'function' ? fn(id) : undefined
+      return n?.dimensions ? { width: n.dimensions.width, height: n.dimensions.height } : undefined
+    }
+  })
+
+  if (newPositions.length === 0) return
+
+  await canvasStore.updateNodePositions(newPositions)
+  _layoutSnapshot = snapshot
+  vueFlowKey.value++  // 触发重新挂载以应用新坐标（VueFlow 内部 nodes prop 变化即可，但 key 更稳）
+
+  // 自动 fitView 让用户看到整理结果
+  await nextTick()
+  vfFitView({ padding: 0.2, duration: 300 })
+
+  // 启动撤销倒计时（5 秒）
+  layoutUndoCountdown.value = 5
+  _layoutCountdownTimer = setInterval(() => {
+    layoutUndoCountdown.value--
+    if (layoutUndoCountdown.value <= 0) _clearLayoutCountdown()
+  }, 1000)
+
+  showToast('已整理布局，5 秒内可撤销', 'success', 2500)
+}
+
+async function undoAutoLayout() {
+  if (!_layoutSnapshot) return
+  const snap = _layoutSnapshot
+  _clearLayoutCountdown()
+  await applySnapshot(snap)
+  vueFlowKey.value++
+  await nextTick()
+  vfFitView({ padding: 0.2, duration: 300 })
+  showToast('已撤销布局整理', 'success', 1500)
 }
 
 // Add node
@@ -837,11 +1015,28 @@ function goBack() {
   router.push('/canvas')
 }
 
-async function runWorkflow() {
+async function onRunOrCancel() {
+  // 运行中点同一按钮触发软取消：未开始的节点不发送，已开始的让其完成
+  if (workflowRunning.value) {
+    if (cancelWorkflow()) {
+      showToast('已请求停止，已开始的节点会继续完成', 'success', 2500)
+    }
+    return
+  }
   if (!projectId.value) return
   const result = await executeWorkflow(projectId.value)
   if (result) {
     showToast(result.message, result.ok ? 'success' : 'error', result.ok ? 3000 : 5000)
+  }
+  // 参考图读取失败聚合提示：执行完成后若有静默跳过的参考图，给出明确警告
+  if (refImageWarnings.value.length > 0) {
+    const totalFailed = refImageWarnings.value.reduce((s, w) => s + w.failed, 0)
+    const nodeCount = refImageWarnings.value.length
+    showToast(
+      `${nodeCount} 个节点共 ${totalFailed} 张参考图读取失败已被跳过，结果可能与预期不同`,
+      'error',
+      5000
+    )
   }
 }
 
@@ -907,6 +1102,18 @@ onMounted(async () => {
 onUnmounted(() => {
   document.removeEventListener('click', onClickOutside)
   document.removeEventListener('keydown', onKeyDown)
+  // 清理整理布局的撤销倒计时定时器，避免组件卸载后 setInterval 仍在跑
+  _clearLayoutCountdown()
+})
+
+// 离开画布时若工作流仍在跑：不阻止跳转（任务本就在后台继续），仅 toast 告知用户
+// 任务仍然存活、可在顶栏徽标看到并停止。useWorkflowEngine 是 module-level singleton，
+// 路由切换不影响其内部 async loop。
+onBeforeRouteLeave(() => {
+  if (workflowRunning.value) {
+    showToast('画布任务在后台继续运行，可在顶栏徽标查看或停止', 'success', 3500)
+  }
+  return true
 })
 </script>
 

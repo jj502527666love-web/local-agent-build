@@ -41,7 +41,7 @@
         已使用 {{ data.ref_image_count }} 张参考图
       </div>
       <div v-if="data.result_path" class="mb-2">
-        <img :src="getImageSrc(data.result_path)" class="w-full rounded-lg border border-surface-3" @click="previewImage" />
+        <img :src="getImageSrc(data.result_path)" class="w-full rounded-lg border border-surface-3 cursor-pointer" @click.stop="previewImage" />
       </div>
       <button
         @click="runGenerate"
@@ -61,6 +61,11 @@
       @click="(e: MouseEvent) => onHandleClick?.(e, data.nodeId, 'output', 'image')"
     />
   </div>
+  <ImageLightbox
+    :src="previewSrc"
+    :on-locate="openInFolder"
+    @close="previewSrc = null"
+  />
 </template>
 
 <script setup lang="ts">
@@ -70,6 +75,7 @@ import { useCanvasStore } from '@/stores/canvas'
 import { useWorkflowEngine } from '../composables/useWorkflowEngine'
 import ImageSizePicker from '@/components/ImageSizePicker.vue'
 import ResolutionTierPicker from '@/components/ResolutionTierPicker.vue'
+import ImageLightbox from '@/components/ImageLightbox.vue'
 import { DEFAULT_TIER_ID } from '@shared/image-size'
 
 type HandleClickHandler = (e: MouseEvent, nodeId: string, handleId: string, dataType: 'text' | 'image') => void
@@ -82,6 +88,7 @@ const onHandleClick = inject<HandleClickHandler | null>('onHandleClick', null)
 
 const size = ref(props.data.size || '1:1')
 const tier = ref<string>(props.data.tier_id || DEFAULT_TIER_ID)
+const previewSrc = ref<string | null>(null)
 
 // v-model driven: persist whenever the user picks a preset or confirms a custom value.
 watch([size, tier], () => saveData())
@@ -105,7 +112,12 @@ function getImageSrc(path: string): string {
 }
 
 function previewImage() {
-  // Could open in a modal, for now just open externally
+  if (props.data.result_path) {
+    previewSrc.value = getImageSrc(props.data.result_path)
+  }
+}
+
+function openInFolder() {
   if (props.data.result_path) {
     api().shell.showItemInFolder(props.data.result_path)
   }

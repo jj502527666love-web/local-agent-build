@@ -10,6 +10,7 @@ import { BrowserWindow } from 'electron'
 import { recordUsage } from './usage-stats'
 import { resolveSizeToPixels, getMaxConsistencyN } from '@shared/image-size'
 import { stripBase64 } from '@shared/strip-image-metadata'
+import { stripModelId } from '@shared/model-id'
 import { normalizeApiBase } from './api-base-normalize'
 import { addToCreation, removeByRelativePath } from './gallery'
 
@@ -18,26 +19,39 @@ import { addToCreation, removeByRelativePath } from './gallery'
 // 防止多入口同时打到上游服务商触发 429 / 账号风控。
 // 6 是经验值：常见服务商单账号 RPM 限制 30~60，单请求 5~30s，6 并发约 1~3 RPS。
 const MAX_CONCURRENT_API_CALLS = 6
+const ACQUIRE_SLOT_TIMEOUT_MS = 600_000 // 10 分钟兜底：避免某次任务异常未 release 时后续永远等
 let _activeApiCalls = 0
-const _apiWaitQueue: Array<() => void> = []
+const _apiWaitQueue: Array<{ resolve: () => void; reject: (e: Error) => void; timer: NodeJS.Timeout }> = []
 
 async function acquireApiSlot(): Promise<void> {
   if (_activeApiCalls < MAX_CONCURRENT_API_CALLS) {
     _activeApiCalls++
     return
   }
-  return new Promise<void>((resolve) => {
-    _apiWaitQueue.push(() => {
-      _activeApiCalls++
-      resolve()
-    })
+  return new Promise<void>((resolve, reject) => {
+    const entry: { resolve: () => void; reject: (e: Error) => void; timer: NodeJS.Timeout } = {
+      resolve: () => {
+        clearTimeout(entry.timer)
+        _activeApiCalls++
+        resolve()
+      },
+      reject,
+      timer: setTimeout(() => {
+        // 等待超时：从队列摘除自身，抛错让调用方失败而非永久阻塞
+        const idx = _apiWaitQueue.indexOf(entry)
+        if (idx >= 0) _apiWaitQueue.splice(idx, 1)
+        reject(new Error(`生图并发等待超时（>${ACQUIRE_SLOT_TIMEOUT_MS / 1000}s），可能存在未释放的并发槽位，请稍后重试`))
+      }, ACQUIRE_SLOT_TIMEOUT_MS)
+    }
+    _apiWaitQueue.push(entry)
   })
 }
 
 function releaseApiSlot(): void {
-  _activeApiCalls--
+  // 防御性下界：极端情况下避免计数变负
+  _activeApiCalls = Math.max(0, _activeApiCalls - 1)
   const next = _apiWaitQueue.shift()
-  if (next) next()
+  if (next) next.resolve()
 }
 
 // ---- fetch with timeout (Bug #4) ----
@@ -60,10 +74,103 @@ async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: nu
   }
 }
 
+/**
+ * 读取错误响应体并提取人类可读 message：先按 JSON 解析 `{error:{message}}` / `{error}` / `{message}`，
+ * 失败回退 text。HTML/超长内容由 truncateError 兜底。避免向上抛 `Unexpected token <` 这种解析错误。
+ */
+async function readResponseError(res: Response): Promise<string> {
+  let raw = ''
+  try {
+    raw = await res.text()
+  } catch {
+    return `HTTP ${res.status}`
+  }
+  if (!raw) return `HTTP ${res.status}`
+  try {
+    const j = JSON.parse(raw)
+    const inner =
+      (j && typeof j === 'object' && j.error && typeof j.error === 'object' && j.error.message) ||
+      (j && typeof j === 'object' && typeof j.error === 'string' ? j.error : undefined) ||
+      (j && typeof j === 'object' && typeof j.message === 'string' ? j.message : undefined)
+    if (inner) return truncateError(String(inner))
+  } catch {}
+  return truncateError(raw)
+}
+
 /** 错误信息截断（Bug #9）：上游可能返回几 MB HTML，避免污染 DB / IPC / UI */
 function truncateError(text: string, max = 500): string {
   if (!text) return ''
   return text.length <= max ? text : text.slice(0, max) + `... (truncated, total ${text.length} chars)`
+}
+
+/** HTTP 状态码是否值得退避重试：429（限流）+ 5xx（服务端临时故障） */
+function isRetriableStatus(status: number): boolean {
+  return status === 429 || (status >= 500 && status <= 599)
+}
+
+/** 网络层错误（fetchWithTimeout 抛出的非 HTTP 错误）是否值得重试：超时、连接重置、DNS 抖动等 */
+function isRetriableNetworkError(e: any): boolean {
+  const msg: string = String(e?.message || e || '')
+  if (msg.startsWith('请求超时')) return true
+  if (/ETIMEDOUT|ECONNRESET|EAI_AGAIN|UND_ERR_CONNECT_TIMEOUT|UND_ERR_HEADERS_TIMEOUT|UND_ERR_BODY_TIMEOUT|UND_ERR_SOCKET|socket hang up|fetch failed/i.test(msg)) return true
+  return false
+}
+
+/**
+ * 带退避重试的 fetch。对 429 / 5xx HTTP 响应与网络层临时错误自动重试。
+ * 4xx（除 429）一次失败即抛错，避免无效重试浪费配额。
+ *
+ * 重试间隔：1.5s → 4s → 8s（指数退避，含轻微抖动）。
+ * 最终失败时若是 HTTP 响应，抛出 `${prefix} ${status}: ${message}` 风格错误。
+ */
+async function fetchWithRetry(
+  url: string,
+  options: RequestInit,
+  timeoutMs: number,
+  opts: { retries?: number; errorPrefix?: string } = {}
+): Promise<Response> {
+  const retries = Math.max(0, opts.retries ?? 2)
+  const errorPrefix = opts.errorPrefix || 'API'
+  let lastErr: any
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const res = await fetchWithTimeout(url, options, timeoutMs)
+      if (res.ok) return res
+      // HTTP 错误：可重试码退避，不可重试码立即抛
+      if (isRetriableStatus(res.status) && attempt < retries) {
+        const body = await readResponseError(res).catch(() => `HTTP ${res.status}`)
+        console.warn(`[ImageGen] ${errorPrefix} ${res.status} (attempt ${attempt + 1}/${retries + 1}), retrying:`, body)
+        const delay = 1500 * Math.pow(2, attempt) + Math.floor(Math.random() * 500)
+        await new Promise(r => setTimeout(r, delay))
+        continue
+      }
+      // 不可重试 4xx 或最后一次重试失败：抛出真实错误
+      const message = await readResponseError(res)
+      throw new Error(`${errorPrefix} ${res.status}: ${message}`)
+    } catch (e: any) {
+      lastErr = e
+      // 业务层 throw 出来的（已经带 errorPrefix 的）直接终止
+      if (typeof e?.message === 'string' && e.message.startsWith(`${errorPrefix} `)) throw e
+      if (isRetriableNetworkError(e) && attempt < retries) {
+        console.warn(`[ImageGen] ${errorPrefix} network error (attempt ${attempt + 1}/${retries + 1}):`, e?.message || e)
+        const delay = 1500 * Math.pow(2, attempt) + Math.floor(Math.random() * 500)
+        await new Promise(r => setTimeout(r, delay))
+        continue
+      }
+      throw e
+    }
+  }
+  throw lastErr || new Error(`${errorPrefix} retry exhausted`)
+}
+
+/** 按分辨率档位返回单次生图超时上限：4K + 高质量场景偏紧时给更宽松窗口 */
+function getImageApiTimeout(tierId?: string): number {
+  switch (tierId) {
+    case '4k': return 300_000  // 5 分钟
+    case '2k': return 240_000  // 4 分钟
+    case '1k': return 150_000  // 2.5 分钟
+    default:   return 180_000  // 默认 3 分钟（向后兼容）
+  }
 }
 
 // ---- Disk file cleanup (Bug #5) ----
@@ -204,6 +311,29 @@ export function countFailedGenerations(): number {
   return row?.total || 0
 }
 
+/**
+ * 应用启动时清理上一次会话残留的 pending / generating 任务（Bug #8）。
+ * 应用崩溃 / 主进程被杀 / 强制退出会让 generateImages 的 finally 没机会跑，
+ * DB 留下"永久生成中"的僵尸记录，UI 一直转圈。
+ *
+ * 策略：标记为 'error' + 错误信息说明上次异常关闭。保留 result_url 字段（如已写入）。
+ */
+export function cleanupStaleGenerations(): number {
+  try {
+    const db = getDatabase()
+    const result = db.prepare(
+      "UPDATE image_generations SET status = 'error', error = ? WHERE status IN ('pending','generating')"
+    ).run('应用上次异常关闭，任务未完成')
+    if (result.changes > 0) {
+      console.log(`[ImageGen] Cleaned up ${result.changes} stale pending/generating records on startup`)
+    }
+    return result.changes
+  } catch (e) {
+    console.error('[ImageGen] Failed to cleanup stale generations:', e)
+    return 0
+  }
+}
+
 export function clearFailedGenerations(): { deleted: number } {
   const db = getDatabase()
   // Bug #5: 清理磁盘上残留的失败图片（罕见但保险）
@@ -267,9 +397,6 @@ function toRelativePath(absolutePath: string): string {
 
 type ImageAPIResult = { b64_json?: string; url?: string; revised_prompt?: string }
 
-/** 单次生图 API 调用的超时上限（毫秒）：覆盖最慢的 4K + 高质量场景 */
-const IMAGE_API_TIMEOUT_MS = 180_000
-
 async function callImageAPI(
   providerId: string,
   modelId: string,
@@ -281,6 +408,9 @@ async function callImageAPI(
   tierId?: string,
   n: number = 1
 ): Promise<ImageAPIResult[]> {
+  // 渲染端 cloud:default 下的 modelId 可能是复合 key `{model_id}#@{provider_name}`，
+  // 上游真实 API 不识别，函数入口统一 strip 为纯 model_id（本地 provider 的 modelId 不含分隔符，无副作用）。
+  modelId = stripModelId(modelId)
   // Bug #3: 全局 semaphore — 所有入口共享上限
   await acquireApiSlot()
   try {
@@ -359,16 +489,19 @@ async function callImageAPI(
       fetchOptions = { method: 'POST', headers, body: JSON.stringify(body) }
     }
 
-    // Bug #4: 加超时
-    const response = await fetchWithTimeout(url, fetchOptions, IMAGE_API_TIMEOUT_MS)
+    // 动态 timeout（按 tierId）+ 5xx/429 自动退避重试
+    const response = await fetchWithRetry(url, fetchOptions, getImageApiTimeout(tierId), {
+      retries: 2,
+      errorPrefix: 'Image API error'
+    })
 
-    if (!response.ok) {
-      const errorText = await response.text()
-      // Bug #9: 截断超长错误响应
-      throw new Error(`Image API error ${response.status}: ${truncateError(errorText)}`)
+    // 响应体也可能是非法 JSON（如某些代理返回 HTML 200）— 安全解析
+    let data: any
+    try {
+      data = await response.json()
+    } catch (e: any) {
+      throw new Error(`Image API 响应解析失败：${truncateError(String(e?.message || e))}`)
     }
-
-    const data = await response.json()
 
     if (data.usage) {
       try {
@@ -440,19 +573,19 @@ async function callCloudImageAPI(
     body.mask = stripBase64(maskRaw, 'png')
   }
 
-  // Step 1: Submit task (Bug #4: 60s 提交超时)
-  const submitRes = await fetchWithTimeout(`${gatewayUrl}${endpoint}`, {
+  // Step 1: Submit task — 60s 超时 + 5xx/429 退避重试
+  const submitRes = await fetchWithRetry(`${gatewayUrl}${endpoint}`, {
     method: 'POST',
     headers,
     body: JSON.stringify(body)
-  }, 60_000)
+  }, 60_000, { retries: 2, errorPrefix: 'Image API error' })
 
-  if (!submitRes.ok) {
-    const errorText = await submitRes.text()
-    throw new Error(`Image API error ${submitRes.status}: ${truncateError(errorText)}`)
+  let submitData: any
+  try {
+    submitData = await submitRes.json()
+  } catch (e: any) {
+    throw new Error(`云端生图响应解析失败：${truncateError(String(e?.message || e))}`)
   }
-
-  const submitData = await submitRes.json()
   const taskId = submitData.task_id
   if (!taskId) {
     // Direct response (no async)
@@ -461,26 +594,53 @@ async function callCloudImageAPI(
     return items.map((item: any) => ({ b64_json: item.b64_json, url: item.url, revised_prompt: item.revised_prompt }))
   }
 
-  // Step 2: Poll for result
+  // Step 2: Poll for result —
+  // 单次轮询失败/超时不立即终止：在 maxWait deadline 内软重试，避免一次抖动毁掉已成功的任务。
+  // 仅 401/403/404 等永久错误立即抛；429/5xx/网络错误继续轮询。
   console.log('[ImageGen] Cloud task submitted:', taskId)
   const maxWait = 300_000 // 5 minutes 总等待
   const pollInterval = 3_000
-  const pollTimeout = 30_000 // Bug #4: 单次 status 请求 30s 超时
+  const pollTimeout = 30_000 // 单次 status 请求 30s
   const start = Date.now()
+  let lastTransientError: string | undefined
 
   while (Date.now() - start < maxWait) {
     await new Promise(r => setTimeout(r, pollInterval))
 
-    const statusRes = await fetchWithTimeout(`${gatewayUrl}/images/status/${taskId}`, {
-      method: 'GET',
-      headers: { 'Authorization': `Bearer ${token}` }
-    }, pollTimeout)
-
-    if (!statusRes.ok) {
-      throw new Error(`Image API error ${statusRes.status}: ${truncateError(await statusRes.text())}`)
+    let statusRes: Response
+    try {
+      statusRes = await fetchWithTimeout(`${gatewayUrl}/images/status/${taskId}`, {
+        method: 'GET',
+        headers: { 'Authorization': `Bearer ${token}` }
+      }, pollTimeout)
+    } catch (e: any) {
+      // 网络层错误（含超时）→ 继续轮询到 deadline
+      lastTransientError = String(e?.message || e)
+      console.log('[ImageGen] Cloud poll transient network error:', lastTransientError)
+      continue
     }
 
-    const statusData = await statusRes.json()
+    if (statusRes.status === 401 || statusRes.status === 403) {
+      throw new Error(`Image API error ${statusRes.status}: ${await readResponseError(statusRes)}`)
+    }
+    if (statusRes.status === 404) {
+      throw new Error(`Image API error 404: 任务不存在或已过期 (task_id=${taskId})`)
+    }
+    if (!statusRes.ok) {
+      // 429/5xx 等中间态：继续轮询，记下最后一次错误用于超时时回带
+      lastTransientError = await readResponseError(statusRes).catch(() => `HTTP ${statusRes.status}`)
+      console.log('[ImageGen] Cloud poll transient HTTP error:', statusRes.status, lastTransientError)
+      continue
+    }
+
+    let statusData: any
+    try {
+      statusData = await statusRes.json()
+    } catch {
+      // 解析失败按瞬态处理
+      lastTransientError = '响应解析失败'
+      continue
+    }
 
     if (statusData.status === 'completed') {
       const items = (statusData.result?.data || statusData.data) as any[]
@@ -493,7 +653,7 @@ async function callCloudImageAPI(
     }
   }
 
-  throw new Error('Image generation timed out')
+  throw new Error(`Image generation timed out (>${maxWait / 1000}s, task_id=${taskId}${lastTransientError ? ', last_error=' + lastTransientError : ''})`)
 }
 
 /**
@@ -531,21 +691,21 @@ async function callDuoMiImageAPI(
 
   const submitUrl = `${apiBase}/images/generations?async=true`
   const submitBody = { model: modelId, prompt, size: resolvedPx }
-  const submitRes = await fetchWithTimeout(submitUrl, {
+  const submitRes = await fetchWithRetry(submitUrl, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'Authorization': apiKey
     },
     body: JSON.stringify(submitBody)
-  }, 60_000)
+  }, 60_000, { retries: 2, errorPrefix: '多米 API 提交失败' })
 
-  if (!submitRes.ok) {
-    const errorText = await submitRes.text()
-    throw new Error(`多米 API 提交失败 ${submitRes.status}: ${truncateError(errorText)}`)
+  let submitData: any
+  try {
+    submitData = await submitRes.json()
+  } catch (e: any) {
+    throw new Error(`多米 API 响应解析失败：${truncateError(String(e?.message || e))}`)
   }
-
-  const submitData = await submitRes.json()
   const taskId: string | undefined = submitData?.id
   if (!taskId) {
     throw new Error(`多米 API 响应缺少 task id：${truncateError(JSON.stringify(submitData))}`)
@@ -558,6 +718,10 @@ async function callDuoMiImageAPI(
   const pollTimeout = 30_000   // 单次轮询请求 30s 超时
   const start = Date.now()
   let lastState: string | undefined
+  let lastTransientError: string | undefined
+  let consecutiveTransientFailures = 0
+  // 连续 N 次瞬态失败（5xx / 网络 / 解析）后早退，避免上游持续不可用时让用户白等 5 分钟
+  const MAX_CONSECUTIVE_TRANSIENT = 12  // 12 * 3s ≈ 36s 持续失败
 
   while (Date.now() - start < maxWait) {
     await new Promise(r => setTimeout(r, pollInterval))
@@ -569,20 +733,44 @@ async function callDuoMiImageAPI(
         headers: { 'Authorization': apiKey }
       }, pollTimeout)
     } catch (e: any) {
-      // 单次轮询异常（含超时）不立即结束，继续重试到 deadline
-      console.log('[ImageGen] DuoMi poll transient error:', e?.message || e)
+      // 单次轮询异常（含超时）不立即结束，继续重试到 deadline 或连续失败上限
+      lastTransientError = String(e?.message || e)
+      consecutiveTransientFailures++
+      console.log('[ImageGen] DuoMi poll transient error:', lastTransientError)
+      if (consecutiveTransientFailures >= MAX_CONSECUTIVE_TRANSIENT) {
+        throw new Error(`多米 API 持续不可用（连续 ${consecutiveTransientFailures} 次轮询失败，task_id=${taskId}）：${lastTransientError}`)
+      }
       continue
     }
 
-    if (statusRes.status === 401) {
-      throw new Error('多米 API 鉴权失败（HTTP 401）：API Key 无效或已过期')
+    if (statusRes.status === 401 || statusRes.status === 403) {
+      throw new Error(`多米 API 鉴权失败（HTTP ${statusRes.status}）：API Key 无效或已过期`)
+    }
+    if (statusRes.status === 404) {
+      throw new Error(`多米 API 任务不存在或已过期 (task_id=${taskId})`)
     }
     if (!statusRes.ok) {
-      // 中间态 4xx/5xx 不立即失败，多米偶发 502 是常见现象
+      // 中间态 429/5xx：累计连续失败计数，早退避免白等
+      lastTransientError = await readResponseError(statusRes).catch(() => `HTTP ${statusRes.status}`)
+      consecutiveTransientFailures++
+      if (consecutiveTransientFailures >= MAX_CONSECUTIVE_TRANSIENT) {
+        throw new Error(`多米 API 持续不可用（连续 ${consecutiveTransientFailures} 次 ${statusRes.status}，task_id=${taskId}）：${lastTransientError}`)
+      }
       continue
     }
 
-    const statusData = await statusRes.json()
+    let statusData: any
+    try {
+      statusData = await statusRes.json()
+    } catch {
+      lastTransientError = '响应解析失败'
+      consecutiveTransientFailures++
+      if (consecutiveTransientFailures >= MAX_CONSECUTIVE_TRANSIENT) {
+        throw new Error(`多米 API 响应持续异常（连续 ${consecutiveTransientFailures} 次解析失败，task_id=${taskId}）`)
+      }
+      continue
+    }
+    consecutiveTransientFailures = 0  // 拿到合法响应即重置
     const state: string | undefined = statusData?.state
     lastState = state
 
@@ -684,6 +872,39 @@ function insertGeneration(data: {
   return getGeneration(data.id)!
 }
 
+/**
+ * 保存生图结果到本地：base64 直接落盘，URL 模式先把 URL 写库再下载，
+ * 下载失败时确保 DB 里 result_url 不丢（用户可手动救）并抛错让外层标 'error'。
+ * 返回 { result_path, result_url } 仅在成功路径下使用。
+ */
+async function saveOrDownloadResult(
+  sessionId: string,
+  genId: string,
+  apiResult: ImageAPIResult
+): Promise<{ result_path: string; result_url: string }> {
+  let resultPath = ''
+  let resultUrl = ''
+  if (apiResult.b64_json) {
+    resultPath = saveImageToFile(sessionId, genId, apiResult.b64_json)
+  } else if (apiResult.url) {
+    resultUrl = apiResult.url
+    // 先持久化 URL，避免 download 失败时 catch 里没机会回填
+    try {
+      const db = getDatabase()
+      db.prepare('UPDATE image_generations SET result_url = ? WHERE id = ?').run(resultUrl, genId)
+    } catch (e) {
+      console.error('[ImageGen] Failed to persist result_url before download:', e)
+    }
+    try {
+      resultPath = await downloadImageToFile(sessionId, genId, apiResult.url)
+    } catch (e: any) {
+      const detail = truncateError(String(e?.message || e))
+      throw new Error(`图片下载失败：${detail}（已保留原 URL，可手动复制访问）`)
+    }
+  }
+  return { result_path: resultPath, result_url: resultUrl }
+}
+
 function updateGenerationStatus(id: string, status: string, updates: Partial<{ result_path: string; result_url: string; revised_prompt: string; error: string }>): void {
   const db = getDatabase()
   const sets: string[] = ['status = ?']
@@ -771,57 +992,55 @@ export async function generateImages(
         batchCount
       )
 
-      // Save each result to its corresponding genId
+      // Save each result to its corresponding genId.
+      // 每张独立 try/catch：单张下载失败仅影响该张（标 error），不连累其他成功结果。
       for (let i = 0; i < batchCount; i++) {
         const genId = genIds[i]
         const apiResult = apiResults[i]
         if (!apiResult) {
-          updateGenerationStatus(genId, 'error', { error: 'No image data for index ' + i })
+          const errMsg = `服务商未返回第 ${i + 1} 张图片（n=${batchCount}）`
+          updateGenerationStatus(genId, 'error', { error: errMsg })
           if (window) {
             window.webContents.send('imageGen:progress', {
               type: 'error', index: i, total: batchCount, completed: i + 1,
-              genId, error: 'No image data for index ' + i, sessionId
+              genId, error: errMsg, sessionId
             })
           }
           continue
         }
 
-        let resultPath = ''
-        let resultUrl = ''
-        if (apiResult.b64_json) {
-          resultPath = saveImageToFile(sessionId, genId, apiResult.b64_json)
-        } else if (apiResult.url) {
-          resultUrl = apiResult.url
-          try {
-            resultPath = await downloadImageToFile(sessionId, genId, apiResult.url)
-          } catch (e) {
-            console.error('Failed to download image, keeping URL only:', e)
-          }
-        }
-
-        updateGenerationStatus(genId, 'done', {
-          result_path: resultPath,
-          result_url: resultUrl,
-          revised_prompt: apiResult.revised_prompt || ''
-        })
-
-        if (resultPath) {
-          try { addToCreation(resultPath) } catch (e) { console.error('Failed to add to gallery creation:', e) }
-        }
-
-        const gen = getGeneration(genId)!
-        results.push(gen)
-
-        if (window) {
-          window.webContents.send('imageGen:progress', {
-            type: 'completed',
-            index: i,
-            total: batchCount,
-            completed: i + 1,
-            genId,
-            generation: gen,
-            sessionId
+        try {
+          const { result_path, result_url } = await saveOrDownloadResult(sessionId, genId, apiResult)
+          updateGenerationStatus(genId, 'done', {
+            result_path,
+            result_url,
+            revised_prompt: apiResult.revised_prompt || ''
           })
+          if (result_path) {
+            try { addToCreation(result_path) } catch (e) { console.error('Failed to add to gallery creation:', e) }
+          }
+          const gen = getGeneration(genId)!
+          results.push(gen)
+          if (window) {
+            window.webContents.send('imageGen:progress', {
+              type: 'completed',
+              index: i,
+              total: batchCount,
+              completed: i + 1,
+              genId,
+              generation: gen,
+              sessionId
+            })
+          }
+        } catch (e: any) {
+          const errMsg = e?.message || '保存生图结果失败'
+          updateGenerationStatus(genId, 'error', { error: errMsg })
+          if (window) {
+            window.webContents.send('imageGen:progress', {
+              type: 'error', index: i, total: batchCount, completed: i + 1,
+              genId, error: errMsg, sessionId
+            })
+          }
         }
       }
     } catch (e: any) {
@@ -876,29 +1095,20 @@ export async function generateImages(
           1
         )
         const apiResult = apiResults[0]
-        if (!apiResult) throw new Error('No image data in response')
+        if (!apiResult) throw new Error('服务商未返回图片数据')
 
-        let resultPath = ''
-        let resultUrl = ''
-        if (apiResult.b64_json) {
-          resultPath = saveImageToFile(sessionId, genId, apiResult.b64_json)
-        } else if (apiResult.url) {
-          resultUrl = apiResult.url
-          try {
-            resultPath = await downloadImageToFile(sessionId, genId, apiResult.url)
-          } catch (e) {
-            console.error('Failed to download image, keeping URL only:', e)
-          }
-        }
+        // 下载失败时 saveOrDownloadResult 抛错，进 worker 外层 catch 标 'error'；
+        // result_url 已在 helper 内提前写库，便于用户手动救援。
+        const { result_path, result_url } = await saveOrDownloadResult(sessionId, genId, apiResult)
 
         updateGenerationStatus(genId, 'done', {
-          result_path: resultPath,
-          result_url: resultUrl,
+          result_path,
+          result_url,
           revised_prompt: apiResult.revised_prompt || ''
         })
 
-        if (resultPath) {
-          try { addToCreation(resultPath) } catch (e) { console.error('Failed to add to gallery creation:', e) }
+        if (result_path) {
+          try { addToCreation(result_path) } catch (e) { console.error('Failed to add to gallery creation:', e) }
         }
 
         const gen = getGeneration(genId)!
@@ -968,6 +1178,57 @@ export function getAbsolutePath(relPath: string): string {
   const isAbsolute = /^[A-Za-z]:|^\//.test(relPath)
   if (isAbsolute) return relPath
   return join(getDataDir(), relPath)
+}
+
+/**
+ * 本地图库编辑保存：从本地图库点编辑后保存，创建独立的新 image_generation 记录，
+ * 不会修改原图、不会自动加入图库（B 方案：避免本地图库出现"两张相同"的视觉问题）。
+ *
+ * 与 saveEditedImage 的区别：
+ *  - saveEditedImage 用于"我的创作"页内编辑：覆盖该 generation 的 result_path
+ *  - saveLocalEdited 用于本地图库编辑：新建独立 generation，仅出现在"我的创作"页面
+ */
+export function saveLocalEdited(sourcePath: string, base64Data: string): ImageGeneration {
+  const sessionId = getOrCreateDefaultSession()
+  const id = uuid()
+
+  // 解析 base64 + 写盘
+  let ext = 'png'
+  let rawBase64 = base64Data
+  if (base64Data.startsWith('data:')) {
+    const match = base64Data.match(/^data:image\/(\w+);base64,/)
+    if (match) {
+      ext = match[1] === 'jpeg' ? 'jpg' : match[1]
+      rawBase64 = base64Data.slice(match[0].length)
+    }
+  }
+  const dir = getImageDir(sessionId)
+  const filename = `${id}.${ext}`
+  const filePath = join(dir, filename)
+  writeFileSync(filePath, Buffer.from(rawBase64, 'base64'))
+  const relPath = toRelativePath(filePath)
+
+  // 从源文件名提取标识，方便用户在「我的创作」识别来源
+  const sourceName = sourcePath.split(/[\\/]/).pop() || ''
+  const prompt = sourceName ? `本地编辑：${sourceName}` : '本地编辑'
+
+  return insertGeneration({
+    id,
+    session_id: sessionId,
+    prompt,
+    revised_prompt: '',
+    ref_images: [],
+    model_provider_id: '',
+    model_id: '',
+    size: '1:1',
+    quality: 'auto',
+    result_path: relPath,
+    result_url: '',
+    status: 'done',
+    error: ''
+  })
+  // 注意：不调 addToCreation！本地图库的图片已经在 gallery_items 表里，
+  // 如果这里再加一次，"我的创作"分类会出现两张视觉上几乎相同的图。
 }
 
 export function saveEditedImage(id: string, base64Data: string): ImageGeneration | null {

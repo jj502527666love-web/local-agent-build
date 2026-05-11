@@ -68,9 +68,15 @@
       </button>
     </div>
 
-    <!-- Hint：当前值对应像素 -->
-    <div v-if="showHint && modelValue" class="mt-1 text-[10px] text-text-tertiary">
-      输出 {{ pixelHint }}
+    <!-- Hint：形状预览 + 当前值对应像素，同一行避免增加纵向占位 -->
+    <div v-if="showHint && modelValue" class="mt-1 text-[10px] text-text-tertiary flex items-center gap-1.5">
+      <span
+        v-if="shapeStyle"
+        class="inline-block border border-current rounded-sm flex-shrink-0"
+        :style="shapeStyle"
+        :title="`形状预览 ${pixelHint}`"
+      ></span>
+      <span>输出 {{ pixelHint }}</span>
     </div>
 
     <!-- Popover：Teleport 到 body，避免 Canvas 节点裁剪；仅阴影，无遮罩 -->
@@ -258,6 +264,20 @@ const selectTitle = computed(() => {
 })
 
 const pixelHint = computed(() => resolveSizeToPixels(props.modelValue, resolveOpts.value) || '—')
+
+/** 形状预览样式：最长边固定 22px，短边按比例缩放，最小 6px 兜底（21:9/9:21 仍可辨） */
+const shapeStyle = computed<Record<string, string> | null>(() => {
+  const px = pixelHint.value
+  if (!px || px === '—') return null
+  const [w, h] = px.split('x').map(Number)
+  if (!w || !h) return null
+  const MAX = 22
+  const MIN = 6
+  const longest = Math.max(w, h)
+  const W = Math.max(MIN, Math.round((MAX * w) / longest))
+  const H = Math.max(MIN, Math.round((MAX * h) / longest))
+  return { width: `${W}px`, height: `${H}px` }
+})
 
 // ============ 按钮样式 ============
 const accentBorderClass = computed(() => {

@@ -7,7 +7,7 @@
           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.5 19.5 3 12m0 0 7.5-7.5M3 12h18" /></svg>
         </button>
         <span class="text-sm font-medium text-text-primary">图片编辑</span>
-        <span v-if="generation" class="text-[11px] text-text-tertiary">{{ generation.model_id }} / {{ generation.size }}</span>
+        <span v-if="generation" class="text-[11px] text-text-tertiary">{{ modelStore.formatModelLabel(generation.model_provider_id, generation.model_id) }} / {{ generation.size }}</span>
       </div>
       <div class="flex items-center gap-1.5">
         <button @click="undo" :disabled="!canUndo" class="p-1.5 rounded-lg text-text-tertiary hover:text-text-primary hover:bg-surface-2 transition-colors disabled:opacity-40 disabled:cursor-not-allowed" title="撤销 (Ctrl+Z)">
@@ -335,9 +335,11 @@ import { Canvas, FabricImage, Rect, Ellipse, IText, PencilBrush, filters, Path, 
 import type { FabricObject, TPointerEvent, Transform } from 'fabric'
 import { recordUsage } from '@/utils/model-usage-hints'
 import { useSiteConfigStore } from '@/stores/site-config'
+import { useModelStore } from '@/stores/models'
 
 const route = useRoute()
 const router = useRouter()
+const modelStore = useModelStore()
 const siteConfig = useSiteConfigStore()
 const api = () => (window as any).api
 
@@ -485,15 +487,46 @@ onMounted(async () => {
   if (!id) { router.back(); return }
 
   try {
-    const gen = await api().imageGen.invoke('getGeneration', id)
-    if (!gen || !gen.result_path) {
-      showToast('图片数据不存在')
-      router.back()
-      return
-    }
-    generation.value = gen
+    let absPath: string
 
-    const absPath = await api().imageGen.invoke('getAbsolutePath', gen.result_path)
+    if (id === '_local') {
+      // 本地图库编辑模式：从 query.path 加载文件，不查 image_generations 表。
+      // generation.value 用 mock 对象，id='_local' 作 sentinel；保存时走 saveLocalEdited
+      // 创建独立的新 image_generation 记录（不入图库 gallery_items，避免重复显示）。
+      const localPath = route.query.path as string
+      if (!localPath) {
+        showToast('未指定图片路径')
+        router.back()
+        return
+      }
+      generation.value = {
+        id: '_local',
+        session_id: '',
+        prompt: '',
+        revised_prompt: '',
+        ref_images: [],
+        model_provider_id: '',
+        model_id: '',
+        size: '1:1',
+        quality: 'auto',
+        result_path: localPath,
+        result_url: '',
+        status: 'done',
+        error: '',
+        created_at: new Date().toISOString()
+      } as any
+      absPath = await api().imageGen.invoke('getAbsolutePath', localPath)
+    } else {
+      const gen = await api().imageGen.invoke('getGeneration', id)
+      if (!gen || !gen.result_path) {
+        showToast('图片数据不存在')
+        router.back()
+        return
+      }
+      generation.value = gen
+      absPath = await api().imageGen.invoke('getAbsolutePath', gen.result_path)
+    }
+
     await nextTick()
     await new Promise<void>(r => requestAnimationFrame(() => requestAnimationFrame(() => r())))
     await initCanvas(absPath)
@@ -1858,8 +1891,20 @@ async function saveImage() {
   try {
     const dataUrl = await getCanvasDataUrl()
     if (!dataUrl) throw new Error('Failed to export canvas')
-    await api().imageGen.invoke('saveEditedImage', generation.value.id, dataUrl)
-    showToast('已保存')
+    if (generation.value.id === '_local') {
+      // 本地图库编辑模式：创建独立的新 image_generation 记录
+      // sourcePath 仅作元数据保留，方便用户追溯；不会覆盖原图，也不会自动加入图库
+      const newGen = await api().imageGen.invoke('saveLocalEdited', generation.value.result_path, dataUrl)
+      showToast('已保存到「我的创作」')
+      // 把当前页指向新生成的记录，让后续 inpaint/saveAsNew/reset 都基于新记录运行
+      if (newGen?.id) {
+        generation.value = newGen
+        router.replace({ path: `/image-edit/${newGen.id}` })
+      }
+    } else {
+      await api().imageGen.invoke('saveEditedImage', generation.value.id, dataUrl)
+      showToast('已保存')
+    }
   } catch (e: any) {
     showToast('保存失败: ' + (e.message || ''))
   } finally {

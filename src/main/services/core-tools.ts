@@ -295,6 +295,40 @@ export async function executeCoreToolCall(
   kbContext?: KbToolContext
 ): Promise<{ handled: boolean; result?: any }> {
   if (functionName === 'file_ops') {
+    // 二进制办公文档（PDF/DOCX/DOC/XLS/XLSX）拦截：sandbox 内的 readFileSync(p, 'utf-8')
+    // 会把它们读成乱码，让 agent 完全无法理解。这里走主进程统一解析器返回纯文本。
+    // 仅对 'read' action 拦截；'read_json' 是 JSON 文本无需特殊处理。
+    if (args && args.action === 'read' && typeof args.path === 'string') {
+      const { isBinaryDocument, parseDocument } = await import('./document-parser')
+      if (isBinaryDocument(args.path)) {
+        try {
+          const absPath = sandboxDir ? resolveInWorkspace(args.path, sandboxDir) : args.path
+          const parsed = await parseDocument(absPath)
+          if (parsed.ok) {
+            const payload = {
+              content: parsed.text,
+              path: args.path,
+              parser: parsed.parser,
+              size: parsed.size,
+              ...(parsed.truncated ? { truncated: true } : {})
+            }
+            return { handled: true, result: withWorkspace(payload, sandboxDir) }
+          }
+          return {
+            handled: true,
+            result: withWorkspace(
+              { error: parsed.error || '文档解析失败', parser: parsed.parser, path: args.path },
+              sandboxDir
+            )
+          }
+        } catch (e: any) {
+          return {
+            handled: true,
+            result: withWorkspace({ error: `文档解析异常：${e?.message || e}`, path: args.path }, sandboxDir)
+          }
+        }
+      }
+    }
     backupBeforeWrite(args, sandboxDir)
     const result = await executeSkillSandbox(FILE_OPS_IMPL, args, sandboxDir)
     const payload = result.success ? result.result : { error: result.error }

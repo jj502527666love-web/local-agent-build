@@ -54,7 +54,7 @@
           <select v-model="selectedModelId" class="w-full px-3 py-2 text-xs bg-surface-1 border border-surface-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500" :disabled="!selectedProviderModels.length">
             <option value="">-- 选择模型 --</option>
             <optgroup v-if="selectedModelGroups.recommended.length" label="推荐（生图）">
-              <option v-for="m in selectedModelGroups.recommended" :key="m" :value="m">{{ m }}</option>
+              <option v-for="m in selectedModelGroups.recommended" :key="m" :value="m">{{ modelStore.optionLabel(selectedProviderId, m) }}</option>
             </optgroup>
           </select>
           <input v-if="selectedProviderId && !selectedProviderModels.length" v-model="selectedModelId" placeholder="输入模型名称" class="w-full mt-2 px-3 py-2 text-xs bg-surface-1 border border-surface-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500" />
@@ -70,7 +70,7 @@
           <select v-model="optimizeModelId" class="w-full px-3 py-2 text-xs bg-surface-1 border border-surface-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500" :disabled="!optimizeProviderModels.length">
             <option value="">-- 选择模型 --</option>
             <optgroup v-if="optimizeModelGroups.recommended.length" label="推荐（对话）">
-              <option v-for="m in optimizeModelGroups.recommended" :key="m" :value="m">{{ m }}</option>
+              <option v-for="m in optimizeModelGroups.recommended" :key="m" :value="m">{{ modelStore.optionLabel(optimizeProviderId, m) }}</option>
             </optgroup>
           </select>
           <input v-if="optimizeProviderId && !optimizeProviderModels.length" v-model="optimizeModelId" placeholder="输入模型名称" class="w-full mt-2 px-3 py-2 text-xs bg-surface-1 border border-surface-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500" />
@@ -82,7 +82,7 @@
           <ImageSizePicker
             v-model="defaultSize"
             :columns="6"
-            :model-id="selectedModelId"
+            :model-id="pureSelectedModelId"
             :tier-id="defaultTier"
             show-hint
           />
@@ -93,7 +93,7 @@
           <label class="text-xs font-medium text-text-secondary mb-1.5 block">默认分辨率</label>
           <ResolutionTierPicker
             v-model="defaultTier"
-            :model-id="selectedModelId"
+            :model-id="pureSelectedModelId"
           />
         </div>
 
@@ -208,7 +208,7 @@
 
               <!-- Result thumbnail -->
               <div v-if="task.status === 'done' && task.resultPath" class="w-20 h-20 rounded-lg overflow-hidden flex-shrink-0 bg-surface-2 relative group/result">
-                <img :src="localFileUrl(task.resultPath!)" class="w-full h-full object-cover cursor-pointer" @click="previewImage = localFileUrl(task.resultPath!)" />
+                <img :src="localFileUrl(task.resultPath!)" class="w-full h-full object-cover cursor-pointer" @click="openPreview(task.resultPath!)" />
                 <div class="absolute inset-0 flex items-center justify-center gap-1 opacity-0 group-hover/result:opacity-100 transition-opacity bg-black/30">
                   <button @click.stop="copyImage(task.resultPath!)" class="w-7 h-7 rounded-lg bg-black/50 hover:bg-black/70 text-white flex items-center justify-center" title="复制图片">
                     <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.666 3.888A2.25 2.25 0 0 0 13.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 0 1-.75.75H9.75a.75.75 0 0 1-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 0 1-2.25 2.25H6.75A2.25 2.25 0 0 1 4.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 0 1 1.927-.184" /></svg>
@@ -238,7 +238,7 @@
                     layout="select"
                     allow-inherit
                     :inherit-label="`默认 (${defaultSize})`"
-                    :model-id="selectedModelId"
+                    :model-id="pureSelectedModelId"
                     :tier-id="defaultTier"
                   />
                 </div>
@@ -297,11 +297,11 @@
     <div v-if="copyToast" class="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-lg bg-surface-0 shadow-lg border border-surface-3 text-xs text-text-primary">{{ copyToast }}</div>
 
     <!-- Image Preview Overlay -->
-    <div v-if="previewImage" class="fixed inset-0 z-50 flex items-center justify-center" @click="previewImage = null">
-      <div class="max-w-[90vw] max-h-[90vh] rounded-2xl overflow-hidden shadow-[0_0_40px_rgba(0,0,0,0.15)]" @click.stop>
-        <img :src="previewImage" class="max-w-full max-h-[90vh] object-contain" />
-      </div>
-    </div>
+    <ImageLightbox
+      :src="previewImage"
+      :on-copy="copyPreviewImage"
+      @close="closePreview"
+    />
 
     <!-- Error detail dialog -->
     <ErrorDetailDialog
@@ -332,6 +332,7 @@ import { useImageGenStore } from '@/stores/image-gen'
 import { useBatchGenFormStore } from '@/stores/batch-gen-form'
 import type { BatchTask as BatchGenTask } from '@/stores/batch-gen-form'
 import { useModelStore } from '@/stores/models'
+import { stripModelId } from '@shared/model-id'
 import { usePromptPresetStore } from '@/stores/prompt-presets'
 import { useHandoffStore } from '@/stores/handoff'
 import { groupAndSort } from '@/utils/model-caps'
@@ -343,6 +344,7 @@ import { stripImageMetadata } from '@shared/strip-image-metadata'
 import ErrorDetailDialog from '@/components/ErrorDetailDialog.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import GalleryPicker from '@/components/GalleryPicker.vue'
+import ImageLightbox from '@/components/ImageLightbox.vue'
 import { translateError } from '@/utils/error-message'
 
 // BatchTask 类型已提到 stores/batch-gen-form.ts，下面作为本地别名使用
@@ -369,6 +371,10 @@ const {
   tasks,
   taskIdCounter,
 } = storeToRefs(formStore)
+
+// selectedModelId 可能是复合 key `gpt-image-2#@多米`，Picker 内部按纯关键字匹配，必须 strip
+// 后才能正确识别型号专属参数（如 gpt-image-2 的 size/tier 选项）。
+const pureSelectedModelId = computed(() => stripModelId(selectedModelId.value))
 
 // 错误详情弹窗：仅存原文，友好翻译由 ErrorDetailDialog 内部派生
 const errorDialog = ref<{ visible: boolean; rawError: string }>({
@@ -404,6 +410,7 @@ const promptPresets = computed(() => presetStore.visibleGrouped('image_gen'))
 const optimizing = ref(false)
 const showPresetPopup = ref(false)
 const previewImage = ref<string | null>(null)
+const previewPath = ref<string>('')
 
 function localFileUrl(path: string): string {
   const isAbsolute = /^[A-Za-z]:|^\//.test(path)
@@ -572,7 +579,7 @@ async function optimizeDefaultPrompt(lang: 'cn' | 'en') {
       { role: 'system', content: systemPrompt },
       { role: 'user', content: defaultPrompt.value }
     ]
-    const result = await (window as any).api.llm.invoke('call', optimizeProviderId.value, optimizeModelId.value, messages)
+    const result = await (window as any).api.llm.invoke('call', optimizeProviderId.value, stripModelId(optimizeModelId.value), messages)
     if (result) defaultPrompt.value = result
     await recordUsage('chat', optimizeProviderId.value, optimizeModelId.value)
     hintsTick.value++
@@ -663,6 +670,18 @@ async function retryTask(task: BatchTask) {
 }
 
 const copyToast = ref('')
+
+function openPreview(path: string) {
+  previewPath.value = path
+  previewImage.value = localFileUrl(path)
+}
+function closePreview() {
+  previewImage.value = null
+  previewPath.value = ''
+}
+function copyPreviewImage() {
+  if (previewPath.value) copyImage(previewPath.value)
+}
 
 async function copyImage(path: string) {
   try {

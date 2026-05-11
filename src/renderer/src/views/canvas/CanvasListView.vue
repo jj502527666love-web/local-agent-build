@@ -151,7 +151,7 @@
             <select v-model="createForm.text_model_id" class="select-field">
               <option value="">-- 请选择 --</option>
               <optgroup v-if="textModelGroups.recommended.length" label="推荐（对话）">
-                <option v-for="m in textModelGroups.recommended" :key="m" :value="m">{{ m }}</option>
+                <option v-for="m in textModelGroups.recommended" :key="m" :value="m">{{ modelStore.optionLabel(createForm.text_provider_id, m) }}</option>
               </optgroup>
             </select>
           </div>
@@ -167,7 +167,7 @@
             <select v-model="createForm.image_model_id" class="select-field">
               <option value="">-- 请选择 --</option>
               <optgroup v-if="imageModelGroups.recommended.length" label="推荐（生图）">
-                <option v-for="m in imageModelGroups.recommended" :key="m" :value="m">{{ m }}</option>
+                <option v-for="m in imageModelGroups.recommended" :key="m" :value="m">{{ modelStore.optionLabel(createForm.image_provider_id, m) }}</option>
               </optgroup>
             </select>
           </div>
@@ -191,6 +191,7 @@ import { ref, computed, onMounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { useCanvasStore } from '@/stores/canvas'
 import { useModelStore } from '@/stores/models'
+import { stripModelId } from '@shared/model-id'
 import { useHandoffStore } from '@/stores/handoff'
 import { groupAndSort } from '@/utils/model-caps'
 import { warmHintsCache, getHintsSync } from '@/utils/model-usage-hints'
@@ -289,9 +290,9 @@ async function doCreate() {
   const project = await canvasStore.createProject({
     title,
     text_provider_id: createForm.value.text_provider_id,
-    text_model_id: createForm.value.text_model_id,
+    text_model_id: stripModelId(createForm.value.text_model_id),
     image_provider_id: createForm.value.image_provider_id,
-    image_model_id: createForm.value.image_model_id,
+    image_model_id: stripModelId(createForm.value.image_model_id),
     concurrency
   })
   showCreateDialog.value = false

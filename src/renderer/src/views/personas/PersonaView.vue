@@ -86,7 +86,7 @@
               <select v-model="optimizeModelId" class="select-field" :disabled="!optimizeProviderModels.length">
                 <option value="">-- 选择 --</option>
                 <optgroup v-if="optimizeModelGroups.recommended.length" label="推荐（对话）">
-                  <option v-for="m in optimizeModelGroups.recommended" :key="m" :value="m">{{ m }}</option>
+                  <option v-for="m in optimizeModelGroups.recommended" :key="m" :value="m">{{ modelStore.optionLabel(optimizeProviderId, m) }}</option>
                 </optgroup>
               </select>
               <input v-if="optimizeProviderId && !optimizeProviderModels.length" v-model="optimizeModelId" placeholder="输入模型名称" class="input-field mt-2" />
@@ -136,6 +136,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { usePersonaStore, type Persona } from '@/stores/personas'
 import { useModelStore } from '@/stores/models'
+import { stripModelId } from '@shared/model-id'
 import { usePromptPresetStore } from '@/stores/prompt-presets'
 import { groupAndSort } from '@/utils/model-caps'
 import { warmHintsCache, getHintsSync, recordUsage } from '@/utils/model-usage-hints'
@@ -250,7 +251,7 @@ async function doOptimize() {
       { role: 'system', content: OPTIMIZE_SYSTEM_PROMPT },
       { role: 'user', content: form.value.system_prompt }
     ]
-    const result = (await window.api.llm.invoke('call', optimizeProviderId.value, optimizeModelId.value, messages)) as string
+    const result = (await window.api.llm.invoke('call', optimizeProviderId.value, stripModelId(optimizeModelId.value), messages)) as string
     if (result) {
       form.value.system_prompt = result
       showOptimizeModal.value = false

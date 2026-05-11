@@ -35,6 +35,7 @@ function inferImageMime(path: string): string {
  * 字符串当作 base64 推到上游导致请求乱码失败。 */
 async function resolveRefImages(images: string[]): Promise<string[]> {
   const result: string[] = []
+  let failed = 0
   for (const img of images) {
     if (!img) continue
     if (img.startsWith('data:')) {
@@ -48,19 +49,30 @@ async function resolveRefImages(images: string[]): Promise<string[]> {
       const mime = inferImageMime(img)
       result.push(`data:${mime};base64,${b64}`)
     } catch (e) {
+      failed++
       console.warn('[Canvas] 读取参考图失败，已跳过:', img, e)
     }
   }
+  // 把失败计数挂到数组上（不改 return type 兼容现有调用方），上层可读取并提示
+  ;(result as any).__failedCount = failed
   return result
 }
 
 // Module-level singletons so all composable consumers share the same state.
 // - workflowRunning: true while runWorkflow owns the canvas
 // - activeSingleRuns: tracks node IDs currently running via executeSingleNode
+// - cancelRequested: soft-cancel flag; runWorkflow loop won't launch new tasks once true,
+//   but already-inflight tasks are allowed to finish so DB/state stays consistent.
+// - runningProjectId: which project the current workflow belongs to (for global badge)
 const workflowRunning = ref(false)
 const tasks = ref<WorkflowTask[]>([])
 const nodeStatuses = ref<Map<string, TaskStatus>>(new Map())
 const activeSingleRuns = ref<Set<string>>(new Set())
+const cancelRequested = ref(false)
+const runningProjectId = ref<string | null>(null)
+// 参考图读取失败聚合：每次 runWorkflow / executeSingleNode 开始时清空，
+// 上游 UI（CanvasEditorView）可在执行完成后读取并 toast 提示，避免静默吞掉部分失败
+const refImageWarnings = ref<Array<{ nodeId: string; failed: number; total: number }>>([])
 
 // Legacy alias kept for existing bindings (`workflowRunning` in view)
 const running = workflowRunning
@@ -267,6 +279,13 @@ export function useWorkflowEngine() {
 
         const refImageData =
           upstream.images.length > 0 ? await resolveRefImages(upstream.images) : []
+        const failedRef = (refImageData as any).__failedCount || 0
+        if (failedRef > 0) {
+          refImageWarnings.value = [
+            ...refImageWarnings.value,
+            { nodeId, failed: failedRef, total: upstream.images.length }
+          ]
+        }
 
         const genOptions: Record<string, any> = {
           prompt,
@@ -326,8 +345,15 @@ export function useWorkflowEngine() {
         })
 
         const refImageData = await resolveRefImages(upstream.images)
+        const failedRefImg = (refImageData as any).__failedCount || 0
         if (refImageData.length === 0) {
           throw new Error('参考图读取失败：请检查上游参考图节点是否有效')
+        }
+        if (failedRefImg > 0) {
+          refImageWarnings.value = [
+            ...refImageWarnings.value,
+            { nodeId, failed: failedRefImg, total: upstream.images.length }
+          ]
         }
 
         const genResults = await api().imageGen.invoke('generate', {
@@ -409,6 +435,9 @@ export function useWorkflowEngine() {
       return { ok: false, message: '有节点正在单独执行，请稍候' }
     }
     workflowRunning.value = true
+    cancelRequested.value = false
+    runningProjectId.value = projectId
+    refImageWarnings.value = []
     const canvasStore = useCanvasStore()
 
     try {
@@ -514,6 +543,25 @@ export function useWorkflowEngine() {
       }
 
       while (true) {
+        // 软取消：不再启动新任务，但已 inflight 的让它跑完（保证 DB/state 一致）。
+        // pending 状态的节点统一打 skipped 并写库，避免切回画布看到僵尸 pending。
+        if (cancelRequested.value) {
+          for (const nodeId of allNodes) {
+            if (statusMap.get(nodeId) === 'pending' && !inflight.has(nodeId)) {
+              statusMap.set(nodeId, 'skipped')
+              const node = canvasStore.nodes.find((n) => n.id === nodeId)
+              if (node) {
+                await canvasStore.updateNode(nodeId, {
+                  data: { ...node.data, status: 'skipped', error: '已取消' }
+                })
+              }
+            }
+          }
+          if (inflight.size === 0) break
+          await Promise.race(inflight.values())
+          continue
+        }
+
         const { ready, blocked } = findReady()
 
         // Propagate failure to blocked nodes immediately
@@ -570,13 +618,25 @@ export function useWorkflowEngine() {
       return { ok: false, message: e?.message || '工作流执行失败' }
     } finally {
       workflowRunning.value = false
+      cancelRequested.value = false
+      runningProjectId.value = null
     }
+  }
+
+  /** 软取消当前工作流：不再启动新节点，已 inflight 让它跑完保证 DB/state 一致。
+   * 仅对 runWorkflow 生效；executeSingleNode 没有循环结构，无法中途打断（fetch 已发） */
+  function cancelWorkflow(): boolean {
+    if (!workflowRunning.value) return false
+    cancelRequested.value = true
+    return true
   }
 
   async function executeSingleNode(nodeId: string, projectId: string) {
     // Block if workflow is running, or this node is already running via single-execution
     if (workflowRunning.value) return
     if (activeSingleRuns.value.has(nodeId)) return
+    // 单节点执行入口也清空一次警告聚合，避免与上一次工作流的 warnings 混淆
+    refImageWarnings.value = []
     const canvasStore = useCanvasStore()
     const node = canvasStore.nodes.find((n) => n.id === nodeId)
     if (!node) return
@@ -612,9 +672,13 @@ export function useWorkflowEngine() {
     workflowRunning,
     activeSingleRuns,
     anyRunning,
+    cancelRequested,
+    runningProjectId,
+    refImageWarnings,
     tasks,
     nodeStatuses,
     runWorkflow,
+    cancelWorkflow,
     executeSingleNode
   }
 }

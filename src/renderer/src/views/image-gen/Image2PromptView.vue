@@ -23,7 +23,7 @@
           >
             <option value="">-- 选择模型 --</option>
             <optgroup v-if="modelGroups.recommended.length" label="推荐">
-              <option v-for="m in modelGroups.recommended" :key="m" :value="m">{{ m }}</option>
+              <option v-for="m in modelGroups.recommended" :key="m" :value="m">{{ modelStore.optionLabel(visionProviderId, m) }}</option>
             </optgroup>
           </select>
           <input
@@ -246,11 +246,7 @@
     <div v-if="toast" class="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-lg bg-surface-0 shadow-lg border border-surface-3 text-xs text-text-primary">{{ toast }}</div>
 
     <!-- Image Preview -->
-    <div v-if="previewImage" class="fixed inset-0 z-50 flex items-center justify-center p-8" @click="previewImage = null">
-      <div class="max-w-[90vw] max-h-[90vh] rounded-2xl overflow-hidden shadow-[0_0_40px_rgba(0,0,0,0.15)]" @click.stop>
-        <img :src="previewImage" class="max-w-full max-h-[90vh] object-contain" />
-      </div>
-    </div>
+    <ImageLightbox :src="previewImage" @close="previewImage = null" />
     <GalleryPicker v-model:visible="showGalleryPicker" :multiple="true" @select="onGalleryPickImages" />
   </div>
 </template>
@@ -260,12 +256,14 @@ import { ref, computed, watch, onMounted, reactive } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
 import { useModelStore } from '@/stores/models'
+import { stripModelId } from '@shared/model-id'
 import { useImage2PromptStore } from '@/stores/image2prompt'
 import type { Task as Image2PromptTask } from '@/stores/image2prompt'
 import { groupAndSort } from '@/utils/model-caps'
 import { recordUsage, warmHintsCache, getHintsSync } from '@/utils/model-usage-hints'
 import { stripImageMetadata } from '@shared/strip-image-metadata'
 import GalleryPicker from '@/components/GalleryPicker.vue'
+import ImageLightbox from '@/components/ImageLightbox.vue'
 
 // Task 类型已提到 stores/image2prompt.ts，下面作为本地别名使用
 type Task = Image2PromptTask
@@ -501,7 +499,7 @@ async function runOne(task: Task) {
         ]
       }
     ]
-    const result = await (window as any).api.llm.invoke('call', visionProviderId.value, visionModelId.value, messages)
+    const result = await (window as any).api.llm.invoke('call', visionProviderId.value, stripModelId(visionModelId.value), messages)
     if (typeof result === 'string') {
       task.result = result.trim()
     } else if (result?.content) {

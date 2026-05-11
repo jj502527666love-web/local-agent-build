@@ -1,6 +1,8 @@
 <template>
-  <div v-if="visible" class="fixed inset-0 z-50 flex items-center justify-center" @click.self="cancel">
-    <div class="bg-surface-0 rounded-xl shadow-[0_0_40px_rgba(0,0,0,0.15)] w-full max-w-3xl max-h-[80vh] flex flex-col">
+  <!-- Teleport 到 body：避免被画布节点的 transform 容器影响（缩放 + fixed 重定位） -->
+  <Teleport to="body">
+    <div v-if="visible" class="fixed inset-0 z-50 flex items-center justify-center" @click.self="cancel">
+      <div class="bg-surface-0 rounded-xl shadow-[0_0_40px_rgba(0,0,0,0.15)] w-full max-w-4xl max-h-[80vh] flex flex-col">
       <div class="flex items-center justify-between px-5 py-3 border-b border-surface-3">
         <h2 class="text-sm font-semibold text-text-primary">从图库选择</h2>
         <div class="flex items-center gap-2">
@@ -73,8 +75,9 @@
           <button class="btn-secondary text-xs px-2 py-0.5" :disabled="page >= totalPages" @click="setPage(page + 1)">下一页</button>
         </div>
       </div>
+      </div>
     </div>
-  </div>
+  </Teleport>
 </template>
 
 <script setup lang="ts">

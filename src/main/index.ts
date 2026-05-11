@@ -6,6 +6,7 @@ import { autoUpdater } from 'electron-updater'
 import { getDatabase, closeDatabase } from './database'
 import { registerIpcHandlers } from './ipc'
 import { backfillCreationGallery } from './services/gallery'
+import { cleanupStaleGenerations } from './services/image-generation'
 import { getThumbnailBytes } from './services/thumbnail'
 import { stopAllMcpServers } from './services/mcp-server'
 import { getDataDir } from './services/data-path'
@@ -177,6 +178,13 @@ app.whenReady().then(async () => {
 
   // Register all IPC handlers
   registerIpcHandlers()
+
+  // 启动时清理上次崩溃残留的"生成中"图片任务（避免 UI 永久转圈）
+  try {
+    cleanupStaleGenerations()
+  } catch (e) {
+    console.error('[ImageGen] cleanupStaleGenerations failed:', e)
+  }
 
   // Backup startup tasks: 清理上次崩溃残骸 + 异步触发自动备份（如配置）
   runBackupStartupTasks().catch((e) => console.error('Backup startup error:', e))

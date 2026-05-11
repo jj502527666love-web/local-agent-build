@@ -337,14 +337,7 @@
   </div>
 
   <!-- Image Preview -->
-  <div v-if="previewImage" class="fixed inset-0 z-50 flex items-center justify-center" @click.self="previewImage = null">
-    <div class="relative max-w-[90vw] max-h-[90vh] rounded-xl shadow-[0_0_30px_rgba(0,0,0,0.12)] overflow-hidden bg-surface-0">
-      <img :src="previewImage" class="max-w-[90vw] max-h-[90vh] object-contain" />
-      <button @click="previewImage = null" class="absolute top-3 right-3 w-8 h-8 flex items-center justify-center rounded-full bg-surface-0/80 hover:bg-surface-2 text-text-secondary transition-colors shadow-lg">
-        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18 18 6M6 6l12 12" /></svg>
-      </button>
-    </div>
-  </div>
+  <ImageLightbox :src="previewImage" @close="previewImage = null" />
 
   <!-- Tool Approval Modal -->
   <div v-if="pendingApproval" class="fixed inset-0 z-50 flex items-center justify-center pointer-events-none">
@@ -404,6 +397,7 @@ import { usePromptPresetStore } from '@/stores/prompt-presets'
 import { renderMarkdown } from '@/utils/markdown'
 import { stripImageMetadata } from '@shared/strip-image-metadata'
 import GalleryPicker from '@/components/GalleryPicker.vue'
+import ImageLightbox from '@/components/ImageLightbox.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -862,7 +856,9 @@ function cancelEditTitle() {
 async function openWorkspace() {
   if (!chatStore.currentConversationId) return
   const dataDir = await (window as any).api.dataDir.get()
-  const wsPath = `${dataDir}\\workspaces\\${chatStore.currentConversationId}`
+  // 用 / 分隔符兼容 macOS / Linux：Windows shell.openPath 同时接受 / 和 \，
+  // 但 macOS 不识别 \，混合分隔符会导致 openPath 静默失败
+  const wsPath = `${dataDir}/workspaces/${chatStore.currentConversationId}`
   ;(window as any).api.shell.openPath(wsPath)
 }
 

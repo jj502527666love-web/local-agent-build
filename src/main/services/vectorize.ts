@@ -64,7 +64,7 @@ export async function vectorizeDocument(
     // Delete existing chunks for re-vectorization
     deleteChunksByKnowledgeBaseId(knowledgeBaseId)
 
-    const chunks = chunkFile(kb.file_path, {
+    const chunks = await chunkFile(kb.file_path, {
       chunkSize: 512,
       chunkOverlap: 100
     })

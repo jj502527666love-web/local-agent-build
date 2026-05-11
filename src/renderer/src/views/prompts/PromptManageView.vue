@@ -152,7 +152,7 @@
             <select v-model="optimizeModelId" class="w-full px-3 py-2 text-xs border border-surface-3 rounded-lg bg-surface-1 outline-none focus:ring-2 focus:ring-primary-500" :disabled="!optimizeProviderModels.length">
               <option value="">-- 选择模型 --</option>
               <optgroup v-if="optimizeModelGroups.recommended.length" label="推荐（对话）">
-                <option v-for="m in optimizeModelGroups.recommended" :key="m" :value="m">{{ m }}</option>
+                <option v-for="m in optimizeModelGroups.recommended" :key="m" :value="m">{{ modelStore.optionLabel(optimizeProviderId, m) }}</option>
               </optgroup>
             </select>
             <input v-if="optimizeProviderId && !optimizeProviderModels.length" v-model="optimizeModelId" placeholder="输入模型名称" class="w-full mt-2 px-3 py-2 text-xs border border-surface-3 rounded-lg bg-surface-1 outline-none focus:ring-2 focus:ring-primary-500" />
@@ -173,6 +173,7 @@ import { ref, computed, watch, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { usePromptPresetStore, type PromptCategory, type PromptPreset } from '@/stores/prompt-presets'
 import { useModelStore } from '@/stores/models'
+import { stripModelId } from '@shared/model-id'
 import { groupAndSort } from '@/utils/model-caps'
 import { warmHintsCache, getHintsSync, recordUsage } from '@/utils/model-usage-hints'
 
@@ -331,7 +332,7 @@ async function doOptimize() {
       { role: 'system', content: OPTIMIZE_SYSTEM_PROMPT },
       { role: 'user', content: presetForm.value.content }
     ]
-    const result = (await (window as any).api.llm.invoke('call', optimizeProviderId.value, optimizeModelId.value, messages)) as string
+    const result = (await (window as any).api.llm.invoke('call', optimizeProviderId.value, stripModelId(optimizeModelId.value), messages)) as string
     if (result) {
       presetForm.value.content = result
       showOptimizeModal.value = false

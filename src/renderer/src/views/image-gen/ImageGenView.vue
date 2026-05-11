@@ -87,7 +87,7 @@
                 <select v-model="selectedModelId" class="w-full px-3 py-2 text-xs bg-surface-1 border border-surface-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500" :disabled="!selectedProviderModels.length">
                   <option value="">-- 选择模型 --</option>
                   <optgroup v-if="selectedModelGroups.recommended.length" label="推荐（生图）">
-                    <option v-for="m in selectedModelGroups.recommended" :key="m" :value="m">{{ m }}</option>
+                    <option v-for="m in selectedModelGroups.recommended" :key="m" :value="m">{{ modelStore.optionLabel(selectedProviderId, m) }}</option>
                   </optgroup>
                 </select>
                 <input v-if="selectedProviderId && !selectedProviderModels.length" v-model="selectedModelId" placeholder="输入模型名称" class="w-full mt-2 px-3 py-2 text-xs bg-surface-1 border border-surface-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500" />
@@ -103,7 +103,7 @@
                 <select v-model="optimizeModelId" class="w-full px-3 py-2 text-xs bg-surface-1 border border-surface-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500" :disabled="!optimizeProviderModels.length">
                   <option value="">-- 选择模型 --</option>
                   <optgroup v-if="optimizeModelGroups.recommended.length" label="推荐（对话）">
-                    <option v-for="m in optimizeModelGroups.recommended" :key="m" :value="m">{{ m }}</option>
+                    <option v-for="m in optimizeModelGroups.recommended" :key="m" :value="m">{{ modelStore.optionLabel(optimizeProviderId, m) }}</option>
                   </optgroup>
                 </select>
                 <input v-if="optimizeProviderId && !optimizeProviderModels.length" v-model="optimizeModelId" placeholder="输入模型名称" class="w-full mt-2 px-3 py-2 text-xs bg-surface-1 border border-surface-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500" />
@@ -115,7 +115,7 @@
                 <ImageSizePicker
                   v-model="selectedSize"
                   :columns="6"
-                  :model-id="selectedModelId"
+                  :model-id="pureSelectedModelId"
                   :tier-id="selectedTier"
                   show-hint
                 />
@@ -126,7 +126,7 @@
                 <label class="text-xs font-medium text-text-secondary mb-1.5 block">分辨率</label>
                 <ResolutionTierPicker
                   v-model="selectedTier"
-                  :model-id="selectedModelId"
+                  :model-id="pureSelectedModelId"
                 />
               </div>
 
@@ -135,7 +135,7 @@
                 <label class="text-xs font-medium text-text-secondary mb-1.5 block">画质</label>
                 <QualityPicker
                   v-model="selectedQuality"
-                  :model-id="selectedModelId"
+                  :model-id="pureSelectedModelId"
                 />
               </div>
 
@@ -260,7 +260,7 @@
                     <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18 18 6M6 6l12 12" /></svg>
                   </button>
                   <div v-if="gen.status === 'done' && gen.result_path" class="aspect-square relative">
-                    <img :src="localFileUrl(gen.result_path)" class="w-full h-full object-cover cursor-pointer" @click.stop="selectMode ? toggleSelect(gen.id) : (previewImage = localFileUrl(gen.result_path))" />
+                    <img :src="localFileUrl(gen.result_path)" class="w-full h-full object-cover cursor-pointer" @click.stop="selectMode ? toggleSelect(gen.id) : openPreview(gen.result_path)" />
                     <div v-if="!selectMode" class="absolute bottom-1.5 right-1.5 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                       <button @click.stop="copyImage(gen.result_path)" class="w-7 h-7 rounded-lg bg-black/50 hover:bg-black/70 text-white flex items-center justify-center" title="复制图片">
                         <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.666 3.888A2.25 2.25 0 0 0 13.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 0 1-.75.75H9.75a.75.75 0 0 1-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 0 1-2.25 2.25H6.75A2.25 2.25 0 0 1 4.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 0 1 1.927-.184" /></svg>
@@ -299,7 +299,7 @@
                   <div class="p-2.5">
                     <p class="text-[11px] text-text-secondary line-clamp-2">{{ gen.prompt }}</p>
                     <div class="flex items-center justify-between mt-1.5">
-                      <span class="text-[10px] text-text-tertiary">{{ gen.model_id }} / {{ gen.size }}</span>
+                      <span class="text-[10px] text-text-tertiary">{{ modelStore.formatModelLabel(gen.model_provider_id, gen.model_id) }} / {{ gen.size }}</span>
                       <button v-if="gen.status === 'done' && gen.result_path" @click.stop="openFolder(gen.result_path)" class="opacity-0 group-hover:opacity-100 p-1 text-text-tertiary hover:text-text-primary transition-opacity" title="打开所在目录">
                         <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 0 0-1.883 2.542l.857 6a2.25 2.25 0 0 0 2.227 1.932H19.05a2.25 2.25 0 0 0 2.227-1.932l.857-6a2.25 2.25 0 0 0-1.883-2.542m-16.5 0V6A2.25 2.25 0 0 1 6 3.75h3.879a1.5 1.5 0 0 1 1.06.44l2.122 2.12a1.5 1.5 0 0 0 1.06.44H18A2.25 2.25 0 0 1 20.25 9v.776" /></svg>
                       </button>
@@ -317,7 +317,7 @@
                     </div>
                   </div>
                   <div class="w-20 h-20 rounded-lg overflow-hidden flex-shrink-0 bg-surface-2">
-                    <img v-if="gen.status === 'done' && gen.result_path" :src="localFileUrl(gen.result_path)" class="w-full h-full object-cover cursor-pointer" @click="previewImage = localFileUrl(gen.result_path)" />
+                    <img v-if="gen.status === 'done' && gen.result_path" :src="localFileUrl(gen.result_path)" class="w-full h-full object-cover cursor-pointer" @click="openPreview(gen.result_path)" />
                     <div v-else-if="gen.status === 'generating' || gen.status === 'pending'" class="w-full h-full flex items-center justify-center">
                       <svg class="w-5 h-5 animate-spin text-primary-500" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
                     </div>
@@ -329,7 +329,7 @@
                     <p class="text-xs text-text-primary line-clamp-2">{{ gen.prompt }}</p>
                     <p v-if="gen.revised_prompt" class="text-[10px] text-text-tertiary mt-1 line-clamp-1">{{ gen.revised_prompt }}</p>
                     <div class="flex items-center gap-3 mt-1.5">
-                      <span class="text-[10px] text-text-tertiary">{{ gen.model_id }}</span>
+                      <span class="text-[10px] text-text-tertiary">{{ modelStore.formatModelLabel(gen.model_provider_id, gen.model_id) }}</span>
                       <span class="text-[10px] text-text-tertiary">{{ gen.size }}</span>
                       <span :class="['text-[10px]', gen.status === 'done' ? 'text-green-600' : gen.status === 'error' ? 'text-red-500' : 'text-text-tertiary']">{{ gen.status }}</span>
                     </div>
@@ -445,14 +445,12 @@
   </div>
 
   <!-- Image Preview -->
-  <div v-if="previewImage" class="fixed inset-0 z-50 flex items-center justify-center" @click.self="previewImage = null">
-    <div class="relative max-w-[90vw] max-h-[90vh] rounded-xl shadow-[0_0_30px_rgba(0,0,0,0.12)] overflow-hidden bg-surface-0">
-      <img :src="previewImage" class="max-w-[90vw] max-h-[90vh] object-contain" />
-      <button @click="previewImage = null" class="absolute top-3 right-3 w-8 h-8 flex items-center justify-center rounded-full bg-surface-0/80 hover:bg-surface-2 text-text-secondary transition-colors shadow-lg">
-        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18 18 6M6 6l12 12" /></svg>
-      </button>
-    </div>
-  </div>
+  <ImageLightbox
+    :src="previewImage"
+    :on-copy="copyPreviewImage"
+    :on-locate="locatePreviewImage"
+    @close="closePreview"
+  />
 
   <!-- Error detail dialog -->
   <ErrorDetailDialog
@@ -481,6 +479,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useImageGenStore } from '@/stores/image-gen'
 import { useImageGenFormStore } from '@/stores/image-gen-form'
 import { useModelStore } from '@/stores/models'
+import { stripModelId } from '@shared/model-id'
 import { usePromptPresetStore } from '@/stores/prompt-presets'
 import { useHandoffStore } from '@/stores/handoff'
 import { translateError } from '@/utils/error-message'
@@ -494,6 +493,7 @@ import { stripImageMetadata } from '@shared/strip-image-metadata'
 import ErrorDetailDialog from '@/components/ErrorDetailDialog.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import GalleryPicker from '@/components/GalleryPicker.vue'
+import ImageLightbox from '@/components/ImageLightbox.vue'
 import type { ImageGeneration } from '@/stores/image-gen'
 
 const route = useRoute()
@@ -570,10 +570,14 @@ function localFileUrl(path: string): string {
   return 'local-file://img?' + param + '=' + encodeURIComponent(path)
 }
 
-const modelSupportsConsistency = computed(() => supportsConsistency(selectedModelId.value))
-const consistencyMaxN = computed(() => getMaxConsistencyN(selectedModelId.value))
+// selectedModelId 可能是复合 key `gpt-image-2#@多米`，Picker / supports* 都按纯关键字匹配，必须 strip
+// 后才能正确识别型号专属参数（如 gpt-image-2 的 size/tier/quality 选项）。
+const pureSelectedModelId = computed(() => stripModelId(selectedModelId.value))
+const modelSupportsConsistency = computed(() => supportsConsistency(pureSelectedModelId.value))
+const consistencyMaxN = computed(() => getMaxConsistencyN(pureSelectedModelId.value))
 const showConsistencyToggle = computed(() => modelSupportsConsistency.value && batchCount.value > 1)
 const previewImage = ref<string | null>(null)
+const previewPath = ref<string>('')
 const optimizing = ref(false)
 const optimizeError = ref('')
 const showPresetPopup = ref(false)
@@ -656,7 +660,7 @@ async function deleteSingle(id: string) {
 const hintsTick = ref(0)
 
 const hasRefImages = computed(() => refImages.value.length > 0)
-const qualitiesAvailable = computed(() => hasQualityOptions(selectedModelId.value))
+const qualitiesAvailable = computed(() => hasQualityOptions(pureSelectedModelId.value))
 
 // Result list — 后端分页，25 条/页
 const PAGE_SIZE = 25
@@ -759,7 +763,7 @@ async function optimizePrompt(lang: 'cn' | 'en') {
       { role: 'system', content: systemPrompt },
       { role: 'user', content: prompt.value }
     ]
-    const result = await (window as any).api.llm.invoke('call', optimizeProviderId.value, optimizeModelId.value, messages)
+    const result = await (window as any).api.llm.invoke('call', optimizeProviderId.value, stripModelId(optimizeModelId.value), messages)
     if (result) prompt.value = result
     await recordUsage('chat', optimizeProviderId.value, optimizeModelId.value)
     hintsTick.value++
@@ -876,6 +880,21 @@ function openFolder(path: string) {
   ;(window as any).api.shell.showItemInFolder(path)
 }
 
+function openPreview(path: string) {
+  previewPath.value = path
+  previewImage.value = localFileUrl(path)
+}
+function closePreview() {
+  previewImage.value = null
+  previewPath.value = ''
+}
+function copyPreviewImage() {
+  if (previewPath.value) copyImage(previewPath.value)
+}
+function locatePreviewImage() {
+  if (previewPath.value) openFolder(previewPath.value)
+}
+
 // Handle inspiration data from route query
 function applyInspirationFromQuery() {
   const q = route.query
@@ -898,7 +917,7 @@ watch(selectedModelId, (v) => {
     window.api.settings.invoke('set', 'imagegen_provider_id', selectedProviderId.value)
     window.api.settings.invoke('set', 'imagegen_model_id', v)
   }
-  if (!supportsConsistency(v)) consistency.value = false
+  if (!supportsConsistency(stripModelId(v))) consistency.value = false
 })
 watch(optimizeModelId, (v) => {
   if (v) {

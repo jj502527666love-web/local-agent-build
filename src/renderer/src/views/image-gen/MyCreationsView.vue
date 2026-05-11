@@ -92,7 +92,7 @@
           <div class="p-2.5">
             <p class="text-[11px] text-text-secondary line-clamp-2">{{ item.prompt }}</p>
             <div class="flex items-center justify-between mt-1.5">
-              <span class="text-[10px] text-text-tertiary">{{ item.model_id }} / {{ item.size }}</span>
+              <span class="text-[10px] text-text-tertiary">{{ modelStore.formatModelLabel(item.model_provider_id, item.model_id) }} / {{ item.size }}</span>
             </div>
           </div>
         </div>
@@ -146,7 +146,7 @@
       <div class="bg-white rounded-2xl shadow-[0_0_30px_rgba(0,0,0,0.12)] w-[640px] max-h-[85vh] flex flex-col overflow-hidden">
         <!-- Image -->
         <div class="aspect-square max-h-[50vh] bg-surface-2 flex-shrink-0 overflow-hidden relative group">
-          <img v-if="detailItem.result_path" :src="localFileUrl(detailItem.result_path)" class="w-full h-full object-contain" />
+          <img v-if="detailItem.result_path" :src="localFileUrl(detailItem.result_path)" class="w-full h-full object-contain cursor-pointer" @click="openLightbox(detailItem.result_path)" />
           <div v-if="detailItem.result_path" class="absolute bottom-3 right-3 flex gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
             <button @click.stop="copyImage(detailItem.result_path)" class="w-8 h-8 rounded-lg bg-black/50 hover:bg-black/70 text-white flex items-center justify-center" title="复制图片">
               <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.666 3.888A2.25 2.25 0 0 0 13.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 0 1-.75.75H9.75a.75.75 0 0 1-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 0 1-2.25 2.25H6.75A2.25 2.25 0 0 1 4.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 0 1 1.927-.184" /></svg>
@@ -186,7 +186,7 @@
 
           <!-- Info -->
           <div class="flex flex-wrap gap-x-6 gap-y-2 text-xs text-text-tertiary mb-4">
-            <span>模型: {{ detailItem.model_id }}</span>
+            <span>模型: {{ modelStore.formatModelLabel(detailItem.model_provider_id, detailItem.model_id) }}</span>
             <span>尺寸: {{ detailItem.size }}</span>
             <span>时间: {{ formatDate(detailItem.created_at) }}</span>
           </div>
@@ -241,6 +241,14 @@
       @success="showToast"
       @error="showToast"
     />
+
+    <!-- Lightbox: 详情 modal 上叠加一层可缩放全屏预览 -->
+    <ImageLightbox
+      :src="lightboxSrc"
+      :on-copy="lightboxCopy"
+      :on-locate="lightboxLocate"
+      @close="closeLightbox"
+    />
   </div>
 </template>
 
@@ -248,9 +256,12 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useCloudAuthStore } from '@/stores/cloud-auth'
+import { useModelStore } from '@/stores/models'
 import UploadInspirationDialog from '@/components/UploadInspirationDialog.vue'
+import ImageLightbox from '@/components/ImageLightbox.vue'
 
 const cloudAuth = useCloudAuthStore()
+const modelStore = useModelStore()
 
 interface ImageGeneration {
   id: string
@@ -286,7 +297,24 @@ const pageSize = 25
 const total = ref(0)
 const loading = ref(false)
 const detailItem = ref<ImageGeneration | null>(null)
+const lightboxSrc = ref<string | null>(null)
+const lightboxPath = ref<string>('')
 const failedCount = ref(0)
+
+function openLightbox(path: string) {
+  lightboxPath.value = path
+  lightboxSrc.value = localFileUrl(path)
+}
+function closeLightbox() {
+  lightboxSrc.value = null
+  lightboxPath.value = ''
+}
+function lightboxCopy() {
+  if (lightboxPath.value) copyImage(lightboxPath.value)
+}
+function lightboxLocate() {
+  if (lightboxPath.value) openFolder(lightboxPath.value)
+}
 
 const periodOptions = [
   { label: '周', value: 'week' },
