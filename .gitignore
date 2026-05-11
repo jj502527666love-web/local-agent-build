@@ -70,6 +70,18 @@ dev-app-update.yml
 /resources/bundled-skills/wechat-pay*
 /resources/bundled-skills/alipay*
 
+# ppt-master 客户定制 layouts（含具体客户名/品牌的内嵌模板，不应进公开仓库）
+# 通用风格 layouts（mckinsey/anthropic/ai_ops/google_style/government_*/medical_university 等）保留跟踪
+/resources/bundled-skills/ppt-master/templates/layouts/招商银行/
+/resources/bundled-skills/ppt-master/templates/layouts/中国电建_常规/
+/resources/bundled-skills/ppt-master/templates/layouts/中国电建_现代/
+/resources/bundled-skills/ppt-master/templates/layouts/中汽研_商务/
+/resources/bundled-skills/ppt-master/templates/layouts/中汽研_常规/
+/resources/bundled-skills/ppt-master/templates/layouts/中汽研_现代/
+/resources/bundled-skills/ppt-master/templates/layouts/重庆大学/
+/resources/bundled-skills/ppt-master/templates/layouts/科技蓝商务/
+/resources/bundled-skills/ppt-master/templates/layouts/china_telecom_template/
+
 # 通用临时 / scratch 文件
 /scratch/
 /.notes/
