@@ -83,6 +83,7 @@
 import { ref, computed, watch } from 'vue'
 import { useModelStore } from '@/stores/models'
 import { groupAndSort } from '@/utils/model-caps'
+import { getHintsSync, warmHintsCache } from '@/utils/model-usage-hints'
 
 const props = defineProps<{
   visible: boolean
@@ -97,14 +98,17 @@ const emit = defineEmits<{
 const modelStore = useModelStore()
 const providerId = ref('')
 const modelId = ref('')
+// 用于触发 modelGroups computed 重新计算（warm 完 hints 后 ++）
+const hintsTick = ref(0)
 
-// 弹窗打开时同步初值
+// 弹窗打开时同步初值，并 warm hints 缓存（与 ImageGenView/BatchGenView 规范一致）
 watch(
   () => props.visible,
   (v) => {
     if (v) {
       providerId.value = props.initialProviderId || ''
       modelId.value = props.initialModelId || ''
+      warmHintsCache().then(() => { hintsTick.value++ })
     }
   },
   { immediate: true }
@@ -114,8 +118,12 @@ const provider = computed(() => modelStore.providers.find(p => p.id === provider
 const providerModels = computed<string[]>(() => provider.value?.models ?? [])
 
 const modelGroups = computed<{ recommended: string[]; others: string[] }>(() => {
+  hintsTick.value
   if (!provider.value) return { recommended: [], others: [] }
-  return groupAndSort(provider.value.models, 'image')
+  return groupAndSort(provider.value.models, 'image', {
+    cloudTypeOf: (mid) => modelStore.cloudTypeOf(provider.value!.id, mid),
+    usageHints: getHintsSync('image', provider.value.id)
+  })
 })
 
 function cancel() {

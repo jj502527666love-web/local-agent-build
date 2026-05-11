@@ -359,7 +359,8 @@ import { ref, reactive, computed, onMounted, onBeforeUnmount, nextTick, shallowR
 import { useRoute, useRouter } from 'vue-router'
 import { Canvas, FabricImage, Rect, Ellipse, IText, PencilBrush, filters, Path, Point, Control, util } from 'fabric'
 import type { FabricObject, TPointerEvent, Transform } from 'fabric'
-import { recordUsage } from '@/utils/model-usage-hints'
+import { recordUsage, warmHintsCache } from '@/utils/model-usage-hints'
+import { translateError } from '@/utils/error-message'
 import { useSiteConfigStore } from '@/stores/site-config'
 import { useModelStore } from '@/stores/models'
 import ImageEditModelDialog from '@/components/ImageEditModelDialog.vue'
@@ -588,6 +589,9 @@ onMounted(async () => {
     } catch {
       // 设置读取失败不影响主流程
     }
+
+    // 预热模型用法 LRU，让模型选择弹窗第一次打开时推荐顺序就是热的
+    warmHintsCache().catch(() => {})
 
     window.addEventListener('keydown', handleKeyDown)
     unsubscribeImageProgress = api().imageGen.onProgress(handleImageGenProgress)
@@ -1743,7 +1747,8 @@ function classifyError(rawMsg: string): string {
   if (m.includes('cloud login')) {
     return '未登录云端服务'
   }
-  return rawMsg || '重绘失败'
+  // 兜底：复用统一错误翻译表（覆盖 Upstream/503/Bad Gateway/限流/多米/鉴权等常见英文错误）
+  return translateError(rawMsg) || '重绘失败'
 }
 
 // ---- Image utility ----
@@ -1903,8 +1908,9 @@ async function runInpaint() {
     }
 
     // Record successful image-model usage for the shared hints LRU
-    if (generation.value.model_provider_id && generation.value.model_id) {
-      await recordUsage('image', generation.value.model_provider_id, generation.value.model_id)
+    // 用本次实际重绘所用的模型（effectiveProvider/effectiveModel），不是 generation 创建时的模型
+    if (effectiveProvider && effectiveModel) {
+      await recordUsage('image', effectiveProvider, effectiveModel)
     }
 
     // Load candidate data URLs
