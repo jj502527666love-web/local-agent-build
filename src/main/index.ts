@@ -207,7 +207,17 @@ app.whenReady().then(async () => {
 
 function setupAutoUpdater(): void {
   autoUpdater.autoDownload = false
-  autoUpdater.autoInstallOnAppQuit = true
+  // mac 未签名场景：Squirrel.Mac 在 quitAndInstall 阶段调 SecCodeCheckValidity 校验当前
+  // 运行 .app 的代码签名，未签名直接 reject，UI 上「下载完成 → 点重启安装」会变成
+  // 「app 退出但 .app 没被替换 → 重启依然是旧版」的静默失败。
+  // 更关键：electron-updater MacUpdater 在 update-downloaded 后若 autoInstallOnAppQuit=true，
+  // 会立刻调 nativeUpdater(Squirrel.Mac).checkForUpdates() 触发签名校验，未签名直接 emit
+  // error → 我们的 UI 状态机会从「下载完成」秒切到「更新失败」。所以 mac 必须把
+  // autoInstallOnAppQuit 关掉，配合下面 updater:install 改为「打开下载目录」走手动覆盖。
+  // 等接入 Apple Developer 签名+公证后这两段都可以回滚。
+  autoUpdater.autoInstallOnAppQuit = process.platform !== 'darwin'
+
+  let downloadedFilePath: string | null = null
 
   function sendToRenderer(channel: string, ...args: unknown[]): void {
     const win = BrowserWindow.getAllWindows()[0]
@@ -226,8 +236,9 @@ function setupAutoUpdater(): void {
     sendToRenderer('updater:progress', { percent: Math.round(progress.percent), transferred: progress.transferred, total: progress.total })
   })
 
-  autoUpdater.on('update-downloaded', () => {
-    sendToRenderer('updater:downloaded')
+  autoUpdater.on('update-downloaded', (info: any) => {
+    downloadedFilePath = typeof info?.downloadedFile === 'string' ? info.downloadedFile : null
+    sendToRenderer('updater:downloaded', { manualInstall: process.platform === 'darwin' })
   })
 
   autoUpdater.on('error', (err) => {
@@ -249,7 +260,17 @@ function setupAutoUpdater(): void {
   })
 
   ipcMain.handle('updater:install', () => {
+    // mac 未签名兜底：跳过 Squirrel.Mac（必失败），在 Finder 中高亮 zip，
+    // 用户手动覆盖 /Applications/{App}.app。等签名+公证落地后此分支可删。
+    if (process.platform === 'darwin') {
+      if (downloadedFilePath) {
+        shell.showItemInFolder(downloadedFilePath)
+        return { mode: 'manual', path: downloadedFilePath }
+      }
+      return { error: 'no_downloaded_file' }
+    }
     autoUpdater.quitAndInstall(false, true)
+    return { mode: 'auto' }
   })
 
   ipcMain.handle('updater:getVersion', () => app.getVersion())

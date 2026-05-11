@@ -76,7 +76,11 @@
     </aside>
     <main class="flex-1 overflow-hidden flex flex-col relative">
       <header class="h-9 flex-shrink-0 flex items-center px-5 bg-surface-0 gap-3" :class="[isWin ? 'pr-40 app-drag' : '']">
-        <h1 class="text-sm font-semibold text-text-primary">{{ pageTitle }}</h1>
+        <h1 class="text-sm font-semibold text-text-primary flex-shrink-0">{{ pageTitle }}</h1>
+        <!-- 全局公告条：登录后自动显示当前启用的最新一条；点击展开全文弹窗。
+             放在 pageTitle 右侧 + 画布徽标左侧，画布运行时仍可点击（徽标 ml-auto 抢占右侧）。
+             根元素是 button，main.css 的 `.app-drag button` 规则会自动 no-drag，无需额外 class -->
+        <AnnouncementBar />
         <!-- 全局画布任务徽标：anyRunning 时显示，跨页面可见，让用户知道任务仍在后台执行 -->
         <div
           v-if="canvasAnyRunning && !isCanvasRoute"
@@ -130,6 +134,13 @@ import IconPrompt from '@/components/icons/IconPrompt.vue'
 import IconCanvas from '@/components/icons/IconCanvas.vue'
 import IconGallery from '@/components/icons/IconGallery.vue'
 import IconUser from '@/components/icons/IconUser.vue'
+import IconAICreation from '@/components/icons/IconAICreation.vue'
+import IconVideoModel from '@/components/icons/IconVideoModel.vue'
+import IconVideoGen from '@/components/icons/IconVideoGen.vue'
+import IconVideoCreation from '@/components/icons/IconVideoCreation.vue'
+import IconCanvasSquare from '@/components/icons/IconCanvasSquare.vue'
+import IconImageToolkit from '@/components/icons/IconImageToolkit.vue'
+import AnnouncementBar from '@/components/AnnouncementBar.vue'
 import { useCloudAuthStore } from '@/stores/cloud-auth'
 import { appName, appAbbr, appIconUrl } from '@/utils/branding'
 
@@ -173,35 +184,60 @@ function onCancelCanvas() {
 const isWin = ((window as any).electron?.process?.platform || (window as any).runtimeConfig?.platform || '') === 'win32'
 
 const allNavItems = [
-  { path: '/chat', label: '\u5BF9\u8BDD', icon: IconChat },
-  { path: '/bots', label: '\u667A\u80FD\u4F53', icon: IconBot },
-  { path: '/knowledge', label: '\u77E5\u8BC6\u5E93', icon: IconKnowledge },
-  { path: '/models', label: '\u6A21\u578B\u670D\u52A1', icon: IconModel, requirePermission: 'allow_custom_provider' },
-  { path: '/personas', label: '\u4EBA\u683C\u89C4\u5219', icon: IconPersona },
-  { path: '/tools', label: '\u5C0F\u5DE5\u5177', icon: IconTool },
-  { path: '/image-gen', label: 'AI \u751F\u56FE', icon: IconImageGen },
-  { path: '/batch-gen', label: '\u6279\u91CF\u751F\u56FE', icon: IconBatchGen },
-  { path: '/image-to-prompt', label: '\u56FE\u7247\u53CD\u63A8', icon: IconImage2Prompt },
-  { path: '/canvas', label: '\u6D41\u5F0F\u753B\u5E03', icon: IconCanvas },
-  { path: '/inspiration', label: '\u7075\u611F\u5E7F\u573A', icon: IconInspiration },
-  { path: '/my-creations', label: '\u6211\u7684\u521B\u4F5C', icon: IconCreation },
+  { path: '/chat', label: '对话', icon: IconChat },
+  { path: '/bots', label: '智能体', icon: IconBot },
+  { path: '/knowledge', label: '知识库', icon: IconKnowledge },
+  { path: '/models', label: '模型服务', icon: IconModel, requirePermission: 'allow_custom_provider' },
+  { path: '/video-models', label: '视频模型', icon: IconVideoModel, requirePermission: 'allow_custom_video_provider' },
+  { path: '/personas', label: '人格规则', icon: IconPersona },
   {
-    label: '\u6269\u5C55\u80FD\u529B',
+    label: 'AI 创作',
+    icon: IconAICreation,
+    children: [
+      { path: '/image-gen', label: 'AI 生图', icon: IconImageGen },
+      { path: '/batch-gen', label: '批量生图', icon: IconBatchGen },
+      { path: '/image-to-prompt', label: '图片反推', icon: IconImage2Prompt },
+      { path: '/canvas', label: '流式画布', icon: IconCanvas },
+      { path: '/ai-video', label: 'AI 视频', icon: IconVideoGen }
+    ]
+  },
+  { path: '/image-toolkit', label: '图像处理', icon: IconImageToolkit },
+  { path: '/inspiration', label: '灵感广场', icon: IconInspiration },
+  { path: '/canvas-square', label: '画布广场', icon: IconCanvasSquare },
+  {
+    label: '我的创作',
+    icon: IconCreation,
+    children: [
+      { path: '/my-creations', label: '图片创作', icon: IconImageGen },
+      { path: '/video-creations', label: '视频创作', icon: IconVideoCreation }
+    ]
+  },
+  {
+    label: '扩展能力',
     icon: IconExtension,
     children: [
-      { path: '/gallery', label: '\u672C\u5730\u56FE\u5E93', icon: IconGallery },
-      { path: '/prompts', label: '\u63D0\u793A\u8BCD', icon: IconPrompt },
-      { path: '/skills', label: 'Skills\u6280\u80FD', icon: IconSkill },
-      { path: '/mcps', label: 'MCP\u670D\u52A1', icon: IconMcp }
+      { path: '/gallery', label: '本地图库', icon: IconGallery },
+      { path: '/prompts', label: '提示词', icon: IconPrompt },
+      { path: '/tools', label: '小工具', icon: IconTool },
+      { path: '/skills', label: 'Skills技能', icon: IconSkill },
+      { path: '/mcps', label: 'MCP服务', icon: IconMcp }
     ]
   }
 ]
 
 const expandedGroups = ref<Set<string>>(new Set())
 
+/**
+ * 路径匹配：避免 `/canvas-square` 错命中 `/canvas` 这种「字符串前缀但语义不同」的情况。
+ * 规则：完全相等 OR 完全相等 + 紧跟 `/`（用于带 :id 的子路径，比如 /canvas/abc）。
+ */
+function pathMatches(routePath: string, menuPath: string): boolean {
+  return routePath === menuPath || routePath.startsWith(menuPath + '/')
+}
+
 watchEffect(() => {
   for (const item of allNavItems) {
-    if (item.children?.some(child => route.path.startsWith(child.path))) {
+    if (item.children?.some(child => pathMatches(route.path, child.path))) {
       expandedGroups.value.add(item.label)
     }
   }
@@ -216,13 +252,14 @@ function toggleGroup(label: string) {
 }
 
 function isGroupActive(item: any) {
-  return item.children?.some((child: any) => route.path.startsWith(child.path))
+  return item.children?.some((child: any) => pathMatches(route.path, child.path))
 }
 
 const navItems = computed(() => {
   return allNavItems.filter(item => {
-    if (item.requirePermission === 'allow_custom_provider') {
-      return cloudAuth.permissions.allow_custom_provider
+    // 通用权限过滤：动态从 cloudAuth.permissions 取字段，项 requirePermission 存在则该位为真才显示
+    if (item.requirePermission) {
+      return Boolean((cloudAuth.permissions as any)[item.requirePermission])
     }
     return true
   })

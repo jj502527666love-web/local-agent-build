@@ -191,7 +191,6 @@ import { ref, computed, onMounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { useCanvasStore } from '@/stores/canvas'
 import { useModelStore } from '@/stores/models'
-import { stripModelId } from '@shared/model-id'
 import { useHandoffStore } from '@/stores/handoff'
 import { groupAndSort } from '@/utils/model-caps'
 import { warmHintsCache, getHintsSync } from '@/utils/model-usage-hints'
@@ -290,9 +289,10 @@ async function doCreate() {
   const project = await canvasStore.createProject({
     title,
     text_provider_id: createForm.value.text_provider_id,
-    text_model_id: stripModelId(createForm.value.text_model_id),
+    // 保留复合 key（`model_id#@provider_name`）入库，调用时 main 端反查 cloud_model_id 精确路由服务商
+    text_model_id: createForm.value.text_model_id,
     image_provider_id: createForm.value.image_provider_id,
-    image_model_id: stripModelId(createForm.value.image_model_id),
+    image_model_id: createForm.value.image_model_id,
     concurrency
   })
   showCreateDialog.value = false

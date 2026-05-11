@@ -330,8 +330,19 @@ export async function sendMessage(
 ): Promise<void> {
   const bot = getBot(options.botId)
   if (!bot) throw new Error('Bot not found')
-  if (!bot.model_provider_id && !bot.model_id) throw new Error('Bot has no model provider configured')
-  const effectiveProviderId = bot.model_provider_id || 'cloud:default'
+
+  // 「智能体不再绑定模型」改造（v0.6.5+）：模型从 conversation.active_model_* 读取
+  // - 优先用 conv.active_model_*（用户在输入框左下角切换过的在这里）
+  // - 回退：bot.model_*（旧数据：之前绑在 bot 上的模型）
+  // - 都为空时报错，提示用户从输入框左下角选模型
+  const conv = getConversation(options.conversationId)
+  if (!conv) throw new Error('Conversation not found')
+  const effectiveProviderId =
+    conv.active_model_provider_id || bot.model_provider_id || 'cloud:default'
+  const effectiveModelId = conv.active_model_id || bot.model_id || ''
+  if (!effectiveModelId) {
+    throw new Error('未选择对话模型，请在输入框左下角选择模型')
+  }
 
   // Save user message
   addMessage({
@@ -367,7 +378,7 @@ export async function sendMessage(
   // Bot configuration summary
   const capSummary: string[] = []
   capSummary.push(`名称: ${bot.name}`)
-  capSummary.push(`模型: ${bot.model_id}`)
+  capSummary.push(`模型: ${effectiveModelId}`)
   if (effectiveKbCategoryIds.length > 0) {
     capSummary.push(buildKbInventorySummary(effectiveKbCategoryIds, kbDataByCategory))
   }
@@ -589,7 +600,7 @@ export async function sendMessage(
 
   // Sliding window: keep recent rounds, trim if exceeding the model's prompt budget.
   const systemTokens = estimateMessagesTokens(messages)
-  const promptBudget = getModelPromptBudget(bot.model_id)
+  const promptBudget = getModelPromptBudget(effectiveModelId)
   const budget = promptBudget - systemTokens
   let included = historyMessages.slice(-RECENT_ROUNDS * 2)
   included = repairHistoryHead(included)
@@ -623,7 +634,7 @@ export async function sendMessage(
       const response = await callLLM(
         effectiveProviderId,
         {
-          modelId: bot.model_id,
+          modelId: effectiveModelId,
           messages: currentMessages,
           tools: tools.length > 0 ? tools : undefined,
           stream: true,
@@ -739,7 +750,7 @@ export async function sendMessage(
         const finalResponse = await callLLM(
           effectiveProviderId,
           {
-            modelId: bot.model_id,
+            modelId: effectiveModelId,
             messages: currentMessages,
             stream: true,
             signal
@@ -760,9 +771,9 @@ export async function sendMessage(
       }
     }
     // Auto-generate title on 1st or 5th user message
-    maybeGenerateTitle(options.conversationId, effectiveProviderId, bot.model_id, window)
+    maybeGenerateTitle(options.conversationId, effectiveProviderId, effectiveModelId, window)
     // Auto-summarize if history exceeds threshold
-    maybeGenerateSummary(options.conversationId, effectiveProviderId, bot.model_id)
+    maybeGenerateSummary(options.conversationId, effectiveProviderId, effectiveModelId)
   } catch (error: any) {
     if (isAbortedError(error)) {
       // User-initiated cancel: surface as a friendly aborted marker, not an error.

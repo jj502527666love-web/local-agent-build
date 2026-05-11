@@ -103,6 +103,18 @@ const api = {
     getDeviceId: () => ipcRenderer.invoke('cloud:getDeviceId') as Promise<string>,
     setEmbeddingModels: (models: Array<{ id: number; model_id: string; name: string }>) =>
       ipcRenderer.invoke('cloud:setEmbeddingModels', models),
+    // 同步全量云端模型（含 chat/image/embedding）到主进程，发起请求前用于反查 cloud_model_id
+    // 精确路由到具体服务商，解决多家提供同 model_id 时云控端错位扣费的 bug
+    setModels: (
+      models: Array<{
+        id: number
+        model_id: string
+        name: string
+        type: string
+        provider_name: string
+        provider_type?: string
+      }>,
+    ) => ipcRenderer.invoke('cloud:setModels', models),
     setPreferredEmbeddingModel: (modelId: string) =>
       ipcRenderer.invoke('cloud:setPreferredEmbeddingModel', modelId),
     getEmbeddingState: () => ipcRenderer.invoke('cloud:getEmbeddingState') as Promise<{
@@ -140,8 +152,8 @@ const api = {
       ipcRenderer.on('updater:not-available', () => cb()),
     onProgress: (cb: (data: { percent: number; transferred: number; total: number }) => void) =>
       ipcRenderer.on('updater:progress', (_, data) => cb(data)),
-    onDownloaded: (cb: () => void) =>
-      ipcRenderer.on('updater:downloaded', () => cb()),
+    onDownloaded: (cb: (data: { manualInstall?: boolean }) => void) =>
+      ipcRenderer.on('updater:downloaded', (_, data) => cb(data || {})),
     onError: (cb: (msg: string) => void) =>
       ipcRenderer.on('updater:error', (_, msg) => cb(msg)),
     offAll: () => {

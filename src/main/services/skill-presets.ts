@@ -1,4 +1,6 @@
 export interface SkillPreset {
+  /** 固定 ID（builtin_ 前缀），seed 时作为 skills.id 写入，已存在则跳过覆盖 */
+  id: string
   name: string
   description: string
   function_def: {
@@ -15,6 +17,7 @@ export interface SkillPreset {
 
 export const skillPresets: SkillPreset[] = [
   {
+    id: 'builtin_current_time',
     name: '当前时间',
     description: '获取当前日期和时间',
     function_def: {
@@ -36,6 +39,7 @@ const formatted = now.toLocaleString('zh-CN', { timeZone: tz, dateStyle: 'full',
 return { time: formatted, timezone: tz, timestamp: now.toISOString() }`
   },
   {
+    id: 'builtin_calculator',
     name: '数学计算器',
     description: '执行数学表达式计算',
     function_def: {
@@ -62,6 +66,7 @@ return { time: formatted, timezone: tz, timestamp: now.toISOString() }`
 }`
   },
   {
+    id: 'builtin_fetch_webpage',
     name: '网页获取',
     description: '获取网页内容（纯文本）',
     function_def: {
@@ -97,6 +102,7 @@ const text = html.replace(/<script[^>]*>[\\s\\S]*?<\\/script>/gi, '')
 return { url: args.url, content: text.slice(0, maxLen), truncated: text.length > maxLen }`
   },
   {
+    id: 'builtin_json_tool',
     name: 'JSON 处理',
     description: '解析、格式化或查询JSON数据',
     function_def: {
@@ -136,6 +142,7 @@ return { url: args.url, content: text.slice(0, maxLen), truncated: text.length >
 } catch (e) { return { error: e.message } }`
   },
   {
+    id: 'builtin_text_tool',
     name: '文本处理',
     description: '文本统计、转换和处理',
     function_def: {
@@ -172,6 +179,7 @@ if (args.action === 'split') return { result: t.split(args.delimiter || ',') }
 return { error: '未知操作' }`
   },
   {
+    id: 'builtin_random_generator',
     name: '随机生成器',
     description: '生成随机数、UUID、密码等',
     function_def: {

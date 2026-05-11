@@ -21,7 +21,7 @@
         <button @click="saveImage" :disabled="saving" class="px-3 py-1.5 text-xs text-white bg-primary-600 hover:bg-primary-700 rounded-lg transition-colors disabled:opacity-50">
           {{ saving ? '保存中...' : '覆盖保存' }}
         </button>
-        <button @click="saveAsNew" :disabled="saving" class="px-3 py-1.5 text-xs border border-primary-600 text-primary-600 hover:bg-primary-50 rounded-lg transition-colors disabled:opacity-50">另存为</button>
+        <button @click="prepareSaveToGallery" :disabled="saving" class="px-3 py-1.5 text-xs border border-primary-600 text-primary-600 hover:bg-primary-50 rounded-lg transition-colors disabled:opacity-50">另存到图库</button>
       </div>
     </header>
 
@@ -54,6 +54,16 @@
           title="用作参考图重新生成"
         >
           <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182" /></svg>
+        </button>
+
+        <!-- O8: 生图模型设置 -->
+        <div class="flex-1"></div>
+        <button
+          @click="modelDialogVisible = true"
+          :class="['w-10 h-10 rounded-lg flex items-center justify-center transition-colors', editModelId ? 'text-primary-600 hover:bg-surface-2' : 'text-text-tertiary hover:text-text-secondary hover:bg-surface-2']"
+          :title="editModelId ? `生图模型：${modelStore.formatModelLabel(editProviderId, editModelId)}` : '设置生图模型'"
+        >
+          <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21.75 17.25v-.228a4.5 4.5 0 0 0-.12-1.03l-2.268-9.64a3.375 3.375 0 0 0-3.285-2.602H7.923a3.375 3.375 0 0 0-3.285 2.602l-2.268 9.64a4.5 4.5 0 0 0-.12 1.03v.228m19.5 0a3 3 0 0 1-3 3H5.25a3 3 0 0 1-3-3m19.5 0a3 3 0 0 0-3-3H5.25a3 3 0 0 0-3 3m16.5 0h.008v.008h-.008v-.008Zm-3 0h.008v.008h-.008v-.008Z" /></svg>
         </button>
       </div>
 
@@ -325,17 +335,36 @@
 
     <!-- Toast -->
     <div v-if="toast" class="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-lg bg-surface-0 shadow-lg border border-surface-3 text-xs text-text-primary">{{ toast }}</div>
+
+    <!-- O8: 生图模型设置弹窗 -->
+    <ImageEditModelDialog
+      v-model:visible="modelDialogVisible"
+      :initial-provider-id="editProviderId"
+      :initial-model-id="editModelId"
+      @confirm="onModelConfirm"
+    />
+
+    <!-- O4-4: 另存到图库弹窗 -->
+    <GallerySaveDialog
+      v-model:visible="gallerySaveVisible"
+      :preview-data-uri="gallerySaveDataUri"
+      :default-name="gallerySaveDefaultName"
+      @confirm="onGallerySaveConfirm"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, onBeforeUnmount, nextTick, shallowRef } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Canvas, FabricImage, Rect, Ellipse, IText, PencilBrush, filters, Path, Control, util } from 'fabric'
+import { Canvas, FabricImage, Rect, Ellipse, IText, PencilBrush, filters, Path, Point, Control, util } from 'fabric'
 import type { FabricObject, TPointerEvent, Transform } from 'fabric'
 import { recordUsage } from '@/utils/model-usage-hints'
 import { useSiteConfigStore } from '@/stores/site-config'
 import { useModelStore } from '@/stores/models'
+import ImageEditModelDialog from '@/components/ImageEditModelDialog.vue'
+import GallerySaveDialog from '@/components/GallerySaveDialog.vue'
+import { useGalleryStore } from '@/stores/gallery'
 
 const route = useRoute()
 const router = useRouter()
@@ -361,6 +390,17 @@ const inpainting = ref(false)
 const toast = ref('')
 const generation = ref<any>(null)
 const activeTool = ref('select')
+
+// O8: 用户在图片编辑里设置的生图模型（用 settings 持久化，跨打开记忆）
+const editProviderId = ref('')
+const editModelId = ref('')
+const modelDialogVisible = ref(false)
+
+// O4-4: 另存到图库弹窗
+const galleryStore = useGalleryStore()
+const gallerySaveVisible = ref(false)
+const gallerySaveDataUri = ref('')
+const gallerySaveDefaultName = ref('')
 
 // Text tool
 const textContent = ref('文字')
@@ -531,6 +571,23 @@ onMounted(async () => {
     await new Promise<void>(r => requestAnimationFrame(() => requestAnimationFrame(() => r())))
     await initCanvas(absPath)
 
+    // URL query 预设：从图像处理菜单 / 第三方入口跳过来时携带工具/模板/提示词，
+    // 进入页面自动激活，让用户少点几下。仅当 canvas 就绪后调用 selectTool 才安全。
+    applyEditPresetsFromQuery()
+
+    // O8: 读出记忆的图片编辑生图模型；不存在则回退到当前 generation 的模型
+    try {
+      const all = (await api().settings.invoke('getAll')) as Record<string, string>
+      if (all['imageedit_provider_id']) editProviderId.value = all['imageedit_provider_id']
+      if (all['imageedit_model_id']) editModelId.value = all['imageedit_model_id']
+      if (!editProviderId.value && generation.value?.model_provider_id) {
+        editProviderId.value = generation.value.model_provider_id
+        editModelId.value = generation.value.model_id || ''
+      }
+    } catch {
+      // 设置读取失败不影响主流程
+    }
+
     window.addEventListener('keydown', handleKeyDown)
     unsubscribeImageProgress = api().imageGen.onProgress(handleImageGenProgress)
   } catch (e: any) {
@@ -538,6 +595,32 @@ onMounted(async () => {
     console.error(e)
   }
 })
+
+/**
+ * 解析路由 query 上的预设并应用：
+ *   - tool='inpaint' | 'crop' | 'rotate' | 'filter' | 'text' | 'draw'  → selectTool
+ *   - template='replace' | 'remove' | 'fix' | 'enhance'                → 切 inpaint 模板
+ *   - presetPrompt='...'                                                → 填入 inpaintPrompt
+ *
+ * 不在 query 里就保持默认（select 工具、空 prompt），不影响普通进入流程。
+ */
+function applyEditPresetsFromQuery() {
+  const q = route.query
+  const presetTool = typeof q.tool === 'string' ? q.tool : ''
+  const presetTpl = typeof q.template === 'string' ? q.template : ''
+  const presetPrompt = typeof q.presetPrompt === 'string' ? q.presetPrompt : ''
+
+  if (presetTool && ['select', 'crop', 'rotate', 'filter', 'text', 'draw', 'inpaint'].includes(presetTool)) {
+    selectTool(presetTool)
+  }
+  if (presetTpl && ['replace', 'remove', 'fix', 'enhance'].includes(presetTpl)) {
+    activeTemplate.value = presetTpl
+    usePromptTemplate.value = true
+  }
+  if (presetPrompt) {
+    inpaintPrompt.value = presetPrompt
+  }
+}
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleKeyDown)
@@ -649,6 +732,20 @@ async function initCanvas(imagePath: string) {
 
   // Load base image
   await setBaseImage(dataUrl, canvasW, canvasH)
+
+  // O7：滚轮缩放（以鼠标位置为中心）；min 0.2x ~ max 5x，缩放同时刷新画笔圆圈光标尺寸
+  fabricCanvas.on('mouse:wheel', (opt: any) => {
+    if (!fabricCanvas) return
+    const delta = opt.e.deltaY
+    let zoom = fabricCanvas.getZoom()
+    zoom *= 0.999 ** delta
+    if (zoom > 5) zoom = 5
+    if (zoom < 0.2) zoom = 0.2
+    fabricCanvas.zoomToPoint(new Point(opt.e.offsetX, opt.e.offsetY), zoom)
+    opt.e.preventDefault()
+    opt.e.stopPropagation()
+    refreshBrushCursor()
+  })
 
   // Hook path:created to tag brush strokes by role and ensure visibility
   fabricCanvas.on('path:created', (e: any) => {
@@ -827,6 +924,7 @@ function selectTool(toolId: string) {
   // Always exit drawing mode and reset cursor
   fabricCanvas.isDrawingMode = false
   fabricCanvas.defaultCursor = 'default'
+  fabricCanvas.freeDrawingCursor = 'crosshair'
   removeCropRect()
 
   activeTool.value = toolId
@@ -848,6 +946,7 @@ function selectTool(toolId: string) {
     brush.color = drawColor.value
     fabricCanvas.freeDrawingBrush = brush
     removeShapeListeners()
+    refreshBrushCursor()
   } else if (toolId === 'inpaint') {
     applyMaskShapeMode()
   } else if (toolId === 'crop') {
@@ -875,11 +974,51 @@ function applyMaskShapeMode() {
     brush.width = maskBrushSize.value
     brush.color = maskShape.value === 'eraser' ? 'rgba(80, 80, 80, 0.55)' : 'rgba(255, 0, 0, 0.4)'
     fabricCanvas.freeDrawingBrush = brush
-    fabricCanvas.defaultCursor = 'crosshair'
+    refreshBrushCursor()
   } else {
     fabricCanvas.isDrawingMode = false
     fabricCanvas.defaultCursor = 'crosshair'
     addShapeListeners()
+  }
+}
+
+/**
+ * O6: 构造圆圈画笔光标的 SVG data URI。
+ * 圆形 + 中心十字辅助点（双色描边，浅色背景与深色背景都能看清）。
+ */
+function buildBrushCursor(diameter: number, ringColor: string): string {
+  const d = Math.max(6, Math.min(256, diameter))
+  const r = d / 2
+  const pad = 2
+  const size = d + pad * 2
+  const cx = r + pad
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">` +
+    `<circle cx="${cx}" cy="${cx}" r="${r}" fill="none" stroke="white" stroke-width="2.5"/>` +
+    `<circle cx="${cx}" cy="${cx}" r="${r}" fill="none" stroke="${ringColor}" stroke-width="1.2"/>` +
+    `<circle cx="${cx}" cy="${cx}" r="1.5" fill="${ringColor}"/>` +
+    `</svg>`
+  const url = `data:image/svg+xml;base64,${btoa(svg)}`
+  return `url("${url}") ${cx} ${cx}, crosshair`
+}
+
+/**
+ * O6 + O7: 根据当前激活工具计算画笔光标 px 大小（含 zoom 比例），并更新 fabric.
+ * 当工具/笔刷尺寸/zoom 变化时都应调用此函数。
+ */
+function refreshBrushCursor() {
+  if (!fabricCanvas) return
+  const zoom = fabricCanvas.getZoom() || 1
+  if (activeTool.value === 'draw') {
+    const px = drawBrushSize.value * zoom
+    const cursor = buildBrushCursor(px, drawColor.value)
+    fabricCanvas.freeDrawingCursor = cursor
+    fabricCanvas.defaultCursor = cursor
+  } else if (activeTool.value === 'inpaint' && (maskShape.value === 'brush' || maskShape.value === 'eraser')) {
+    const px = maskBrushSize.value * zoom
+    const ring = maskShape.value === 'eraser' ? '#888888' : '#f97316'
+    const cursor = buildBrushCursor(px, ring)
+    fabricCanvas.freeDrawingCursor = cursor
+    fabricCanvas.defaultCursor = cursor
   }
 }
 
@@ -1331,12 +1470,14 @@ function updateBrush() {
   if (!fabricCanvas || !fabricCanvas.freeDrawingBrush) return
   fabricCanvas.freeDrawingBrush.width = drawBrushSize.value
   fabricCanvas.freeDrawingBrush.color = drawColor.value
+  refreshBrushCursor()
 }
 
 // ---- Inpaint Mask ----
 function updateMaskBrush() {
   if (!fabricCanvas || !fabricCanvas.freeDrawingBrush || activeTool.value !== 'inpaint') return
   fabricCanvas.freeDrawingBrush.width = maskBrushSize.value
+  refreshBrushCursor()
 }
 
 function clearMask() {
@@ -1670,6 +1811,15 @@ function cancelInpaint() {
   showToast('已请求取消，等待当前批次完成后停止')
 }
 
+// O8: 模型选择弹窗确认回调，保存到 settings 持久化
+function onModelConfirm(payload: { providerId: string; modelId: string }) {
+  editProviderId.value = payload.providerId
+  editModelId.value = payload.modelId
+  api().settings.invoke('set', 'imageedit_provider_id', payload.providerId).catch(() => {})
+  api().settings.invoke('set', 'imageedit_model_id', payload.modelId).catch(() => {})
+  showToast(`已设置：${modelStore.formatModelLabel(payload.providerId, payload.modelId)}`)
+}
+
 // ---- Main inpaint function ----
 async function runInpaint() {
   if (!generation.value || !inpaintPrompt.value.trim()) return
@@ -1698,12 +1848,19 @@ async function runInpaint() {
     const finalPrompt = buildFinalPrompt()
     const finalSize = inferSizeKey(originalW, originalH, generation.value.size || '1:1')
 
+    // O8: 优先使用用户在工具栏「生图模型」按钮设置的模型；未设置回退到 generation
+    const effectiveProvider = editProviderId.value || generation.value.model_provider_id
+    const effectiveModel = editModelId.value || generation.value.model_id
+    if (!effectiveProvider || !effectiveModel) {
+      throw new Error('未设置生图模型，请先点左下角「设置生图模型」选择')
+    }
+
     const results: any[] = await api().imageGen.invoke('generate', {
       prompt: finalPrompt,
       refImages: [sourceBase64],
       mask: maskBase64,
-      modelProviderId: generation.value.model_provider_id,
-      modelId: generation.value.model_id,
+      modelProviderId: effectiveProvider,
+      modelId: effectiveModel,
       size: finalSize,
       quality: generation.value.quality || 'auto',
       batchCount: batchCount.value,
@@ -1912,26 +2069,35 @@ async function saveImage() {
   }
 }
 
-async function saveAsNew() {
+// O4-4: 另存到图库
+async function prepareSaveToGallery() {
   if (!generation.value) return
-  saving.value = true
   try {
     const dataUrl = await getCanvasDataUrl()
     if (!dataUrl) throw new Error('Failed to export canvas')
-    const base64 = dataUrl.split(',')[1]
-    const buffer = Uint8Array.from(atob(base64), c => c.charCodeAt(0))
-    const blob = new Blob([buffer], { type: 'image/png' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `edited_${generation.value.id}.png`
-    a.click()
-    URL.revokeObjectURL(url)
-    showToast('已下载')
+    gallerySaveDataUri.value = dataUrl
+    gallerySaveDefaultName.value = generation.value.id === '_local'
+      ? `编辑_${new Date().toISOString().slice(0, 10)}`
+      : `edited_${generation.value.id}`
+    gallerySaveVisible.value = true
+  } catch (e: any) {
+    showToast('准备保存失败: ' + (e.message || ''))
+  }
+}
+
+async function onGallerySaveConfirm(payload: { categoryId: string; filename: string }) {
+  if (!gallerySaveDataUri.value) return
+  saving.value = true
+  try {
+    const name = payload.filename || gallerySaveDefaultName.value
+    const item = await galleryStore.addFromDataUri(payload.categoryId, gallerySaveDataUri.value, name)
+    if (item) showToast('已保存到图库')
+    else throw new Error('写盘失败')
   } catch (e: any) {
     showToast('保存失败: ' + (e.message || ''))
   } finally {
     saving.value = false
+    gallerySaveDataUri.value = ''
   }
 }
 

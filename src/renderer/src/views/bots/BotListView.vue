@@ -14,25 +14,8 @@
           <label class="form-label">描述</label>
           <input v-model="form.description" class="input-field" placeholder="简要描述智能体的用途" />
         </div>
-        <div class="grid grid-cols-2 gap-4">
-          <div>
-            <label class="form-label">模型服务商</label>
-            <select v-model="form.model_provider_id" class="select-field">
-              <option value="">-- 选择 --</option>
-              <option v-for="p in modelStore.providers" :key="p.id" :value="p.id">{{ p.name }}</option>
-            </select>
-          </div>
-          <div>
-            <label class="form-label">模型</label>
-            <select v-if="selectedProviderModels.length" v-model="form.model_id" class="select-field">
-              <option value="">-- 选择 --</option>
-              <optgroup v-if="modelGroups.recommended.length" label="推荐（对话）">
-                <option v-for="m in modelGroups.recommended" :key="m" :value="m">{{ modelStore.optionLabel(form.model_provider_id, m) }}</option>
-              </optgroup>
-            </select>
-            <input v-else v-model="form.model_id" placeholder="e.g. gpt-4o" class="input-field" />
-          </div>
-        </div>
+        <!-- 「智能体不再绑定模型」（v0.6.5+）：创建/编辑不再选模型。默认模型由云控端「系统设置→对话模型」下发，
+             进入对话后在输入框左下角可随时切换，每个会话独立记忆。 -->
         <div>
           <label class="form-label">人格</label>
           <select v-model="form.persona_id" class="select-field">
@@ -136,7 +119,8 @@
               </div>
               <div class="min-w-0">
                 <div class="font-semibold text-sm text-text-primary truncate">{{ bot.name }}</div>
-                <div class="text-xs text-text-tertiary mt-0.5 truncate">{{ bot.model_id ? modelStore.formatModelLabel(bot.model_provider_id, bot.model_id) : '未配置模型' }}</div>
+                <!-- 「智能体不再绑定模型」后，卡片小字展示「会话时选择模型」提示 -->
+                <div class="text-xs text-text-tertiary mt-0.5 truncate">会话时可选择模型</div>
               </div>
             </div>
           </div>
@@ -161,18 +145,13 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useBotStore, type Bot } from '@/stores/bots'
-import { useModelStore } from '@/stores/models'
-import { stripModelId } from '@shared/model-id'
 import { usePersonaStore } from '@/stores/personas'
 import { useKnowledgeStore } from '@/stores/knowledge'
 import { useSkillStore } from '@/stores/skills'
 import { useMcpStore } from '@/stores/mcps'
 import { usePromptSkillStore } from '@/stores/prompt-skills'
-import { groupAndSort } from '@/utils/model-caps'
-import { warmHintsCache, getHintsSync } from '@/utils/model-usage-hints'
 
 const botStore = useBotStore()
-const modelStore = useModelStore()
 const personaStore = usePersonaStore()
 const kbStore = useKnowledgeStore()
 const skillStore = useSkillStore()
@@ -196,8 +175,6 @@ const approvalOptions: { value: ToolApproval; label: string; desc: string }[] = 
 const form = ref({
   name: '',
   description: '',
-  model_provider_id: '',
-  model_id: '',
   persona_id: '',
   kb_only: 0 as number,
   kb_category_ids: [] as string[],
@@ -207,35 +184,15 @@ const form = ref({
   tool_approval: 'destructive' as ToolApproval
 })
 
-const hintsTick = ref(0)
-const selectedProvider = computed(() =>
-  modelStore.providers.find((p) => p.id === form.value.model_provider_id) || null
-)
-const selectedProviderModels = computed(() => selectedProvider.value?.models || [])
-const modelGroups = computed(() => {
-  hintsTick.value
-  if (!selectedProvider.value) return { recommended: [], others: [] }
-  return groupAndSort(selectedProvider.value.models, 'chat', {
-    cloudTypeOf: (mid) => modelStore.cloudTypeOf(selectedProvider.value!.id, mid),
-    usageHints: getHintsSync('chat', selectedProvider.value.id)
-  })
-})
-
 function resetForm() {
-  form.value = { name: '', description: '', model_provider_id: '', model_id: '', persona_id: '', kb_only: 0, kb_category_ids: [], skill_ids: [], mcp_ids: [], prompt_skill_dirs: [], tool_approval: 'destructive' }
+  form.value = { name: '', description: '', persona_id: '', kb_only: 0, kb_category_ids: [], skill_ids: [], mcp_ids: [], prompt_skill_dirs: [], tool_approval: 'destructive' }
 }
 
 function editBot(bot: Bot) {
   editingId.value = bot.id
-  const inferredProviderId = bot.model_provider_id || (bot.model_id && modelStore.providers.some(p => p.isCloud && p.models.some(m => stripModelId(m) === bot.model_id)) ? 'cloud:default' : '')
-  // 云端 provider 的 select option 用复合 key 作为 :value，editBot 时把 DB 里的纯 model_id 升级为复合 key
-  // 让 select 能命中具体某家服务商的 option；其他 provider 直接用纯 model_id。
-  const isCloudProvider = inferredProviderId === 'cloud:default'
   form.value = {
     name: bot.name,
     description: bot.description,
-    model_provider_id: inferredProviderId,
-    model_id: isCloudProvider ? modelStore.upgradeToCompositeKey(bot.model_id) : bot.model_id,
     persona_id: bot.persona_id || '',
     kb_only: bot.kb_only || 0,
     kb_category_ids: [...bot.kb_category_ids],
@@ -249,13 +206,10 @@ function editBot(bot: Bot) {
 
 async function saveBot() {
   try {
-    const isCloud = form.value.model_provider_id?.startsWith('cloud:')
-    const data = {
-      ...form.value,
-      model_provider_id: (form.value.model_provider_id && !isCloud) ? form.value.model_provider_id : null,
-      model_id: stripModelId(form.value.model_id),
-      persona_id: form.value.persona_id || null
-    }
+    // 「智能体不再绑定模型」（v0.6.5+）：model_provider_id/model_id 不再由表单提供，
+    // 发送以上字段后保证服务端以空字符串插入（后端使用 `data.model_id || ''`）
+    // 旧 bot 上已存在的 model_provider_id/model_id 保留不动，仅作向后兼容 fallback
+    const data: any = { ...form.value, persona_id: form.value.persona_id || null }
     if (editingId.value) {
       await botStore.updateBot(editingId.value, data)
     } else {
@@ -272,15 +226,12 @@ async function saveBot() {
 onMounted(async () => {
   await Promise.all([
     botStore.fetchBots(),
-    modelStore.fetchProviders(),
     personaStore.fetchPersonas(),
     kbStore.fetchCategories(),
     skillStore.fetchSkills(),
     mcpStore.fetchServers(),
     promptSkillStore.fetchSkills(),
-    warmHintsCache()
   ])
-  hintsTick.value++
 })
 </script>
 

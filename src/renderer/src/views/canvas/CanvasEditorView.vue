@@ -277,7 +277,6 @@ import '@vue-flow/core/dist/theme-default.css'
 import '@vue-flow/minimap/dist/style.css'
 import { useCanvasStore } from '@/stores/canvas'
 import { useModelStore } from '@/stores/models'
-import { stripModelId } from '@shared/model-id'
 import { useHandoffStore } from '@/stores/handoff'
 import { groupAndSort } from '@/utils/model-caps'
 import { warmHintsCache, getHintsSync } from '@/utils/model-usage-hints'
@@ -419,9 +418,10 @@ async function saveSettings() {
   await canvasStore.updateProject(projectId.value, {
     title: settingsForm.value.title.trim() || canvasStore.currentProject?.title,
     text_provider_id: settingsForm.value.text_provider_id,
-    text_model_id: stripModelId(settingsForm.value.text_model_id),
+    // 保留复合 key 入库，调用时 main 端反查 cloud_model_id 精确路由服务商
+    text_model_id: settingsForm.value.text_model_id,
     image_provider_id: settingsForm.value.image_provider_id,
-    image_model_id: stripModelId(settingsForm.value.image_model_id),
+    image_model_id: settingsForm.value.image_model_id,
     concurrency
   })
   showSettings.value = false

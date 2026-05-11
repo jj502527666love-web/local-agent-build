@@ -58,6 +58,21 @@
           </label>
         </div>
 
+        <div v-if="isRegister" class="flex items-start gap-1.5">
+          <input
+            id="agree-checkbox"
+            type="checkbox"
+            v-model="agreed"
+            class="mt-0.5 w-3.5 h-3.5 rounded border-surface-3 accent-primary-600 cursor-pointer flex-shrink-0"
+          />
+          <label for="agree-checkbox" class="text-xs text-text-secondary leading-relaxed cursor-pointer">
+            我已阅读并同意
+            <button type="button" @click="openAgreement('register')" class="text-primary-600 hover:text-primary-700 transition-colors">《{{ siteConfig.agreements.register.title || '注册协议' }}》</button>
+            和
+            <button type="button" @click="openAgreement('privacy')" class="text-primary-600 hover:text-primary-700 transition-colors">《{{ siteConfig.agreements.privacy.title || '隐私协议' }}》</button>
+          </label>
+        </div>
+
         <div v-if="error" class="text-xs text-red-500 bg-red-50 rounded-lg px-3 py-2">{{ error }}</div>
 
         <button type="submit" :disabled="submitting"
@@ -67,11 +82,18 @@
       </form>
 
       <div class="mt-5 text-center">
-        <button @click="isRegister = !isRegister" class="text-xs text-primary-600 hover:text-primary-700 transition-colors">
-          {{ isRegister ? '\u5df2\u6709\u8d26\u53f7\uff1f\u53bb\u767b\u5f55' : '\u6ca1\u6709\u8d26\u53f7\uff1f\u53bb\u6ce8\u518c' }}
+        <button @click="toggleMode" class="text-xs text-primary-600 hover:text-primary-700 transition-colors">
+          {{ isRegister ? '已有账号？去登录' : '没有账号？去注册' }}
         </button>
       </div>
     </div>
+
+    <AgreementDialog
+      :open="agreementDialog.open"
+      :title="agreementDialog.title"
+      :content-html="agreementDialog.content"
+      @close="agreementDialog.open = false"
+    />
   </div>
 </template>
 
@@ -79,10 +101,13 @@
 import { ref, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useCloudAuthStore } from '@/stores/cloud-auth'
+import { useSiteConfigStore } from '@/stores/site-config'
+import AgreementDialog from '@/components/AgreementDialog.vue'
 import { appName, appAbbr } from '@/utils/branding'
 
 const router = useRouter()
 const store = useCloudAuthStore()
+const siteConfig = useSiteConfigStore()
 
 const isRegister = ref(false)
 const submitting = ref(false)
@@ -90,6 +115,29 @@ const error = ref('')
 const form = ref({ username: '', password: '', confirmPassword: '', nickname: '', phone: '' })
 const rememberUsername = ref(false)
 const rememberPassword = ref(false)
+// 注册页协议勾选：默认不勾选，提交前必须勾选。切换登录/注册时重置
+const agreed = ref(false)
+const agreementDialog = ref<{ open: boolean; title: string; content: string }>({
+  open: false,
+  title: '',
+  content: '',
+})
+
+function openAgreement(type: 'register' | 'privacy') {
+  const a = type === 'register' ? siteConfig.agreements.register : siteConfig.agreements.privacy
+  agreementDialog.value = {
+    open: true,
+    title: a.title || (type === 'register' ? '注册协议' : '隐私协议'),
+    content: a.content || '',
+  }
+}
+
+function toggleMode() {
+  isRegister.value = !isRegister.value
+  // 切换时清理错误提示与协议勾选，避免状态残留
+  error.value = ''
+  agreed.value = false
+}
 
 // 与云控端 UserController/AuthController 保持一致：中/英/数/下划线
 const NAME_REGEX = /^[a-zA-Z0-9_\u4e00-\u9fa5]+$/
@@ -152,6 +200,7 @@ function validateRegisterForm(): string | null {
 
   if (form.value.password.length < 6) return '密码至少 6 位'
   if (form.value.password !== form.value.confirmPassword) return '两次密码不一致'
+  if (!agreed.value) return '请勾选并阅读《' + (siteConfig.agreements.register.title || '注册协议') + '》和《' + (siteConfig.agreements.privacy.title || '隐私协议') + '》'
   return null
 }
 

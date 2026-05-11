@@ -55,6 +55,16 @@ interface Window {
       setPermissions: (perms: Record<string, any>) => Promise<void>
       getDeviceId: () => Promise<string>
       setEmbeddingModels: (models: Array<{ id: number; model_id: string; name: string }>) => Promise<void>
+      setModels: (
+        models: Array<{
+          id: number
+          model_id: string
+          name: string
+          type: string
+          provider_name: string
+          provider_type?: string
+        }>,
+      ) => Promise<void>
       setPreferredEmbeddingModel: (modelId: string) => Promise<void>
       getEmbeddingState: () => Promise<{
         models: Array<{ id: number; model_id: string; name: string }>
@@ -74,7 +84,7 @@ interface Window {
       onAvailable: (cb: (data: { version: string; releaseNotes?: string }) => void) => void
       onNotAvailable: (cb: () => void) => void
       onProgress: (cb: (data: { percent: number; transferred: number; total: number }) => void) => void
-      onDownloaded: (cb: () => void) => void
+      onDownloaded: (cb: (data: { manualInstall?: boolean }) => void) => void
       onError: (cb: (msg: string) => void) => void
       offAll: () => void
     }

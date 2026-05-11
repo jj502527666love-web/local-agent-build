@@ -1,6 +1,6 @@
 {
   "name": "local-agent",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "description": "Local AI Agent Platform",
   "main": "./out/main/index.js",
   "scripts": {
@@ -17,6 +17,7 @@
     "@vue-flow/minimap": "^1.5.4",
     "better-sqlite3": "^11.0.0",
     "electron-updater": "^6.8.3",
+    "gifenc": "^1.0.3",
     "mammoth": "^1.12.0",
     "pdf-parse": "^2.4.5",
     "uuid": "^10.0.0",

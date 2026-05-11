@@ -256,7 +256,6 @@ import { ref, computed, watch, onMounted, reactive } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
 import { useModelStore } from '@/stores/models'
-import { stripModelId } from '@shared/model-id'
 import { useImage2PromptStore } from '@/stores/image2prompt'
 import type { Task as Image2PromptTask } from '@/stores/image2prompt'
 import { groupAndSort } from '@/utils/model-caps'
@@ -499,7 +498,8 @@ async function runOne(task: Task) {
         ]
       }
     ]
-    const result = await (window as any).api.llm.invoke('call', visionProviderId.value, stripModelId(visionModelId.value), messages)
+    // 保留复合 key 传给 main，main 端按服务商反查 cloud_model_id 精确路由
+    const result = await (window as any).api.llm.invoke('call', visionProviderId.value, visionModelId.value, messages)
     if (typeof result === 'string') {
       task.result = result.trim()
     } else if (result?.content) {

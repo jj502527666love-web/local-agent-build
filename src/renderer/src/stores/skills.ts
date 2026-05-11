@@ -14,7 +14,14 @@ export interface Skill {
   source: string
   version: string
   enabled: boolean
+  is_builtin: boolean
   created_at: string
+}
+
+/** skill:import 的返回结构：main 进程会把重名 / 校验失败的条目单独列出，整批不回滚 */
+export interface SkillImportResult {
+  created: Skill[]
+  errors: { name: string; reason: string }[]
 }
 
 export const useSkillStore = defineStore('skills', () => {
@@ -65,10 +72,10 @@ export const useSkillStore = defineStore('skills', () => {
     return (await window.api.skill.invoke('export', plain(ids))) as any[]
   }
 
-  async function importSkills(dataArr: any[]) {
-    const results = (await window.api.skill.invoke('import', plain(dataArr))) as Skill[]
-    skills.value.unshift(...results)
-    return results
+  async function importSkills(dataArr: any[]): Promise<SkillImportResult> {
+    const result = (await window.api.skill.invoke('import', plain(dataArr))) as SkillImportResult
+    skills.value.unshift(...result.created)
+    return result
   }
 
   return {

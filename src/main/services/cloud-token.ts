@@ -1,4 +1,5 @@
 import { getRuntimeConfig } from './runtime-config'
+import { CLOUD_KEY_SEP } from '@shared/model-id'
 
 let cloudToken: string | null = null
 
@@ -19,10 +20,29 @@ export interface CloudEmbeddingModel {
   name: string
 }
 
+/**
+ * 云控端 cloud_models 表中一行的最小投影。
+ * 由 renderer cloud-auth.ts fetchCloudData 拉到全量模型后，
+ * 通过 IPC `cloud:setModels` 同步到 main 进程缓存中。
+ * 用于发起云端推理/生图/向量请求前，把渲染层选择的复合 key
+ * `{model_id}#@{provider_name}` 反查为云端唯一主键 `cloud_model_id`，
+ * 解决多家服务商提供同名模型时云控端 `first()` 错位路由的 bug。
+ */
+export interface CloudModelEntry {
+  id: number
+  model_id: string
+  name: string
+  type: string
+  provider_name: string
+  provider_type?: string
+}
+
 // 渲染进程通过 fetchCloudData 同步过来的云端 embedding 模型列表
 let cloudEmbeddingModels: CloudEmbeddingModel[] = []
 // 用户在 SettingsView 选择的偏好云端 embedding 模型 model_id
 let preferredCloudEmbeddingModel = ''
+// 全量云端模型（chat/image/embedding 等），用于 resolveCloudModelId 反查主键
+let cloudModels: CloudModelEntry[] = []
 
 export function setCloudToken(token: string | null): void {
   cloudToken = token
@@ -80,4 +100,66 @@ export function getActiveCloudEmbeddingModelId(): string {
     if (hit) return hit.model_id
   }
   return cloudEmbeddingModels[0]?.model_id || ''
+}
+
+export function setCloudModels(models: CloudModelEntry[]): void {
+  cloudModels = Array.isArray(models) ? models : []
+}
+
+export function getCloudModels(): CloudModelEntry[] {
+  return cloudModels
+}
+
+/**
+ * 把渲染层选择的模型标识精确反查为云端 cloud_models 表主键。
+ *
+ * 输入 modelIdOrComposite 可能是：
+ *   - 复合 key `{model_id}#@{provider_name}`：携带用户实际选中的服务商
+ *   - 纯 model_id：老数据 / 老客户端兼容路径，不带服务商信息
+ *
+ * 返回：
+ *   - pureModelId：剥离复合 key 后的纯 model_id，作为上游 OpenAI 协议 body.model 字段
+ *   - cloudModelId：命中的云端主键。返回 null 时云控端 GatewayController 会
+ *     回退到老的 `(model_id, type)` 查询（保持向后兼容）
+ *
+ * 命中规则：
+ *   - 复合 key 且缓存里存在 (model_id, provider_name[, type]) 三元组 → 精准命中
+ *   - 纯 model_id 但缓存里同 (model_id[, type]) 只有一条 → 唯一命中
+ *   - 多家提供同名 model_id 且未带 provider_name → 返回 null（让后端兜底，保留旧行为）
+ *
+ * @param expectedType 可选过滤 'chat' | 'image' | 'embedding'，避免同名跨 type 冲突
+ */
+export function resolveCloudModelId(
+  modelIdOrComposite: string | undefined | null,
+  expectedType?: string,
+): { pureModelId: string; cloudModelId: number | null } {
+  if (!modelIdOrComposite) return { pureModelId: '', cloudModelId: null }
+  const sepIdx = modelIdOrComposite.indexOf(CLOUD_KEY_SEP)
+  const pureModelId =
+    sepIdx === -1 ? modelIdOrComposite : modelIdOrComposite.slice(0, sepIdx)
+  const providerName = sepIdx === -1 ? '' : modelIdOrComposite.slice(sepIdx + CLOUD_KEY_SEP.length)
+
+  if (cloudModels.length === 0) {
+    return { pureModelId, cloudModelId: null }
+  }
+
+  const candidates = expectedType
+    ? cloudModels.filter((m) => m.type === expectedType)
+    : cloudModels
+
+  if (providerName) {
+    const hit = candidates.find(
+      (m) => m.model_id === pureModelId && m.provider_name === providerName,
+    )
+    if (hit) return { pureModelId, cloudModelId: hit.id }
+    // 复合 key 携带了 provider_name 但缓存里找不到精确匹配：
+    // 可能用户拉取模型列表后云控端管理员重命名了服务商，或者删除了该模型。
+    // 不强行兜底命中其他同名行（避免再次陷入"错家扣费"），返回 null 让后端走老逻辑。
+    return { pureModelId, cloudModelId: null }
+  }
+
+  // 纯 model_id：仅当唯一匹配时才精准命中，多家同名时返回 null 保持现状
+  const matches = candidates.filter((m) => m.model_id === pureModelId)
+  if (matches.length === 1) return { pureModelId, cloudModelId: matches[0].id }
+  return { pureModelId, cloudModelId: null }
 }

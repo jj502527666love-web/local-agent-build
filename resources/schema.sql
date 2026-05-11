@@ -5,6 +5,11 @@ CREATE TABLE IF NOT EXISTS model_providers (
   api_base TEXT NOT NULL,
   api_key TEXT NOT NULL DEFAULT '',
   models TEXT NOT NULL DEFAULT '[]',
+  -- 生图扩展字段（仅作用于 callImageAPI 的自定义 + 多米分支，云端固定协议不受影响）
+  -- custom_params: JSON 数组 [{name, value}]，逐条 set 进 body 顶层；空字符串值仅占位不下发
+  -- request_override_patch: JSON 对象，最后 Object.assign 到 body 上做最终覆盖
+  custom_params TEXT NOT NULL DEFAULT '[]',
+  request_override_patch TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -70,6 +75,13 @@ CREATE TABLE IF NOT EXISTS conversations (
   id TEXT PRIMARY KEY,
   bot_id TEXT NOT NULL,
   title TEXT NOT NULL DEFAULT 'New Chat',
+  -- 当前会话使用的模型（每个会话独立持久记忆）：
+  -- - 新建时：填入云控端「对话页面默认模型」（site-config.chat_default_model）；缺省时留空
+  -- - 用户在对话页输入框左下角切换：写回这两列
+  -- - sendMessage 时优先用这两列，缺省时回退到云端默认 / 本地第一个 chat 模型
+  -- 之前依赖 bots.model_provider_id / bots.model_id 强绑定的设计已废弃，新模型策略「智能体不再绑定模型」
+  active_model_provider_id TEXT NOT NULL DEFAULT '',
+  active_model_id TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (bot_id) REFERENCES bots(id) ON DELETE CASCADE
@@ -106,6 +118,7 @@ CREATE TABLE IF NOT EXISTS skills (
   source TEXT NOT NULL DEFAULT 'local',
   version TEXT NOT NULL DEFAULT '1.0.0',
   enabled INTEGER NOT NULL DEFAULT 1,
+  is_builtin INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

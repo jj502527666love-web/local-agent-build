@@ -25,11 +25,43 @@ export interface PaymentAvailability {
   tianque: boolean
 }
 
+/**
+ * 注册页协议（注册协议、隐私协议）。由云控端「系统设置 → 协议管理」维护，
+ * 桌面端在注册前弹窗展示。content 是 HTML 富文本，渲染前用 DOMPurify 过滤。
+ */
+export interface Agreement {
+  title: string
+  content: string
+}
+
+export interface Agreements {
+  register: Agreement
+  privacy: Agreement
+}
+
+/**
+ * 「对话页面默认模型」：由云控端「系统设置 → 对话模型」维护。
+ * 桌面端新建会话时把这两个字段填入 conversation.active_model_*；
+ * 用户在对话页输入框左下角切换 → 写回 conversation.active_model_*（per-conversation）。
+ * 任一字段为空表示未配置，桌面端将回退到本地第一个 chat 类型模型。
+ */
+export interface ChatDefaultModel {
+  provider_id: string
+  model_id: string
+}
+
 const DEFAULT_LABELS: CurrencyLabels = { token: '金币', credit: '积分' }
 const DEFAULT_PAYMENT: PaymentAvailability = { wechat: true, tianque: true }
+const DEFAULT_AGREEMENTS: Agreements = {
+  register: { title: '注册协议', content: '' },
+  privacy: { title: '隐私协议', content: '' },
+}
+const DEFAULT_CHAT_MODEL: ChatDefaultModel = { provider_id: '', model_id: '' }
 
 const STORAGE_KEY = 'site_config_currency'
 const PAYMENT_STORAGE_KEY = 'site_config_payment'
+const AGREEMENTS_STORAGE_KEY = 'site_config_agreements'
+const CHAT_MODEL_STORAGE_KEY = 'site_config_chat_default_model'
 
 function readCache(): CurrencyLabels {
   try {
@@ -75,10 +107,62 @@ function writePaymentCache(p: PaymentAvailability) {
   }
 }
 
+function readAgreementsCache(): Agreements {
+  try {
+    const raw = localStorage.getItem(AGREEMENTS_STORAGE_KEY)
+    if (!raw) return { register: { ...DEFAULT_AGREEMENTS.register }, privacy: { ...DEFAULT_AGREEMENTS.privacy } }
+    const parsed = JSON.parse(raw)
+    return {
+      register: {
+        title: typeof parsed?.register?.title === 'string' && parsed.register.title ? parsed.register.title : DEFAULT_AGREEMENTS.register.title,
+        content: typeof parsed?.register?.content === 'string' ? parsed.register.content : '',
+      },
+      privacy: {
+        title: typeof parsed?.privacy?.title === 'string' && parsed.privacy.title ? parsed.privacy.title : DEFAULT_AGREEMENTS.privacy.title,
+        content: typeof parsed?.privacy?.content === 'string' ? parsed.privacy.content : '',
+      },
+    }
+  } catch {
+    return { register: { ...DEFAULT_AGREEMENTS.register }, privacy: { ...DEFAULT_AGREEMENTS.privacy } }
+  }
+}
+
+function writeAgreementsCache(a: Agreements) {
+  try {
+    localStorage.setItem(AGREEMENTS_STORAGE_KEY, JSON.stringify(a))
+  } catch {
+    // 静默失败
+  }
+}
+
+function readChatDefaultModelCache(): ChatDefaultModel {
+  try {
+    const raw = localStorage.getItem(CHAT_MODEL_STORAGE_KEY)
+    if (!raw) return { ...DEFAULT_CHAT_MODEL }
+    const parsed = JSON.parse(raw)
+    return {
+      provider_id: typeof parsed?.provider_id === 'string' ? parsed.provider_id : '',
+      model_id: typeof parsed?.model_id === 'string' ? parsed.model_id : '',
+    }
+  } catch {
+    return { ...DEFAULT_CHAT_MODEL }
+  }
+}
+
+function writeChatDefaultModelCache(m: ChatDefaultModel) {
+  try {
+    localStorage.setItem(CHAT_MODEL_STORAGE_KEY, JSON.stringify(m))
+  } catch {
+    // 静默失败
+  }
+}
+
 export const useSiteConfigStore = defineStore('siteConfig', () => {
   // 启动时先用 localStorage 缓存，避免首屏闪烁默认文案
   const labels = ref<CurrencyLabels>(readCache())
   const payment = ref<PaymentAvailability>(readPaymentCache())
+  const agreements = ref<Agreements>(readAgreementsCache())
+  const chatDefaultModel = ref<ChatDefaultModel>(readChatDefaultModelCache())
   const loading = ref(false)
   const lastFetchedAt = ref<number | null>(null)
 
@@ -114,6 +198,32 @@ export const useSiteConfigStore = defineStore('siteConfig', () => {
         writePaymentCache(nextPayment)
       }
 
+      // agreements 字段为后加，老后端不带时保持当前值（缓存或默认占位）
+      if (data?.agreements && typeof data.agreements === 'object') {
+        const nextAgreements: Agreements = {
+          register: {
+            title: (typeof data.agreements?.register?.title === 'string' && data.agreements.register.title) || DEFAULT_AGREEMENTS.register.title,
+            content: typeof data.agreements?.register?.content === 'string' ? data.agreements.register.content : '',
+          },
+          privacy: {
+            title: (typeof data.agreements?.privacy?.title === 'string' && data.agreements.privacy.title) || DEFAULT_AGREEMENTS.privacy.title,
+            content: typeof data.agreements?.privacy?.content === 'string' ? data.agreements.privacy.content : '',
+          },
+        }
+        agreements.value = nextAgreements
+        writeAgreementsCache(nextAgreements)
+      }
+
+      // chat_default_model 字段为后加（v0.6.5+），老后端不带时保持当前值（缓存或空占位）
+      if (data?.chat_default_model && typeof data.chat_default_model === 'object') {
+        const nextChatModel: ChatDefaultModel = {
+          provider_id: typeof data.chat_default_model?.provider_id === 'string' ? data.chat_default_model.provider_id : '',
+          model_id: typeof data.chat_default_model?.model_id === 'string' ? data.chat_default_model.model_id : '',
+        }
+        chatDefaultModel.value = nextChatModel
+        writeChatDefaultModelCache(nextChatModel)
+      }
+
       lastFetchedAt.value = Date.now()
     } catch {
       // 拉取失败保持当前值（缓存或默认）
@@ -129,5 +239,5 @@ export const useSiteConfigStore = defineStore('siteConfig', () => {
     fetch()
   }
 
-  return { labels, payment, hasAnyPayment, loading, lastFetchedAt, labelOf, fetch, init }
+  return { labels, payment, agreements, chatDefaultModel, hasAnyPayment, loading, lastFetchedAt, labelOf, fetch, init }
 })

@@ -1,0 +1,324 @@
+<template>
+  <div class="h-full flex flex-col bg-surface-1">
+    <header class="h-12 flex items-center justify-between px-4 bg-surface-0 border-b border-surface-3 flex-shrink-0">
+      <div class="flex items-center gap-3">
+        <button @click="goBack" class="p-1.5 rounded-lg text-text-tertiary hover:text-text-primary hover:bg-surface-2 transition-colors" title="返回">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.5 19.5 3 12m0 0 7.5-7.5M3 12h18" /></svg>
+        </button>
+        <span class="text-sm font-medium text-text-primary">切图</span>
+        <span v-if="image" class="text-[11px] text-text-tertiary">{{ image.width }} × {{ image.height }}</span>
+      </div>
+      <div class="flex items-center gap-1.5">
+        <button @click="changeImage" class="px-3 py-1.5 text-xs text-text-secondary border border-surface-3 rounded-lg hover:bg-surface-2 transition-colors">更换图片</button>
+        <button @click="prepareSave" :disabled="!image || exporting" class="px-3 py-1.5 text-xs text-white bg-primary-600 hover:bg-primary-700 rounded-lg transition-colors disabled:opacity-50">{{ exporting ? `保存 ${exportProgress}/${totalSlices}` : `保存 ${totalSlices} 张到图库` }}</button>
+      </div>
+    </header>
+
+    <div class="flex flex-1 overflow-hidden min-h-0">
+      <!-- Left: Settings -->
+      <div class="w-60 bg-surface-0 border-r border-surface-3 overflow-y-auto p-3 space-y-4 flex-shrink-0">
+        <div>
+          <h4 class="text-xs font-medium text-text-secondary mb-2">切片模式</h4>
+          <div class="grid grid-cols-2 gap-2">
+            <button
+              v-for="m in modes"
+              :key="m.id"
+              @click="mode = m.id"
+              :class="['px-2 py-2 rounded-lg border text-[11px] font-medium transition-colors', mode === m.id ? 'border-primary-500 bg-primary-50 text-primary-700 dark:bg-primary-900/20' : 'border-surface-3 text-text-secondary hover:bg-surface-2']"
+            >{{ m.label }}</button>
+          </div>
+        </div>
+
+        <div v-if="mode === 'grid'">
+          <h4 class="text-xs font-medium text-text-secondary mb-2">网格</h4>
+          <div class="space-y-2">
+            <div>
+              <div class="flex items-center justify-between mb-1">
+                <span class="text-[11px] text-text-secondary">列（横向 N 等分）</span>
+                <span class="text-[10px] text-text-tertiary">{{ cols }}</span>
+              </div>
+              <input type="range" min="1" max="10" v-model.number="cols" class="w-full h-1 accent-primary-600" />
+            </div>
+            <div>
+              <div class="flex items-center justify-between mb-1">
+                <span class="text-[11px] text-text-secondary">行（纵向 N 等分）</span>
+                <span class="text-[10px] text-text-tertiary">{{ rows }}</span>
+              </div>
+              <input type="range" min="1" max="10" v-model.number="rows" class="w-full h-1 accent-primary-600" />
+            </div>
+            <div class="grid grid-cols-3 gap-1.5 pt-2">
+              <button v-for="p in gridPresets" :key="p.label" @click="applyPreset(p.cols, p.rows)" class="px-1.5 py-1 text-[10px] border border-surface-3 rounded hover:bg-surface-2 text-text-tertiary">{{ p.label }}</button>
+            </div>
+          </div>
+        </div>
+
+        <div v-else-if="mode === 'horizontal'">
+          <h4 class="text-xs font-medium text-text-secondary mb-2">横向切（顶向下 N 等分）</h4>
+          <div class="flex items-center justify-between mb-1">
+            <span class="text-[11px] text-text-secondary">份数</span>
+            <span class="text-[10px] text-text-tertiary">{{ rows }}</span>
+          </div>
+          <input type="range" min="2" max="20" v-model.number="rows" class="w-full h-1 accent-primary-600" />
+        </div>
+
+        <div v-else-if="mode === 'vertical'">
+          <h4 class="text-xs font-medium text-text-secondary mb-2">纵向切（左向右 N 等分）</h4>
+          <div class="flex items-center justify-between mb-1">
+            <span class="text-[11px] text-text-secondary">份数</span>
+            <span class="text-[10px] text-text-tertiary">{{ cols }}</span>
+          </div>
+          <input type="range" min="2" max="20" v-model.number="cols" class="w-full h-1 accent-primary-600" />
+        </div>
+
+        <div v-else-if="mode === 'fixed'">
+          <h4 class="text-xs font-medium text-text-secondary mb-2">按尺寸切（每片相同尺寸）</h4>
+          <div class="space-y-2">
+            <div>
+              <div class="flex items-center justify-between mb-1">
+                <span class="text-[11px] text-text-secondary">宽度</span>
+                <span class="text-[10px] text-text-tertiary">{{ tileW }}px</span>
+              </div>
+              <input type="range" min="100" :max="image?.width || 2000" step="10" v-model.number="tileW" class="w-full h-1 accent-primary-600" />
+            </div>
+            <div>
+              <div class="flex items-center justify-between mb-1">
+                <span class="text-[11px] text-text-secondary">高度</span>
+                <span class="text-[10px] text-text-tertiary">{{ tileH }}px</span>
+              </div>
+              <input type="range" min="100" :max="image?.height || 2000" step="10" v-model.number="tileH" class="w-full h-1 accent-primary-600" />
+            </div>
+          </div>
+        </div>
+
+        <div class="pt-3 border-t border-surface-3 text-[11px] text-text-secondary">
+          共生成 <span class="text-primary-600 font-semibold">{{ totalSlices }}</span> 张
+          <span v-if="slices[0]" class="block text-[10px] text-text-tertiary mt-0.5">每张约 {{ slices[0].w }} × {{ slices[0].h }}</span>
+        </div>
+      </div>
+
+      <!-- Center: Preview -->
+      <div class="flex-1 flex items-center justify-center overflow-auto bg-[#f0f0f0] dark:bg-surface-2 p-6">
+        <div v-if="!image" class="text-center text-text-tertiary text-xs">请先添加图片</div>
+        <div v-else class="relative inline-block">
+          <img :src="image.dataUri" class="block max-w-full max-h-[calc(100vh-12rem)]" ref="imgEl" @load="onImageLoad" />
+          <!-- 覆盖网格 -->
+          <svg
+            v-if="imgRendered.w"
+            :width="imgRendered.w"
+            :height="imgRendered.h"
+            class="absolute top-0 left-0 pointer-events-none"
+          >
+            <rect
+              v-for="(s, i) in slices"
+              :key="i"
+              :x="(s.x / image.width) * imgRendered.w"
+              :y="(s.y / image.height) * imgRendered.h"
+              :width="(s.w / image.width) * imgRendered.w"
+              :height="(s.h / image.height) * imgRendered.h"
+              fill="none"
+              stroke="rgb(99 102 241)"
+              stroke-width="2"
+              stroke-dasharray="4 3"
+            />
+          </svg>
+        </div>
+      </div>
+    </div>
+
+    <ImageSourcePickerDialog v-model:visible="pickerVisible" @select="onChangeImage" />
+
+    <GallerySaveDialog
+      v-model:visible="saveDialogVisible"
+      :count="totalSlices"
+      :default-name="image ? `切图_${image.name.replace(/\.[^.]+$/, '')}` : ''"
+      @confirm="onSaveConfirm"
+    />
+
+    <div v-if="toast" class="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-lg bg-surface-0 shadow-lg border border-surface-3 text-xs text-text-primary">{{ toast }}</div>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref, computed, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
+import { useHandoffStore } from '@/stores/handoff'
+import ImageSourcePickerDialog from '@/components/ImageSourcePickerDialog.vue'
+import GallerySaveDialog from '@/components/GallerySaveDialog.vue'
+import { loadAsDataUri, buildOutputName, type LoadedImage } from '@/utils/image-source'
+import { useGalleryStore } from '@/stores/gallery'
+
+type Mode = 'grid' | 'horizontal' | 'vertical' | 'fixed'
+interface Slice { x: number; y: number; w: number; h: number; idx: number; row: number; col: number }
+
+const router = useRouter()
+const handoff = useHandoffStore()
+
+const image = ref<LoadedImage | null>(null)
+const mode = ref<Mode>('grid')
+const cols = ref(3)
+const rows = ref(3)
+const tileW = ref(500)
+const tileH = ref(500)
+const exporting = ref(false)
+const exportProgress = ref(0)
+const toast = ref('')
+const pickerVisible = ref(false)
+const imgEl = ref<HTMLImageElement | null>(null)
+const imgRendered = ref({ w: 0, h: 0 })
+
+const modes: Array<{ id: Mode; label: string }> = [
+  { id: 'grid', label: '网格' },
+  { id: 'horizontal', label: '横切' },
+  { id: 'vertical', label: '纵切' },
+  { id: 'fixed', label: '定尺寸' }
+]
+
+const gridPresets = [
+  { label: '2×2', cols: 2, rows: 2 },
+  { label: '3×3', cols: 3, rows: 3 },
+  { label: '4×4', cols: 4, rows: 4 },
+  { label: '2×3', cols: 2, rows: 3 },
+  { label: '3×2', cols: 3, rows: 2 },
+  { label: '1×9', cols: 1, rows: 9 }
+]
+
+const slices = computed<Slice[]>(() => {
+  if (!image.value) return []
+  const W = image.value.width, H = image.value.height
+  const out: Slice[] = []
+  let idx = 0
+
+  if (mode.value === 'grid') {
+    const cw = Math.floor(W / cols.value)
+    const ch = Math.floor(H / rows.value)
+    for (let r = 0; r < rows.value; r++) {
+      for (let c = 0; c < cols.value; c++) {
+        // 最后一行/列吃掉剩余像素，避免整除误差
+        const w = c === cols.value - 1 ? W - c * cw : cw
+        const h = r === rows.value - 1 ? H - r * ch : ch
+        out.push({ x: c * cw, y: r * ch, w, h, idx: idx++, row: r, col: c })
+      }
+    }
+  } else if (mode.value === 'horizontal') {
+    const ch = Math.floor(H / rows.value)
+    for (let r = 0; r < rows.value; r++) {
+      const h = r === rows.value - 1 ? H - r * ch : ch
+      out.push({ x: 0, y: r * ch, w: W, h, idx: idx++, row: r, col: 0 })
+    }
+  } else if (mode.value === 'vertical') {
+    const cw = Math.floor(W / cols.value)
+    for (let c = 0; c < cols.value; c++) {
+      const w = c === cols.value - 1 ? W - c * cw : cw
+      out.push({ x: c * cw, y: 0, w, h: H, idx: idx++, row: 0, col: c })
+    }
+  } else if (mode.value === 'fixed') {
+    let r = 0
+    for (let y = 0; y < H; y += tileH.value) {
+      let c = 0
+      for (let x = 0; x < W; x += tileW.value) {
+        const w = Math.min(tileW.value, W - x)
+        const h = Math.min(tileH.value, H - y)
+        out.push({ x, y, w, h, idx: idx++, row: r, col: c })
+        c++
+      }
+      r++
+    }
+  }
+
+  return out
+})
+
+const totalSlices = computed(() => slices.value.length)
+
+onMounted(async () => {
+  const payload = handoff.consume<{ paths: string[] }>('imageToolkit')
+  if (!payload?.paths?.length) {
+    showToast('未传入图片，请重新选择')
+    return
+  }
+  await loadPath(payload.paths[0])
+})
+
+async function loadPath(path: string) {
+  // 切图保留原始尺寸（不能压缩，否则切出来会糊）
+  const items = await loadAsDataUri([path], { maxSize: 6000, quality: 1 })
+  if (items[0]) {
+    image.value = items[0]
+    // tile 默认值跟随图片尺寸
+    tileW.value = Math.min(500, Math.floor(items[0].width / 3))
+    tileH.value = Math.min(500, Math.floor(items[0].height / 3))
+  }
+}
+
+function applyPreset(c: number, r: number) {
+  cols.value = c
+  rows.value = r
+}
+
+function changeImage() { pickerVisible.value = true }
+async function onChangeImage(paths: string[]) {
+  if (!paths.length) return
+  await loadPath(paths[0])
+}
+
+function onImageLoad() {
+  if (!imgEl.value) return
+  imgRendered.value = { w: imgEl.value.clientWidth, h: imgEl.value.clientHeight }
+}
+
+// O4: 切片保存到图库
+const gallery = useGalleryStore()
+const saveDialogVisible = ref(false)
+
+function prepareSave() {
+  if (!image.value || slices.value.length === 0) return
+  saveDialogVisible.value = true
+}
+
+async function onSaveConfirm(payload: { categoryId: string; filename: string }) {
+  const src = image.value
+  if (!src) return
+  const sliceSnapshot = slices.value.slice()
+  if (sliceSnapshot.length === 0) return
+  exporting.value = true
+  exportProgress.value = 0
+  try {
+    const baseEl = new Image()
+    await new Promise<void>((resolve, reject) => {
+      baseEl.onload = () => resolve()
+      baseEl.onerror = () => reject(new Error('Image load failed'))
+      baseEl.src = src.dataUri
+    })
+
+    const isJpg = src.ext === 'jpg' || src.ext === 'jpeg'
+    const ext = isJpg ? 'jpg' : 'png'
+
+    for (let i = 0; i < sliceSnapshot.length; i++) {
+      const s = sliceSnapshot[i]
+      const tmp = document.createElement('canvas')
+      tmp.width = s.w
+      tmp.height = s.h
+      const ctx = tmp.getContext('2d')!
+      ctx.drawImage(baseEl, s.x, s.y, s.w, s.h, 0, 0, s.w, s.h)
+      const dataUri = isJpg ? tmp.toDataURL('image/jpeg', 0.92) : tmp.toDataURL('image/png')
+      const suffix = `_r${s.row + 1}c${s.col + 1}`
+      const fname = payload.filename
+        ? `${payload.filename}${suffix}.${ext}`
+        : buildOutputName(src.name, suffix, ext)
+      await gallery.addFromDataUri(payload.categoryId, dataUri, fname)
+      exportProgress.value = i + 1
+    }
+    showToast(`已保存 ${sliceSnapshot.length} 张到图库`)
+  } catch (e: any) {
+    showToast('保存失败：' + (e.message || ''))
+  } finally {
+    exporting.value = false
+  }
+}
+
+function goBack() { router.back() }
+function showToast(t: string) {
+  toast.value = t
+  setTimeout(() => { if (toast.value === t) toast.value = '' }, 2500)
+}
+</script>

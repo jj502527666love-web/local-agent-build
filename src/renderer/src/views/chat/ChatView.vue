@@ -247,8 +247,9 @@
                     工作区
                   </button>
                 </div>
+                <!-- 输入框容器：flex-col，上部 textarea + 底部左 ModelSwitcher / 右 发送按钮。IDE 风格。 -->
                 <div
-                  :class="['flex-1 flex items-end gap-3 bg-surface-1 rounded-2xl border p-2 focus-within:ring-2 focus-within:ring-primary-500 focus-within:border-transparent transition-all', dragging ? 'border-primary-500 bg-primary-50' : 'border-surface-4']"
+                  :class="['flex-1 flex flex-col bg-surface-1 rounded-2xl border focus-within:ring-2 focus-within:ring-primary-500 focus-within:border-transparent transition-all', dragging ? 'border-primary-500 bg-primary-50' : 'border-surface-4']"
                   @dragover.prevent="dragging = true"
                   @dragleave.prevent="dragging = false"
                   @drop.prevent="handleDrop"
@@ -260,14 +261,22 @@
                     @paste="handlePaste"
                     rows="2"
                     :placeholder="dragging ? '松开以添加附件' : '输入消息，按 Enter 发送...'"
-                    class="flex-1 px-3 py-2 text-sm bg-transparent resize-none focus:outline-none placeholder:text-text-disabled"
+                    class="px-3 pt-2.5 pb-1 text-sm bg-transparent resize-none focus:outline-none placeholder:text-text-disabled"
                   ></textarea>
-                  <button v-if="chatStore.streaming" @click="chatStore.cancel()" class="w-9 h-9 flex items-center justify-center bg-red-600 text-white rounded-xl hover:bg-red-700 transition-all flex-shrink-0" title="中断当前回复">
-                    <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1.5" /></svg>
-                  </button>
-                  <button v-else @click="send" :disabled="!inputText.trim() && !pendingAttachments.length" class="w-9 h-9 flex items-center justify-center bg-primary-600 text-white rounded-xl hover:bg-primary-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all flex-shrink-0">
-                    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5" /></svg>
-                  </button>
+                  <!-- 底部条：左侧 模型切换器（IDE 风格）、右侧 发送/中断按钮 -->
+                  <div class="flex items-center justify-between gap-2 px-2 pb-2">
+                    <ChatModelSwitcher
+                      :provider-id="chatStore.currentConversation?.active_model_provider_id || ''"
+                      :model-id="chatStore.currentConversation?.active_model_id || ''"
+                      @change="onChatModelChange"
+                    />
+                    <button v-if="chatStore.streaming" @click="chatStore.cancel()" class="w-8 h-8 flex items-center justify-center bg-red-600 text-white rounded-lg hover:bg-red-700 transition-all flex-shrink-0" title="中断当前回复">
+                      <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1.5" /></svg>
+                    </button>
+                    <button v-else @click="send" :disabled="!inputText.trim() && !pendingAttachments.length" class="w-8 h-8 flex items-center justify-center bg-primary-600 text-white rounded-lg hover:bg-primary-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all flex-shrink-0" title="发送">
+                      <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5" /></svg>
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -394,16 +403,22 @@ import { useSkillStore } from '@/stores/skills'
 import { useMcpStore } from '@/stores/mcps'
 import { usePromptSkillStore } from '@/stores/prompt-skills'
 import { usePromptPresetStore } from '@/stores/prompt-presets'
+import { useModelStore } from '@/stores/models'
+import { hasCap } from '@/utils/model-caps'
+import { useSiteConfigStore } from '@/stores/site-config'
 import { renderMarkdown } from '@/utils/markdown'
 import { stripImageMetadata } from '@shared/strip-image-metadata'
 import GalleryPicker from '@/components/GalleryPicker.vue'
 import ImageLightbox from '@/components/ImageLightbox.vue'
+import ChatModelSwitcher from '@/components/ChatModelSwitcher.vue'
 
 const route = useRoute()
 const router = useRouter()
 const handoff = useHandoffStore()
 const chatStore = useChatStore()
 const botStore = useBotStore()
+const modelStore = useModelStore()
+const siteConfigStore = useSiteConfigStore()
 const kbStore = useKnowledgeStore()
 const skillStore = useSkillStore()
 const CORE_TOOL_NAMES = ['file_ops', 'run_command', 'image_gen']
@@ -670,10 +685,75 @@ watch(() => chatStore.currentConversationId, (newId, oldId) => {
   else clearLocalDraft()
 })
 
+/**
+ * 「对话默认模型」解析：
+ * 1. 云控端下发的 chatDefaultModel（主选）——云端默认 model_id 会被 upgrade 为复合 key 避免多服务商同名冲突
+ * 2. 本地所有 chat 类型模型中第一个（兑底）
+ * 3. 都没有→返回空，让 chat-engine 报「未选择对话模型」
+ */
+function resolveDefaultModel(): { provider_id: string; model_id: string } {
+  // 首选云控端下发默认：provider 固定 'cloud:default'，model_id 是裸值，要 upgrade 为复合 key
+  const cloud = siteConfigStore.chatDefaultModel
+  if (cloud?.provider_id && cloud?.model_id) {
+    return {
+      provider_id: cloud.provider_id,
+      model_id: cloud.provider_id === 'cloud:default'
+        ? modelStore.upgradeToCompositeKey(cloud.model_id)
+        : cloud.model_id,
+    }
+  }
+  // 兜底：本地所有 provider 里第一个 chat 类型模型
+  // 与 ChatModelSwitcher 用同一套过滤规则（hasCap）保持一致，
+  // 避免本地 provider 把图像/embedding 模型当作默认对话模型选中
+  for (const p of modelStore.providers) {
+    for (const m of p.models) {
+      const cloudType = modelStore.cloudTypeOf(p.id, m)
+      if (!hasCap(m, 'chat', cloudType)) continue
+      return { provider_id: p.id, model_id: m }
+    }
+  }
+  return { provider_id: '', model_id: '' }
+}
+
 async function newConversation() {
   if (!selectedBotId.value) return
-  const conv = await chatStore.createConversation(selectedBotId.value)
+  // 「智能体不再绑定模型」（v0.6.5+）：新会话预填云控默认模型；db 层 active_model_*
+  // 以后用户可随时在输入框左下角切换，每个会话独立记忆
+  const initialModel = resolveDefaultModel()
+  const conv = await chatStore.createConversation(
+    selectedBotId.value,
+    undefined,
+    initialModel.model_id ? initialModel : undefined
+  )
   await chatStore.selectConversation(conv.id)
+}
+
+/**
+ * 打开旧会话时的兼容兜底：若 conversation.active_model_* 为空（v0.6.5 之前创建的会话），
+ * 自动用 resolveDefaultModel 填充一次并持久化。让升级用户也能享受「打开会话即默认模型」的体验。
+ */
+watch(
+  () => chatStore.currentConversationId,
+  async (newId) => {
+    if (!newId) return
+    const conv = chatStore.currentConversation
+    if (!conv) return
+    if (conv.active_model_id) return  // 已有模型记录，跳过
+    const m = resolveDefaultModel()
+    if (!m.model_id) return  // 本地也没可用模型，让 chat-engine 在 sendMessage 时再抛错
+    await chatStore.updateConversationModel(newId, m.provider_id, m.model_id)
+  },
+  { immediate: false }
+)
+
+/**
+ * 输入框左下角 ChatModelSwitcher 选定模型后的回调。
+ * 写回主进程 conversation 表，同时同步本地 conversations 缓存。
+ */
+async function onChatModelChange(val: { provider_id: string; model_id: string }) {
+  const convId = chatStore.currentConversationId
+  if (!convId) return
+  await chatStore.updateConversationModel(convId, val.provider_id, val.model_id)
 }
 
 const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp'])

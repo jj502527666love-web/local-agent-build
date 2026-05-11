@@ -1,14 +1,14 @@
 import { getDatabase } from '../database'
 import { v4 as uuid } from 'uuid'
-import { getModelProvider } from './model-provider'
+import { getModelProvider, type ModelProvider } from './model-provider'
 import { createImageSession } from './image-session'
 import { getDataDir } from './data-path'
-import { getCloudToken, getCloudGatewayUrl } from './cloud-token'
+import { getCloudToken, getCloudGatewayUrl, resolveCloudModelId } from './cloud-token'
 import { join } from 'path'
 import { mkdirSync, writeFileSync, unlinkSync, existsSync } from 'fs'
 import { BrowserWindow } from 'electron'
 import { recordUsage } from './usage-stats'
-import { resolveSizeToPixels, getMaxConsistencyN } from '@shared/image-size'
+import { resolveSizeToPixels, getMaxConsistencyN, getModelMode } from '@shared/image-size'
 import { stripBase64 } from '@shared/strip-image-metadata'
 import { stripModelId } from '@shared/model-id'
 import { normalizeApiBase } from './api-base-normalize'
@@ -166,10 +166,10 @@ async function fetchWithRetry(
 /** 按分辨率档位返回单次生图超时上限：4K + 高质量场景偏紧时给更宽松窗口 */
 function getImageApiTimeout(tierId?: string): number {
   switch (tierId) {
-    case '4k': return 300_000  // 5 分钟
-    case '2k': return 240_000  // 4 分钟
-    case '1k': return 150_000  // 2.5 分钟
-    default:   return 180_000  // 默认 3 分钟（向后兼容）
+    case '4k': return 900_000  // 15 分钟
+    case '2k': return 540_000  // 9 分钟
+    case '1k': return 300_000  // 5 分钟
+    default:   return 300_000  // 默认 5 分钟（向后兼容）
   }
 }
 
@@ -397,6 +397,173 @@ function toRelativePath(absolutePath: string): string {
 
 type ImageAPIResult = { b64_json?: string; url?: string; revised_prompt?: string }
 
+/**
+ * 把用户在 ModelProvider 上配置的 custom_params + request_override_patch 叠加到生图请求 body 上。
+ * 顺序：先 custom_params（逐条 set），再 request_override_patch（最终覆盖）。
+ *
+ * - JSON body：直接 body[name]=value
+ * - FormData：form.set(name, value)；对象类型 JSON.stringify 后下发（上游通常自己解析）
+ * - 空字符串 value 视为占位不下发；undefined 同理
+ * - value 字符串会尝试 coerceValue 转 number/boolean/JSON 对象（覆盖 patch 已是 typed value 不二次转换）
+ *
+ * 仅作用于自定义 provider 与多米分支；云端走固定网关协议，不参与叠加。
+ */
+function applyProviderPatches(body: Record<string, any> | FormData, provider: ModelProvider): void {
+  for (const p of provider.custom_params) {
+    if (!p.name || p.value === '') continue
+    setBodyField(body, p.name, coerceParamValue(p.value))
+  }
+  for (const [k, v] of Object.entries(provider.request_override_patch)) {
+    if (v === undefined) continue
+    setBodyField(body, k, v)
+  }
+}
+
+function setBodyField(body: Record<string, any> | FormData, key: string, value: any): void {
+  if (body instanceof FormData) {
+    if (value == null) return
+    if (typeof value === 'object') body.set(key, JSON.stringify(value))
+    else body.set(key, String(value))
+  } else {
+    body[key] = value
+  }
+}
+
+/**
+ * custom_params 的 value 是 string，按形态推断转换：
+ * - 'true' / 'false' → boolean
+ * - 纯数字 → number
+ * - 以 { 或 [ 开头并合法 JSON → 对象 / 数组
+ * - 其他 → 原字符串
+ * 故意不抛错：解析失败回落字符串，上游通常能接受字符串。
+ */
+function coerceParamValue(s: string): any {
+  const t = s.trim()
+  if (t === '') return ''
+  if (t === 'true') return true
+  if (t === 'false') return false
+  if (/^-?\d+(\.\d+)?$/.test(t)) {
+    const n = Number(t)
+    if (Number.isFinite(n)) return n
+  }
+  if ((t.startsWith('{') && t.endsWith('}')) || (t.startsWith('[') && t.endsWith(']'))) {
+    try { return JSON.parse(t) } catch {}
+  }
+  return s
+}
+
+/**
+ * 异步生图任务轮询通用器。
+ *
+ * 设计目标：把云端 / 多米两套几乎一样的轮询逻辑合并 — 它们仅在三个点上不同：
+ *  1. 状态字段路径（`status` vs `state`）
+ *  2. 成功/失败的状态值（`completed` vs `succeeded`；`failed` vs `failed/error/cancelled`）
+ *  3. 结果数据形状（`result.data` items vs `data.images` items）
+ * 这些差异由调用方通过 `parseStatus` 注入。
+ *
+ * 行为：
+ *  - 401/403：立即抛"鉴权失败"（永久错误，重试无意义）
+ *  - 404：立即抛"任务不存在或已过期"
+ *  - 其他 4xx/5xx + 网络异常 + 响应解析失败：视为瞬态错误。
+ *      - 未设置 `maxConsecutiveTransientFailures` → 一直软重试到 `maxWaitMs` deadline（云端策略）
+ *      - 设置后 → 连续 N 次失败提前抛错（多米策略，避免上游持续不可用时白等）
+ *  - `parseStatus` 返回 null → 继续轮询；返回数组 → 任务成功；抛错 → 任务失败
+ *  - 超过 `maxWaitMs` → 抛超时错误（带最后一次瞬态错误信息，方便排查）
+ */
+interface PollTaskConfig {
+  statusUrl: string
+  headers: Record<string, string>
+  taskId: string
+  errorPrefix: string
+  /** 解析响应：成功 → 返回结果数组；进行中 → 返回 null 继续轮询；失败 → 抛错 */
+  parseStatus: (statusData: any) => ImageAPIResult[] | null
+  /**
+   * 可选：从合法状态响应里抽取一段诊断字符串（如多米的 `state`、云端的 `status`），
+   * 仅用于超时错误信息回带，帮助用户分辨"卡在 pending"还是"卡在 running"。
+   * 抛错由 parseStatus 负责，此函数不应抛错。
+   */
+  extractDiagnostic?: (statusData: any) => string | undefined
+  maxWaitMs?: number
+  pollIntervalMs?: number
+  pollTimeoutMs?: number
+  /** 连续瞬态失败上限。undefined = 不限（直到 deadline）；正整数 = 达到即抛错 */
+  maxConsecutiveTransientFailures?: number
+}
+
+async function pollAsyncTask(config: PollTaskConfig): Promise<ImageAPIResult[]> {
+  const maxWait = config.maxWaitMs ?? 300_000
+  const pollInterval = config.pollIntervalMs ?? 3_000
+  const pollTimeout = config.pollTimeoutMs ?? 30_000
+  const maxConsecutive = config.maxConsecutiveTransientFailures
+  const start = Date.now()
+  let lastTransientError: string | undefined
+  let lastDiagnostic: string | undefined
+  let consecutiveTransientFailures = 0
+
+  const bumpTransient = (msg: string): void => {
+    lastTransientError = msg
+    consecutiveTransientFailures++
+    if (maxConsecutive !== undefined && consecutiveTransientFailures >= maxConsecutive) {
+      throw new Error(`${config.errorPrefix} 持续不可用（连续 ${consecutiveTransientFailures} 次轮询失败，task_id=${config.taskId}）：${msg}`)
+    }
+    console.log(`[ImageGen] ${config.errorPrefix} poll transient:`, msg)
+  }
+
+  while (Date.now() - start < maxWait) {
+    await new Promise(r => setTimeout(r, pollInterval))
+
+    let statusRes: Response
+    try {
+      statusRes = await fetchWithTimeout(config.statusUrl, {
+        method: 'GET',
+        headers: config.headers
+      }, pollTimeout)
+    } catch (e: any) {
+      bumpTransient(String(e?.message || e))
+      continue
+    }
+
+    if (statusRes.status === 401 || statusRes.status === 403) {
+      throw new Error(`${config.errorPrefix} ${statusRes.status}: ${await readResponseError(statusRes)}`)
+    }
+    if (statusRes.status === 404) {
+      throw new Error(`${config.errorPrefix} 404: 任务不存在或已过期 (task_id=${config.taskId})`)
+    }
+    if (!statusRes.ok) {
+      const body = await readResponseError(statusRes).catch(() => `HTTP ${statusRes.status}`)
+      bumpTransient(body)
+      continue
+    }
+
+    let statusData: any
+    try {
+      statusData = await statusRes.json()
+    } catch {
+      bumpTransient('响应解析失败')
+      continue
+    }
+    consecutiveTransientFailures = 0  // 拿到合法响应即重置
+
+    // 先抽取诊断信息（不影响业务逻辑，仅用于超时错误回带）
+    if (config.extractDiagnostic) {
+      try {
+        const d = config.extractDiagnostic(statusData)
+        if (d) lastDiagnostic = d
+      } catch { /* 诊断提取失败不影响轮询 */ }
+    }
+
+    const result = config.parseStatus(statusData)  // 抛错由调用方决定（终止态）
+    if (result !== null) return result
+    // null = 还在进行中，继续轮询
+  }
+
+  // 超时错误信息：可能同时带 last_status（任务卡住的状态）和 last_error（最后一次瞬态错误），
+  // 帮助用户排查到底是"任务长时间未完成"还是"上游持续不可用"。
+  const diag = lastDiagnostic ? `, last_status=${lastDiagnostic}` : ''
+  const err = lastTransientError ? `, last_error=${lastTransientError}` : ''
+  throw new Error(`${config.errorPrefix} 任务超时（>${maxWait / 1000}s 未完成，task_id=${config.taskId}${diag}${err}）`)
+}
+
 async function callImageAPI(
   providerId: string,
   modelId: string,
@@ -409,13 +576,23 @@ async function callImageAPI(
   n: number = 1
 ): Promise<ImageAPIResult[]> {
   // 渲染端 cloud:default 下的 modelId 可能是复合 key `{model_id}#@{provider_name}`，
-  // 上游真实 API 不识别，函数入口统一 strip 为纯 model_id（本地 provider 的 modelId 不含分隔符，无副作用）。
-  modelId = stripModelId(modelId)
+  // 上游真实 API 不识别；云端分支用 resolveCloudModelId 同时拿到纯 model_id 与 cloud_model_id 主键，
+  // 后者作为 body.cloud_model_id 让云控端按主键精确路由到对应服务商；
+  // 本地 provider 的 modelId 不含分隔符，stripModelId 是 no-op。
+  const isCloud = providerId.startsWith('cloud:')
+  let cloudModelId: number | null = null
+  if (isCloud) {
+    const resolved = resolveCloudModelId(modelId, 'image')
+    modelId = resolved.pureModelId
+    cloudModelId = resolved.cloudModelId
+  } else {
+    modelId = stripModelId(modelId)
+  }
   // Bug #3: 全局 semaphore — 所有入口共享上限
   await acquireApiSlot()
   try {
-    if (providerId.startsWith('cloud:')) {
-      return await callCloudImageAPI(modelId, prompt, size, quality, refImages, mask, tierId, n)
+    if (isCloud) {
+      return await callCloudImageAPI(modelId, prompt, size, quality, refImages, mask, tierId, n, cloudModelId)
     }
 
     const provider = getModelProvider(providerId)
@@ -474,6 +651,9 @@ async function callImageAPI(
         form.append('mask', maskBlob, 'mask.png')
       }
 
+      // 用户 customParams + requestOverridePatch 叠加（最后写入，可覆盖系统默认字段）
+      applyProviderPatches(form, provider)
+
       fetchOptions = { method: 'POST', headers, body: form }
     } else {
       headers['Content-Type'] = 'application/json'
@@ -486,6 +666,8 @@ async function callImageAPI(
         quality,
         response_format: 'b64_json'
       }
+      // 用户 customParams + requestOverridePatch 叠加（最后写入，可覆盖系统默认字段）
+      applyProviderPatches(body, provider)
       fetchOptions = { method: 'POST', headers, body: JSON.stringify(body) }
     }
 
@@ -536,7 +718,8 @@ async function callCloudImageAPI(
   refImages?: string[],
   mask?: string,
   tierId?: string,
-  n: number = 1
+  n: number = 1,
+  cloudModelId: number | null = null
 ): Promise<ImageAPIResult[]> {
   const token = getCloudToken()
   if (!token) throw new Error('Cloud login required')
@@ -555,6 +738,10 @@ async function callCloudImageAPI(
     size: resolvePixels(size, modelId, tierId),
     quality,
     response_format: 'b64_json'
+  }
+  // 云端网关按 cloud_model_id 主键精确路由到具体服务商，避免同 model_id 多家时 first() 错位
+  if (cloudModelId !== null) {
+    body.cloud_model_id = cloudModelId
   }
 
   if (hasRefImages) {
@@ -594,66 +781,26 @@ async function callCloudImageAPI(
     return items.map((item: any) => ({ b64_json: item.b64_json, url: item.url, revised_prompt: item.revised_prompt }))
   }
 
-  // Step 2: Poll for result —
-  // 单次轮询失败/超时不立即终止：在 maxWait deadline 内软重试，避免一次抖动毁掉已成功的任务。
-  // 仅 401/403/404 等永久错误立即抛；429/5xx/网络错误继续轮询。
+  // Step 2: Poll for result — 软重试到 deadline（429/5xx/网络/解析错误持续重试，不早退）
   console.log('[ImageGen] Cloud task submitted:', taskId)
-  const maxWait = 300_000 // 5 minutes 总等待
-  const pollInterval = 3_000
-  const pollTimeout = 30_000 // 单次 status 请求 30s
-  const start = Date.now()
-  let lastTransientError: string | undefined
-
-  while (Date.now() - start < maxWait) {
-    await new Promise(r => setTimeout(r, pollInterval))
-
-    let statusRes: Response
-    try {
-      statusRes = await fetchWithTimeout(`${gatewayUrl}/images/status/${taskId}`, {
-        method: 'GET',
-        headers: { 'Authorization': `Bearer ${token}` }
-      }, pollTimeout)
-    } catch (e: any) {
-      // 网络层错误（含超时）→ 继续轮询到 deadline
-      lastTransientError = String(e?.message || e)
-      console.log('[ImageGen] Cloud poll transient network error:', lastTransientError)
-      continue
+  return pollAsyncTask({
+    statusUrl: `${gatewayUrl}/images/status/${taskId}`,
+    headers: { 'Authorization': `Bearer ${token}` },
+    taskId,
+    errorPrefix: 'Image API error',
+    extractDiagnostic: (statusData) => statusData?.status,
+    parseStatus: (statusData) => {
+      if (statusData.status === 'completed') {
+        const items = (statusData.result?.data || statusData.data) as any[]
+        if (!items || items.length === 0) throw new Error('No image data in response')
+        return items.map((item: any) => ({ b64_json: item.b64_json, url: item.url, revised_prompt: item.revised_prompt }))
+      }
+      if (statusData.status === 'failed') {
+        throw new Error(truncateError(statusData.error || 'Image generation failed'))
+      }
+      return null  // 进行中，继续轮询
     }
-
-    if (statusRes.status === 401 || statusRes.status === 403) {
-      throw new Error(`Image API error ${statusRes.status}: ${await readResponseError(statusRes)}`)
-    }
-    if (statusRes.status === 404) {
-      throw new Error(`Image API error 404: 任务不存在或已过期 (task_id=${taskId})`)
-    }
-    if (!statusRes.ok) {
-      // 429/5xx 等中间态：继续轮询，记下最后一次错误用于超时时回带
-      lastTransientError = await readResponseError(statusRes).catch(() => `HTTP ${statusRes.status}`)
-      console.log('[ImageGen] Cloud poll transient HTTP error:', statusRes.status, lastTransientError)
-      continue
-    }
-
-    let statusData: any
-    try {
-      statusData = await statusRes.json()
-    } catch {
-      // 解析失败按瞬态处理
-      lastTransientError = '响应解析失败'
-      continue
-    }
-
-    if (statusData.status === 'completed') {
-      const items = (statusData.result?.data || statusData.data) as any[]
-      if (!items || items.length === 0) throw new Error('No image data in response')
-      return items.map((item: any) => ({ b64_json: item.b64_json, url: item.url, revised_prompt: item.revised_prompt }))
-    }
-
-    if (statusData.status === 'failed') {
-      throw new Error(truncateError(statusData.error || 'Image generation failed'))
-    }
-  }
-
-  throw new Error(`Image generation timed out (>${maxWait / 1000}s, task_id=${taskId}${lastTransientError ? ', last_error=' + lastTransientError : ''})`)
+  })
 }
 
 /**
@@ -666,7 +813,7 @@ async function callCloudImageAPI(
  * 返回形态：[{ url }]，上层 generateImages 会调 downloadImageToFile 下载到本地。
  */
 async function callDuoMiImageAPI(
-  provider: { api_base: string; api_key: string },
+  provider: ModelProvider,
   modelId: string,
   prompt: string,
   size: string,
@@ -690,7 +837,9 @@ async function callDuoMiImageAPI(
   const resolvedPx = resolvePixels(size, modelId, tierId)
 
   const submitUrl = `${apiBase}/images/generations?async=true`
-  const submitBody = { model: modelId, prompt, size: resolvedPx }
+  const submitBody: Record<string, any> = { model: modelId, prompt, size: resolvedPx }
+  // 用户 customParams + requestOverridePatch 叠加（最后写入，可覆盖系统默认字段）
+  applyProviderPatches(submitBody, provider)
   const submitRes = await fetchWithRetry(submitUrl, {
     method: 'POST',
     headers: {
@@ -711,89 +860,36 @@ async function callDuoMiImageAPI(
     throw new Error(`多米 API 响应缺少 task id：${truncateError(JSON.stringify(submitData))}`)
   }
 
-  // 轮询任务状态
+  // 轮询任务状态 — 多米策略：连续 12 次瞬态失败提前抛错（避免上游持续不可用时白等 5 分钟）
   console.log('[ImageGen] DuoMi task submitted:', taskId)
-  const maxWait = 300_000      // 5 分钟总等待（与云控端 gateway.timeouts.image 默认同档）
-  const pollInterval = 3_000   // 每 3s 轮询一次
-  const pollTimeout = 30_000   // 单次轮询请求 30s 超时
-  const start = Date.now()
-  let lastState: string | undefined
-  let lastTransientError: string | undefined
-  let consecutiveTransientFailures = 0
-  // 连续 N 次瞬态失败（5xx / 网络 / 解析）后早退，避免上游持续不可用时让用户白等 5 分钟
-  const MAX_CONSECUTIVE_TRANSIENT = 12  // 12 * 3s ≈ 36s 持续失败
-
-  while (Date.now() - start < maxWait) {
-    await new Promise(r => setTimeout(r, pollInterval))
-
-    let statusRes: Response
-    try {
-      statusRes = await fetchWithTimeout(`${apiBase}/tasks/${taskId}`, {
-        method: 'GET',
-        headers: { 'Authorization': apiKey }
-      }, pollTimeout)
-    } catch (e: any) {
-      // 单次轮询异常（含超时）不立即结束，继续重试到 deadline 或连续失败上限
-      lastTransientError = String(e?.message || e)
-      consecutiveTransientFailures++
-      console.log('[ImageGen] DuoMi poll transient error:', lastTransientError)
-      if (consecutiveTransientFailures >= MAX_CONSECUTIVE_TRANSIENT) {
-        throw new Error(`多米 API 持续不可用（连续 ${consecutiveTransientFailures} 次轮询失败，task_id=${taskId}）：${lastTransientError}`)
+  return pollAsyncTask({
+    statusUrl: `${apiBase}/tasks/${taskId}`,
+    headers: { 'Authorization': apiKey },  // 多米是裸 token，无 Bearer 前缀
+    taskId,
+    errorPrefix: '多米 API',
+    maxConsecutiveTransientFailures: 12,  // 12 * 3s ≈ 36s 持续失败后早退
+    extractDiagnostic: (statusData) => statusData?.state,
+    parseStatus: (statusData) => {
+      const state: string | undefined = statusData?.state
+      if (state === 'succeeded') {
+        const images = Array.isArray(statusData?.data?.images) ? statusData.data.images : []
+        const out: ImageAPIResult[] = []
+        for (const img of images) {
+          if (img?.url) out.push({ url: String(img.url) })
+        }
+        if (out.length === 0) {
+          throw new Error(`多米 API 任务声明成功但未返回图片 URL（task_id=${taskId}）`)
+        }
+        return out
       }
-      continue
-    }
-
-    if (statusRes.status === 401 || statusRes.status === 403) {
-      throw new Error(`多米 API 鉴权失败（HTTP ${statusRes.status}）：API Key 无效或已过期`)
-    }
-    if (statusRes.status === 404) {
-      throw new Error(`多米 API 任务不存在或已过期 (task_id=${taskId})`)
-    }
-    if (!statusRes.ok) {
-      // 中间态 429/5xx：累计连续失败计数，早退避免白等
-      lastTransientError = await readResponseError(statusRes).catch(() => `HTTP ${statusRes.status}`)
-      consecutiveTransientFailures++
-      if (consecutiveTransientFailures >= MAX_CONSECUTIVE_TRANSIENT) {
-        throw new Error(`多米 API 持续不可用（连续 ${consecutiveTransientFailures} 次 ${statusRes.status}，task_id=${taskId}）：${lastTransientError}`)
+      if (state === 'failed' || state === 'error' || state === 'cancelled') {
+        const msg = statusData?.data?.description || statusData?.message || '任务执行失败'
+        throw new Error(`多米 API 任务失败（state=${state}, task_id=${taskId}）：${truncateError(String(msg))}`)
       }
-      continue
+      // pending / running / processing / queued / 未知 → 继续轮询
+      return null
     }
-
-    let statusData: any
-    try {
-      statusData = await statusRes.json()
-    } catch {
-      lastTransientError = '响应解析失败'
-      consecutiveTransientFailures++
-      if (consecutiveTransientFailures >= MAX_CONSECUTIVE_TRANSIENT) {
-        throw new Error(`多米 API 响应持续异常（连续 ${consecutiveTransientFailures} 次解析失败，task_id=${taskId}）`)
-      }
-      continue
-    }
-    consecutiveTransientFailures = 0  // 拿到合法响应即重置
-    const state: string | undefined = statusData?.state
-    lastState = state
-
-    if (state === 'succeeded') {
-      const images = Array.isArray(statusData?.data?.images) ? statusData.data.images : []
-      const out: ImageAPIResult[] = []
-      for (const img of images) {
-        if (img?.url) out.push({ url: String(img.url) })
-      }
-      if (out.length === 0) {
-        throw new Error(`多米 API 任务声明成功但未返回图片 URL（task_id=${taskId}）`)
-      }
-      return out
-    }
-
-    if (state === 'failed' || state === 'error' || state === 'cancelled') {
-      const msg = statusData?.data?.description || statusData?.message || '任务执行失败'
-      throw new Error(`多米 API 任务失败（state=${state}, task_id=${taskId}）：${truncateError(String(msg))}`)
-    }
-    // pending / running / processing / queued / 未知 → 继续轮询
-  }
-
-  throw new Error(`多米 API 任务超时（>${maxWait / 1000}s 未完成，task_id=${taskId}，last_state=${lastState || 'unknown'}）`)
+  })
 }
 
 function saveImageToFile(sessionId: string, genId: string, b64Data: string): string {
@@ -921,6 +1017,19 @@ export async function generateImages(
   options: GenerateImageOptions,
   window?: BrowserWindow | null
 ): Promise<ImageGeneration[]> {
+  // 前置：模型工作模式校验（mode = 'edit_only' / 'text2img' / 'both'）
+  // 在创建 DB 记录与发送 API 请求之前拦截，提供友好提示（避免上游返回生涩英文报错）。
+  // 默认 'both' = 任意请求都放行；只有显式注册了 mode 的模型才会拦截。
+  const _refCount = options.refImages?.length || 0
+  const _hasMask = !!options.mask
+  const _mode = getModelMode(options.modelId)
+  if (_mode === 'edit_only' && _refCount === 0 && !_hasMask) {
+    throw new Error(`模型「${options.modelId}」仅支持编辑模式，请先提供参考图或蒙版后再生成。`)
+  }
+  if (_mode === 'text2img' && (_refCount > 0 || _hasMask)) {
+    throw new Error(`模型「${options.modelId}」仅支持纯文生图，不能携带参考图或蒙版。请切换到支持编辑的模型，或移除参考图/蒙版。`)
+  }
+
   const sessionId = options.sessionId || getOrCreateDefaultSession()
   const rawBatchCount = Math.min(Math.max(options.batchCount || 1, 1), 10)
   const quality = options.quality || 'auto'

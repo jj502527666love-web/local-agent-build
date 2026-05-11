@@ -1,0 +1,175 @@
+<template>
+  <div ref="rootEl" class="relative">
+    <!-- 触发按钮：输入框左下角的小条，IDE 风格 -->
+    <button
+      type="button"
+      @click="open = !open"
+      class="flex items-center gap-1 px-1.5 py-0.5 text-[11px] text-text-tertiary hover:text-text-primary rounded-md hover:bg-surface-2 transition-colors max-w-[280px] focus:outline-none"
+      :title="currentLabel || '选择对话模型'"
+    >
+      <span class="truncate">{{ currentLabel || '选择模型' }}</span>
+      <svg class="w-3 h-3 flex-shrink-0 opacity-70" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m4.5 15.75 7.5-7.5 7.5 7.5" />
+      </svg>
+    </button>
+
+    <!-- 下拉面板：向上展开（按钮在输入框底部） -->
+    <div
+      v-if="open"
+      class="absolute bottom-full left-0 mb-1 w-80 max-h-[360px] bg-surface-0 border border-surface-3 rounded-xl shadow-modal z-30 flex flex-col overflow-hidden"
+    >
+      <div class="px-2.5 pt-2 pb-1.5 border-b border-surface-3 flex-shrink-0">
+        <input
+          v-model="search"
+          type="text"
+          placeholder="搜索对话模型..."
+          class="w-full px-2 py-1 text-xs border border-surface-3 rounded-md bg-surface-1 outline-none focus:ring-2 focus:ring-primary-500"
+        />
+      </div>
+      <div class="flex-1 overflow-y-auto py-1">
+        <template v-if="filteredGroups.length">
+          <div v-for="g in filteredGroups" :key="g.providerId" class="mb-1 last:mb-0">
+            <div class="px-3 py-1 text-[11px] text-text-tertiary font-medium uppercase tracking-wider">
+              {{ g.providerName }}
+            </div>
+            <button
+              v-for="m in g.models"
+              :key="g.providerId + '/' + m.modelKey"
+              type="button"
+              @click="pick(m)"
+              class="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left transition-colors"
+              :class="isCurrent(m) ? 'text-primary-700 bg-primary-50 font-medium' : 'text-text-secondary hover:bg-surface-2 hover:text-text-primary'"
+            >
+              <span class="flex-shrink-0 w-3.5 h-3.5 flex items-center justify-center">
+                <svg v-if="isCurrent(m)" class="w-3.5 h-3.5 text-primary-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M4.5 12.75 10.5 18.75 19.5 5.25" />
+                </svg>
+              </span>
+              <span class="truncate">{{ m.displayName }}</span>
+            </button>
+          </div>
+        </template>
+        <div v-else class="px-3 py-6 text-center text-[11px] text-text-tertiary">
+          {{ search ? '无匹配的对话模型' : '暂无可用的对话模型' }}
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { useModelStore } from '@/stores/models'
+import { hasCap } from '@/utils/model-caps'
+
+/**
+ * 对话输入框左下角的模型切换器。
+ *
+ * 设计要点：
+ * - 仅展示 chat 类型模型，过滤规则与旧 BotListView 的「推荐（对话）」组完全一致：
+ *   · 云端 provider：以 cloud_models.type 字段为单一真值（cloudTypeOf → 'chat' 才进）
+ *   · 本地 provider：按 modelId 关键字识别，image/embedding/tts/asr/rerank 等关键字独占；
+ *     非排除则默认 chat（兼容用户填的私有部署模型、新模型）
+ * - 当前选中态由父组件通过 props 控制（per-conversation）；切换通过 emit('change') 通知父组件持久化
+ * - 下拉向上展开，符合"输入框底部按钮"的视觉习惯
+ */
+
+interface ChatModelEntry {
+  providerId: string
+  providerName: string
+  modelKey: string
+  displayName: string
+}
+
+interface ChatModelGroup {
+  providerId: string
+  providerName: string
+  models: ChatModelEntry[]
+}
+
+const props = defineProps<{
+  /** 当前会话选用的 provider id（'' 表示未选） */
+  providerId: string
+  /** 当前会话选用的 model id 或复合 key（'' 表示未选） */
+  modelId: string
+}>()
+
+const emit = defineEmits<{
+  (e: 'change', val: { provider_id: string; model_id: string }): void
+}>()
+
+const modelStore = useModelStore()
+const open = ref(false)
+const search = ref('')
+const rootEl = ref<HTMLElement | null>(null)
+
+/** 全部 chat 类型可选模型，按 provider 分组 */
+const allGroups = computed<ChatModelGroup[]>(() => {
+  const groups: ChatModelGroup[] = []
+  for (const p of modelStore.providers) {
+    const entries: ChatModelEntry[] = []
+    for (const m of p.models) {
+      // 统一过滤：hasCap 内部按来源走双路识别
+      // - 云端 provider：cloudTypeOf 返回 'chat'/'image'/... → capsFromCloudType 取 cloud_models.type
+      // - 本地 provider：cloudTypeOf 返回 undefined → detectCapsByName 关键字识别
+      //   （image/embedding/tts/asr/rerank 关键字独占；否则兜底 chat）
+      const cloudType = modelStore.cloudTypeOf(p.id, m)
+      if (!hasCap(m, 'chat', cloudType)) continue
+      entries.push({
+        providerId: p.id,
+        providerName: p.name,
+        modelKey: m,
+        displayName: modelStore.optionLabel(p.id, m),
+      })
+    }
+    if (entries.length > 0) {
+      groups.push({ providerId: p.id, providerName: p.name, models: entries })
+    }
+  }
+  return groups
+})
+
+const filteredGroups = computed<ChatModelGroup[]>(() => {
+  const q = search.value.trim().toLowerCase()
+  if (!q) return allGroups.value
+  return allGroups.value
+    .map((g) => ({
+      ...g,
+      models: g.models.filter((m) => m.displayName.toLowerCase().includes(q)),
+    }))
+    .filter((g) => g.models.length > 0)
+})
+
+/** 按钮上显示的当前模型名（短，最长 280px 截断显示） */
+const currentLabel = computed(() => {
+  if (!props.modelId) return ''
+  return modelStore.formatModelLabel(props.providerId, props.modelId)
+})
+
+function isCurrent(entry: ChatModelEntry): boolean {
+  return entry.providerId === props.providerId && entry.modelKey === props.modelId
+}
+
+function pick(entry: ChatModelEntry): void {
+  emit('change', { provider_id: entry.providerId, model_id: entry.modelKey })
+  open.value = false
+  search.value = ''
+}
+
+/** 点击面板外部关闭 */
+function onDocMouseDown(e: MouseEvent): void {
+  if (!open.value) return
+  const el = rootEl.value
+  if (el && !el.contains(e.target as Node)) {
+    open.value = false
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('mousedown', onDocMouseDown)
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('mousedown', onDocMouseDown)
+})
+</script>

@@ -225,4 +225,6 @@ export const cloudClient = {
   // 订单：创建 / 同步（天阙聚合支付通道，无异步 notify 需主动轮询同步）
   createTianqueOrder: (planId: number) => request('POST', '/client/orders/tianque', { plan_id: planId }),
   syncTianqueOrder: (orderNo: string) => request('POST', `/client/orders/${orderNo}/tianque-sync`),
+  // 公告：当前启用的排序最高的一条公告；无公告时 announcement=null
+  currentAnnouncement: () => request('GET', '/client/announcement/current'),
 }

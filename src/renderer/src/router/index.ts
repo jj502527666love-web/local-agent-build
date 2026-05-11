@@ -40,6 +40,12 @@ export const routes: RouteRecordRaw[] = [
         meta: { title: '模型服务' }
       },
       {
+        path: 'video-models',
+        name: 'videoModels',
+        component: () => import('@/views/common/DevelopingView.vue'),
+        meta: { title: '视频模型' }
+      },
+      {
         path: 'personas',
         name: 'personas',
         component: () => import('@/views/personas/PersonaView.vue'),
@@ -77,6 +83,48 @@ export const routes: RouteRecordRaw[] = [
         meta: { title: '图片反推' }
       },
       {
+        path: 'image-toolkit',
+        name: 'imageToolkit',
+        component: () => import('@/views/image-toolkit/ImageToolkitView.vue'),
+        meta: { title: '图像处理' }
+      },
+      {
+        path: 'image-toolkit/collage',
+        name: 'imageToolkitCollage',
+        component: () => import('@/views/image-toolkit/CollageView.vue'),
+        meta: { title: '拼图拼接' }
+      },
+      {
+        path: 'image-toolkit/watermark',
+        name: 'imageToolkitWatermark',
+        component: () => import('@/views/image-toolkit/WatermarkView.vue'),
+        meta: { title: '加水印' }
+      },
+      {
+        path: 'image-toolkit/format-convert',
+        name: 'imageToolkitFormatConvert',
+        component: () => import('@/views/image-toolkit/FormatConvertView.vue'),
+        meta: { title: '格式转换' }
+      },
+      {
+        path: 'image-toolkit/compress',
+        name: 'imageToolkitCompress',
+        component: () => import('@/views/image-toolkit/CompressView.vue'),
+        meta: { title: '图片压缩' }
+      },
+      {
+        path: 'image-toolkit/slice',
+        name: 'imageToolkitSlice',
+        component: () => import('@/views/image-toolkit/SliceView.vue'),
+        meta: { title: '切图' }
+      },
+      {
+        path: 'image-toolkit/gif',
+        name: 'imageToolkitGif',
+        component: () => import('@/views/image-toolkit/GifView.vue'),
+        meta: { title: 'GIF 制作' }
+      },
+      {
         path: 'inspiration',
         name: 'inspiration',
         component: () => import('@/views/image-gen/InspirationView.vue'),
@@ -86,7 +134,25 @@ export const routes: RouteRecordRaw[] = [
         path: 'my-creations',
         name: 'myCreations',
         component: () => import('@/views/image-gen/MyCreationsView.vue'),
-        meta: { title: '我的创作' }
+        meta: { title: '图片创作' }
+      },
+      {
+        path: 'video-creations',
+        name: 'videoCreations',
+        component: () => import('@/views/common/DevelopingView.vue'),
+        meta: { title: '视频创作' }
+      },
+      {
+        path: 'ai-video',
+        name: 'aiVideo',
+        component: () => import('@/views/common/DevelopingView.vue'),
+        meta: { title: 'AI 视频' }
+      },
+      {
+        path: 'canvas-square',
+        name: 'canvasSquare',
+        component: () => import('@/views/common/DevelopingView.vue'),
+        meta: { title: '画布广场' }
       },
       {
         path: 'image-edit/:id',

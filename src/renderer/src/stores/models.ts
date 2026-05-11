@@ -7,6 +7,11 @@ function plain<T>(data: T): T {
   return JSON.parse(JSON.stringify(data))
 }
 
+export interface ProviderCustomParam {
+  name: string
+  value: string
+}
+
 export interface ModelProvider {
   id: string
   name: string
@@ -14,6 +19,10 @@ export interface ModelProvider {
   api_base: string
   api_key: string
   models: string[]
+  /** 在生图请求 body 顶层逐条 set 的自定义参数（空字符串 value 视为占位不下发） */
+  custom_params: ProviderCustomParam[]
+  /** 在 custom_params 之后做最终 body 覆盖的 JSON patch */
+  request_override_patch: Record<string, any>
   created_at: string
   updated_at: string
   isCloud?: boolean
@@ -47,6 +56,8 @@ export const useModelStore = defineStore('models', () => {
         api_base: '',
         api_key: '',
         models: keys,
+        custom_params: [],
+        request_override_patch: {},
         created_at: '',
         updated_at: '',
         isCloud: true

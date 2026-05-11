@@ -21,8 +21,19 @@ Thumbs.db
 # TypeScript incremental build cache
 *.tsbuildinfo
 
-# electron-vite runtime-generated config
+# Volar / vue-tsc 偶发生成的 .vue 旁车文件（不应提交，且会污染 Vite 解析）
+*.vue.js
+*.vue.d.ts
+
+# tsc 误产物：src 下所有 .ts 都不应产生同名 .js / .d.ts（唯一例外 env.d.ts 是手写源码，需单独 negate）
+/src/**/*.js
+/src/**/*.d.ts
+!/src/renderer/src/env.d.ts
+
+# electron-vite runtime-generated config / 根目录 sidecar 产物
 electron.vite.config.*.mjs
+/electron.vite.config.js
+/electron.vite.config.d.ts
 
 # electron-builder local-only
 dev-app-update.yml
@@ -30,7 +41,6 @@ dev-app-update.yml
 # Unrelated sub-projects (deployed / tracked separately)
 /agent-admin/
 /agent-build/
-/ppt_project_flower/
 
 # Temp build icons (uploaded by agent-build, cleaned up by workflow)
 .build-icons/

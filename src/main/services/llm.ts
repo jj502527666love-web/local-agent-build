@@ -1,7 +1,12 @@
 import { getModelProvider } from './model-provider'
 import { BrowserWindow } from 'electron'
 import { recordUsage } from './usage-stats'
-import { getCloudToken, getCloudGatewayUrl, getAllowCustomProvider } from './cloud-token'
+import {
+  getCloudToken,
+  getCloudGatewayUrl,
+  getAllowCustomProvider,
+  resolveCloudModelId,
+} from './cloud-token'
 import { normalizeApiBase } from './api-base-normalize'
 
 export interface ChatMessage {
@@ -119,7 +124,18 @@ export async function callLLM(
   let url: string
   let apiKey: string
 
-  if (providerId.startsWith('cloud:')) {
+  // 渲染层传进来的 modelId 在云端 provider 下可能是复合 key `{model_id}#@{provider_name}`，
+  // 用于标识用户实际选择的服务商；上游 OpenAI 协议只认纯 model_id，路由用 cloud_model_id 透传。
+  const isCloud = providerId.startsWith('cloud:')
+  let bodyModelId = options.modelId
+  let cloudModelId: number | null = null
+  if (isCloud) {
+    const resolved = resolveCloudModelId(options.modelId, 'chat')
+    bodyModelId = resolved.pureModelId
+    cloudModelId = resolved.cloudModelId
+  }
+
+  if (isCloud) {
     // Cloud model: route through cloud gateway
     const token = getCloudToken()
     if (!token) throw new Error('Cloud login required')
@@ -138,9 +154,13 @@ export async function callLLM(
   }
 
   const body: any = {
-    model: options.modelId,
+    model: bodyModelId,
     messages: options.messages,
     stream: options.stream ?? false
+  }
+  // 云端网关按 cloud_model_id 主键精确路由到具体服务商，避免同 model_id 多家时 first() 错位
+  if (isCloud && cloudModelId !== null) {
+    body.cloud_model_id = cloudModelId
   }
 
   if (options.tools && options.tools.length > 0) {

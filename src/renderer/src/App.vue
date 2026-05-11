@@ -177,9 +177,14 @@
       </template>
       <!-- Downloaded -->
       <template v-if="updateState === 'downloaded'">
-        <p class="text-xs text-text-secondary mb-3">更新已下载完成，重启后生效</p>
+        <p v-if="manualInstallMode" class="text-xs text-text-secondary mb-3">
+          更新已下载，请在 Finder 中把新版本 App 拖到「应用程序」文件夹覆盖旧版后重新打开。
+        </p>
+        <p v-else class="text-xs text-text-secondary mb-3">更新已下载完成，重启后生效</p>
         <div class="flex gap-2">
-          <button @click="installUpdate" class="flex-1 py-2 text-xs font-medium bg-primary-600 hover:bg-primary-700 text-white rounded-lg transition-colors">立即重启</button>
+          <button @click="installUpdate" class="flex-1 py-2 text-xs font-medium bg-primary-600 hover:bg-primary-700 text-white rounded-lg transition-colors">
+            {{ manualInstallMode ? '打开下载目录' : '立即重启' }}
+          </button>
           <button @click="dismissUpdate" class="px-3 py-2 text-xs text-text-tertiary hover:text-text-secondary border border-surface-3 rounded-lg transition-colors">稍后</button>
         </div>
       </template>
@@ -239,6 +244,8 @@ const updateVersion = ref('')
 const updateNotes = ref<string[]>([])
 const downloadPercent = ref(0)
 const updateError = ref('')
+// mac 未签名场景下主进程把 install 行为切成「打开下载目录」，UI 据此切换按钮文案
+const manualInstallMode = ref(false)
 
 function setupUpdaterListeners(): void {
   const u = window.api?.updater
@@ -254,7 +261,10 @@ function setupUpdaterListeners(): void {
     downloadPercent.value = data.percent
     updateState.value = 'downloading'
   })
-  u.onDownloaded(() => {
+  u.onDownloaded((data) => {
+    // mac 未签名兜底：主进程把 install 改成 shell.showItemInFolder，UI 上要把
+    // 「立即重启」换成「打开下载目录」并给提示，让用户手动覆盖 .app。
+    manualInstallMode.value = !!data?.manualInstall
     updateState.value = 'downloaded'
   })
   u.onError((msg) => {

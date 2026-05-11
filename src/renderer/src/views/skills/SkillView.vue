@@ -3,7 +3,6 @@
     <header class="page-header">
       <div class="flex items-center gap-2">
         <button class="btn-primary" @click="openCreate">+ 添加工具</button>
-        <button class="btn-secondary" @click="showPresets = true">预设模板</button>
         <button class="btn-secondary" @click="handleExportAll">导出全部</button>
         <label class="btn-secondary cursor-pointer">
           导入
@@ -12,27 +11,6 @@
       </div>
     </header>
     <div class="page-body">
-      <!-- Preset Modal -->
-      <div v-if="showPresets" class="fixed inset-0 z-50 flex items-center justify-center">
-        <div class="w-[520px] max-h-[70vh] bg-surface-0 rounded-2xl shadow-[0_0_30px_rgba(0,0,0,0.12)] flex flex-col overflow-hidden">
-          <div class="px-5 py-4 border-b border-surface-3 flex items-center justify-between">
-            <span class="text-sm font-semibold text-text-primary">预设小工具模板</span>
-            <button @click="showPresets = false" class="btn-ghost text-xs">关闭</button>
-          </div>
-          <div class="flex-1 overflow-y-auto p-4 space-y-2">
-            <div v-for="(preset, idx) in presets" :key="idx" class="card p-4 hover:bg-surface-2 transition-colors cursor-pointer" @click="applyPreset(preset)">
-              <div class="flex items-center justify-between">
-                <div>
-                  <div class="text-sm font-medium text-text-primary">{{ preset.name }}</div>
-                  <div class="text-xs text-text-tertiary mt-0.5">{{ preset.description }}</div>
-                </div>
-                <button class="btn-primary text-xs px-3 py-1" @click.stop="createFromPreset(preset)">添加</button>
-              </div>
-            </div>
-            <div v-if="presets.length === 0" class="text-center text-sm text-text-tertiary py-8">加载中...</div>
-          </div>
-        </div>
-      </div>
 
       <!-- Form -->
       <div v-if="showForm" class="max-w-2xl mb-6 form-card">
@@ -92,7 +70,7 @@
           <svg class="w-8 h-8 text-text-disabled" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M11.42 15.17 17.25 21A2.652 2.652 0 0 0 21 17.25l-5.877-5.877M11.42 15.17l2.496-3.03c.317-.384.74-.626 1.208-.766M11.42 15.17l-4.655 5.653a2.548 2.548 0 1 1-3.586-3.586l6.837-5.63m5.108-.233c.55-.164 1.163-.188 1.743-.14a4.5 4.5 0 0 0 4.486-6.336l-3.276 3.277a3.004 3.004 0 0 1-2.25-2.25l3.276-3.276a4.5 4.5 0 0 0-6.336 4.486c.049.58.025 1.193-.14 1.743" /></svg>
         </div>
         <p class="text-sm font-medium text-text-secondary mb-1">暂无小工具</p>
-        <p class="text-xs text-text-tertiary">添加自定义小工具或从预设模板快速创建</p>
+        <p class="text-xs text-text-tertiary">点击「+ 添加工具」创建自定义工具扩展智能体能力</p>
       </div>
 
       <div v-else-if="!showForm" class="grid grid-cols-3 gap-3">
@@ -104,6 +82,7 @@
             <div class="min-w-0 flex-1">
               <div class="flex items-center gap-2 flex-wrap">
                 <span class="font-semibold text-sm text-text-primary truncate">{{ skill.name }}</span>
+                <span v-if="skill.is_builtin" class="text-[10px] font-medium px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-600 dark:bg-indigo-900/20 dark:text-indigo-300">内置</span>
                 <span :class="['status-badge', skill.enabled ? 'status-active' : 'status-inactive']">{{ skill.enabled ? '已启用' : '已禁用' }}</span>
                 <span class="text-xs text-text-disabled">v{{ skill.version }}</span>
               </div>
@@ -114,7 +93,7 @@
             <button @click="toggleSkill(skill)" class="btn-ghost text-xs">{{ skill.enabled ? '禁用' : '启用' }}</button>
             <button @click="editSkill(skill)" class="btn-ghost text-xs">编辑</button>
             <button @click="handleExportOne(skill)" class="btn-ghost text-xs">导出</button>
-            <button @click="store.deleteSkill(skill.id)" class="btn-danger text-xs">删除</button>
+            <button v-if="!skill.is_builtin" @click="handleDelete(skill)" class="btn-danger text-xs">删除</button>
           </div>
         </div>
       </div>
@@ -133,11 +112,9 @@ const visibleSkills = computed(() =>
   store.skills.filter((s) => !CORE_TOOL_NAMES.includes(s.function_def?.name))
 )
 const showForm = ref(false)
-const showPresets = ref(false)
 const editingId = ref<string | null>(null)
 const form = ref({ name: '', description: '', implementation: '' })
 const functionDefStr = ref('{}')
-const presets = ref<any[]>([])
 
 const testing = ref(false)
 const testArgsStr = ref('{}')
@@ -204,33 +181,13 @@ function formatTestOutput(r: { success: boolean; result?: any; error?: string })
   try { return JSON.stringify(r.result, null, 2) } catch { return String(r.result) }
 }
 
-async function loadPresets() {
+async function handleDelete(skill: Skill) {
+  if (skill.is_builtin) return
+  if (!confirm(`确定删除小工具「${skill.name}」吗？删除后使用它的智能体将失去该能力。`)) return
   try {
-    presets.value = await store.fetchPresets()
-  } catch { /* ignore */ }
-}
-
-function applyPreset(preset: any) {
-  form.value = { name: preset.name, description: preset.description, implementation: preset.implementation }
-  functionDefStr.value = JSON.stringify(preset.function_def, null, 2)
-  editingId.value = null
-  testResult.value = null
-  testArgsStr.value = '{}'
-  showPresets.value = false
-  showForm.value = true
-}
-
-async function createFromPreset(preset: any) {
-  try {
-    await store.createSkill({
-      name: preset.name,
-      description: preset.description,
-      function_def: preset.function_def,
-      implementation: preset.implementation
-    })
-    showPresets.value = false
+    await store.deleteSkill(skill.id)
   } catch (e: any) {
-    alert('创建失败: ' + (e?.message || e))
+    alert('删除失败：' + (e?.message || e))
   }
 }
 
@@ -264,7 +221,12 @@ async function handleImport(e: Event) {
     const text = await file.text()
     const data = JSON.parse(text)
     const arr = Array.isArray(data) ? data : [data]
-    await store.importSkills(arr)
+    const result = await store.importSkills(arr)
+    // 部分失败不回滚成功项，重名 / 校验失败的条目集中提醒
+    if (result.errors.length > 0) {
+      const lines = result.errors.map(err => `【${err.name}】${err.reason}`).join('\n')
+      alert(`导入完成：成功 ${result.created.length} 个，跳过 ${result.errors.length} 个。\n\n跳过原因：\n${lines}`)
+    }
   } catch (err: any) {
     alert('导入失败: ' + (err?.message || err))
   }
@@ -273,6 +235,5 @@ async function handleImport(e: Event) {
 
 onMounted(() => {
   store.fetchSkills()
-  loadPresets()
 })
 </script>

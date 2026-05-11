@@ -5,6 +5,7 @@ import { readFileSync } from 'fs'
 import { getDataDir } from '../services/data-path'
 import { seedPresetPersonas } from '../services/persona'
 import { seedBuiltinPresets } from '../services/prompt-preset'
+import { seedBuiltinSkillPresets } from '../services/skill'
 
 let db: Database.Database | null = null
 
@@ -33,10 +34,22 @@ function initSchema(): void {
   runMigrations()
   seedPresetPersonas()
   seedBuiltinPresets()
+  seedBuiltinSkillPresets()
 }
 
 function runMigrations(): void {
   if (!db) return
+  // model_providers: 生图扩展字段（custom_params + request_override_patch）
+  // 旧库升级幂等加列；JSON 文本，默认空数组 / 空对象。
+  const mpCols = db.prepare("PRAGMA table_info(model_providers)").all() as any[]
+  const mpColNames = mpCols.map((c: any) => c.name)
+  if (mpCols.length > 0 && !mpColNames.includes('custom_params')) {
+    db.exec("ALTER TABLE model_providers ADD COLUMN custom_params TEXT NOT NULL DEFAULT '[]'")
+  }
+  if (mpCols.length > 0 && !mpColNames.includes('request_override_patch')) {
+    db.exec("ALTER TABLE model_providers ADD COLUMN request_override_patch TEXT NOT NULL DEFAULT '{}'")
+  }
+
   const botCols = db.prepare("PRAGMA table_info(bots)").all() as any[]
   const botColNames = botCols.map((c: any) => c.name)
   if (!botColNames.includes('kb_only')) {
@@ -87,6 +100,25 @@ function runMigrations(): void {
   if (!chunkColNames.includes('embedding_source')) {
     db.exec("ALTER TABLE vector_chunks ADD COLUMN embedding_source TEXT NOT NULL DEFAULT ''")
   }
+  // skills: 加 is_builtin 字段，用于标识 6 个内置预设（不可删除、启动自动 seed）
+  const skillCols = db.prepare("PRAGMA table_info(skills)").all() as any[]
+  const skillColNames = skillCols.map((c: any) => c.name)
+  if (skillCols.length > 0 && !skillColNames.includes('is_builtin')) {
+    db.exec("ALTER TABLE skills ADD COLUMN is_builtin INTEGER NOT NULL DEFAULT 0")
+  }
+
+  // conversations: 「智能体不再绑定模型」改造（v0.6.5+）
+  // 每个会话独立记忆模型：新建会话从云控端默认拉取，用户输入框切换持久写回
+  // 旧库的 conversation 行为：active_model_* 为空字符串，sendMessage 时按回退链解析
+  const convCols = db.prepare("PRAGMA table_info(conversations)").all() as any[]
+  const convColNames = convCols.map((c: any) => c.name)
+  if (convCols.length > 0 && !convColNames.includes('active_model_provider_id')) {
+    db.exec("ALTER TABLE conversations ADD COLUMN active_model_provider_id TEXT NOT NULL DEFAULT ''")
+  }
+  if (convCols.length > 0 && !convColNames.includes('active_model_id')) {
+    db.exec("ALTER TABLE conversations ADD COLUMN active_model_id TEXT NOT NULL DEFAULT ''")
+  }
+
   // Populate FTS index from existing chunks if FTS table is empty
   const ftsCount = (db.prepare("SELECT COUNT(*) as cnt FROM vector_chunks_fts").get() as any).cnt
   const chunkCount = (db.prepare("SELECT COUNT(*) as cnt FROM vector_chunks").get() as any).cnt

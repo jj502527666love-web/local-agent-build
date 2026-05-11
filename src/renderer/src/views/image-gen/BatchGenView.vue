@@ -579,7 +579,8 @@ async function optimizeDefaultPrompt(lang: 'cn' | 'en') {
       { role: 'system', content: systemPrompt },
       { role: 'user', content: defaultPrompt.value }
     ]
-    const result = await (window as any).api.llm.invoke('call', optimizeProviderId.value, stripModelId(optimizeModelId.value), messages)
+    // 保留复合 key 传给 main，main 端按服务商反查 cloud_model_id 精确路由
+    const result = await (window as any).api.llm.invoke('call', optimizeProviderId.value, optimizeModelId.value, messages)
     if (result) defaultPrompt.value = result
     await recordUsage('chat', optimizeProviderId.value, optimizeModelId.value)
     hintsTick.value++

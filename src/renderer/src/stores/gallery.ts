@@ -103,6 +103,24 @@ export const useGalleryStore = defineStore('gallery', () => {
     return result
   }
 
+  /**
+   * O4: 工具页保存生成结果到图库。
+   * dataUri 必须是 data:image/(png|jpeg|webp|gif|bmp);base64,... 形式。
+   * 写盘成功后会自动 refresh 当前列表（如果当前查看的就是该分类）。
+   */
+  async function addFromDataUri(categoryId: string, dataUri: string, displayName: string) {
+    const result = (await window.api.gallery.invoke(
+      'addFromDataUri',
+      categoryId,
+      dataUri,
+      displayName
+    )) as GalleryItem | null
+    if (result && (!activeCategoryId.value || activeCategoryId.value === categoryId)) {
+      await fetchItems()
+    }
+    return result
+  }
+
   async function addFolder(categoryId: string, folderPath: string, recursive: boolean) {
     const result = (await window.api.gallery.invoke('addFolder', categoryId, folderPath, recursive)) as {
       added: number
@@ -165,6 +183,7 @@ export const useGalleryStore = defineStore('gallery', () => {
     fetchItems,
     getItem,
     addFile,
+    addFromDataUri,
     addFolder,
     removeItems,
     sync,

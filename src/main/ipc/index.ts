@@ -35,6 +35,7 @@ import {
   getPreferredCloudEmbeddingModel,
   getActiveCloudEmbeddingModelId,
   getAllowCustomEmbedding,
+  setCloudModels,
 } from '../services/cloud-token'
 import { getDeviceId } from '../services/device-id'
 import { uploadInspiration as uploadInspirationToCloud } from '../services/cloud-inspiration'
@@ -106,11 +107,19 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('chat:getConversation', (_, id: string) =>
     conversationService.getConversation(id)
   )
-  ipcMain.handle('chat:createConversation', (_, botId: string, title?: string) =>
-    conversationService.createConversation(botId, title)
+  ipcMain.handle(
+    'chat:createConversation',
+    (_, botId: string, title?: string, initialModel?: { provider_id: string; model_id: string }) =>
+      conversationService.createConversation(botId, title, initialModel)
   )
   ipcMain.handle('chat:updateTitle', (_, id: string, title: string) =>
     conversationService.updateConversationTitle(id, title)
+  )
+  // 切换会话使用的模型（输入框左下角下拉触发）。每个会话独立持久化。
+  ipcMain.handle(
+    'chat:updateConversationModel',
+    (_, id: string, provider_id: string, model_id: string) =>
+      conversationService.updateConversationModel(id, provider_id, model_id)
   )
   ipcMain.handle('chat:deleteConversation', (_, id: string) =>
     conversationService.deleteConversation(id)
@@ -251,18 +260,29 @@ export function registerIpcHandlers(): void {
       version: s!.version
     }))
   })
+  // 单条独立 try/catch：重名失败时跳过该条继续处理后续，不让整批回滚。
+  // 返回 { created, errors }：前端可分别提示成功条数 + 重名条目，体验比整批回滚友好得多。
   ipcMain.handle('skill:import', (_, dataArr: any[]) => {
-    const results: any[] = []
+    const created: any[] = []
+    const errors: { name: string; reason: string }[] = []
     for (const data of dataArr) {
-      results.push(skillService.createSkill({
-        name: data.name,
-        description: data.description || '',
-        function_def: data.function_def || {},
-        implementation: data.implementation || '',
-        version: data.version || '1.0.0'
-      }))
+      try {
+        const skill = skillService.createSkill({
+          name: data.name,
+          description: data.description || '',
+          function_def: data.function_def || {},
+          implementation: data.implementation || '',
+          version: data.version || '1.0.0'
+        })
+        created.push(skill)
+      } catch (e: any) {
+        errors.push({
+          name: data.name || data.function_def?.name || '未命名',
+          reason: e?.message || String(e)
+        })
+      }
     }
-    return results
+    return { created, errors }
   })
 
   // === MCP Servers ===
@@ -823,6 +843,10 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('gallery:addFile', (_, categoryId: string, filePath: string) =>
     galleryService.addFile(categoryId, filePath)
   )
+  // O4: 工具页保存图片 → 写盘 + 入库
+  ipcMain.handle('gallery:addFromDataUri', (_, categoryId: string, dataUri: string, displayName: string) =>
+    galleryService.addFromDataUri(categoryId, dataUri, displayName)
+  )
   ipcMain.handle(
     'gallery:addFolder',
     (_, categoryId: string, folderPath: string, recursive: boolean) =>
@@ -842,6 +866,14 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('cloud:getToken', () => getCloudToken())
   ipcMain.handle('cloud:setPermissions', (_, perms: Record<string, any>) => setCloudPermissions(perms))
   ipcMain.handle('cloud:getDeviceId', () => getDeviceId())
+
+  // === Cloud Models（全量 chat/image/embedding；用于 callLLM/image/embedding 出 body 前反查 cloud_model_id） ===
+  // 解决多家服务商提供同名 model_id 时云控端 first() 错位路由的 bug：
+  // renderer fetchCloudData 拉到全量模型后通过此 IPC 同步到 main 缓存，
+  // main 在请求体里附 cloud_model_id 让后端按主键精确路由。
+  ipcMain.handle('cloud:setModels', (_, models: any[]) => {
+    setCloudModels(Array.isArray(models) ? models : [])
+  })
 
   // === Cloud Embedding（渲染进程同步云端可用 embedding 模型 + 偏好选择） ===
   ipcMain.handle('cloud:setEmbeddingModels', (_, models: any[]) => {

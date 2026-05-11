@@ -16,7 +16,6 @@ files:
   - '!.build-icons/**/*'
   # IDE / agent workspaces and unrelated demo assets — local-only artifacts
   - '!.windsurf/**/*'
-  - '!ppt_project_flower/**/*'
   - '!.github/**/*'
   # Dev-only loose files at repo root
   - '!find_pptmaster.py'

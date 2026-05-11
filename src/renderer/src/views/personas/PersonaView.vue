@@ -136,7 +136,6 @@
 import { ref, computed, onMounted } from 'vue'
 import { usePersonaStore, type Persona } from '@/stores/personas'
 import { useModelStore } from '@/stores/models'
-import { stripModelId } from '@shared/model-id'
 import { usePromptPresetStore } from '@/stores/prompt-presets'
 import { groupAndSort } from '@/utils/model-caps'
 import { warmHintsCache, getHintsSync, recordUsage } from '@/utils/model-usage-hints'
@@ -251,7 +250,8 @@ async function doOptimize() {
       { role: 'system', content: OPTIMIZE_SYSTEM_PROMPT },
       { role: 'user', content: form.value.system_prompt }
     ]
-    const result = (await window.api.llm.invoke('call', optimizeProviderId.value, stripModelId(optimizeModelId.value), messages)) as string
+    // 保留复合 key 传给 main，main 端按服务商反查 cloud_model_id 精确路由
+    const result = (await window.api.llm.invoke('call', optimizeProviderId.value, optimizeModelId.value, messages)) as string
     if (result) {
       form.value.system_prompt = result
       showOptimizeModal.value = false

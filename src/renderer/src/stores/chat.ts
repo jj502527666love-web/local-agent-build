@@ -6,6 +6,10 @@ export interface Conversation {
   id: string
   bot_id: string
   title: string
+  // 「智能体不再绑定模型」改造（v0.6.5+）：每个会话独立持久记忆当前模型
+  // 新建时填入云控端默认（site-config.chat_default_model）；用户切换 → updateConversationModel
+  active_model_provider_id: string
+  active_model_id: string
   created_at: string
   updated_at: string
 }
@@ -70,10 +74,37 @@ export const useChatStore = defineStore('chat', () => {
     conversations.value = (await window.api.chat.invoke('listConversations', botId)) as Conversation[]
   }
 
-  async function createConversation(botId: string, title?: string) {
-    const result = (await window.api.chat.invoke('createConversation', botId, title)) as Conversation
+  async function createConversation(
+    botId: string,
+    title?: string,
+    initialModel?: { provider_id: string; model_id: string }
+  ) {
+    const result = (await window.api.chat.invoke(
+      'createConversation',
+      botId,
+      title,
+      initialModel
+    )) as Conversation
     conversations.value.unshift(result)
     return result
+  }
+
+  /**
+   * 切换会话使用的模型（输入框左下角下拉触发）。
+   * 写回主进程 + 同步更新本地 conversations 缓存中的对应会话字段，
+   * 让 ChatModelSwitcher 显示立即跟随，无需重拉列表。
+   */
+  async function updateConversationModel(
+    conversationId: string,
+    provider_id: string,
+    model_id: string
+  ) {
+    await window.api.chat.invoke('updateConversationModel', conversationId, provider_id, model_id)
+    const conv = conversations.value.find((c) => c.id === conversationId)
+    if (conv) {
+      conv.active_model_provider_id = provider_id || ''
+      conv.active_model_id = model_id || ''
+    }
   }
 
   async function selectConversation(id: string) {
@@ -289,6 +320,7 @@ export const useChatStore = defineStore('chat', () => {
     drafts,
     fetchConversations,
     createConversation,
+    updateConversationModel,
     selectConversation,
     deleteConversation,
     updateTitle,

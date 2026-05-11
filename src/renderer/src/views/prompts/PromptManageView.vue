@@ -173,7 +173,6 @@ import { ref, computed, watch, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { usePromptPresetStore, type PromptCategory, type PromptPreset } from '@/stores/prompt-presets'
 import { useModelStore } from '@/stores/models'
-import { stripModelId } from '@shared/model-id'
 import { groupAndSort } from '@/utils/model-caps'
 import { warmHintsCache, getHintsSync, recordUsage } from '@/utils/model-usage-hints'
 
@@ -332,7 +331,8 @@ async function doOptimize() {
       { role: 'system', content: OPTIMIZE_SYSTEM_PROMPT },
       { role: 'user', content: presetForm.value.content }
     ]
-    const result = (await (window as any).api.llm.invoke('call', optimizeProviderId.value, stripModelId(optimizeModelId.value), messages)) as string
+    // 保留复合 key（`model_id#@provider_name`）传给 main，main 端 callLLM 内部按服务商反查 cloud_model_id 精确路由
+    const result = (await (window as any).api.llm.invoke('call', optimizeProviderId.value, optimizeModelId.value, messages)) as string
     if (result) {
       presetForm.value.content = result
       showOptimizeModal.value = false

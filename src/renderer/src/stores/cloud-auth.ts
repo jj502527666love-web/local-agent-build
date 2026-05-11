@@ -26,6 +26,8 @@ export interface CloudModel {
 export interface CloudPermissions {
   allow_custom_provider: boolean
   allow_custom_embedding: boolean
+  /** 自定义视频模型：开启后桌面端侧栏「视频模型」入口可见。默认 false，独立于 allow_custom_provider */
+  allow_custom_video_provider: boolean
   allow_image_gen: boolean
   allow_knowledge_base: boolean
   max_context_messages: number
@@ -57,12 +59,21 @@ export interface MyPlan {
   models: { id: number; model_id: string; name: string; type: string }[]
 }
 
+export interface Announcement {
+  id: number
+  title: string
+  /** HTML 富文本，桌面端用 v-html 渲染。来源为 admin 后台可控，无需白名单过滤 */
+  content: string
+  updated_at: string
+}
+
 export const useCloudAuthStore = defineStore('cloudAuth', () => {
   const user = ref<CloudUser | null>(null)
   const models = ref<CloudModel[]>([])
   const permissions = ref<CloudPermissions>({
     allow_custom_provider: false,
     allow_custom_embedding: true,
+    allow_custom_video_provider: false,
     allow_image_gen: true,
     allow_knowledge_base: true,
     max_context_messages: 50,
@@ -71,6 +82,8 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
   const balances = ref<{ type: string; amount: number }[]>([])
   const billingRules = ref<any[]>([])
   const plans = ref<MyPlan[]>([])
+  // 云端当前启用的最新一条公告，未登录 / 未拉取 / 无公告时为 null
+  const announcement = ref<Announcement | null>(null)
   const isLoggedIn = computed(() => !!user.value && !!getCloudToken())
   const loading = ref(false)
   const pendingBonus = ref<RegisterBonus | null>(null)
@@ -126,9 +139,11 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
     models.value = []
     balances.value = []
     plans.value = []
+    announcement.value = null
     permissions.value = {
       allow_custom_provider: false,
       allow_custom_embedding: true,
+      allow_custom_video_provider: false,
       allow_image_gen: true,
       allow_knowledge_base: true,
       max_context_messages: 50,
@@ -141,6 +156,8 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
     // 清空主进程缓存的云端 embedding 模型与偏好，避免状态泄漏
     window.api?.cloud?.setEmbeddingModels([])
     window.api?.cloud?.setPreferredEmbeddingModel('')
+    // 清空主进程缓存的全量云端模型，避免登出后旧账号的 cloud_model_id 被复用
+    window.api?.cloud?.setModels([])
   }
 
   async function fetchMe() {
@@ -174,6 +191,14 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
         const planRes = await cloudClient.myPlans()
         plans.value = (planRes.plans || []) as MyPlan[]
       } catch { plans.value = [] }
+      // 拉取当前公告：接口失败 / 无公告 / 字段缺失统一按 null 处理，避免 UI 出现半残状态
+      try {
+        const annRes = await cloudClient.currentAnnouncement()
+        const a = annRes?.announcement
+        announcement.value = a && typeof a === 'object' && a.id
+          ? { id: Number(a.id), title: String(a.title || ''), content: String(a.content || ''), updated_at: String(a.updated_at || '') }
+          : null
+      } catch { announcement.value = null }
       // Sync permissions to main process for LLM routing guard
       window.api?.cloud?.setPermissions({
         allow_custom_provider: permissions.value.allow_custom_provider,
@@ -184,6 +209,17 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
         .filter((m: any) => m.type === 'embedding')
         .map((m: any) => ({ id: m.id, model_id: m.model_id, name: m.name }))
       window.api?.cloud?.setEmbeddingModels(embeddingModels)
+      // 同步全量云端模型到主进程；main 在 callLLM / 生图 / 向量请求体里附 cloud_model_id 主键，
+      // 让云控端按主键精确路由，避免多家服务商同 model_id 时 first() 错位扣费。
+      const allModels = (modelsRes.models || []).map((m: any) => ({
+        id: m.id,
+        model_id: m.model_id,
+        name: m.name,
+        type: m.type,
+        provider_name: m.provider_name,
+        provider_type: m.provider_type,
+      }))
+      window.api?.cloud?.setModels(allModels)
       // 用户偏好的云端 embedding 模型（从 settings 读取，由 SettingsView 写入）
       try {
         const preferred = (await window.api.settings.invoke('get', 'cloud_embedding_model')) as string | undefined
@@ -228,7 +264,7 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
   }
 
   return {
-    user, models, permissions, balances, billingRules, plans,
+    user, models, permissions, balances, billingRules, plans, announcement,
     isLoggedIn, loading, pendingBonus,
     login, register, logout, fetchMe, fetchCloudData,
     changePassword, refreshToken, init, consumeBonus,

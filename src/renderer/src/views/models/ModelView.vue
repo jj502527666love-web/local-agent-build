@@ -96,8 +96,72 @@
               </div>
             </template>
           </div>
+          <!-- 高级配置（可折叠）：生图请求 body 的自定义参数 + 最终覆盖 patch -->
+          <!-- 仅作用于自定义 / OpenAI / 多米生图分支；云端走固定网关协议不受影响 -->
+          <div class="pt-2">
+            <button
+              type="button"
+              class="text-xs text-text-tertiary hover:text-text-primary transition-colors flex items-center gap-1"
+              @click="showAdvanced = !showAdvanced"
+            >
+              <svg class="w-3 h-3 transition-transform" :class="showAdvanced ? 'rotate-90' : ''" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" /></svg>
+              <span>高级配置（生图请求扩展）</span>
+            </button>
+            <div v-if="showAdvanced" class="mt-3 space-y-4 p-3 bg-surface-1 rounded-lg border border-surface-3">
+              <!-- 自定义参数 -->
+              <div>
+                <div class="flex items-center justify-between mb-2">
+                  <label class="form-label !mb-0">自定义参数</label>
+                  <button type="button" @click="addCustomParam" class="text-xs text-primary-600 hover:text-primary-700">+ 添加</button>
+                </div>
+                <p class="text-[11px] text-text-tertiary leading-relaxed mb-2">
+                  按顺序写入请求 body 顶层。空 value 仅占位、不下发。值会自动识别数字 / 布尔 / JSON。
+                </p>
+                <div v-if="form.custom_params.length === 0" class="text-[11px] text-text-disabled px-2 py-1.5">
+                  暂无参数
+                </div>
+                <div v-else class="space-y-1.5">
+                  <div v-for="(p, idx) in form.custom_params" :key="idx" class="flex gap-2">
+                    <input
+                      v-model="p.name"
+                      placeholder="参数名 (如 seed)"
+                      class="input-field flex-1 text-xs"
+                    />
+                    <input
+                      v-model="p.value"
+                      placeholder="值 (如 42 / true / hd)"
+                      class="input-field flex-1 text-xs"
+                    />
+                    <button
+                      type="button"
+                      @click="removeCustomParam(idx)"
+                      class="px-2 text-text-tertiary hover:text-red-500 transition-colors text-xs"
+                      :title="`移除参数 ${p.name || idx + 1}`"
+                    >&times;</button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 请求覆盖 patch (JSON) -->
+              <div>
+                <label class="form-label">请求覆盖 patch（JSON）</label>
+                <p class="text-[11px] text-text-tertiary leading-relaxed mb-2">
+                  在自定义参数之后做最终覆盖。必须是 JSON 对象（{} 形式），留空表示不下发。
+                </p>
+                <textarea
+                  v-model="form.request_override_patch_text"
+                  @input="validatePatchText"
+                  placeholder='例如：{"safety_filter_level":"strict","seed":12345}'
+                  rows="4"
+                  class="input-field text-xs font-mono"
+                ></textarea>
+                <p v-if="patchParseError" class="text-[11px] text-red-500 mt-1">{{ patchParseError }}</p>
+              </div>
+            </div>
+          </div>
+
           <div class="flex gap-3 pt-2">
-            <button @click="saveProvider" class="btn-primary">{{ editingId ? '更新' : '创建' }}</button>
+            <button @click="saveProvider" class="btn-primary" :disabled="!!patchParseError">{{ editingId ? '更新' : '创建' }}</button>
             <button @click="showForm = false" class="btn-secondary">取消</button>
           </div>
         </div>
@@ -260,7 +324,67 @@ const statsProviderId = ref('')
 const showForm = ref(false)
 const editingId = ref<string | null>(null)
 const modelsInput = ref('')
-const form = ref({ name: '', type: 'openai_compatible', api_base: '', api_key: '' })
+
+interface ProviderFormCustomParam {
+  name: string
+  value: string
+}
+
+interface ProviderFormState {
+  name: string
+  type: string
+  api_base: string
+  api_key: string
+  /** 自定义参数（按顺序写入 body 顶层；空 value 不下发） */
+  custom_params: ProviderFormCustomParam[]
+  /** 最终 body 覆盖 patch 的 JSON 文本（保存时解析；空字符串视为 {}） */
+  request_override_patch_text: string
+}
+
+function createEmptyFormState(): ProviderFormState {
+  return {
+    name: '',
+    type: 'openai_compatible',
+    api_base: '',
+    api_key: '',
+    custom_params: [],
+    request_override_patch_text: ''
+  }
+}
+
+const form = ref<ProviderFormState>(createEmptyFormState())
+
+/** 高级配置展开开关（默认折叠避免干扰新用户） */
+const showAdvanced = ref(false)
+/** request_override_patch 解析错误提示（实时校验，保存前阻断） */
+const patchParseError = ref('')
+
+function addCustomParam(): void {
+  form.value.custom_params.push({ name: '', value: '' })
+}
+
+function removeCustomParam(idx: number): void {
+  form.value.custom_params.splice(idx, 1)
+}
+
+/** 实时校验 patch 文本是否合法 JSON object（空字符串视为合法 = 不下发 patch） */
+function validatePatchText(): void {
+  const t = form.value.request_override_patch_text.trim()
+  if (!t) {
+    patchParseError.value = ''
+    return
+  }
+  try {
+    const parsed = JSON.parse(t)
+    if (parsed == null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      patchParseError.value = '必须是 JSON 对象（{} 形式）'
+    } else {
+      patchParseError.value = ''
+    }
+  } catch (e: any) {
+    patchParseError.value = 'JSON 解析失败: ' + (e?.message || '')
+  }
+}
 
 // 某些服务商类型有固定接入地址，选中后为空则自动填充；已填写过不覆盖。
 const PROVIDER_DEFAULT_API_BASE: Record<string, string> = {
@@ -406,12 +530,14 @@ async function fetchModels() {
 }
 
 function resetForm() {
-  form.value = { name: '', type: 'openai_compatible', api_base: '', api_key: '' }
+  form.value = createEmptyFormState()
   modelsInput.value = ''
   remoteModels.value = []
   selectedModels.value = []
   modelSearch.value = ''
   fetchError.value = ''
+  showAdvanced.value = false
+  patchParseError.value = ''
 }
 
 const SUPPORTED_PROVIDER_TYPES = ['openai_compatible', 'openai', 'duomi']
@@ -420,12 +546,25 @@ function editProvider(provider: ModelProvider) {
   editingId.value = provider.id
   // 老数据（如历史 anthropic）type 不在白名单内时回落 openai_compatible，避免 select 显示空白
   const safeType = SUPPORTED_PROVIDER_TYPES.includes(provider.type) ? provider.type : 'openai_compatible'
+  // 高级配置：custom_params 深拷贝（避免直接绑定 store 内引用），patch 序列化为多行 JSON 文本
+  const customParams = Array.isArray(provider.custom_params)
+    ? provider.custom_params.map((p) => ({ name: String(p.name || ''), value: String(p.value ?? '') }))
+    : []
+  const patch = provider.request_override_patch && typeof provider.request_override_patch === 'object'
+    ? provider.request_override_patch
+    : {}
+  const patchText = Object.keys(patch).length > 0 ? JSON.stringify(patch, null, 2) : ''
   form.value = {
     name: provider.name,
     type: safeType,
     api_base: provider.api_base,
-    api_key: provider.api_key
+    api_key: provider.api_key,
+    custom_params: customParams,
+    request_override_patch_text: patchText
   }
+  // 进入编辑时如有高级配置，自动展开方便用户看到
+  showAdvanced.value = customParams.length > 0 || patchText.length > 0
+  patchParseError.value = ''
   // duomi 等固定模型清单的类型：忽略 provider.models（可能是老数据不规范），强制锁定。
   // type 未变 watch 不会触发，需要这里手动兼底。
   const fixed = PROVIDER_FIXED_MODELS[safeType]
@@ -452,14 +591,46 @@ async function saveProvider() {
     alert('请输入 API 基础地址')
     return
   }
+  // 实时校验已写在 onInput；这里二次确认 patch_text 合法（防止用户没触发 input 直接点保存）
+  validatePatchText()
+  if (patchParseError.value) {
+    alert('高级配置 - 请求覆盖 patch：' + patchParseError.value)
+    showAdvanced.value = true
+    return
+  }
+  // 解析 patch 文本 → JSON 对象（空字符串视为不下发 patch = 空对象）
+  const patchText = form.value.request_override_patch_text.trim()
+  let requestOverridePatch: Record<string, any> = {}
+  if (patchText) {
+    try {
+      requestOverridePatch = JSON.parse(patchText)
+    } catch (e: any) {
+      alert('高级配置 - 请求覆盖 patch JSON 解析失败：' + (e?.message || e))
+      showAdvanced.value = true
+      return
+    }
+  }
+  // 清洗 custom_params：丢弃空 name 行（空 value 仍保留作为占位，但运行时不下发）
+  const customParams = form.value.custom_params
+    .map((p) => ({ name: String(p.name || '').trim(), value: String(p.value ?? '') }))
+    .filter((p) => p.name.length > 0)
   try {
     const models = selectedModels.value.length
       ? selectedModels.value
       : modelsInput.value.split(',').map((m) => m.trim()).filter(Boolean)
+    const payload = {
+      name: form.value.name,
+      type: form.value.type,
+      api_base: form.value.api_base,
+      api_key: form.value.api_key,
+      models,
+      custom_params: customParams,
+      request_override_patch: requestOverridePatch
+    }
     if (editingId.value) {
-      await store.updateProvider(editingId.value, { ...form.value, models })
+      await store.updateProvider(editingId.value, payload)
     } else {
-      await store.createProvider({ ...form.value, models })
+      await store.createProvider(payload)
     }
     showForm.value = false
     resetForm()

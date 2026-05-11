@@ -1,6 +1,6 @@
 import { getDatabase } from '../database'
 import { v4 as uuid } from 'uuid'
-import { existsSync, statSync, readdirSync } from 'fs'
+import { existsSync, statSync, readdirSync, mkdirSync, writeFileSync } from 'fs'
 import { join, basename, extname } from 'path'
 import { probeImage } from './image-probe'
 import { getDataDir } from './data-path'
@@ -326,6 +326,49 @@ export function sync(categoryId?: string): { removed: number; checked: number } 
   }
 
   return { removed: toRemove.length, checked: items.length }
+}
+
+/**
+ * O4: 从 data URI 把图片存到磁盘并入库。
+ * - 解析 data:image/{png|jpeg|webp|gif|bmp};base64,... 提取 MIME + 数据
+ * - 在 dataDir/gallery-uploads/ 下生成唯一文件名（uuid + 扩展名）
+ * - 写入磁盘，然后调 addFile 写入指定分类
+ * - displayName 仅用作 UI 提示，不进文件名，避免非法字符 / 编码问题
+ *
+ * 返回值：GalleryItem 或 null（解析失败 / 写盘失败）
+ */
+export function addFromDataUri(categoryId: string, dataUri: string, displayName: string): GalleryItem | null {
+  const m = /^data:image\/(png|jpeg|jpg|webp|gif|bmp);base64,(.+)$/i.exec(dataUri)
+  if (!m) return null
+  const mime = m[1].toLowerCase()
+  const ext = mime === 'jpeg' ? 'jpg' : mime
+  const b64 = m[2]
+  let buf: Buffer
+  try { buf = Buffer.from(b64, 'base64') } catch { return null }
+  if (buf.length === 0) return null
+
+  const dir = join(getDataDir(), 'gallery-uploads')
+  try { mkdirSync(dir, { recursive: true }) } catch { /* ignore */ }
+  const filename = `${Date.now()}_${uuid().slice(0, 8)}.${ext}`
+  const fullPath = join(dir, filename)
+  try {
+    writeFileSync(fullPath, buf)
+  } catch (e) {
+    console.error('addFromDataUri write failed:', e)
+    return null
+  }
+
+  // displayName 写到 gallery_items.name 列；这里 addFile 用 basename(fullPath) 作为 name，
+  // 我们覆盖一下让用户看到自己起的名（保留扩展名以便辨识图片类型）
+  const item = addFile(categoryId, fullPath)
+  if (item && displayName) {
+    const cleanName = displayName.trim().slice(0, 120) || basename(fullPath)
+    const finalName = cleanName.toLowerCase().endsWith('.' + ext) ? cleanName : `${cleanName}.${ext}`
+    const db = getDatabase()
+    db.prepare('UPDATE gallery_items SET name = ? WHERE id = ?').run(finalName, item.id)
+    return getItem(item.id)
+  }
+  return item
 }
 
 // ────── 创作分类联动入库 ──────

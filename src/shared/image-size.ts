@@ -78,6 +78,14 @@ export interface ImageQualityOption {
   note?: string
 }
 
+/**
+ * 模型支持的工作模式。
+ * - 'both'（默认）：支持纯文生图 + 带参考图编辑（gpt-image-* / 多数通用模型）
+ * - 'edit_only'：必须带参考图或 mask，UI 应前置校验拦截无参考图请求（如 flux-kontext / gemini-3-pro-image）
+ * - 'text2img'：仅支持纯文生图，携带参考图会被服务端拒绝（如部分纯文生图模型）
+ */
+export type ImageModelMode = 'text2img' | 'edit_only' | 'both'
+
 /** 某个生图模型的尺寸能力域 */
 export interface ModelImageCapability {
   /** 可选档位列表（顺序与 UI 一致） */
@@ -91,6 +99,11 @@ export interface ModelImageCapability {
    * 注意：参考图（/images/edits）场景下 UI 应隐藏画质控件并强制发送 'auto'。
    */
   qualities?: ImageQualityOption[]
+  /**
+   * 模型工作模式（默认 'both'）。用于在 generateImages 入口前置校验请求与模型能力匹配，
+   * 给用户友好提示（避免上游返回生涩英文报错）。
+   */
+  mode?: ImageModelMode
 }
 
 /** 默认选中档位 id，首次进入生图 / 模型切换后的回退值 */
@@ -145,6 +158,14 @@ const CAPABILITIES: Record<string, ModelImageCapability> = {
 export function getModelCapability(modelId?: string): ModelImageCapability {
   if (!modelId) return DEFAULT_CAPABILITY
   return CAPABILITIES[modelId] ?? DEFAULT_CAPABILITY
+}
+
+/**
+ * 查某个模型的工作模式。未声明 mode 时返回 'both'（默认支持文生图 + 参考图）。
+ * 用于 generateImages 入口的前置校验。
+ */
+export function getModelMode(modelId?: string): ImageModelMode {
+  return getModelCapability(modelId).mode ?? 'both'
 }
 
 /** 保证 tierId 合法，否则回退到 DEFAULT_TIER_ID 或首档。用于模型切换后的自动降级。 */

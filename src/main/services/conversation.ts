@@ -8,6 +8,12 @@ export interface Conversation {
   id: string
   bot_id: string
   title: string
+  // 「智能体不再绑定模型」改造：每个会话独立持久记忆当前模型
+  // - 新建时填入云控端默认（site-config.chat_default_model）；缺省留空
+  // - 用户在输入框左下角切换 → updateConversationModel 写回
+  // - chat-engine sendMessage 时按 conv → cloud_default → 本地第一个 chat 模型 回退链解析
+  active_model_provider_id: string
+  active_model_id: string
   created_at: string
   updated_at: string
 }
@@ -37,13 +43,21 @@ export function getConversation(id: string): Conversation | null {
   )
 }
 
-export function createConversation(botId: string, title?: string): Conversation {
+export function createConversation(
+  botId: string,
+  title?: string,
+  initialModel?: { provider_id: string; model_id: string }
+): Conversation {
   const db = getDatabase()
   const id = uuid()
   const now = new Date().toISOString()
+  // 新建时把云控端默认模型（或显式传入的初始模型）写入 active_model_*；
+  // 缺省时留空字符串，chat-engine 解析时再走回退链
+  const pid = initialModel?.provider_id || ''
+  const mid = initialModel?.model_id || ''
   db.prepare(
-    'INSERT INTO conversations (id, bot_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)'
-  ).run(id, botId, title || 'New Chat', now, now)
+    'INSERT INTO conversations (id, bot_id, title, active_model_provider_id, active_model_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+  ).run(id, botId, title || 'New Chat', pid, mid, now, now)
   // Eagerly create workspace directory so the "工作区" button works before any tool writes files.
   try {
     const wsDir = join(getDataDir(), 'workspaces', id)
@@ -58,6 +72,22 @@ export function updateConversationTitle(id: string, title: string): void {
   const db = getDatabase()
   const now = new Date().toISOString()
   db.prepare('UPDATE conversations SET title=?, updated_at=? WHERE id=?').run(title, now, id)
+}
+
+/**
+ * 切换会话使用的模型（输入框左下角下拉触发）。
+ * 仅写两个字段，不更新 updated_at（避免污染会话列表的排序，切模型不算"有新消息"）
+ * provider_id / model_id 任一为空表示清空（恢复回退链）
+ */
+export function updateConversationModel(
+  id: string,
+  provider_id: string,
+  model_id: string
+): void {
+  const db = getDatabase()
+  db.prepare(
+    'UPDATE conversations SET active_model_provider_id=?, active_model_id=? WHERE id=?'
+  ).run(provider_id || '', model_id || '', id)
 }
 
 export function deleteConversation(id: string): boolean {

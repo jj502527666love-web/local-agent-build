@@ -763,7 +763,8 @@ async function optimizePrompt(lang: 'cn' | 'en') {
       { role: 'system', content: systemPrompt },
       { role: 'user', content: prompt.value }
     ]
-    const result = await (window as any).api.llm.invoke('call', optimizeProviderId.value, stripModelId(optimizeModelId.value), messages)
+    // 保留复合 key 传给 main，main 端按服务商反查 cloud_model_id 精确路由
+    const result = await (window as any).api.llm.invoke('call', optimizeProviderId.value, optimizeModelId.value, messages)
     if (result) prompt.value = result
     await recordUsage('chat', optimizeProviderId.value, optimizeModelId.value)
     hintsTick.value++
@@ -950,8 +951,27 @@ onMounted(async () => {
 
   applyInspirationFromQuery()
 
-  const pending = handoff.consume<{ prompt?: string }>('imageGen')
-  if (pending?.prompt) prompt.value = pending.prompt
+  // handoff payload 兼容三种来源：
+  //  - 旧：{ prompt }（其它页面直接透传 prompt）
+  //  - 新：{ presetPrompt, presetSize, refImages }（图像处理菜单 / 第三方预设入口）
+  // refImages 已在调用方压缩到 1024 / 0.8（@/utils/image-source.loadAsDataUri 默认值），
+  // 此处直接挂载，不再二次压缩。
+  const pending = handoff.consume<{
+    prompt?: string
+    presetPrompt?: string
+    presetSize?: string
+    refImages?: string[]
+  }>('imageGen')
+  if (pending) {
+    if (pending.presetPrompt) prompt.value = pending.presetPrompt
+    else if (pending.prompt) prompt.value = pending.prompt
+    if (pending.presetSize) selectedSize.value = pending.presetSize
+    // O3：refImages 用"覆盖"而非"追加"——从图像处理菜单跳过来的参考图代表全新场景，
+    // 保留旧的参考图会让用户困惑且容易超 10 张上限。
+    if (pending.refImages?.length) {
+      refImages.value = pending.refImages.slice(0, 10)
+    }
+  }
 })
 
 onUnmounted(() => {

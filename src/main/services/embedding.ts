@@ -4,6 +4,7 @@ import {
   getAllowCustomEmbedding,
   getCloudGatewayUrl,
   getActiveCloudEmbeddingModelId,
+  resolveCloudModelId,
 } from './cloud-token'
 import { normalizeApiBase } from './api-base-normalize'
 
@@ -165,13 +166,22 @@ async function cloudEmbedBatch(texts: string[], model: string): Promise<EmbedBat
   }
 
   const url = `${getCloudGatewayUrl()}/embeddings`
+  // 用 cloud_model_id 主键精确路由到具体服务商，避免同 model_id 多家时云控端 first() 错位。
+  // getActiveCloudEmbeddingModelId 返回的本来就是纯 model_id（cloud-token 内部维护），
+  // 这里调 resolveCloudModelId 走唯一匹配命中即可；不命中（多家同名）则 cloudModelId=null，
+  // 由云控端回退老逻辑保持兼容。
+  const { cloudModelId } = resolveCloudModelId(model, 'embedding')
+  const body: any = { model, input: texts }
+  if (cloudModelId !== null) {
+    body.cloud_model_id = cloudModelId
+  }
   const response = await fetch(url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
     },
-    body: JSON.stringify({ model, input: texts }),
+    body: JSON.stringify(body),
   })
 
   // 余额不足专属：402

@@ -90,6 +90,19 @@ export const useImageGenStore = defineStore('imageGen', () => {
       total.value = result.total || 0
       currentPage.value = page
       pageSize.value = size
+      // 孤儿占位清理：
+      // 用户在生图未完成时切走（如切到其他页面 / Bot 详情），ImageGenView.onUnmounted
+      // 会卸载 progress 监听器（stopListenProgress），后端 'completed' 事件因此无人接收，
+      // mergeCompleted 没机会把 inFlight 里的占位迁出。
+      // 等用户切回 ImageGenView 时 onMounted 重新调 fetchPage，DB 里该任务已 status=done
+      // 出现在 items 中，但 inFlight 里的「转圈」占位仍残留 → displayList = [...inFlight, ...items]
+      // 同时渲染「转圈占位 + 完成卡片」造成重复。这里按 id 求差集兜底清理。
+      if (inFlight.value.length) {
+        const knownIds = new Set(items.value.map(g => g.id))
+        if (knownIds.size) {
+          inFlight.value = inFlight.value.filter(g => !knownIds.has(g.id))
+        }
+      }
     } finally {
       loading.value = false
     }
