@@ -18,15 +18,15 @@
           <div class="space-y-1">
             <div v-if="(bonus.token ?? 0) > 0" class="flex items-center justify-between">
               <span class="text-text-tertiary">{{ siteConfig.labels.token }}</span>
-              <span class="font-semibold text-emerald-600">+ {{ formatAmount(bonus.token) }}</span>
+              <span class="font-semibold text-emerald-600 dark:text-emerald-400">+ {{ formatAmount(bonus.token) }}</span>
             </div>
             <div v-if="(bonus.credit ?? 0) > 0" class="flex items-center justify-between">
               <span class="text-text-tertiary">{{ siteConfig.labels.credit }}</span>
-              <span class="font-semibold text-emerald-600">+ {{ formatAmount(bonus.credit) }}</span>
+              <span class="font-semibold text-emerald-600 dark:text-emerald-400">+ {{ formatAmount(bonus.credit) }}</span>
             </div>
             <div v-if="bonus.user_plan_id" class="flex items-center justify-between">
               <span class="text-text-tertiary">套餐</span>
-              <span class="font-semibold text-emerald-600">已开通</span>
+              <span class="font-semibold text-emerald-600 dark:text-emerald-400">已开通</span>
             </div>
             <div v-else-if="bonus.plan_id" class="flex items-center justify-between">
               <span class="text-text-tertiary">套餐</span>

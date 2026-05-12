@@ -42,7 +42,7 @@
                   <svg class="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
                   正在优化提示词...
                 </div>
-                <div v-if="optimizeError" class="mt-1 px-3 py-1.5 text-[11px] text-red-600 bg-red-50 rounded-lg">{{ optimizeError }}</div>
+                <div v-if="optimizeError" class="mt-1 px-3 py-1.5 text-[11px] text-red-600 bg-red-50 dark:text-red-300 dark:bg-red-900/20 rounded-lg">{{ optimizeError }}</div>
               </div>
 
               <!-- Reference Images -->
@@ -152,37 +152,7 @@
                 </div>
               </div>
 
-              <!-- Consistency toggle (only when model supports it and batchCount > 1) -->
-              <div v-if="showConsistencyToggle" class="flex items-center justify-between">
-                <div>
-                  <label class="text-xs font-medium text-text-secondary">多图一致性</label>
-                  <p class="text-[10px] text-text-tertiary mt-0.5">同批次图片保持风格/角色一致</p>
-                </div>
-                <button
-                  @click="consistency = !consistency"
-                  :class="['relative inline-flex h-5 w-9 flex-shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out cursor-pointer', consistency ? 'bg-primary-600' : 'bg-surface-4']"
-                  role="switch"
-                  :aria-checked="consistency"
-                >
-                  <span :class="['pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out', consistency ? 'translate-x-4' : 'translate-x-0']" />
-                </button>
-              </div>
-              <div v-if="showConsistencyToggle && consistency && batchCount > consistencyMaxN" class="px-2 py-1.5 text-[10px] text-amber-600 bg-amber-50 rounded-lg">
-                当前模型单次最多生成 {{ consistencyMaxN }} 张一致性图片，超出部分将分批发送
-              </div>
-
-              <!-- Concurrency (only when batchCount > 1 and not in consistency mode) -->
-              <div v-if="batchCount > 1 && !consistency">
-                <div class="flex items-center justify-between mb-1.5">
-                  <label class="text-xs font-medium text-text-secondary" title="同时发起的请求数。过高可能触发服务商限流">并发数</label>
-                  <span class="text-xs font-semibold text-primary-600">{{ concurrency }}</span>
-                </div>
-                <input type="range" v-model.number="concurrency" :min="1" :max="Math.min(10, batchCount)" step="1" class="w-full h-1.5 bg-surface-3 rounded-full appearance-none cursor-pointer accent-primary-600" />
-                <div class="flex justify-between text-[10px] text-text-tertiary mt-1">
-                  <span>1（串行）</span>
-                  <span>{{ Math.min(10, batchCount) }}</span>
-                </div>
-              </div>
+              <!-- Concurrency UI removed: 全局 semaphore (6) 已兜底，再叠加 per-call 滑块只会增加用户困惑 -->
 
             </div>
             <!-- Generate Button (sticky bottom) -->
@@ -201,9 +171,9 @@
                   <svg class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
                   <span>生成中 ({{ store.progress?.completed || 0 }}/{{ store.progress?.total || '?' }}) + 排队 {{ store.queue.length }}</span>
                 </div>
-                <button @click="store.clearQueue()" class="text-[11px] text-red-500 hover:text-red-600">清空队列</button>
+                <button @click="store.clearQueue()" class="text-[11px] text-red-500 hover:text-red-600 dark:text-red-400 dark:hover:text-red-300">清空队列</button>
               </div>
-              <div v-if="store.lastError" class="mt-2 px-3 py-1.5 text-[11px] text-red-600 bg-red-50 rounded-lg">{{ store.lastError }}</div>
+              <div v-if="store.lastError" class="mt-2 px-3 py-1.5 text-[11px] text-red-600 bg-red-50 dark:text-red-300 dark:bg-red-900/20 rounded-lg">{{ store.lastError }}</div>
             </div>
           </div>
 
@@ -215,14 +185,14 @@
                 <template v-if="selectMode">
                   <span class="text-[10px] text-text-tertiary">{{ selectedIds.size }} 项已选</span>
                   <button @click="toggleSelectAll" class="text-[10px] text-primary-600 hover:text-primary-700">{{ pagedGenerations.length > 0 && pagedGenerations.every(g => selectedIds.has(g.id)) ? '取消本页全选' : '本页全选' }}</button>
-                  <button v-if="selectedIds.size > 0" @click="deleteSelected" class="text-[10px] text-red-500 hover:text-red-600">删除所选</button>
+                  <button v-if="selectedIds.size > 0" @click="deleteSelected" class="text-[10px] text-red-500 hover:text-red-600 dark:text-red-400 dark:hover:text-red-300">删除所选</button>
                 </template>
               </div>
               <div class="flex items-center gap-1">
                 <button
                   v-if="failedCount > 0 && !selectMode"
                   @click="clearFailedGenerations"
-                  class="px-2 py-1 rounded text-[10px] text-red-500 hover:text-red-600 hover:bg-red-50 transition-colors flex items-center gap-1"
+                  class="px-2 py-1 rounded text-[10px] text-red-500 hover:text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:text-red-300 dark:hover:bg-red-900/20 transition-colors flex items-center gap-1"
                   :title="`清理 ${failedCount} 条失败记录`"
                 >
                   <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165" /></svg>
@@ -280,14 +250,14 @@
                   <div v-else-if="gen.status === 'generating' || gen.status === 'pending'" class="aspect-square flex items-center justify-center bg-surface-2">
                     <svg class="w-8 h-8 animate-spin text-primary-500" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
                   </div>
-                  <div v-else-if="gen.status === 'error'" class="aspect-square flex flex-col items-center justify-center bg-red-50 p-3">
-                    <svg class="w-6 h-6 text-red-400 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z" /></svg>
-                    <p class="text-[10px] text-red-500 text-center line-clamp-2">{{ translateError(gen.error) }}</p>
+                  <div v-else-if="gen.status === 'error'" class="aspect-square flex flex-col items-center justify-center bg-red-50 dark:bg-red-900/20 p-3">
+                    <svg class="w-6 h-6 text-red-400 dark:text-red-300 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z" /></svg>
+                    <p class="text-[10px] text-red-500 dark:text-red-300 text-center line-clamp-2">{{ translateError(gen.error) }}</p>
                     <div class="mt-1.5 flex items-center gap-1">
                       <button
                         type="button"
                         @click.stop="openErrorDialog(gen)"
-                        class="px-2 py-0.5 text-[10px] text-red-600 border border-red-300 rounded-md hover:bg-red-100 transition-colors"
+                        class="px-2 py-0.5 text-[10px] text-red-600 border border-red-300 rounded-md hover:bg-red-100 dark:text-red-300 dark:border-red-800 dark:hover:bg-red-900/30 transition-colors"
                       >详情</button>
                       <button
                         type="button"
@@ -321,8 +291,8 @@
                     <div v-else-if="gen.status === 'generating' || gen.status === 'pending'" class="w-full h-full flex items-center justify-center">
                       <svg class="w-5 h-5 animate-spin text-primary-500" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
                     </div>
-                    <div v-else class="w-full h-full flex items-center justify-center bg-red-50">
-                      <svg class="w-5 h-5 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z" /></svg>
+                    <div v-else class="w-full h-full flex items-center justify-center bg-red-50 dark:bg-red-900/20">
+                      <svg class="w-5 h-5 text-red-400 dark:text-red-300" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z" /></svg>
                     </div>
                   </div>
                   <div class="flex-1 min-w-0">
@@ -331,14 +301,14 @@
                     <div class="flex items-center gap-3 mt-1.5">
                       <span class="text-[10px] text-text-tertiary">{{ modelStore.formatModelLabel(gen.model_provider_id, gen.model_id) }}</span>
                       <span class="text-[10px] text-text-tertiary">{{ gen.size }}</span>
-                      <span :class="['text-[10px]', gen.status === 'done' ? 'text-green-600' : gen.status === 'error' ? 'text-red-500' : 'text-text-tertiary']">{{ gen.status }}</span>
+                      <span :class="['text-[10px]', gen.status === 'done' ? 'text-green-600 dark:text-green-400' : gen.status === 'error' ? 'text-red-500 dark:text-red-400' : 'text-text-tertiary']">{{ gen.status }}</span>
                     </div>
-                    <p v-if="gen.status === 'error'" class="text-[10px] text-red-500 mt-1 line-clamp-2">{{ translateError(gen.error) }}</p>
+                    <p v-if="gen.status === 'error'" class="text-[10px] text-red-500 dark:text-red-400 mt-1 line-clamp-2">{{ translateError(gen.error) }}</p>
                     <div v-if="gen.status === 'error'" class="mt-1 flex items-center gap-1">
                       <button
                         type="button"
                         @click.stop="openErrorDialog(gen)"
-                        class="px-1.5 py-0.5 text-[10px] text-red-600 border border-red-300 rounded-md hover:bg-red-50 transition-colors"
+                        class="px-1.5 py-0.5 text-[10px] text-red-600 border border-red-300 rounded-md hover:bg-red-50 dark:text-red-300 dark:border-red-800 dark:hover:bg-red-900/20 transition-colors"
                       >详情</button>
                       <button
                         type="button"
@@ -488,7 +458,7 @@ import { recordUsage, warmHintsCache, getHintsSync } from '@/utils/model-usage-h
 import ImageSizePicker from '@/components/ImageSizePicker.vue'
 import ResolutionTierPicker from '@/components/ResolutionTierPicker.vue'
 import QualityPicker from '@/components/QualityPicker.vue'
-import { DEFAULT_QUALITY_ID, hasQualityOptions, supportsConsistency, getMaxConsistencyN } from '@shared/image-size'
+import { DEFAULT_QUALITY_ID, hasQualityOptions } from '@shared/image-size'
 import { stripImageMetadata } from '@shared/strip-image-metadata'
 import ErrorDetailDialog from '@/components/ErrorDetailDialog.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
@@ -516,8 +486,6 @@ const {
   selectedTier,
   selectedQuality,
   batchCount,
-  concurrency,
-  consistency,
   viewMode,
 } = storeToRefs(formStore)
 
@@ -573,9 +541,6 @@ function localFileUrl(path: string): string {
 // selectedModelId 可能是复合 key `gpt-image-2#@多米`，Picker / supports* 都按纯关键字匹配，必须 strip
 // 后才能正确识别型号专属参数（如 gpt-image-2 的 size/tier/quality 选项）。
 const pureSelectedModelId = computed(() => stripModelId(selectedModelId.value))
-const modelSupportsConsistency = computed(() => supportsConsistency(pureSelectedModelId.value))
-const consistencyMaxN = computed(() => getMaxConsistencyN(pureSelectedModelId.value))
-const showConsistencyToggle = computed(() => modelSupportsConsistency.value && batchCount.value > 1)
 const previewImage = ref<string | null>(null)
 const previewPath = ref<string>('')
 const optimizing = ref(false)
@@ -849,9 +814,7 @@ function doGenerate() {
     size: selectedSize.value,
     tierId: selectedTier.value,
     quality: hasRefImages.value ? DEFAULT_QUALITY_ID : selectedQuality.value,
-    batchCount: batchCount.value,
-    concurrency: consistency.value ? 1 : concurrency.value,
-    consistency: consistency.value && showConsistencyToggle.value
+    batchCount: batchCount.value
   })
   recordUsage('image', selectedProviderId.value, selectedModelId.value)
   hintsTick.value++
@@ -918,7 +881,6 @@ watch(selectedModelId, (v) => {
     window.api.settings.invoke('set', 'imagegen_provider_id', selectedProviderId.value)
     window.api.settings.invoke('set', 'imagegen_model_id', v)
   }
-  if (!supportsConsistency(stripModelId(v))) consistency.value = false
 })
 watch(optimizeModelId, (v) => {
   if (v) {

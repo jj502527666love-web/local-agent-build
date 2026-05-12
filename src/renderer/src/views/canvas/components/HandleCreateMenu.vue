@@ -76,7 +76,7 @@
             </div>
             <span
               v-if="e.connected"
-              class="flex-shrink-0 text-[9px] px-1.5 py-0.5 rounded border whitespace-nowrap transition-colors border-surface-3 text-text-tertiary group-hover:border-red-300 group-hover:text-red-500 group-hover:bg-red-50"
+              class="flex-shrink-0 text-[9px] px-1.5 py-0.5 rounded border whitespace-nowrap transition-colors border-surface-3 text-text-tertiary group-hover:border-red-300 group-hover:text-red-500 group-hover:bg-red-50 dark:group-hover:border-red-800 dark:group-hover:text-red-300 dark:group-hover:bg-red-900/30"
             >
               <span class="group-hover:hidden">已连接</span>
               <span class="hidden group-hover:inline">点击断开</span>

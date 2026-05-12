@@ -195,18 +195,12 @@ export const coreToolDefs = [
         required: ['query']
       }
     }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'kb_stats',
-      description: '查看当前对话已启用知识库的统计概览：每个分类的文档总数、已就绪/待处理/失败数量、向量切片数与 token 数。用于回答"知识库规模/状态"类问题。',
-      parameters: {
-        type: 'object',
-        properties: {}
-      }
-    }
   }
+  // 注：kb_stats 工具曾被暴露给模型，但其 parameters.properties 为空对象 {}
+  // 在部分 OpenAI 兼容上游（DeepSeek/智谱/豆包/Moonshot 等）下会触发 silent 200 + 空 SSE，
+  // 导致「绑定知识库后对话无回复也无报错」。kb_list 已能给出 ready/pending/error 计数，
+  // 模型问"知识库规模/状态"时改走 kb_list 即可。
+  // executeKbTool 内部的 kb_stats 分支保留作防御（模型再也不会调用到）。
 ]
 
 const FILE_OPS_IMPL = `try {

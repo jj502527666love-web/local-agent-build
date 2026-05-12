@@ -96,15 +96,15 @@
           <div class="text-xs text-text-secondary mt-1">总文档数</div>
         </div>
         <div class="card p-4 text-center">
-          <div class="text-2xl font-bold text-green-600">{{ readyDocs }}</div>
+          <div class="text-2xl font-bold text-green-600 dark:text-green-400">{{ readyDocs }}</div>
           <div class="text-xs text-text-secondary mt-1">已向量化</div>
         </div>
         <div class="card p-4 text-center">
-          <div class="text-2xl font-bold text-amber-600">{{ pendingDocs }}</div>
+          <div class="text-2xl font-bold text-amber-600 dark:text-amber-400">{{ pendingDocs }}</div>
           <div class="text-xs text-text-secondary mt-1">待处理</div>
         </div>
         <div class="card p-4 text-center">
-          <div class="text-2xl font-bold text-red-600">{{ errorDocs }}</div>
+          <div class="text-2xl font-bold text-red-600 dark:text-red-400">{{ errorDocs }}</div>
           <div class="text-xs text-text-secondary mt-1">处理失败</div>
         </div>
       </div>
@@ -296,8 +296,8 @@ const bannerClass = computed(() => {
 const bannerIconClass = computed(() => {
   if (!banner.value) return ''
   switch (banner.value.level) {
-    case 'red': return 'text-red-600'
-    case 'yellow': return 'text-amber-600'
+    case 'red': return 'text-red-600 dark:text-red-400'
+    case 'yellow': return 'text-amber-600 dark:text-amber-400'
     case 'gray': return 'text-text-tertiary'
     default: return ''
   }

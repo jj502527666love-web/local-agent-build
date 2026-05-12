@@ -126,10 +126,10 @@
           </div>
           <div v-if="bot.description" class="text-xs text-text-tertiary mb-3 line-clamp-2">{{ bot.description }}</div>
           <div class="flex flex-wrap gap-1.5 mb-4">
-            <span v-if="bot.kb_category_ids.length" class="status-badge bg-teal-50 text-teal-700">知识库 {{ bot.kb_category_ids.length }}</span>
-            <span v-if="bot.skill_ids.filter(id => userSkills.some(s => s.id === id)).length" class="status-badge bg-amber-50 text-amber-700">小工具 {{ bot.skill_ids.filter(id => userSkills.some(s => s.id === id)).length }}</span>
-            <span v-if="bot.prompt_skill_dirs && bot.prompt_skill_dirs.length" class="status-badge bg-purple-50 text-purple-700">Skills {{ bot.prompt_skill_dirs.length }}</span>
-            <span v-if="bot.mcp_ids.length" class="status-badge bg-blue-50 text-blue-700">MCP {{ bot.mcp_ids.length }}</span>
+            <span v-if="bot.kb_category_ids.length" class="status-badge bg-teal-50 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300">知识库 {{ bot.kb_category_ids.length }}</span>
+            <span v-if="bot.skill_ids.filter(id => userSkills.some(s => s.id === id)).length" class="status-badge bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">小工具 {{ bot.skill_ids.filter(id => userSkills.some(s => s.id === id)).length }}</span>
+            <span v-if="bot.prompt_skill_dirs && bot.prompt_skill_dirs.length" class="status-badge bg-purple-50 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300">Skills {{ bot.prompt_skill_dirs.length }}</span>
+            <span v-if="bot.mcp_ids.length" class="status-badge bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">MCP {{ bot.mcp_ids.length }}</span>
           </div>
           <div class="mt-auto flex gap-2">
             <button @click="$router.push({ path: '/chat', query: { botId: bot.id } })" class="flex-1 px-3 py-2 text-xs font-medium bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors">开始对话</button>

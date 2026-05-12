@@ -42,7 +42,7 @@
 
         <button
           @click="selectTool('inpaint')"
-          :class="['w-10 h-10 rounded-lg flex items-center justify-center transition-colors', activeTool === 'inpaint' ? 'bg-orange-100 text-orange-700' : 'text-text-tertiary hover:text-text-secondary hover:bg-surface-2']"
+          :class="['w-10 h-10 rounded-lg flex items-center justify-center transition-colors', activeTool === 'inpaint' ? 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300' : 'text-text-tertiary hover:text-text-secondary hover:bg-surface-2']"
           title="AI 局部重绘"
         >
           <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.53 16.122a3 3 0 0 0-5.78 1.128 2.25 2.25 0 0 1-2.4 2.245 4.5 4.5 0 0 0 8.4-2.245c0-.399-.078-.78-.22-1.128Zm0 0a15.998 15.998 0 0 0 3.388-1.62m-5.043-.025a15.994 15.994 0 0 1 1.622-3.395m3.42 3.42a15.995 15.995 0 0 0 4.764-4.648l3.876-5.814a1.151 1.151 0 0 0-1.597-1.597L14.146 6.32a15.996 15.996 0 0 0-4.649 4.763m3.42 3.42a6.776 6.776 0 0 0-3.42-3.42" /></svg>
@@ -156,7 +156,7 @@
                 v-for="s in maskShapeOptions"
                 :key="s.id"
                 @click="setMaskShape(s.id)"
-                :class="['px-1 py-1.5 text-[10px] rounded border transition-colors', maskShape === s.id ? 'border-orange-500 bg-orange-50 text-orange-700' : 'border-surface-3 text-text-tertiary hover:bg-surface-2']"
+                :class="['px-1 py-1.5 text-[10px] rounded border transition-colors', maskShape === s.id ? 'border-orange-500 bg-orange-50 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300' : 'border-surface-3 text-text-tertiary hover:bg-surface-2']"
               >{{ s.label }}</button>
             </div>
           </div>
@@ -199,7 +199,7 @@
                   v-for="t in promptTemplates"
                   :key="t.id"
                   @click="activeTemplate = t.id"
-                  :class="['px-1 py-1.5 text-[10px] rounded border transition-colors', activeTemplate === t.id ? 'border-orange-500 bg-orange-50 text-orange-700' : 'border-surface-3 text-text-tertiary hover:bg-surface-2']"
+                  :class="['px-1 py-1.5 text-[10px] rounded border transition-colors', activeTemplate === t.id ? 'border-orange-500 bg-orange-50 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300' : 'border-surface-3 text-text-tertiary hover:bg-surface-2']"
                 >{{ t.label }}</button>
               </div>
             </div>
@@ -220,13 +220,7 @@
               <input type="range" min="1" max="4" v-model.number="batchCount" class="w-full h-1 accent-orange-500" />
             </div>
 
-            <div v-if="batchCount > 1">
-              <div class="flex items-center justify-between">
-                <span class="text-[11px] text-text-secondary" title="同时发起的请求数。过高可能触发服务商限流">并发数</span>
-                <span class="text-[10px] text-text-tertiary">{{ concurrency }}</span>
-              </div>
-              <input type="range" :min="1" :max="batchCount" v-model.number="concurrency" class="w-full h-1 accent-orange-500" />
-            </div>
+            <!-- 并发控制由主进程全局 semaphore (6) 统一接管，不再暴露 per-call 滑块 -->
 
             <!-- 高级选项 -->
             <div class="space-y-1.5">
@@ -423,7 +417,6 @@ const maskFeather = ref(3)
 const usePromptTemplate = ref(true)
 const activeTemplate = ref('replace')
 const batchCount = ref(1)
-const concurrency = ref(2)
 const compositeBlend = ref(true)
 const keepEditLayers = ref(false)
 const inpaintProgress = ref({ completed: 0, total: 0, message: '' })
@@ -1890,8 +1883,7 @@ async function runInpaint() {
       modelId: effectiveModel,
       size: finalSize,
       quality: generation.value.quality || 'auto',
-      batchCount: batchCount.value,
-      concurrency: concurrency.value
+      batchCount: batchCount.value
     })
 
     if (inpaintCancelled) {

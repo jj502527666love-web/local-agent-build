@@ -361,9 +361,9 @@
         <!-- File write/append preview with line diff -->
         <template v-if="approvalPreview && approvalPreview.type === 'file_write'">
           <div class="flex items-center gap-2 text-[11px]">
-            <span :class="['px-1.5 py-0.5 rounded font-medium', approvalPreview.exists ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700']">{{ approvalPreview.exists ? '修改文件' : '新建文件' }}</span>
+            <span :class="['px-1.5 py-0.5 rounded font-medium', approvalPreview.exists ? 'bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300' : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300']">{{ approvalPreview.exists ? '修改文件' : '新建文件' }}</span>
             <code class="font-mono text-text-secondary truncate flex-1" :title="approvalPreview.path">{{ approvalPreview.path }}</code>
-            <span v-if="approvalDiffSummary" class="font-mono"><span class="text-emerald-600">+{{ approvalDiffSummary.adds }}</span> <span class="text-red-500">-{{ approvalDiffSummary.dels }}</span></span>
+            <span v-if="approvalDiffSummary" class="font-mono"><span class="text-emerald-600 dark:text-emerald-400">+{{ approvalDiffSummary.adds }}</span> <span class="text-red-500 dark:text-red-400">-{{ approvalDiffSummary.dels }}</span></span>
           </div>
           <div v-if="approvalPreview.tooLarge" class="text-[11px] text-text-tertiary">原文件超过 200KB，仅展示新内容预览。允许后原文件将被覆盖（同路径 .bak 会保留备份）。</div>
           <div v-else-if="approvalPreview.isBinary" class="text-[11px] text-text-tertiary">原文件为二进制，仅展示新内容预览。允许后同路径 .bak 保留备份。</div>
@@ -495,11 +495,11 @@ function lineDiff(a: string, b: string): { sigil: string; text: string; cls: str
   let i = 0, j = 0
   while (i < m && j < n) {
     if (aL[i] === bL[j]) { out.push({ sigil: ' ', text: aL[i], cls: '' }); i++; j++ }
-    else if (dp[i + 1][j] >= dp[i][j + 1]) { out.push({ sigil: '-', text: aL[i], cls: 'bg-red-50 text-red-700' }); i++ }
-    else { out.push({ sigil: '+', text: bL[j], cls: 'bg-emerald-50 text-emerald-700' }); j++ }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) { out.push({ sigil: '-', text: aL[i], cls: 'bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300' }); i++ }
+    else { out.push({ sigil: '+', text: bL[j], cls: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300' }); j++ }
   }
-  while (i < m) out.push({ sigil: '-', text: aL[i++], cls: 'bg-red-50 text-red-700' })
-  while (j < n) out.push({ sigil: '+', text: bL[j++], cls: 'bg-emerald-50 text-emerald-700' })
+  while (i < m) out.push({ sigil: '-', text: aL[i++], cls: 'bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300' })
+  while (j < n) out.push({ sigil: '+', text: bL[j++], cls: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300' })
   return out
 }
 
@@ -508,7 +508,7 @@ const approvalDiff = computed(() => {
   if (!p) return [] as { sigil: string; text: string; cls: string }[]
   if (typeof p.currentContent !== 'string') {
     // No current content (new file / binary / too large): treat as all-new lines
-    return (p.newContent || '').split('\n').map((text) => ({ sigil: '+', text, cls: 'bg-emerald-50 text-emerald-700' }))
+    return (p.newContent || '').split('\n').map((text) => ({ sigil: '+', text, cls: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300' }))
   }
   return lineDiff(p.currentContent, p.newContent)
 })
@@ -758,6 +758,8 @@ async function onChatModelChange(val: { provider_id: string; model_id: string })
 
 const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp'])
 const DOC_EXTENSIONS = new Set(['txt', 'md', 'pdf', 'doc', 'docx', 'xls', 'xlsx', 'csv', 'json'])
+// 二进制办公文档：file.text() 按 utf-8 读会得到乱码，必须走 main 进程 parseBuffer 解析
+const BINARY_DOC_EXTENSIONS = new Set(['pdf', 'doc', 'docx', 'xls', 'xlsx'])
 
 function canAddAttachment(): boolean {
   if (pendingAttachments.value.length >= MAX_ATTACHMENTS) {
@@ -812,7 +814,16 @@ async function handleDrop(e: DragEvent) {
     } else if (DOC_EXTENSIONS.has(ext)) {
       loadingAttachment.value = true
       try {
-        const text = await file.text()
+        let text: string
+        if (BINARY_DOC_EXTENSIONS.has(ext)) {
+          // 二进制办公文档：通过 ArrayBuffer + IPC 走 main 进程对应解析器，
+          // 避免 file.text() 按 utf-8 直读产出乱码
+          const buffer = await file.arrayBuffer()
+          text = await window.api.chat.invoke('parseBuffer', { buffer, ext }) as string
+        } else {
+          // 纯文本扩展名（txt/md/csv/json）：file.text() 直读
+          text = await file.text()
+        }
         pendingAttachments.value.push({ name: file.name, type: 'document', data: text })
       } finally {
         loadingAttachment.value = false

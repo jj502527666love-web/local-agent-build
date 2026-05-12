@@ -16,8 +16,10 @@
  *  - .xls / .xlsx               → xlsx (SheetJS) → 每 sheet 拼成 TSV 文本
  */
 
-import { readFileSync, statSync } from 'fs'
-import { extname } from 'path'
+import { readFileSync, statSync, writeFileSync, unlinkSync } from 'fs'
+import { extname, join } from 'path'
+import { tmpdir } from 'os'
+import { randomBytes } from 'crypto'
 
 /** 单个文档的最大允许大小（解析前检查 stat），避免 OOM */
 const MAX_DOC_SIZE_BYTES = 50 * 1024 * 1024 // 50 MB
@@ -58,32 +60,42 @@ function clamp(text: string): { text: string; truncated: boolean } {
   }
 }
 
-async function parsePdf(filePath: string): Promise<{ text: string }> {
+/**
+ * 以下 4 个 Buffer 版本全部不依赖磁盘路径，供拖拽 / IPC 上传 / 安全沙箱场景使用。
+ * - PDF / DOCX / XLSX 本身接受 Buffer
+ * - DOC (word-extractor) 只接受路径，写临时文件兼容
+ */
+async function parsePdfBuffer(buffer: Buffer): Promise<{ text: string }> {
   // pdf-parse 默认入口在加载时会跑一段示例代码，直接 require 子模块绕过
   const pdfParse = require('pdf-parse/lib/pdf-parse.js')
-  const buffer = readFileSync(filePath)
   const result = await pdfParse(buffer)
   return { text: String(result?.text || '') }
 }
 
-async function parseDocx(filePath: string): Promise<{ text: string }> {
+async function parseDocxBuffer(buffer: Buffer): Promise<{ text: string }> {
   const mammoth = require('mammoth')
-  const buffer = readFileSync(filePath)
   const result = await mammoth.extractRawText({ buffer })
   return { text: String(result?.value || '') }
 }
 
-async function parseDoc(filePath: string): Promise<{ text: string }> {
-  const WordExtractor = require('word-extractor')
-  const extractor = new WordExtractor()
-  const doc = await extractor.extract(filePath)
-  // word-extractor 提供 getBody / getEndnotes 等；正文优先
-  return { text: String(doc?.getBody?.() || '') }
+async function parseDocBuffer(buffer: Buffer): Promise<{ text: string }> {
+  // word-extractor 只能从路径读，写个临时文件兼容。
+  // 路径用 randomBytes 加拼避免同名冲突；finally 中能刪就刪。
+  const tmpPath = join(tmpdir(), `local-agent-doc-${randomBytes(8).toString('hex')}.doc`)
+  try {
+    writeFileSync(tmpPath, buffer)
+    const WordExtractor = require('word-extractor')
+    const extractor = new WordExtractor()
+    const doc = await extractor.extract(tmpPath)
+    return { text: String(doc?.getBody?.() || '') }
+  } finally {
+    try { unlinkSync(tmpPath) } catch { /* ignore */ }
+  }
 }
 
-function parseXlsx(filePath: string): { text: string } {
+function parseXlsxBuffer(buffer: Buffer): { text: string } {
   const XLSX = require('xlsx')
-  const wb = XLSX.readFile(filePath, { type: 'file' })
+  const wb = XLSX.read(buffer, { type: 'buffer' })
   const parts: string[] = []
   for (const sheetName of wb.SheetNames) {
     const sheet = wb.Sheets[sheetName]
@@ -93,6 +105,37 @@ function parseXlsx(filePath: string): { text: string } {
     parts.push(`# ${sheetName}\n${csv}`)
   }
   return { text: parts.join('\n\n') }
+}
+
+/**
+ * 内部分发：按扩展名选对应解析器，都走 Buffer 路径。
+ * 调用方（parseDocument / parseDocumentFromBuffer）负责 size / clamp / 错误包装。
+ */
+async function dispatchBuffer(
+  buffer: Buffer,
+  ext: string
+): Promise<{ ok: boolean; text: string; parser: ParsedDocument['parser']; error?: string }> {
+  try {
+    if (ext === 'pdf') {
+      const { text } = await parsePdfBuffer(buffer)
+      return { ok: true, text, parser: 'pdf' }
+    }
+    if (ext === 'docx') {
+      const { text } = await parseDocxBuffer(buffer)
+      return { ok: true, text, parser: 'docx' }
+    }
+    if (ext === 'doc') {
+      const { text } = await parseDocBuffer(buffer)
+      return { ok: true, text, parser: 'doc' }
+    }
+    if (ext === 'xlsx' || ext === 'xls') {
+      const { text } = parseXlsxBuffer(buffer)
+      return { ok: true, text, parser: 'xlsx' }
+    }
+    return { ok: false, text: '', parser: 'unsupported', error: `不支持的二进制文档扩展名：${ext}` }
+  } catch (e: any) {
+    return { ok: false, text: '', parser: 'error', error: `解析失败：${e?.message || String(e)}` }
+  }
 }
 
 /**
@@ -115,34 +158,40 @@ export async function parseDocument(filePath: string): Promise<ParsedDocument> {
     }
   }
 
+  let buffer: Buffer
   try {
-    if (ext === 'pdf') {
-      const { text } = await parsePdf(filePath)
-      const c = clamp(text)
-      return { ok: true, text: c.text, ext, size, parser: 'pdf', truncated: c.truncated }
-    }
-    if (ext === 'docx') {
-      const { text } = await parseDocx(filePath)
-      const c = clamp(text)
-      return { ok: true, text: c.text, ext, size, parser: 'docx', truncated: c.truncated }
-    }
-    if (ext === 'doc') {
-      const { text } = await parseDoc(filePath)
-      const c = clamp(text)
-      return { ok: true, text: c.text, ext, size, parser: 'doc', truncated: c.truncated }
-    }
-    if (ext === 'xlsx' || ext === 'xls') {
-      const { text } = parseXlsx(filePath)
-      const c = clamp(text)
-      return { ok: true, text: c.text, ext, size, parser: 'xlsx', truncated: c.truncated }
-    }
-    return { ok: false, text: '', ext, size, parser: 'unsupported', error: `不支持的二进制文档扩展名：${ext}` }
+    buffer = readFileSync(filePath)
   } catch (e: any) {
+    return { ok: false, text: '', ext, size, parser: 'error', error: `读取文件失败：${e?.message || e}` }
+  }
+  const r = await dispatchBuffer(buffer, ext)
+  if (!r.ok) {
+    return { ok: false, text: '', ext, size, parser: r.parser, error: r.error }
+  }
+  const c = clamp(r.text)
+  return { ok: true, text: c.text, ext, size, parser: r.parser, truncated: c.truncated }
+}
+
+/**
+ * Buffer 版本：不走磁盘路径，供拖拽 / IPC 远程上传场景使用。
+ * - 与 parseDocument 等价的返回结构，调用方可复用上层拼 prompt 逻辑
+ * - size 取 buffer.length
+ * - ext 由调用方从文件名提取（已 lower-case，不带点）
+ */
+export async function parseDocumentFromBuffer(buffer: Buffer, ext: string): Promise<ParsedDocument> {
+  const size = buffer.length
+  if (size > MAX_DOC_SIZE_BYTES) {
     return {
       ok: false, text: '', ext, size, parser: 'error',
-      error: `解析失败：${e?.message || String(e)}`
+      error: `文件过大（${(size / 1024 / 1024).toFixed(1)}MB），超过 50MB 限制`
     }
   }
+  const r = await dispatchBuffer(buffer, ext)
+  if (!r.ok) {
+    return { ok: false, text: '', ext, size, parser: r.parser, error: r.error }
+  }
+  const c = clamp(r.text)
+  return { ok: true, text: c.text, ext, size, parser: r.parser, truncated: c.truncated }
 }
 
 /**

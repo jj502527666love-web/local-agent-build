@@ -8,16 +8,33 @@
         @click.self="emitClose"
         @wheel.prevent="onWheel"
       >
-        <img
-          :src="src"
-          :alt="alt || ''"
-          class="lb-img select-none shadow-[0_0_60px_rgba(0,0,0,0.35)] rounded-md"
-          :style="imgStyle"
-          @mousedown.prevent="onDragStart"
-          @dblclick="onDoubleClick"
-          @click.stop
-          draggable="false"
-        />
+        <!-- 图片 wrapper：用 inline-flex 让容器尺寸 = 图片 fit-to-screen 后的实际尺寸（max 92vw/92vh）。
+             关闭按钮通过 absolute 定位在 wrapper 内部右上角，跟随图片视觉边沿。
+             img 自身有 transform 用于缩放/平移，但 transform 不影响 wrapper 的布局尺寸，
+             所以按钮位置在缩放 / 拖动后仍稳定，不会跟着图片缩放变形或飞出视窗。 -->
+        <div class="relative inline-flex">
+          <img
+            :src="src"
+            :alt="alt || ''"
+            class="lb-img select-none shadow-[0_0_60px_rgba(0,0,0,0.35)] rounded-md"
+            :style="imgStyle"
+            @mousedown.prevent="onDragStart"
+            @dblclick="onDoubleClick"
+            @click.stop
+            draggable="false"
+          />
+          <!-- 图片右上角关闭按钮：用户惯性的「找右上角 X 关闭」位置，避免误把 Electron 窗口
+               标题栏的关闭按钮当作预览关闭。半透明白底 + 阴影，hover 不透明，不遮挡图片内容。 -->
+          <button
+            @click.stop="emitClose"
+            @mousedown.stop
+            class="absolute top-2 right-2 z-10 w-9 h-9 rounded-full bg-surface-0/85 backdrop-blur-sm shadow-[0_4px_24px_rgba(0,0,0,0.18)] flex items-center justify-center text-text-secondary hover:bg-surface-0 hover:text-text-primary transition-colors"
+            title="关闭 (Esc)"
+            aria-label="关闭预览"
+          >
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+          </button>
+        </div>
 
         <!-- 工具栏 -->
         <div

@@ -33,7 +33,7 @@
         </div>
 
         <!-- Error -->
-        <div v-else-if="loadError" class="bg-red-50 text-red-600 rounded-lg px-4 py-3 text-xs">
+        <div v-else-if="loadError" class="bg-red-50 text-red-600 dark:bg-red-900/20 dark:text-red-300 rounded-lg px-4 py-3 text-xs">
           {{ loadError }}
           <button
             type="button"
@@ -64,7 +64,7 @@
               </div>
               <span
                 v-if="p.duration_days === 0"
-                class="text-[10px] px-2 py-0.5 rounded-full bg-amber-50 text-amber-700"
+                class="text-[10px] px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
               >永久</span>
               <span
                 v-else

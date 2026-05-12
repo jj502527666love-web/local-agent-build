@@ -38,8 +38,8 @@
       <div v-else class="grid grid-cols-3 gap-3">
         <div v-for="server in store.servers" :key="server.id" class="card p-4">
           <div class="flex items-start gap-3 mb-3">
-            <div class="w-9 h-9 rounded-lg bg-blue-50 flex items-center justify-center flex-shrink-0">
-              <svg class="w-4.5 h-4.5 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M5.25 14.25h13.5m-13.5 0a3 3 0 0 1-3-3m3 3a3 3 0 1 0 0 6h13.5a3 3 0 1 0 0-6m-16.5-3a3 3 0 0 1 3-3h13.5a3 3 0 0 1 3 3m-19.5 0a4.5 4.5 0 0 1 .9-2.7L5.737 5.1a3.375 3.375 0 0 1 2.7-1.35h7.126c1.062 0 2.062.5 2.7 1.35l2.587 3.45a4.5 4.5 0 0 1 .9 2.7" /></svg>
+            <div class="w-9 h-9 rounded-lg bg-blue-50 dark:bg-blue-900/20 flex items-center justify-center flex-shrink-0">
+              <svg class="w-4.5 h-4.5 text-blue-600 dark:text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M5.25 14.25h13.5m-13.5 0a3 3 0 0 1-3-3m3 3a3 3 0 1 0 0 6h13.5a3 3 0 1 0 0-6m-16.5-3a3 3 0 0 1 3-3h13.5a3 3 0 0 1 3 3m-19.5 0a4.5 4.5 0 0 1 .9-2.7L5.737 5.1a3.375 3.375 0 0 1 2.7-1.35h7.126c1.062 0 2.062.5 2.7 1.35l2.587 3.45a4.5 4.5 0 0 1 .9 2.7" /></svg>
             </div>
             <div class="flex-1 min-w-0">
               <div class="flex items-center gap-2">
@@ -55,8 +55,8 @@
             <span v-for="t in server.tools" :key="t" class="text-[10px] px-1.5 py-0.5 bg-surface-2 rounded text-text-secondary">{{ t }}</span>
           </div>
           <div class="flex gap-1 justify-end">
-            <button v-if="store.serverStatus[server.id] !== 'running'" @click="store.startServer(server.id)" class="btn-ghost text-emerald-600 hover:!bg-emerald-50">启动</button>
-            <button v-else @click="store.stopServer(server.id)" class="btn-ghost text-amber-600 hover:!bg-amber-50">停止</button>
+            <button v-if="store.serverStatus[server.id] !== 'running'" @click="store.startServer(server.id)" class="btn-ghost text-emerald-600 dark:text-emerald-400 hover:!bg-emerald-50 dark:hover:!bg-emerald-900/30">启动</button>
+            <button v-else @click="store.stopServer(server.id)" class="btn-ghost text-amber-600 dark:text-amber-400 hover:!bg-amber-50 dark:hover:!bg-amber-900/30">停止</button>
             <button @click="editServer(server)" class="btn-ghost">编辑</button>
             <button @click="store.deleteServer(server.id)" class="btn-danger">删除</button>
           </div>

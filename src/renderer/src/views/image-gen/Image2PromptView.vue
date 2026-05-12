@@ -166,7 +166,7 @@
           <div
             v-for="(task, idx) in tasks"
             :key="task.id"
-            :class="['rounded-xl border bg-surface-0 overflow-hidden', task.status === 'error' ? 'border-red-300' : task.status === 'done' ? 'border-green-300' : 'border-surface-3']"
+            :class="['rounded-xl border bg-surface-0 overflow-hidden', task.status === 'error' ? 'border-red-300 dark:border-red-800' : task.status === 'done' ? 'border-green-300 dark:border-green-800' : 'border-surface-3']"
           >
             <div class="flex gap-3 p-3">
               <!-- Thumbnail -->
@@ -188,8 +188,8 @@
                       <svg class="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
                       反推中
                     </span>
-                    <span v-else-if="task.status === 'done'" class="text-[10px] text-green-600 px-1.5 py-0.5 rounded bg-green-50">完成</span>
-                    <span v-else-if="task.status === 'error'" class="text-[10px] text-red-500 px-1.5 py-0.5 rounded bg-red-50" :title="task.error">失败</span>
+                    <span v-else-if="task.status === 'done'" class="text-[10px] text-green-600 px-1.5 py-0.5 rounded bg-green-50 dark:text-green-300 dark:bg-green-900/30">完成</span>
+                    <span v-else-if="task.status === 'error'" class="text-[10px] text-red-500 px-1.5 py-0.5 rounded bg-red-50 dark:text-red-300 dark:bg-red-900/30" :title="task.error">失败</span>
                     <button
                       v-if="!running"
                       @click="removeTask(idx)"

@@ -32,7 +32,7 @@
         <button
           v-if="failedCount > 0"
           @click="clearFailed"
-          class="px-2.5 py-1.5 rounded-lg text-xs text-red-500 hover:text-red-600 hover:bg-red-50 transition-colors flex items-center gap-1"
+          class="px-2.5 py-1.5 rounded-lg text-xs text-red-500 hover:text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:text-red-300 dark:hover:bg-red-900/20 transition-colors flex items-center gap-1"
           :title="`清理 ${failedCount} 条失败记录`"
         >
           <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165" /></svg>
@@ -143,7 +143,7 @@
 
     <!-- Detail Modal -->
     <div v-if="detailItem" class="fixed inset-0 z-50 flex items-center justify-center" @click.self="detailItem = null">
-      <div class="bg-white rounded-2xl shadow-[0_0_30px_rgba(0,0,0,0.12)] w-[640px] max-h-[85vh] flex flex-col overflow-hidden">
+      <div class="bg-surface-0 rounded-2xl shadow-[0_0_30px_rgba(0,0,0,0.12)] w-[640px] max-h-[85vh] flex flex-col overflow-hidden">
         <!-- Image -->
         <div class="aspect-square max-h-[50vh] bg-surface-2 flex-shrink-0 overflow-hidden relative group">
           <img v-if="detailItem.result_path" :src="localFileUrl(detailItem.result_path)" class="w-full h-full object-contain cursor-pointer" @click="openLightbox(detailItem.result_path)" />
@@ -203,7 +203,7 @@
 
           <!-- Actions -->
           <div class="flex gap-2 flex-wrap">
-            <button @click="deleteFromDetail" class="btn-secondary text-xs flex items-center gap-1.5 text-red-500 hover:text-red-600 hover:bg-red-50">
+            <button @click="deleteFromDetail" class="btn-secondary text-xs flex items-center gap-1.5 text-red-500 hover:text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:text-red-300 dark:hover:bg-red-900/20">
               <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165" /></svg>
               删除
             </button>

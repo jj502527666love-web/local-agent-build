@@ -5,7 +5,7 @@
     @click.self="handleClose"
   >
     <div
-      class="bg-white rounded-2xl shadow-[0_0_30px_rgba(0,0,0,0.12)] w-[520px] max-h-[85vh] flex flex-col overflow-hidden"
+      class="bg-surface-0 rounded-2xl shadow-[0_0_30px_rgba(0,0,0,0.12)] w-[520px] max-h-[85vh] flex flex-col overflow-hidden"
       @click.stop
     >
       <!-- Header -->
@@ -21,7 +21,7 @@
         <!-- 标题 -->
         <div>
           <label class="text-xs font-medium text-text-secondary mb-1.5 block">
-            标题 <span class="text-red-500">*</span>
+            标题 <span class="text-red-500 dark:text-red-400">*</span>
           </label>
           <input
             v-model="localTitle"
@@ -36,7 +36,7 @@
         <!-- 分类 -->
         <div>
           <label class="text-xs font-medium text-text-secondary mb-1.5 block">
-            分类 <span class="text-red-500">*</span>
+            分类 <span class="text-red-500 dark:text-red-400">*</span>
           </label>
           <div v-if="categoriesLoading" class="text-xs text-text-tertiary px-3 py-2 border border-surface-3 rounded-lg bg-surface-1">
             加载分类中...
@@ -58,7 +58,7 @@
         <!-- 提示词语言 -->
         <div>
           <label class="text-xs font-medium text-text-secondary mb-1.5 block">
-            提示词语言 <span class="text-red-500">*</span>
+            提示词语言 <span class="text-red-500 dark:text-red-400">*</span>
           </label>
           <div class="flex gap-2">
             <button
@@ -87,13 +87,13 @@
         </div>
 
         <!-- 参考图提示 -->
-        <div v-if="refImagesCount > 0" class="flex items-start gap-2 px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg">
-          <svg class="w-3.5 h-3.5 text-amber-600 mt-0.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" /></svg>
-          <span class="text-[11px] text-amber-700 leading-relaxed">该创作包含 {{ refImagesCount }} 张参考图，参考图不会上传到灵感广场</span>
+        <div v-if="refImagesCount > 0" class="flex items-start gap-2 px-3 py-2 bg-amber-50 border border-amber-200 dark:bg-amber-900/20 dark:border-amber-800 rounded-lg">
+          <svg class="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 mt-0.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" /></svg>
+          <span class="text-[11px] text-amber-700 dark:text-amber-300 leading-relaxed">该创作包含 {{ refImagesCount }} 张参考图，参考图不会上传到灵感广场</span>
         </div>
 
         <!-- 错误提示 -->
-        <div v-if="errorMsg" class="px-3 py-2 bg-red-50 border border-red-200 rounded-lg text-[11px] text-red-600">
+        <div v-if="errorMsg" class="px-3 py-2 bg-red-50 border border-red-200 dark:bg-red-900/20 dark:border-red-800 rounded-lg text-[11px] text-red-600 dark:text-red-300">
           {{ errorMsg }}
         </div>
       </div>

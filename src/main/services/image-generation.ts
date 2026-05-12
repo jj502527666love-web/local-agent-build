@@ -8,7 +8,7 @@ import { join } from 'path'
 import { mkdirSync, writeFileSync, unlinkSync, existsSync } from 'fs'
 import { BrowserWindow } from 'electron'
 import { recordUsage } from './usage-stats'
-import { resolveSizeToPixels, getMaxConsistencyN, getModelMode } from '@shared/image-size'
+import { resolveSizeToPixels, getModelMode } from '@shared/image-size'
 import { stripBase64 } from '@shared/strip-image-metadata'
 import { stripModelId } from '@shared/model-id'
 import { normalizeApiBase } from './api-base-normalize'
@@ -163,14 +163,11 @@ async function fetchWithRetry(
   throw lastErr || new Error(`${errorPrefix} retry exhausted`)
 }
 
-/** 按分辨率档位返回单次生图超时上限：4K + 高质量场景偏紧时给更宽松窗口 */
-function getImageApiTimeout(tierId?: string): number {
-  switch (tierId) {
-    case '4k': return 900_000  // 15 分钟
-    case '2k': return 540_000  // 9 分钟
-    case '1k': return 300_000  // 5 分钟
-    default:   return 300_000  // 默认 5 分钟（向后兼容）
-  }
+/** 单次生图超时上限。统一 15 分钟，与云控端 gateway.timeouts.image=900s 对齐：
+ *  1k / 2k / 4k 各档位一视同仁，多米异步 + OpenAI 同步都够用。
+ *  tierId 参数保留是为了兼容历史调用签名，未来如需分档调控可在此处分支。 */
+function getImageApiTimeout(_tierId?: string): number {
+  return 900_000  // 15 分钟
 }
 
 // ---- Disk file cleanup (Bug #5) ----
@@ -220,10 +217,6 @@ export interface GenerateImageOptions {
   tierId?: string
   quality?: string
   batchCount?: number
-  /** Parallel workers within a single batch. 1 = serial (legacy), max 10. */
-  concurrency?: number
-  /** 多图一致性：单次 API 请求生成 n 张风格/角色一致的图片 */
-  consistency?: boolean
 }
 
 /** 解析 UI 传入的 size（预设 / 比例 / 像素）为上游 API 接受的 "WxH" 像素串。
@@ -419,9 +412,26 @@ function applyProviderPatches(body: Record<string, any> | FormData, provider: Mo
   }
 }
 
+/**
+ * multipart 路径下，下面这些 key 用 `set` 会清掉前面 append 的多张参考图 / 蒙版
+ *（FormData.set 会移除同名所有 entry，再写入新值）。
+ *
+ * 历史踩坑：用户 customParams 里随手配了 name=image / name=images / name=mask 后，
+ * applyProviderPatches → setBodyField → form.set('image', ...) 会把前面
+ * for img of refImages 循环 append 进去的所有 image entry **全部清空**，
+ * 真实表现是「参考图悄悄丢了，上游还报 missing image」。
+ *
+ * 这里硬性保留：multipart 路径下这些字段不让 customParams / request_override_patch 覆盖。
+ */
+const FORM_RESERVED_KEYS = new Set(['image', 'images', 'mask'])
+
 function setBodyField(body: Record<string, any> | FormData, key: string, value: any): void {
   if (body instanceof FormData) {
     if (value == null) return
+    if (FORM_RESERVED_KEYS.has(key)) {
+      console.warn(`[ImageGen] customParam "${key}" 是 multipart 保留字段（参考图 / 蒙版），已忽略以避免覆盖`)
+      return
+    }
     if (typeof value === 'object') body.set(key, JSON.stringify(value))
     else body.set(key, String(value))
   } else {
@@ -491,7 +501,9 @@ interface PollTaskConfig {
 }
 
 async function pollAsyncTask(config: PollTaskConfig): Promise<ImageAPIResult[]> {
-  const maxWait = config.maxWaitMs ?? 300_000
+  // 默认总等 15 分钟，与单次生图 timeout 同档（云控端 gateway.timeouts.image=900s 对齐）。
+  // 多米异步任务实际通常 30s ~ 3min 完成，15min 兜底覆盖 4K + 排队高峰。
+  const maxWait = config.maxWaitMs ?? 900_000
   const pollInterval = config.pollIntervalMs ?? 3_000
   const pollTimeout = config.pollTimeoutMs ?? 30_000
   const maxConsecutive = config.maxConsecutiveTransientFailures
@@ -671,7 +683,7 @@ async function callImageAPI(
       fetchOptions = { method: 'POST', headers, body: JSON.stringify(body) }
     }
 
-    // 动态 timeout（按 tierId）+ 5xx/429 自动退避重试
+    // 单次 15min timeout + 5xx/429 自动退避重试（已统一为全档位 15min，tierId 仅为兼容签名）
     const response = await fetchWithRetry(url, fetchOptions, getImageApiTimeout(tierId), {
       retries: 2,
       errorPrefix: 'Image API error'
@@ -912,8 +924,12 @@ function saveImageToFile(sessionId: string, genId: string, b64Data: string): str
 }
 
 async function downloadImageToFile(sessionId: string, genId: string, imageUrl: string): Promise<string> {
-  // Bug #4: 下载也加超时（120s 覆盖大文件）
-  const response = await fetchWithTimeout(imageUrl, { method: 'GET' }, 120_000)
+  // 3 分钟覆盖 4K / 多张大文件场景；retries=1：图片 URL 通常时效短（多米 ~15min），
+  // 多次重试反而拖延错误反馈。1 次足够覆盖偶发网络抖动；URL 失效（403/410/404）直接抛错。
+  const response = await fetchWithRetry(imageUrl, { method: 'GET' }, 180_000, {
+    retries: 1,
+    errorPrefix: 'Image download error'
+  })
   if (!response.ok) throw new Error(`Failed to download image: ${response.status}`)
   const buffer = Buffer.from(await response.arrayBuffer())
   const contentType = response.headers.get('content-type') || 'image/png'
@@ -1031,13 +1047,9 @@ export async function generateImages(
   }
 
   const sessionId = options.sessionId || getOrCreateDefaultSession()
-  const rawBatchCount = Math.min(Math.max(options.batchCount || 1, 1), 10)
+  const batchCount = Math.min(Math.max(options.batchCount || 1, 1), 10)
   const quality = options.quality || 'auto'
   const results: ImageGeneration[] = []
-  const maxN = getMaxConsistencyN(options.modelId)
-  const useConsistency = !!(options.consistency && rawBatchCount > 1 && maxN > 1)
-  // In consistency mode, clamp to model's maxN (single API call)
-  const batchCount = useConsistency ? Math.min(rawBatchCount, maxN) : rawBatchCount
 
   // Pre-create all generation records as pending
   const genIds: string[] = []
@@ -1071,108 +1083,10 @@ export async function generateImages(
     })
   }
 
-  if (useConsistency) {
-    // -- Consistency mode: single API call with n = batchCount --
-    // Mark all as generating
-    for (let i = 0; i < batchCount; i++) {
-      updateGenerationStatus(genIds[i], 'generating', {})
-      if (window) {
-        window.webContents.send('imageGen:progress', {
-          type: 'generating',
-          index: i,
-          total: batchCount,
-          completed: 0,
-          genId: genIds[i],
-          sessionId
-        })
-      }
-    }
-
-    try {
-      const apiResults = await callImageAPI(
-        options.modelProviderId,
-        options.modelId,
-        options.prompt,
-        options.size,
-        quality,
-        options.refImages,
-        options.mask,
-        options.tierId,
-        batchCount
-      )
-
-      // Save each result to its corresponding genId.
-      // 每张独立 try/catch：单张下载失败仅影响该张（标 error），不连累其他成功结果。
-      for (let i = 0; i < batchCount; i++) {
-        const genId = genIds[i]
-        const apiResult = apiResults[i]
-        if (!apiResult) {
-          const errMsg = `服务商未返回第 ${i + 1} 张图片（n=${batchCount}）`
-          updateGenerationStatus(genId, 'error', { error: errMsg })
-          if (window) {
-            window.webContents.send('imageGen:progress', {
-              type: 'error', index: i, total: batchCount, completed: i + 1,
-              genId, error: errMsg, sessionId
-            })
-          }
-          continue
-        }
-
-        try {
-          const { result_path, result_url } = await saveOrDownloadResult(sessionId, genId, apiResult)
-          updateGenerationStatus(genId, 'done', {
-            result_path,
-            result_url,
-            revised_prompt: apiResult.revised_prompt || ''
-          })
-          if (result_path) {
-            try { addToCreation(result_path) } catch (e) { console.error('Failed to add to gallery creation:', e) }
-          }
-          const gen = getGeneration(genId)!
-          results.push(gen)
-          if (window) {
-            window.webContents.send('imageGen:progress', {
-              type: 'completed',
-              index: i,
-              total: batchCount,
-              completed: i + 1,
-              genId,
-              generation: gen,
-              sessionId
-            })
-          }
-        } catch (e: any) {
-          const errMsg = e?.message || '保存生图结果失败'
-          updateGenerationStatus(genId, 'error', { error: errMsg })
-          if (window) {
-            window.webContents.send('imageGen:progress', {
-              type: 'error', index: i, total: batchCount, completed: i + 1,
-              genId, error: errMsg, sessionId
-            })
-          }
-        }
-      }
-    } catch (e: any) {
-      // Consistency mode: if the single API call fails, mark all as error
-      const errorMsg = e?.message || 'Unknown error'
-      for (let i = 0; i < batchCount; i++) {
-        updateGenerationStatus(genIds[i], 'error', { error: errorMsg })
-        if (window) {
-          window.webContents.send('imageGen:progress', {
-            type: 'error',
-            index: i,
-            total: batchCount,
-            completed: i + 1,
-            genId: genIds[i],
-            error: errorMsg,
-            sessionId
-          })
-        }
-      }
-    }
-  } else {
-    // -- Normal mode: independent API calls (n=1 each) --
-    const concurrency = Math.min(Math.max(options.concurrency || 1, 1), 10)
+  // 独立 API 调用模式（n=1 each）。
+  // worker 数量直接取 batchCount（上限 10），全局 semaphore（默认 6）天然限流，
+  // 无需再向上层暴露 concurrency 概念。
+  {
     const ordered: (ImageGeneration | null)[] = new Array(batchCount).fill(null)
     let cursor = 0
     let completedCount = 0
@@ -1265,7 +1179,7 @@ export async function generateImages(
       }
     }
 
-    const workers = Array.from({ length: Math.min(concurrency, batchCount) }, () => worker())
+    const workers = Array.from({ length: Math.min(10, batchCount) }, () => worker())
     await Promise.all(workers)
     for (const g of ordered) if (g) results.push(g)
   }

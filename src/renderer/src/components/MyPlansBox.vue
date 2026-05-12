@@ -97,9 +97,9 @@ const activePlans = computed(() => plans.value.filter(p => p.status === 'active'
 
 function statusClass(status: string): string {
   switch (status) {
-    case 'active':  return 'bg-emerald-50 text-emerald-700'
+    case 'active':  return 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300'
     case 'expired': return 'bg-surface-2 text-text-tertiary'
-    case 'revoked': return 'bg-red-50 text-red-500'
+    case 'revoked': return 'bg-red-50 text-red-500 dark:bg-red-900/30 dark:text-red-300'
     default:        return 'bg-surface-2 text-text-tertiary'
   }
 }
@@ -162,8 +162,8 @@ function remainingClass(iso: string, status: string): string {
   if (diff <= 0) return 'text-text-tertiary'
   const days = diff / 86400000
   if (days >= 7) return 'text-text-primary'
-  if (days >= 3) return 'text-amber-600'
-  return 'text-red-500'
+  if (days >= 3) return 'text-amber-600 dark:text-amber-400'
+  return 'text-red-500 dark:text-red-400'
 }
 
 function showProgress(p: MyPlan): boolean {

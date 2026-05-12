@@ -122,11 +122,11 @@
           </div>
           <div class="flex items-center justify-between text-[11px]">
             <span class="text-text-tertiary">预计输出</span>
-            <span :class="ratioPreview ? 'text-text-primary font-medium' : 'text-red-500'">
+            <span :class="ratioPreview ? 'text-text-primary font-medium' : 'text-red-500 dark:text-red-400'">
               {{ ratioPreview || '格式非法' }}
             </span>
           </div>
-          <div v-if="ratioDetail?.clamped" class="text-[10px] text-amber-600">
+          <div v-if="ratioDetail?.clamped" class="text-[10px] text-amber-600 dark:text-amber-400">
             已按模型能力域自动调整
           </div>
         </div>
@@ -151,14 +151,14 @@
           </div>
           <div class="flex items-center justify-between text-[11px]">
             <span class="text-text-tertiary">snap 后</span>
-            <span :class="pxPreview ? 'text-text-primary font-medium' : 'text-red-500'">
+            <span :class="pxPreview ? 'text-text-primary font-medium' : 'text-red-500 dark:text-red-400'">
               {{ pxPreview || '格式非法' }}
             </span>
           </div>
-          <div v-if="pxDetail?.clamped" class="text-[10px] text-amber-600">
+          <div v-if="pxDetail?.clamped" class="text-[10px] text-amber-600 dark:text-amber-400">
             已按模型能力域自动调整
           </div>
-          <div v-else-if="pxPreview && pxSnapChanged" class="text-[10px] text-amber-600">
+          <div v-else-if="pxPreview && pxSnapChanged" class="text-[10px] text-amber-600 dark:text-amber-400">
             已自动调整为 8 的倍数
           </div>
         </div>
@@ -283,9 +283,9 @@ const shapeStyle = computed<Record<string, string> | null>(() => {
 const accentBorderClass = computed(() => {
   switch (props.accent) {
     case 'amber':
-      return 'border-amber-500 text-amber-700'
+      return 'border-amber-500 text-amber-700 dark:text-amber-300'
     case 'red':
-      return 'border-red-500 text-red-700'
+      return 'border-red-500 text-red-700 dark:text-red-300'
     default:
       return 'border-primary-500 text-primary-700'
   }
@@ -304,10 +304,10 @@ function buttonClass(active: boolean): string[] {
   if (active) {
     switch (props.accent) {
       case 'amber':
-        base.push('border-amber-500', 'bg-amber-50', 'text-amber-700', 'font-medium')
+        base.push('border-amber-500', 'bg-amber-50', 'text-amber-700', 'dark:bg-amber-900/30', 'dark:text-amber-300', 'font-medium')
         break
       case 'red':
-        base.push('border-red-500', 'bg-red-50', 'text-red-700', 'font-medium')
+        base.push('border-red-500', 'bg-red-50', 'text-red-700', 'dark:bg-red-900/30', 'dark:text-red-300', 'font-medium')
         break
       default:
         base.push('border-primary-500', 'bg-primary-50', 'text-primary-700', 'font-medium')

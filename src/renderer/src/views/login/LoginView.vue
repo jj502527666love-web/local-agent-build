@@ -2,7 +2,17 @@
   <div class="h-screen w-screen flex items-center justify-center bg-surface-1">
     <div class="w-full max-w-sm bg-surface-0 rounded-2xl shadow-lg p-8">
       <div class="flex items-center gap-3 mb-8">
-        <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center">
+        <img
+          v-if="appIconUrl"
+          :src="appIconUrl"
+          class="w-10 h-10 rounded-xl object-cover flex-shrink-0"
+          alt=""
+          draggable="false"
+        />
+        <div
+          v-else
+          class="w-10 h-10 rounded-xl bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center flex-shrink-0"
+        >
           <span class="text-white text-sm font-bold">{{ appAbbr }}</span>
         </div>
         <div>
@@ -73,7 +83,7 @@
           </label>
         </div>
 
-        <div v-if="error" class="text-xs text-red-500 bg-red-50 rounded-lg px-3 py-2">{{ error }}</div>
+        <div v-if="error" class="text-xs text-red-500 bg-red-50 dark:text-red-300 dark:bg-red-900/20 rounded-lg px-3 py-2">{{ error }}</div>
 
         <button type="submit" :disabled="submitting"
           class="w-full py-3 text-sm font-semibold bg-primary-600 hover:bg-primary-700 disabled:opacity-50 text-white rounded-xl transition-colors">
@@ -103,7 +113,7 @@ import { useRouter } from 'vue-router'
 import { useCloudAuthStore } from '@/stores/cloud-auth'
 import { useSiteConfigStore } from '@/stores/site-config'
 import AgreementDialog from '@/components/AgreementDialog.vue'
-import { appName, appAbbr } from '@/utils/branding'
+import { appName, appAbbr, appIconUrl } from '@/utils/branding'
 
 const router = useRouter()
 const store = useCloudAuthStore()

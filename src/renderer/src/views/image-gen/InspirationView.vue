@@ -78,7 +78,7 @@
 
     <!-- Detail Modal -->
     <div v-if="detailItem" class="fixed inset-0 z-50 flex items-center justify-center" @click.self="detailItem = null">
-      <div class="bg-white rounded-2xl shadow-[0_0_30px_rgba(0,0,0,0.12)] w-[640px] max-h-[85vh] flex flex-col overflow-hidden">
+      <div class="bg-surface-0 rounded-2xl shadow-[0_0_30px_rgba(0,0,0,0.12)] w-[640px] max-h-[85vh] flex flex-col overflow-hidden">
         <!-- Cover -->
         <div class="aspect-[16/9] bg-surface-2 flex-shrink-0 overflow-hidden">
           <img v-if="detailItem.cover_image" :src="detailItem.cover_image" class="w-full h-full object-cover" />

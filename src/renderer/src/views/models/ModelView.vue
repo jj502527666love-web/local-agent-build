@@ -60,7 +60,7 @@
                 <input
                   v-model="modelSearch"
                   placeholder="搜索模型..."
-                  class="w-full px-3 py-2 text-xs border-b border-surface-3 bg-surface-0 outline-none focus:bg-white"
+                  class="w-full px-3 py-2 text-xs border-b border-surface-3 bg-surface-0 outline-none focus:bg-surface-1"
                 />
                 <div class="max-h-40 overflow-y-auto p-2 space-y-0.5">
                   <label v-if="filteredRemoteModels.length" class="flex items-center gap-2 px-2 py-1.5 rounded-md text-xs cursor-pointer hover:bg-surface-2 transition-colors font-medium border-b border-surface-3 mb-1 pb-1.5">
@@ -229,7 +229,7 @@
 
     <!-- Query Models Dialog -->
     <div v-if="showModelsQuery" class="fixed inset-0 z-50 flex items-center justify-center">
-      <div class="bg-white rounded-2xl shadow-[0_0_30px_rgba(0,0,0,0.12)] w-[560px] max-h-[80vh] flex flex-col" @click.stop>
+      <div class="bg-surface-0 rounded-2xl shadow-[0_0_30px_rgba(0,0,0,0.12)] w-[560px] max-h-[80vh] flex flex-col" @click.stop>
         <div class="flex items-center justify-between px-6 py-4 border-b border-surface-3">
           <h3 class="text-sm font-semibold text-text-primary">{{ queryProviderName }} - 可用模型</h3>
           <button @click="showModelsQuery = false" class="text-text-tertiary hover:text-text-primary transition-colors">
@@ -243,7 +243,7 @@
           <div v-else class="space-y-4">
             <div v-for="(models, category) in categorizedModels" :key="category">
               <div class="flex items-center gap-2 mb-2">
-                <span :class="['w-2 h-2 rounded-full', categoryColors[category] || 'bg-gray-400']"></span>
+                <span :class="['w-2 h-2 rounded-full', categoryColors[category] || 'bg-surface-4']"></span>
                 <span class="text-xs font-semibold text-text-primary">{{ category }}</span>
                 <span class="text-[10px] text-text-tertiary">({{ models.length }})</span>
               </div>
@@ -262,7 +262,7 @@
 
     <!-- Stats Dialog -->
     <div v-if="showStats" class="fixed inset-0 z-50 flex items-center justify-center">
-      <div class="bg-white rounded-2xl shadow-[0_0_30px_rgba(0,0,0,0.12)] w-[480px] max-h-[80vh] flex flex-col" @click.stop>
+      <div class="bg-surface-0 rounded-2xl shadow-[0_0_30px_rgba(0,0,0,0.12)] w-[480px] max-h-[80vh] flex flex-col" @click.stop>
         <div class="flex items-center justify-between px-6 py-4 border-b border-surface-3">
           <h3 class="text-sm font-semibold text-text-primary">{{ statsData?.provider_name || '用量统计' }}</h3>
           <button @click="showStats = false" class="text-text-tertiary hover:text-text-primary transition-colors">
@@ -442,7 +442,7 @@ const categoryColors: Record<string, string> = {
   '语音/音频': 'bg-amber-500',
   '代码模型': 'bg-emerald-500',
   '重排序': 'bg-indigo-500',
-  '其他': 'bg-gray-400'
+  '其他': 'bg-surface-4'
 }
 
 function categorizeModel(modelId: string): string {

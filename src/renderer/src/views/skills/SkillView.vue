@@ -49,7 +49,7 @@
             <div v-if="testResult !== null">
               <label class="text-xs text-text-tertiary mb-1 block">
                 执行结果
-                <span :class="testResult.success ? 'text-green-600' : 'text-red-500'" class="ml-2">
+                <span :class="testResult.success ? 'text-green-600 dark:text-green-400' : 'text-red-500 dark:text-red-400'" class="ml-2">
                   {{ testResult.success ? 'OK' : 'FAIL' }}
                 </span>
                 <span class="text-text-disabled ml-2">{{ testResult.duration }}ms</span>

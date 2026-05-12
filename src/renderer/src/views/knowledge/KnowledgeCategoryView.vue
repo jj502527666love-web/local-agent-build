@@ -16,8 +16,8 @@
     </header>
 
     <!-- Sync result banner -->
-    <div v-if="syncResult" class="mx-6 mt-4 flex items-center gap-3 p-3 rounded-lg bg-blue-50 border border-blue-200">
-      <span class="text-sm text-blue-800 flex-1">
+    <div v-if="syncResult" class="mx-6 mt-4 flex items-center gap-3 p-3 rounded-lg bg-blue-50 border border-blue-200 dark:bg-blue-900/20 dark:border-blue-800">
+      <span class="text-sm text-blue-800 dark:text-blue-300 flex-1">
         同步完成：新增 {{ syncResult.added }}，删除 {{ syncResult.removed }}，变更 {{ syncResult.modified }}
       </span>
       <button @click="syncResult = null" class="text-blue-400 hover:text-blue-600">

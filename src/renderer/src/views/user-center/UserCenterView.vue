@@ -72,16 +72,16 @@
           v-if="nextExpiring"
           :class="['mt-3 flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer transition-colors',
             nextExpiring.severity === 'danger'
-              ? 'bg-red-50 hover:bg-red-100'
-              : 'bg-amber-50 hover:bg-amber-100']"
+              ? 'bg-red-50 hover:bg-red-100 dark:bg-red-900/20 dark:hover:bg-red-900/30'
+              : 'bg-amber-50 hover:bg-amber-100 dark:bg-amber-900/20 dark:hover:bg-amber-900/30']"
           @click="scrollToPlans"
         >
-          <span :class="['text-xs', nextExpiring.severity === 'danger' ? 'text-red-700' : 'text-amber-700']">
+          <span :class="['text-xs', nextExpiring.severity === 'danger' ? 'text-red-700 dark:text-red-300' : 'text-amber-700 dark:text-amber-300']">
             最近到期
             <strong class="mx-1">{{ nextExpiring.plan_name }}</strong>
             <span class="font-mono">{{ nextExpiring.text }}</span>
           </span>
-          <span :class="['text-xs', nextExpiring.severity === 'danger' ? 'text-red-600' : 'text-amber-600']">查看 →</span>
+          <span :class="['text-xs', nextExpiring.severity === 'danger' ? 'text-red-600 dark:text-red-400' : 'text-amber-600 dark:text-amber-400']">查看 →</span>
         </div>
         <!-- Billing Rules -->
         <div v-if="store.billingRules.length" class="mt-4 pt-4 border-t border-surface-3">
@@ -130,8 +130,8 @@
             class="w-full px-3 py-2 text-xs bg-surface-2 border border-surface-3 rounded-lg text-text-primary outline-none focus:border-primary-500" />
           <input v-model="pwdForm.confirmPassword" type="password" placeholder="确认新密码"
             class="w-full px-3 py-2 text-xs bg-surface-2 border border-surface-3 rounded-lg text-text-primary outline-none focus:border-primary-500" />
-          <div v-if="pwdError" class="text-xs text-red-500">{{ pwdError }}</div>
-          <div v-if="pwdSuccess" class="text-xs text-emerald-600">{{ pwdSuccess }}</div>
+          <div v-if="pwdError" class="text-xs text-red-500 dark:text-red-400">{{ pwdError }}</div>
+          <div v-if="pwdSuccess" class="text-xs text-emerald-600 dark:text-emerald-400">{{ pwdSuccess }}</div>
           <button type="submit" :disabled="pwdLoading"
             class="btn-primary text-xs">
             {{ pwdLoading ? '...' : '修改' }}

@@ -280,6 +280,12 @@ export function useWorkflowEngine() {
         const refImageData =
           upstream.images.length > 0 ? await resolveRefImages(upstream.images) : []
         const failedRef = (refImageData as any).__failedCount || 0
+        // 用户连了参考图节点本意是希望参与生图——若上游确实有图但本次全部读取失败
+        // （路径变更 / 文件被删 / 权限拒绝），不应该静默走纯文生图，必须明确报错。
+        // 与 img2img 节点 (line ~349) 保持行为一致。
+        if (upstream.images.length > 0 && refImageData.length === 0) {
+          throw new Error(`参考图全部读取失败（${upstream.images.length} 张）：请检查上游参考图节点的文件是否仍然存在`)
+        }
         if (failedRef > 0) {
           refImageWarnings.value = [
             ...refImageWarnings.value,

@@ -32,9 +32,6 @@ export interface GenerateOptions {
   tierId?: string
   quality?: string
   batchCount?: number
-  concurrency?: number
-  /** 多图一致性：单次 API 请求生成 n 张风格/角色一致的图片 */
-  consistency?: boolean
 }
 
 export interface QueueItem {

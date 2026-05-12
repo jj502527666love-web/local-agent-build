@@ -22,7 +22,7 @@
 
         <!-- Preset Modal -->
         <div v-if="showPresetModal" class="fixed inset-0 z-50 flex items-center justify-center" @click.self="showPresetModal = false">
-          <div class="bg-white rounded-2xl shadow-[0_0_30px_rgba(0,0,0,0.12)] w-[560px] max-h-[80vh] flex flex-col">
+          <div class="bg-surface-0 rounded-2xl shadow-[0_0_30px_rgba(0,0,0,0.12)] w-[560px] max-h-[80vh] flex flex-col">
             <div class="p-5 border-b border-surface-3">
               <div class="flex items-center justify-between mb-3">
                 <h3 class="text-sm font-semibold text-text-primary">选择预设人格</h3>
@@ -72,7 +72,7 @@
 
         <!-- Optimize Modal -->
         <div v-if="showOptimizeModal" class="fixed inset-0 z-50 flex items-center justify-center" @click.self="showOptimizeModal = false">
-          <div class="bg-white rounded-2xl shadow-[0_0_30px_rgba(0,0,0,0.12)] p-6 w-96 space-y-4">
+          <div class="bg-surface-0 rounded-2xl shadow-[0_0_30px_rgba(0,0,0,0.12)] p-6 w-96 space-y-4">
             <h3 class="text-sm font-semibold text-text-primary">选择 AI 模型优化提示词</h3>
             <div>
               <label class="form-label">服务商</label>

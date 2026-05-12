@@ -13,7 +13,7 @@
           <div class="flex items-center justify-between px-5 py-3 border-b border-surface-2">
             <div class="flex items-center gap-2 min-w-0">
               <svg
-                class="w-4 h-4 text-red-500 flex-shrink-0"
+                class="w-4 h-4 text-red-500 dark:text-red-400 flex-shrink-0"
                 fill="none"
                 viewBox="0 0 24 24"
                 stroke="currentColor"
@@ -57,7 +57,7 @@
 
           <!-- Footer -->
           <div class="flex items-center justify-end gap-2 px-5 py-3 border-t border-surface-2">
-            <span v-if="copied" class="text-[11px] text-green-600 mr-auto">已复制到剪贴板</span>
+            <span v-if="copied" class="text-[11px] text-green-600 dark:text-green-400 mr-auto">已复制到剪贴板</span>
             <button
               type="button"
               @click="emit('close')"

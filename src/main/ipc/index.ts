@@ -160,6 +160,17 @@ export function registerIpcHandlers(): void {
     const { readFileSmart } = require('../services/document-parser')
     return readFileSmart(filePath)
   })
+  // parseBuffer：拖拽附件场景专用——渲染端拿到 File 对象后 arrayBuffer() 通过 IPC 上送，
+  // 主进程按扩展名走 PDF/DOCX/DOC/XLS/XLSX 二进制解析器返回纯文本。
+  // 解决「拖入 PDF/DOCX 等二进制文档 → file.text() 按 utf-8 读取得到乱码」问题。
+  // 返回值与 readFileText 一致：成功返回 text 字符串；失败返回带错误说明的占位字符串。
+  ipcMain.handle('chat:parseBuffer', async (_, payload: { buffer: ArrayBuffer; ext: string }) => {
+    const { parseDocumentFromBuffer } = require('../services/document-parser')
+    const buffer = Buffer.from(payload.buffer)
+    const result = await parseDocumentFromBuffer(buffer, payload.ext)
+    if (result.ok) return result.text
+    return `[文档解析失败：${result.error || '未知错误'}（解析器=${result.parser}, 扩展名=${result.ext || '未知'}）]`
+  })
 
   // === LLM Utility ===
   const llmAbortMap = new Map<string, AbortController>()

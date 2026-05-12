@@ -104,7 +104,7 @@
         </button>
         <!-- Clear canvas -->
         <template v-if="confirmClear">
-          <button @click="doClearCanvas" class="px-2 py-1 text-[10px] font-medium text-red-600 border border-red-300 rounded-lg hover:bg-red-50 transition-colors">确认清空</button>
+          <button @click="doClearCanvas" class="px-2 py-1 text-[10px] font-medium text-red-600 border border-red-300 rounded-lg hover:bg-red-50 dark:text-red-300 dark:border-red-800 dark:hover:bg-red-900/30 transition-colors">确认清空</button>
           <button @click="confirmClear = false" class="px-2 py-1 text-[10px] text-text-tertiary border border-surface-3 rounded-lg hover:bg-surface-2 transition-colors">取消</button>
         </template>
         <button v-else @click="confirmClear = true" :disabled="canvasStore.nodes.length === 0 || anyRunning" class="p-1.5 rounded-lg text-text-tertiary hover:text-red-500 hover:bg-surface-2 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" title="清空画布">
@@ -239,7 +239,7 @@
 
     <!-- Toast -->
     <div v-if="toast" class="absolute bottom-5 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-lg shadow-lg border text-xs font-medium transition-all"
-      :class="toast.type === 'success' ? 'bg-green-50 border-green-200 text-green-700' : 'bg-red-50 border-red-200 text-red-700'"
+      :class="toast.type === 'success' ? 'bg-green-50 border-green-200 text-green-700 dark:bg-green-900/20 dark:border-green-800 dark:text-green-300' : 'bg-red-50 border-red-200 text-red-700 dark:bg-red-900/20 dark:border-red-800 dark:text-red-300'"
     >{{ toast.text }}</div>
 
     <!-- Handle click-to-create context menu -->

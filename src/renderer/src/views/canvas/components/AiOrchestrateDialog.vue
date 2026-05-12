@@ -278,9 +278,9 @@
             v-if="summary || progressMessage || errorMessage"
             class="rounded-xl border p-3 text-sm"
             :class="errorMessage
-              ? 'border-red-200 bg-red-50 text-red-600'
+              ? 'border-red-200 bg-red-50 text-red-600 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300'
               : progressMessage
-                ? 'border-amber-200 bg-amber-50 text-amber-700'
+                ? 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300'
                 : 'border-surface-3 bg-surface-1 text-text-secondary'"
           >
             <div v-if="errorMessage" class="flex items-start gap-2">

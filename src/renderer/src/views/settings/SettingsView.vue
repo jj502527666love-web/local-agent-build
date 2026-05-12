@@ -87,8 +87,8 @@
                 <svg v-if="vectorTesting" class="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" class="opacity-25" /><path d="M4 12a8 8 0 018-8" stroke="currentColor" stroke-width="3" stroke-linecap="round" class="opacity-75" /></svg>
                 <span>{{ vectorTesting ? '测试中...' : '连接测试' }}</span>
               </button>
-              <span v-if="vectorSaved" class="text-xs text-emerald-600 font-medium animate-pulse">已保存</span>
-              <span v-if="vectorTestResult" :class="['text-xs font-medium', vectorTestOk ? 'text-emerald-600' : 'text-red-500']">{{ vectorTestResult }}</span>
+              <span v-if="vectorSaved" class="text-xs text-emerald-600 dark:text-emerald-400 font-medium animate-pulse">已保存</span>
+              <span v-if="vectorTestResult" :class="['text-xs font-medium', vectorTestOk ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500 dark:text-red-400']">{{ vectorTestResult }}</span>
             </div>
             <p class="text-[11px] text-text-tertiary">自定义配置不消耗云端{{ siteConfig.labels.token }}。若管理员关闭「自定义向量」权限，本地配置将被忽略，强制走云端</p>
           </div>
@@ -114,7 +114,7 @@
         <!-- General -->
         <section>
           <div class="flex items-center gap-2.5 mb-4">
-            <div class="w-8 h-8 rounded-lg bg-amber-50 flex items-center justify-center">
+            <div class="w-8 h-8 rounded-lg bg-amber-50 dark:bg-amber-900/20 flex items-center justify-center">
               <svg class="w-4 h-4 text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.325.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.431l-1.003.827c-.293.241-.438.613-.431.992a6.759 6.759 0 0 1 0 .255c-.007.378.138.75.43.991l1.004.827c.424.35.534.955.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.47 6.47 0 0 1-.22.128c-.331.183-.581.495-.644.869l-.213 1.281c-.09.543-.56.94-1.11.94h-2.594c-.55 0-1.019-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.431l1.004-.827c.292-.24.437-.613.43-.991a6.932 6.932 0 0 1 0-.255c.007-.38-.138-.751-.43-.992l-1.004-.827a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.086.22-.128.332-.183.582-.495.644-.869l.214-1.28Z" /><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" /></svg>
             </div>
             <h2 class="text-sm font-semibold text-text-primary">常规</h2>
@@ -126,7 +126,7 @@
             </div>
             <div class="flex items-center gap-3 pt-1">
               <button @click="saveGeneralSettings" class="btn-primary">保存</button>
-              <span v-if="generalSaved" class="text-xs text-emerald-600 font-medium animate-pulse">已保存</span>
+              <span v-if="generalSaved" class="text-xs text-emerald-600 dark:text-emerald-400 font-medium animate-pulse">已保存</span>
             </div>
           </div>
         </section>
@@ -134,8 +134,8 @@
         <!-- Data Directory -->
         <section>
           <div class="flex items-center gap-2.5 mb-4">
-            <div class="w-8 h-8 rounded-lg bg-teal-50 flex items-center justify-center">
-              <svg class="w-4 h-4 text-teal-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M2.25 12.75V12A2.25 2.25 0 0 1 4.5 9.75h15A2.25 2.25 0 0 1 21.75 12v.75m-8.69-6.44-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9a2.25 2.25 0 0 0-2.25-2.25h-5.379a1.5 1.5 0 0 1-1.06-.44Z" /></svg>
+            <div class="w-8 h-8 rounded-lg bg-teal-50 dark:bg-teal-900/20 flex items-center justify-center">
+              <svg class="w-4 h-4 text-teal-600 dark:text-teal-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M2.25 12.75V12A2.25 2.25 0 0 1 4.5 9.75h15A2.25 2.25 0 0 1 21.75 12v.75m-8.69-6.44-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9a2.25 2.25 0 0 0-2.25-2.25h-5.379a1.5 1.5 0 0 1-1.06-.44Z" /></svg>
             </div>
             <h2 class="text-sm font-semibold text-text-primary">数据目录</h2>
           </div>
@@ -178,8 +178,8 @@
         <!-- Data Backup -->
         <section>
           <div class="flex items-center gap-2.5 mb-4">
-            <div class="w-8 h-8 rounded-lg bg-sky-50 flex items-center justify-center">
-              <svg class="w-4 h-4 text-sky-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M20.25 7.5l-.625 10.632a2.25 2.25 0 0 1-2.247 2.118H6.622a2.25 2.25 0 0 1-2.247-2.118L3.75 7.5m8.25 3v6.75m0 0-3-3m3 3 3-3M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125Z" /></svg>
+            <div class="w-8 h-8 rounded-lg bg-sky-50 dark:bg-sky-900/20 flex items-center justify-center">
+              <svg class="w-4 h-4 text-sky-600 dark:text-sky-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M20.25 7.5l-.625 10.632a2.25 2.25 0 0 1-2.247 2.118H6.622a2.25 2.25 0 0 1-2.247-2.118L3.75 7.5m8.25 3v6.75m0 0-3-3m3 3 3-3M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125Z" /></svg>
             </div>
             <h2 class="text-sm font-semibold text-text-primary">数据备份</h2>
           </div>
@@ -247,8 +247,8 @@
               <div class="grid grid-cols-2 gap-2">
                 <div v-for="b in pagedBackups" :key="b.fileName" class="flex flex-col gap-1.5 px-3 py-2 rounded-lg bg-surface-1 text-xs">
                   <div class="flex items-center gap-2">
-                    <span :class="['inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium', b.type === 'full' ? 'bg-sky-100 text-sky-700' : 'bg-surface-3 text-text-secondary']">{{ b.type === 'full' ? '完整' : '数据库' }}</span>
-                    <span v-if="b.format === 'legacy'" class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-100 text-amber-700" title="旧格式备份，无完整性校验">旧格式</span>
+                    <span :class="['inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium', b.type === 'full' ? 'bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300' : 'bg-surface-3 text-text-secondary']">{{ b.type === 'full' ? '完整' : '数据库' }}</span>
+                    <span v-if="b.format === 'legacy'" class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300" title="旧格式备份，无完整性校验">旧格式</span>
                     <span class="text-text-secondary flex-1 truncate">{{ formatTime(b.createdAt) }}</span>
                     <span class="text-text-tertiary flex-shrink-0">{{ formatSize(b.size) }}</span>
                   </div>
@@ -305,22 +305,22 @@
                 <svg class="w-3 h-3 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" class="opacity-25" /><path d="M4 12a8 8 0 018-8" stroke="currentColor" stroke-width="3" stroke-linecap="round" class="opacity-75" /></svg>
                 正在校验备份文件...
               </div>
-              <div v-else-if="verifyInfo && !verifyInfo.ok" class="mb-3 text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+              <div v-else-if="verifyInfo && !verifyInfo.ok" class="mb-3 text-xs text-red-600 bg-red-50 border border-red-200 dark:text-red-300 dark:bg-red-900/20 dark:border-red-800 rounded-lg px-3 py-2">
                 <div class="font-medium mb-0.5">备份不可恢复</div>
                 <div>{{ verifyInfo.error }}</div>
               </div>
-              <div v-else-if="verifyInfo?.compat?.level === 'warning'" class="mb-3 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+              <div v-else-if="verifyInfo?.compat?.level === 'warning'" class="mb-3 text-xs text-amber-700 bg-amber-50 border border-amber-200 dark:text-amber-300 dark:bg-amber-900/20 dark:border-amber-800 rounded-lg px-3 py-2">
                 <div class="font-medium mb-0.5">兼容性警告</div>
                 <div>{{ verifyInfo.compat.reason }}</div>
               </div>
-              <div v-else-if="verifyInfo?.legacy" class="mb-3 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+              <div v-else-if="verifyInfo?.legacy" class="mb-3 text-xs text-amber-700 bg-amber-50 border border-amber-200 dark:text-amber-300 dark:bg-amber-900/20 dark:border-amber-800 rounded-lg px-3 py-2">
                 <div class="font-medium mb-0.5">旧格式备份</div>
                 <div>无法做完整性校验，建议恢复后立即创建新格式的备份。</div>
               </div>
 
               <!-- 影响说明 -->
               <p class="text-xs text-text-secondary mb-1">{{ restoreTarget.type === 'full' ? '将恢复所有数据和文件，当前数据将被归档保留 7 天供反悔。' : '将恢复数据库（对话、Bot、知识库配置等），技能文件和图片不受影响。' }}</p>
-              <p class="text-xs text-amber-600 font-medium mb-4">恢复完成后应用将自动重启。</p>
+              <p class="text-xs text-amber-600 dark:text-amber-400 font-medium mb-4">恢复完成后应用将自动重启。</p>
 
               <div class="flex justify-end gap-2">
                 <button @click="cancelRestoreDialog" :disabled="restoreRunning" class="btn-secondary">取消</button>
@@ -336,8 +336,8 @@
         <!-- Theme -->
         <section>
           <div class="flex items-center gap-2.5 mb-4">
-            <div class="w-8 h-8 rounded-lg bg-indigo-50 flex items-center justify-center">
-              <svg class="w-4 h-4 text-indigo-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M21.752 15.002A9.72 9.72 0 0 1 18 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 0 0 3 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 0 0 9.002-5.998Z" /></svg>
+            <div class="w-8 h-8 rounded-lg bg-indigo-50 dark:bg-indigo-900/20 flex items-center justify-center">
+              <svg class="w-4 h-4 text-indigo-600 dark:text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M21.752 15.002A9.72 9.72 0 0 1 18 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 0 0 3 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 0 0 9.002-5.998Z" /></svg>
             </div>
             <h2 class="text-sm font-semibold text-text-primary">外观</h2>
           </div>

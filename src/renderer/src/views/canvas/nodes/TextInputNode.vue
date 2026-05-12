@@ -4,7 +4,7 @@
       <span class="node-type-dot" style="background: #6366f1;"></span>
       文本输入
       <span class="text-[10px] font-normal opacity-60 ml-1">#{{ data.nodeIndex }}</span>
-      <button @click.stop="togglePreset" :disabled="data.locked" class="px-1.5 py-0.5 rounded text-[9px] text-indigo-500 hover:bg-indigo-100 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" style="margin-left: auto;">预设</button>
+      <button @click.stop="togglePreset" :disabled="data.locked" class="px-1.5 py-0.5 rounded text-[9px] text-indigo-500 hover:bg-indigo-100 dark:hover:bg-indigo-900/30 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" style="margin-left: auto;">预设</button>
       <button @click="deleteNode" :disabled="data.locked" class="node-delete-btn" style="margin-left: 0;">
         <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
       </button>

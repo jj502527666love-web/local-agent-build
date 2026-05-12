@@ -104,7 +104,7 @@
           <!-- Error（创建失败） -->
           <div
             v-else-if="createError"
-            class="bg-red-50 text-red-600 rounded-lg px-3 py-2.5 text-xs"
+            class="bg-red-50 text-red-600 dark:bg-red-900/20 dark:text-red-300 rounded-lg px-3 py-2.5 text-xs"
           >
             {{ createError }}
           </div>
@@ -129,8 +129,8 @@
             v-else-if="status === 'paid'"
             class="flex flex-col items-center justify-center py-8 text-center"
           >
-            <div class="w-12 h-12 rounded-full bg-emerald-50 flex items-center justify-center mb-3">
-              <svg class="w-6 h-6 text-emerald-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <div class="w-12 h-12 rounded-full bg-emerald-50 dark:bg-emerald-900/30 flex items-center justify-center mb-3">
+              <svg class="w-6 h-6 text-emerald-600 dark:text-emerald-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
               </svg>
             </div>
@@ -172,11 +172,11 @@
               </div>
             </div>
 
-            <div v-if="reused" class="mt-2 text-[11px] text-amber-600">
+            <div v-if="reused" class="mt-2 text-[11px] text-amber-600 dark:text-amber-400">
               已复用未完成订单
             </div>
 
-            <div v-if="pollErrorTip" class="mt-2 text-[11px] text-red-500">
+            <div v-if="pollErrorTip" class="mt-2 text-[11px] text-red-500 dark:text-red-400">
               {{ pollErrorTip }}
             </div>
 

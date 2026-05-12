@@ -26,7 +26,7 @@
         <p class="text-[11px] text-text-tertiary mt-2">
           请勿选择应用安装目录（如 <span class="font-mono">Program Files</span>）或系统目录，否则升级/卸载时数据会被清空。
         </p>
-        <div v-if="setupError" class="flex items-start gap-2 mt-3 p-2.5 rounded-lg bg-red-50 border border-red-200 text-xs text-red-600 font-medium">
+        <div v-if="setupError" class="flex items-start gap-2 mt-3 p-2.5 rounded-lg bg-red-50 border border-red-200 text-xs text-red-600 font-medium dark:bg-red-900/20 dark:border-red-800 dark:text-red-300">
           <svg class="w-3.5 h-3.5 mt-0.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" /></svg>
           <span class="break-all">{{ setupError }}</span>
         </div>
@@ -52,14 +52,14 @@
         </div>
 
         <!-- Too many files warning -->
-        <div v-if="migrationInfo.tooMany" class="mb-3 p-3 rounded-lg bg-amber-50 border border-amber-200">
-          <p class="text-xs text-amber-700">
+        <div v-if="migrationInfo.tooMany" class="mb-3 p-3 rounded-lg bg-amber-50 border border-amber-200 dark:bg-amber-900/20 dark:border-amber-800">
+          <p class="text-xs text-amber-700 dark:text-amber-300">
             文件数量较多（{{ migrationInfo.fileCount }}），迁移可能较慢。请确认旧目录路径正确无误。
           </p>
         </div>
 
         <!-- Conflicts warning -->
-        <div v-if="migrationInfo.conflictCount > 0" class="mb-3 p-3 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-700">
+        <div v-if="migrationInfo.conflictCount > 0" class="mb-3 p-3 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-700 dark:bg-amber-900/20 dark:border-amber-800 dark:text-amber-300">
           <p class="font-medium mb-1">新目录中已有 {{ migrationInfo.conflictCount }} 个同名文件，请选择处理方式：</p>
           <label class="flex items-start gap-2 mt-2 cursor-pointer">
             <input type="radio" v-model="conflictStrategy" value="keep-existing" class="mt-0.5" />

@@ -24,7 +24,7 @@
     <p class="text-[10px] text-text-tertiary mt-2">兑换码不区分大小写</p>
 
     <!-- Success -->
-    <div v-if="success" class="mt-3 bg-emerald-50 text-emerald-700 rounded-lg px-3 py-2 text-xs">
+    <div v-if="success" class="mt-3 bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-300 rounded-lg px-3 py-2 text-xs">
       <div class="font-semibold mb-1">兑换成功</div>
       <div class="space-x-3">
         <span v-if="(success.token ?? 0) > 0">{{ siteConfig.labels.token }} +{{ formatAmount(success.token) }}</span>
@@ -35,7 +35,7 @@
     </div>
 
     <!-- Error -->
-    <div v-if="error" class="mt-3 bg-red-50 text-red-500 rounded-lg px-3 py-2 text-xs">
+    <div v-if="error" class="mt-3 bg-red-50 text-red-500 dark:bg-red-900/20 dark:text-red-300 rounded-lg px-3 py-2 text-xs">
       {{ error }}
     </div>
   </div>

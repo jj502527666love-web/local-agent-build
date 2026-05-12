@@ -169,7 +169,7 @@
           <div
             v-for="(task, idx) in tasks"
             :key="task.id"
-            :class="['rounded-xl border bg-surface-0 overflow-hidden transition-shadow', task.status === 'error' ? 'border-red-300' : task.status === 'done' ? 'border-green-300' : 'border-surface-3']"
+            :class="['rounded-xl border bg-surface-0 overflow-hidden transition-shadow', task.status === 'error' ? 'border-red-300 dark:border-red-800' : task.status === 'done' ? 'border-green-300 dark:border-green-800' : 'border-surface-3']"
           >
             <div class="flex gap-3 p-3">
               <!-- Reference image thumbnail -->
@@ -188,8 +188,8 @@
                       <svg class="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
                       生成中
                     </span>
-                    <span v-else-if="task.status === 'done'" class="text-[10px] text-green-600 px-1.5 py-0.5 rounded bg-green-50">完成</span>
-                    <span v-else-if="task.status === 'error'" class="text-[10px] text-red-500 px-1.5 py-0.5 rounded bg-red-50">失败</span>
+                    <span v-else-if="task.status === 'done'" class="text-[10px] text-green-600 px-1.5 py-0.5 rounded bg-green-50 dark:text-green-300 dark:bg-green-900/30">完成</span>
+                    <span v-else-if="task.status === 'error'" class="text-[10px] text-red-500 px-1.5 py-0.5 rounded bg-red-50 dark:text-red-300 dark:bg-red-900/30">失败</span>
                     <!-- Remove button -->
                     <button v-if="!batchRunning" @click="removeTask(idx)" class="p-0.5 text-text-tertiary hover:text-red-500 transition-colors">
                       <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
@@ -251,7 +251,7 @@
               <button
                 type="button"
                 @click.stop="openErrorDialog(task)"
-                class="flex-shrink-0 px-1.5 py-0.5 text-[10px] text-red-600 border border-red-300 rounded-md hover:bg-red-50 transition-colors"
+                class="flex-shrink-0 px-1.5 py-0.5 text-[10px] text-red-600 border border-red-300 rounded-md hover:bg-red-50 dark:text-red-300 dark:border-red-800 dark:hover:bg-red-900/20 transition-colors"
               >详情</button>
               <button
                 type="button"

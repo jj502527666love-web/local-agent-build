@@ -63,13 +63,13 @@
         <div v-else-if="!showCreateForm && !viewingSkill" class="grid grid-cols-3 gap-3">
           <div v-for="skill in store.skills" :key="skill.id" class="card p-4">
             <div class="flex items-start gap-3 mb-3">
-              <div class="w-9 h-9 rounded-lg bg-violet-50 flex items-center justify-center flex-shrink-0">
-                <svg class="w-4.5 h-4.5 text-violet-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 6.042A8.967 8.967 0 0 0 6 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 0 1 6 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 0 1 6-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0 0 18 18a8.967 8.967 0 0 0-6 2.292m0-14.25v14.25" /></svg>
+              <div class="w-9 h-9 rounded-lg bg-violet-50 dark:bg-violet-900/20 flex items-center justify-center flex-shrink-0">
+                <svg class="w-4.5 h-4.5 text-violet-600 dark:text-violet-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 6.042A8.967 8.967 0 0 0 6 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 0 1 6 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 0 1 6-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0 0 18 18a8.967 8.967 0 0 0-6 2.292m0-14.25v14.25" /></svg>
               </div>
               <div class="min-w-0 flex-1">
                 <div class="flex items-center gap-2">
                   <span class="text-sm font-semibold text-text-primary truncate">{{ skill.name }}</span>
-                  <span :class="['text-[10px] px-1.5 py-0.5 rounded-full font-medium', skill.enabled ? 'bg-emerald-50 text-emerald-600' : 'bg-surface-2 text-text-tertiary']">
+                  <span :class="['text-[10px] px-1.5 py-0.5 rounded-full font-medium', skill.enabled ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-300' : 'bg-surface-2 text-text-tertiary']">
                     {{ skill.enabled ? '启用' : '禁用' }}
                   </span>
                 </div>
@@ -100,8 +100,8 @@
             <button v-if="searchResults.length" @click="searchResults = []; searchDone = false; searchKeyword = ''" class="btn-secondary">清空</button>
           </div>
 
-          <div v-if="searchError" class="card p-4 mb-3 border-amber-200 bg-amber-50">
-            <div class="text-xs text-amber-700">{{ searchError }}</div>
+          <div v-if="searchError" class="card p-4 mb-3 border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-900/20">
+            <div class="text-xs text-amber-700 dark:text-amber-300">{{ searchError }}</div>
           </div>
 
           <div v-if="!searchResults.length && !searching && searchDone && !searchError" class="empty-state py-10">
@@ -130,7 +130,7 @@
                     <span v-if="item.downloads">{{ item.downloads }} downloads</span>
                   </div>
                 </div>
-                <span v-if="isInstalled(item)" class="text-[10px] px-2 py-1 bg-emerald-50 text-emerald-600 rounded-full font-medium flex-shrink-0">已安装</span>
+                <span v-if="isInstalled(item)" class="text-[10px] px-2 py-1 bg-emerald-50 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-300 rounded-full font-medium flex-shrink-0">已安装</span>
                 <button
                   v-else
                   @click="doInstallMarketSkill(item)"

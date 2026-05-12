@@ -28,10 +28,8 @@ export const useImageGenFormStore = defineStore('imageGenForm', () => {
   const selectedTier = ref<string>(DEFAULT_TIER_ID)
   const selectedQuality = ref<string>(DEFAULT_QUALITY_ID)
 
-  // 批量与并发
+  // 批量
   const batchCount = ref(1)
-  const concurrency = ref(2)
-  const consistency = ref(false)
 
   // 视图模式
   const viewMode = ref<'grid' | 'list'>('grid')
@@ -48,8 +46,6 @@ export const useImageGenFormStore = defineStore('imageGenForm', () => {
     selectedTier.value = DEFAULT_TIER_ID
     selectedQuality.value = DEFAULT_QUALITY_ID
     batchCount.value = 1
-    concurrency.value = 2
-    consistency.value = false
     viewMode.value = 'grid'
   }
 
@@ -64,8 +60,6 @@ export const useImageGenFormStore = defineStore('imageGenForm', () => {
     selectedTier,
     selectedQuality,
     batchCount,
-    concurrency,
-    consistency,
     viewMode,
     reset,
   }
