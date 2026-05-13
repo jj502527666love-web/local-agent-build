@@ -33,7 +33,15 @@ const api = {
     offTitleUpdated: () => ipcRenderer.removeAllListeners('chat:titleUpdated'),
     onToolApproval: (callback: (data: unknown) => void) =>
       ipcRenderer.on('chat:toolApproval', (_event, data) => callback(data)),
-    offToolApproval: () => ipcRenderer.removeAllListeners('chat:toolApproval')
+    offToolApproval: () => ipcRenderer.removeAllListeners('chat:toolApproval'),
+    /**
+     * 异步追加消息事件：image_gen fire-and-forget 完成后由主进程发出，
+     * payload: { conversationId, message }。renderer 端 chat store 监听后
+     * 把 message push 到 messages.value（仅当 currentConversationId 匹配）。
+     */
+    onAppendMessage: (callback: (data: unknown) => void) =>
+      ipcRenderer.on('chat:appendMessage', (_event, data) => callback(data)),
+    offAppendMessage: () => ipcRenderer.removeAllListeners('chat:appendMessage')
   },
   skill: {
     invoke: (channel: string, ...args: unknown[]) =>

@@ -8,13 +8,14 @@
         @click.self="emitClose"
         @wheel.prevent="onWheel"
       >
-        <!-- 图片 wrapper：用 inline-flex 让容器尺寸 = 图片 fit-to-screen 后的实际尺寸（max 92vw/92vh）。
+        <!-- ============ Single mode：单图查看（默认 / 旧调用点零改动） ============
+             图片 wrapper 用 inline-flex 让容器尺寸 = 图片 fit-to-screen 后的实际尺寸（max 92vw/92vh）。
              关闭按钮通过 absolute 定位在 wrapper 内部右上角，跟随图片视觉边沿。
              img 自身有 transform 用于缩放/平移，但 transform 不影响 wrapper 的布局尺寸，
-             所以按钮位置在缩放 / 拖动后仍稳定，不会跟着图片缩放变形或飞出视窗。 -->
-        <div class="relative inline-flex">
+             所以按钮位置在缩放 / 拖动后仍稳定。 -->
+        <div v-if="mode === 'single'" class="relative inline-flex">
           <img
-            :src="src"
+            :src="currentSingleSrc"
             :alt="alt || ''"
             class="lb-img select-none shadow-[0_0_60px_rgba(0,0,0,0.35)] rounded-md"
             :style="imgStyle"
@@ -23,8 +24,11 @@
             @click.stop
             draggable="false"
           />
-          <!-- 图片右上角关闭按钮：用户惯性的「找右上角 X 关闭」位置，避免误把 Electron 窗口
-               标题栏的关闭按钮当作预览关闭。半透明白底 + 阴影，hover 不透明，不遮挡图片内容。 -->
+          <!-- 当前显示的是参考图时角标提示 -->
+          <span
+            v-if="hasRefs && activeIndex < resultIdx"
+            class="absolute top-2 left-2 px-2 py-1 rounded-md text-[10px] font-medium bg-black/60 text-white pointer-events-none"
+          >参考图 {{ activeIndex + 1 }}/{{ refImages?.length }}</span>
           <button
             @click.stop="emitClose"
             @mousedown.stop
@@ -36,7 +40,104 @@
           </button>
         </div>
 
-        <!-- 工具栏 -->
+        <!-- ============ Compare mode：滑动对比（仅在传入 refImages 且有图时启用） ============
+             固定 92vw × 92vh 矩形为对比画布；两张 img 都用 contain 居中适配。
+             外层 div 的 clip-path 不受 img 的 transform 影响，保证分隔线相对画布固定，
+             同时图本身的 zoom/pan 应用到内层 img，两层共享同一 transform → 同步联动。 -->
+        <div
+          v-else
+          ref="compareWrapperEl"
+          class="relative"
+          :style="{ width: '92vw', height: '92vh' }"
+          @mousedown.prevent="onDragStart"
+          @dblclick="onDoubleClick"
+          @click.stop
+        >
+          <!-- 底层：参考图（左半显示） -->
+          <div
+            class="absolute inset-0 flex items-center justify-center overflow-hidden"
+            :style="{ clipPath: `inset(0 ${100 - splitPercent}% 0 0)` }"
+          >
+            <img
+              :src="compareLeftSrc"
+              :alt="alt || ''"
+              class="lb-compare-img"
+              :style="imgStyle"
+              draggable="false"
+            />
+            <span class="absolute top-3 left-3 px-2 py-1 rounded-md text-[10px] font-medium bg-black/60 text-white pointer-events-none select-none">
+              参考图<template v-if="refImages && refImages.length > 1"> {{ compareRefIndex + 1 }}/{{ refImages.length }}</template>
+            </span>
+          </div>
+          <!-- 顶层：结果图（右半显示） -->
+          <div
+            class="absolute inset-0 flex items-center justify-center overflow-hidden"
+            :style="{ clipPath: `inset(0 0 0 ${splitPercent}%)` }"
+          >
+            <img
+              :src="src"
+              :alt="alt || ''"
+              class="lb-compare-img"
+              :style="imgStyle"
+              draggable="false"
+            />
+            <span class="absolute top-3 right-3 px-2 py-1 rounded-md text-[10px] font-medium bg-black/60 text-white pointer-events-none select-none">结果图</span>
+          </div>
+          <!-- 分隔线 + 拖拽 handle -->
+          <div
+            class="absolute top-0 bottom-0 w-px bg-white/85 shadow-[0_0_8px_rgba(0,0,0,0.45)] pointer-events-none"
+            :style="{ left: `${splitPercent}%` }"
+          ></div>
+          <div
+            class="absolute top-1/2 -translate-y-1/2 w-9 h-9 rounded-full bg-white shadow-[0_4px_16px_rgba(0,0,0,0.4)] flex items-center justify-center cursor-ew-resize hover:scale-110 transition-transform"
+            :style="{ left: `calc(${splitPercent}% - 18px)` }"
+            @mousedown.stop.prevent="onSplitDragStart"
+            @click.stop
+            @dblclick.stop
+            title="拖动对比"
+          >
+            <svg class="w-4 h-4 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M8 7l-4 5 4 5M16 7l4 5-4 5" />
+            </svg>
+          </div>
+          <!-- 关闭按钮：固定在视口右上角，避免被对比内容覆盖 -->
+          <button
+            @click.stop="emitClose"
+            @mousedown.stop
+            class="absolute top-2 right-2 z-10 w-9 h-9 rounded-full bg-surface-0/85 backdrop-blur-sm shadow-[0_4px_24px_rgba(0,0,0,0.18)] flex items-center justify-center text-text-secondary hover:bg-surface-0 hover:text-text-primary transition-colors"
+            title="关闭 (Esc)"
+            aria-label="关闭预览"
+          >
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+          </button>
+        </div>
+
+        <!-- ============ 底部 filmstrip：参考图 + 结果图（仅在有 refImages 时显示） ============
+             single 模式：点击切换主图；compare 模式：点参考图切换对比基准、点结果图退出对比。 -->
+        <div
+          v-if="hasRefs"
+          class="fixed left-1/2 -translate-x-1/2 flex items-center gap-1.5 px-2 py-1.5 rounded-2xl bg-surface-0 shadow-[0_4px_24px_rgba(0,0,0,0.18)] max-w-[80vw] overflow-x-auto"
+          style="bottom: 64px;"
+          @click.stop
+          @mousedown.stop
+          @wheel.stop
+        >
+          <button
+            v-for="(item, idx) in stripItems"
+            :key="idx"
+            @click="onStripClick(idx)"
+            :class="[
+              'relative shrink-0 w-12 h-12 rounded-md overflow-hidden border-2 transition-colors',
+              isStripActive(idx) ? 'border-primary-500' : 'border-transparent hover:border-surface-3'
+            ]"
+            :title="stripTitle(idx)"
+          >
+            <img :src="item.src" class="w-full h-full object-cover" draggable="false" />
+            <span v-if="item.kind === 'result'" class="absolute bottom-0 inset-x-0 px-1 py-0.5 text-[9px] text-white text-center bg-black/60 leading-none">结果</span>
+          </button>
+        </div>
+
+        <!-- ============ 工具栏 ============ -->
         <div
           class="fixed bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-1 px-2 py-1.5 rounded-2xl bg-surface-0 shadow-[0_4px_24px_rgba(0,0,0,0.18)]"
           @click.stop
@@ -53,6 +154,20 @@
           <button @click="reset" class="lb-btn" title="重置 (0 / 双击)">
             <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 9V4.5M9 9H4.5M9 9 3.75 3.75M15 9V4.5M15 9h4.5M15 9l5.25-5.25M9 15v4.5M9 15H4.5M9 15l-5.25 5.25M15 15v4.5M15 15h4.5m-4.5 0 5.25 5.25" /></svg>
           </button>
+
+          <!-- 对比模式开关：仅在传入 refImages 时显示 -->
+          <template v-if="hasRefs">
+            <div class="w-px h-4 bg-surface-3 mx-0.5" />
+            <button
+              @click="toggleCompare"
+              :class="['lb-btn', mode === 'compare' ? 'lb-btn-active' : '']"
+              :title="mode === 'compare' ? '退出对比 (C)' : '与参考图对比 (C)'"
+            >
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M9 4.5v15M3 6.75A2.25 2.25 0 0 1 5.25 4.5H9v15H5.25A2.25 2.25 0 0 1 3 17.25V6.75ZM15 4.5h3.75A2.25 2.25 0 0 1 21 6.75v10.5a2.25 2.25 0 0 1-2.25 2.25H15v-15Z" />
+              </svg>
+            </button>
+          </template>
 
           <template v-if="onCopy || onLocate">
             <div class="w-px h-4 bg-surface-3 mx-0.5" />
@@ -77,10 +192,14 @@
 <script setup lang="ts">
 import { ref, computed, watch, onUnmounted } from 'vue'
 
+type Mode = 'single' | 'compare'
+
 const props = defineProps<{
-  /** Image src; null/'' = hidden. */
+  /** Image src (主图 / 结果图)；null/'' = 隐藏整个 lightbox */
   src: string | null | undefined
   alt?: string
+  /** 可选：参考图列表（base64 data URI / url）。提供后启用底部 filmstrip 与对比模式开关。 */
+  refImages?: string[]
   /** Optional toolbar action — shown only when provided. */
   onCopy?: () => void
   /** Optional toolbar action — shown only when provided. */
@@ -95,6 +214,7 @@ const MIN_SCALE = 0.1
 const MAX_SCALE = 12
 
 const rootEl = ref<HTMLElement | null>(null)
+const compareWrapperEl = ref<HTMLElement | null>(null)
 
 // Transform state — image is fit-to-screen at scale=1, centered (tx=ty=0).
 const scale = ref(1)
@@ -102,11 +222,45 @@ const tx = ref(0)
 const ty = ref(0)
 const dragging = ref(false)
 
+// Mode + filmstrip / compare 状态
+const mode = ref<Mode>('single')
+/** filmstrip 索引：0..refImages.length-1 = 参考图；refImages.length = 结果图 */
+const activeIndex = ref(0)
+/** compare 模式下底层用第几张参考图 */
+const compareRefIndex = ref(0)
+const splitPercent = ref(50)
+
+const hasRefs = computed(() => !!(props.refImages && props.refImages.length > 0))
+const resultIdx = computed(() => props.refImages?.length || 0)
+
+type StripItem = { src: string; kind: 'ref' | 'result' }
+const stripItems = computed<StripItem[]>(() => {
+  const items: StripItem[] = []
+  if (props.refImages) {
+    for (const r of props.refImages) items.push({ src: r, kind: 'ref' })
+  }
+  if (props.src) items.push({ src: props.src, kind: 'result' })
+  return items
+})
+
+const currentSingleSrc = computed(() => {
+  const items = stripItems.value
+  const idx = activeIndex.value
+  if (idx < 0 || idx >= items.length) return props.src || ''
+  return items[idx].src
+})
+
+const compareLeftSrc = computed(() => {
+  if (!props.refImages || props.refImages.length === 0) return ''
+  const i = Math.max(0, Math.min(props.refImages.length - 1, compareRefIndex.value))
+  return props.refImages[i]
+})
+
 const imgStyle = computed(() => ({
   transform: `translate(${tx.value}px, ${ty.value}px) scale(${scale.value})`,
   transformOrigin: 'center center',
   // Avoid CSS transition on transform while dragging/zooming via wheel — feels laggy.
-  // Reset / dblclick zoom DO want a smooth tween; we toggle via a data-attr below.
+  // Reset / dblclick zoom DO want a smooth tween.
   transition: dragging.value ? 'none' : 'transform 120ms ease-out'
 }))
 
@@ -197,6 +351,85 @@ function onDoubleClick(e: MouseEvent) {
   zoomAt(2, e.clientX - cx, e.clientY - cy)
 }
 
+// ── Split divider drag ─────────────────────────────────────────────────────
+let splitDragging = false
+
+function onSplitDragStart(_e: MouseEvent) {
+  splitDragging = true
+  document.addEventListener('mousemove', onSplitDragMove)
+  document.addEventListener('mouseup', onSplitDragEnd)
+}
+
+function onSplitDragMove(e: MouseEvent) {
+  if (!splitDragging) return
+  const wrap = compareWrapperEl.value
+  if (!wrap) return
+  const rect = wrap.getBoundingClientRect()
+  if (rect.width <= 0) return
+  const pct = clamp(((e.clientX - rect.left) / rect.width) * 100, 0, 100)
+  splitPercent.value = pct
+}
+
+function onSplitDragEnd() {
+  splitDragging = false
+  document.removeEventListener('mousemove', onSplitDragMove)
+  document.removeEventListener('mouseup', onSplitDragEnd)
+}
+
+// ── filmstrip ──────────────────────────────────────────────────────────────
+function isStripActive(idx: number): boolean {
+  if (mode.value === 'single') return idx === activeIndex.value
+  // compare 模式：当前对比的参考图 + 结果图都视作活跃
+  if (idx === resultIdx.value) return true
+  return idx === compareRefIndex.value
+}
+
+function stripTitle(idx: number): string {
+  const isResult = idx === resultIdx.value
+  if (isResult) return mode.value === 'compare' ? '退出对比，查看结果图' : '查看结果图'
+  return mode.value === 'compare' ? `用此参考图对比（参考图 ${idx + 1}）` : `查看参考图 ${idx + 1}`
+}
+
+function onStripClick(idx: number) {
+  const isResult = idx === resultIdx.value
+  if (mode.value === 'single') {
+    if (idx === activeIndex.value) return
+    activeIndex.value = idx
+    reset()
+    return
+  }
+  // compare 模式
+  if (isResult) {
+    mode.value = 'single'
+    activeIndex.value = resultIdx.value
+    reset()
+  } else {
+    if (idx !== compareRefIndex.value) {
+      compareRefIndex.value = idx
+      reset()
+    }
+  }
+}
+
+function toggleCompare() {
+  if (!hasRefs.value) return
+  if (mode.value === 'compare') {
+    mode.value = 'single'
+    activeIndex.value = resultIdx.value
+    reset()
+    return
+  }
+  // 进入对比：若 single 当前看的是某张参考图，就用它做对比基准
+  if (activeIndex.value < resultIdx.value) {
+    compareRefIndex.value = activeIndex.value
+  } else {
+    compareRefIndex.value = 0
+  }
+  splitPercent.value = 50
+  mode.value = 'compare'
+  reset()
+}
+
 // ── Keyboard ───────────────────────────────────────────────────────────────
 function onKeydown(e: KeyboardEvent) {
   if (!props.src) return
@@ -212,16 +445,50 @@ function onKeydown(e: KeyboardEvent) {
   } else if (e.key === '0') {
     e.preventDefault()
     reset()
+  } else if (e.key === 'ArrowLeft') {
+    if (!hasRefs.value) return
+    e.preventDefault()
+    if (mode.value === 'single') {
+      const len = stripItems.value.length
+      if (len > 0) {
+        activeIndex.value = (activeIndex.value - 1 + len) % len
+        reset()
+      }
+    } else if (props.refImages && props.refImages.length > 0) {
+      compareRefIndex.value = (compareRefIndex.value - 1 + props.refImages.length) % props.refImages.length
+      reset()
+    }
+  } else if (e.key === 'ArrowRight') {
+    if (!hasRefs.value) return
+    e.preventDefault()
+    if (mode.value === 'single') {
+      const len = stripItems.value.length
+      if (len > 0) {
+        activeIndex.value = (activeIndex.value + 1) % len
+        reset()
+      }
+    } else if (props.refImages && props.refImages.length > 0) {
+      compareRefIndex.value = (compareRefIndex.value + 1) % props.refImages.length
+      reset()
+    }
+  } else if (e.key === 'c' || e.key === 'C') {
+    if (!hasRefs.value) return
+    e.preventDefault()
+    toggleCompare()
   }
 }
 
 // Mount/unmount global key listener only when the lightbox is actually open,
-// so we don't intercept Esc / +/- / 0 for the rest of the app.
+// so we don't intercept Esc / +/- / 0 / ←/→ / C for the rest of the app.
 watch(
   () => props.src,
   (val) => {
     if (val) {
       reset()
+      mode.value = 'single'
+      activeIndex.value = resultIdx.value
+      compareRefIndex.value = 0
+      splitPercent.value = 50
       window.addEventListener('keydown', onKeydown)
     } else {
       window.removeEventListener('keydown', onKeydown)
@@ -234,12 +501,14 @@ onUnmounted(() => {
   window.removeEventListener('keydown', onKeydown)
   document.removeEventListener('mousemove', onDragMove)
   document.removeEventListener('mouseup', onDragEnd)
+  document.removeEventListener('mousemove', onSplitDragMove)
+  document.removeEventListener('mouseup', onSplitDragEnd)
 })
 </script>
 
 <style scoped>
 .lb-img {
-  /* Fit-to-screen at scale=1: at most 90vw / 90vh, preserving aspect ratio.
+  /* Fit-to-screen at scale=1: at most 92vw / 92vh, preserving aspect ratio.
      Larger image will be downscaled to fit; smaller image displayed at native size.
      Zooming via wheel/buttons multiplies on top of this baseline. */
   max-width: 92vw;
@@ -247,6 +516,16 @@ onUnmounted(() => {
   width: auto;
   height: auto;
   -webkit-user-drag: none;
+}
+
+/* Compare 模式下两张图都在 92vw × 92vh 画布内 contain 居中 */
+.lb-compare-img {
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  -webkit-user-drag: none;
+  user-select: none;
 }
 
 .lb-btn {
@@ -265,6 +544,14 @@ onUnmounted(() => {
 .lb-btn:hover {
   background: var(--surface-2, #f3f4f6);
   color: var(--text-primary, #111827);
+}
+.lb-btn-active {
+  background: var(--primary-50, #eff6ff);
+  color: var(--primary-600, #2563eb);
+}
+.lb-btn-active:hover {
+  background: var(--primary-100, #dbeafe);
+  color: var(--primary-700, #1d4ed8);
 }
 
 /* Fade in/out */

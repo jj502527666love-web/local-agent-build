@@ -74,6 +74,21 @@ function isTransientFetchError(err: any): boolean {
   return msg.includes('fetch failed') || msg.includes('etimedout') || msg.includes('econnreset') || msg.includes('socket hang up')
 }
 
+// undici 在 SSE 流读取过程中被对端关闭时抛 `TypeError: terminated`，
+// cause 一般是 SocketError(UND_ERR_SOCKET) 或 message 含 'other side closed'。
+// 这类错误说明响应阶段被中断，可在尚未产生任何输出时安全重试整条请求。
+function isStreamTerminatedError(err: any): boolean {
+  if (!err) return false
+  const cause = err.cause
+  const code = cause?.code || err.code
+  if (code === 'UND_ERR_SOCKET' || code === 'UND_ERR_BODY_TIMEOUT' || code === 'ECONNRESET' || code === 'EPIPE') return true
+  const name = String(err.name || '').toLowerCase()
+  const msg = String(err.message || '').toLowerCase()
+  if (name === 'typeerror' && msg === 'terminated') return true
+  if (msg.includes('other side closed')) return true
+  return false
+}
+
 function describeFetchError(err: any): string {
   if (!err) return 'unknown fetch error'
   const cause = err.cause
@@ -223,6 +238,9 @@ export async function callLLM(
   }
 }
 
+// 流式请求最多重试次数（仅在尚未产生任何输出且错误属于连接中断类时生效）。
+const MAX_STREAM_RETRIES = 2
+
 async function streamLLM(
   url: string,
   headers: Record<string, string>,
@@ -234,6 +252,48 @@ async function streamLLM(
   notifyStream = true
 ): Promise<LLMResponse> {
   body.stream_options = { include_usage: true }
+
+  let attempt = 0
+  let lastErr: any
+  while (attempt <= MAX_STREAM_RETRIES) {
+    if (signal?.aborted) throw new AbortedError()
+    try {
+      return await streamLLMOnce(url, headers, body, window, providerId, modelId, signal, notifyStream)
+    } catch (err: any) {
+      if (isAbortedError(err)) throw err
+      lastErr = err
+      // 已经向 renderer 推送过 content/tool_call 时，重发整条请求会让 UI 出现重复内容，
+      // 此时只能降级为友好错误，由用户手动重试。
+      const hadOutput = (err as any).__streamHadOutput === true
+      const retryable = !hadOutput && (isStreamTerminatedError(err) || isTransientFetchError(err))
+      if (!retryable || attempt >= MAX_STREAM_RETRIES) break
+      const delay = 500 * Math.pow(2, attempt)
+      console.log(`[llm] stream attempt ${attempt + 1}/${MAX_STREAM_RETRIES + 1} terminated (${describeFetchError(err)}), retry in ${delay}ms`)
+      await new Promise(r => setTimeout(r, delay))
+      attempt++
+    }
+  }
+
+  // 重试耗尽或本身就不可重试。对连接中断类错误抠成中文友好提示，
+  // 避免上层把裸 `terminated` 写进 DB 让用户摸不着头脑。
+  if (isStreamTerminatedError(lastErr) || isTransientFetchError(lastErr)) {
+    const friendly = new Error('与模型服务的连接被中断，请稍后重试（terminated）')
+    ;(friendly as any).cause = lastErr
+    throw friendly
+  }
+  throw lastErr
+}
+
+async function streamLLMOnce(
+  url: string,
+  headers: Record<string, string>,
+  body: any,
+  window: BrowserWindow | null,
+  providerId: string,
+  modelId: string,
+  signal?: AbortSignal,
+  notifyStream = true
+): Promise<LLMResponse> {
   const response = await fetchWithRetry(url, {
     method: 'POST',
     headers,
@@ -323,6 +383,11 @@ async function streamLLM(
   }
   } catch (err: any) {
     if (isAbortedError(err)) throw new AbortedError()
+    // 给外层重试判定打标记：已经推送过任何 content/tool_call 就不能再重发整条请求，
+    // 否则 renderer 会拼出重复内容。
+    if (fullContent.length > 0 || toolCalls.length > 0) {
+      ;(err as any).__streamHadOutput = true
+    }
     throw err
   } finally {
     if (signal) signal.removeEventListener('abort', onAbort)

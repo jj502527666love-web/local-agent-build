@@ -1,13 +1,15 @@
 <template>
   <div ref="rootEl" class="relative">
-    <!-- 触发按钮：输入框左下角的小条，IDE 风格 -->
+    <!-- 触发按钮：输入框左下角的小条，IDE 风格。
+         prefix 不参与 truncate，让「对话：」/「生图：」始终完整可见，模型名可被截断 -->
     <button
       type="button"
       @click="open = !open"
-      class="flex items-center gap-1 px-1.5 py-0.5 text-[11px] text-text-tertiary hover:text-text-primary rounded-md hover:bg-surface-2 transition-colors max-w-[280px] focus:outline-none"
-      :title="currentLabel || '选择对话模型'"
+      class="flex items-center gap-1 px-1.5 py-0.5 text-[11px] text-text-tertiary hover:text-text-primary rounded-md hover:bg-surface-2 transition-colors max-w-[220px] focus:outline-none"
+      :title="currentLabel || placeholderLabel"
     >
-      <span class="truncate">{{ currentLabel || '选择模型' }}</span>
+      <span class="flex-shrink-0 text-text-tertiary">{{ prefixLabel }}</span>
+      <span class="truncate">{{ currentLabel || placeholderLabel }}</span>
       <svg class="w-3 h-3 flex-shrink-0 opacity-70" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m4.5 15.75 7.5-7.5 7.5 7.5" />
       </svg>
@@ -22,7 +24,7 @@
         <input
           v-model="search"
           type="text"
-          placeholder="搜索对话模型..."
+          :placeholder="searchPlaceholder"
           class="w-full px-2 py-1 text-xs border border-surface-3 rounded-md bg-surface-1 outline-none focus:ring-2 focus:ring-primary-500"
         />
       </div>
@@ -50,7 +52,7 @@
           </div>
         </template>
         <div v-else class="px-3 py-6 text-center text-[11px] text-text-tertiary">
-          {{ search ? '无匹配的对话模型' : '暂无可用的对话模型' }}
+          {{ search ? emptySearchLabel : emptyListLabel }}
         </div>
       </div>
     </div>
@@ -63,15 +65,16 @@ import { useModelStore } from '@/stores/models'
 import { hasCap } from '@/utils/model-caps'
 
 /**
- * 对话输入框左下角的模型切换器。
+ * 对话输入框左下角的模型切换器。type 决定过滤哪类型模型：
  *
- * 设计要点：
- * - 仅展示 chat 类型模型，过滤规则与旧 BotListView 的「推荐（对话）」组完全一致：
- *   · 云端 provider：以 cloud_models.type 字段为单一真值（cloudTypeOf → 'chat' 才进）
- *   · 本地 provider：按 modelId 关键字识别，image/embedding/tts/asr/rerank 等关键字独占；
- *     非排除则默认 chat（兼容用户填的私有部署模型、新模型）
- * - 当前选中态由父组件通过 props 控制（per-conversation）；切换通过 emit('change') 通知父组件持久化
- * - 下拉向上展开，符合"输入框底部按钮"的视觉习惯
+ * - type="chat"（默认）：仅列 chat 类型模型，控制会话主 LLM
+ * - type="image"：仅列 image 类型模型，控制 image_gen tool 默认 provider/model
+ *
+ * 过滤规则与 BotListView 「推荐」分组一致：
+ *   · 云端 provider：以 cloud_models.type 为单一真值（cloudTypeOf == type 才进）
+ *   · 本地 provider：按 modelId 关键字识别（hasCap 内部）
+ *
+ * 当前选中态由父组件通过 props 控制（per-conversation）；切换通过 emit('change') 通知父组件持久化。
  */
 
 interface ChatModelEntry {
@@ -87,12 +90,23 @@ interface ChatModelGroup {
   models: ChatModelEntry[]
 }
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   /** 当前会话选用的 provider id（'' 表示未选） */
   providerId: string
   /** 当前会话选用的 model id 或复合 key（'' 表示未选） */
   modelId: string
-}>()
+  /** 过滤类型：chat 默认，image 用于生图选择 */
+  type?: 'chat' | 'image'
+}>(), {
+  type: 'chat'
+})
+
+/** 按钮前缀文案：「对话：」 / 「生图：」 */
+const prefixLabel = computed(() => props.type === 'image' ? '生图：' : '对话：')
+const placeholderLabel = computed(() => props.type === 'image' ? '选择生图模型' : '选择对话模型')
+const searchPlaceholder = computed(() => props.type === 'image' ? '搜索生图模型...' : '搜索对话模型...')
+const emptySearchLabel = computed(() => props.type === 'image' ? '无匹配的生图模型' : '无匹配的对话模型')
+const emptyListLabel = computed(() => props.type === 'image' ? '暂无可用的生图模型' : '暂无可用的对话模型')
 
 const emit = defineEmits<{
   (e: 'change', val: { provider_id: string; model_id: string }): void
@@ -103,18 +117,15 @@ const open = ref(false)
 const search = ref('')
 const rootEl = ref<HTMLElement | null>(null)
 
-/** 全部 chat 类型可选模型，按 provider 分组 */
+/** 全部匹配 type 的可选模型，按 provider 分组。
+ *  type='chat' → hasCap(m, 'chat')；type='image' → hasCap(m, 'image') */
 const allGroups = computed<ChatModelGroup[]>(() => {
   const groups: ChatModelGroup[] = []
   for (const p of modelStore.providers) {
     const entries: ChatModelEntry[] = []
     for (const m of p.models) {
-      // 统一过滤：hasCap 内部按来源走双路识别
-      // - 云端 provider：cloudTypeOf 返回 'chat'/'image'/... → capsFromCloudType 取 cloud_models.type
-      // - 本地 provider：cloudTypeOf 返回 undefined → detectCapsByName 关键字识别
-      //   （image/embedding/tts/asr/rerank 关键字独占；否则兜底 chat）
       const cloudType = modelStore.cloudTypeOf(p.id, m)
-      if (!hasCap(m, 'chat', cloudType)) continue
+      if (!hasCap(m, props.type, cloudType)) continue
       entries.push({
         providerId: p.id,
         providerName: p.name,

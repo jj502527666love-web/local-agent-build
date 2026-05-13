@@ -10,6 +10,10 @@ export interface Conversation {
   // 新建时填入云控端默认（site-config.chat_default_model）；用户切换 → updateConversationModel
   active_model_provider_id: string
   active_model_id: string
+  // v0.6.6+ 「对话内生图模型独立选择」：会话级记忆生图服务商/模型。
+  // 输入框左下角「生图：」切换器写回；chat-engine 调 image_gen 时作为 LLM args 默认值。
+  active_image_provider_id: string
+  active_image_model_id: string
   created_at: string
   updated_at: string
 }
@@ -77,13 +81,15 @@ export const useChatStore = defineStore('chat', () => {
   async function createConversation(
     botId: string,
     title?: string,
-    initialModel?: { provider_id: string; model_id: string }
+    initialModel?: { provider_id: string; model_id: string },
+    initialImageModel?: { provider_id: string; model_id: string }
   ) {
     const result = (await window.api.chat.invoke(
       'createConversation',
       botId,
       title,
-      initialModel
+      initialModel,
+      initialImageModel
     )) as Conversation
     conversations.value.unshift(result)
     return result
@@ -104,6 +110,23 @@ export const useChatStore = defineStore('chat', () => {
     if (conv) {
       conv.active_model_provider_id = provider_id || ''
       conv.active_model_id = model_id || ''
+    }
+  }
+
+  /**
+   * 切换会话使用的生图模型（输入框左下角「生图：」切换器触发）。
+   * 同 updateConversationModel：写回主进程 + 同步本地缓存，让切换器显示立即跟随。
+   */
+  async function updateConversationImageModel(
+    conversationId: string,
+    provider_id: string,
+    model_id: string
+  ) {
+    await window.api.chat.invoke('updateConversationImageModel', conversationId, provider_id, model_id)
+    const conv = conversations.value.find((c) => c.id === conversationId)
+    if (conv) {
+      conv.active_image_provider_id = provider_id || ''
+      conv.active_image_model_id = model_id || ''
     }
   }
 
@@ -169,6 +192,28 @@ export const useChatStore = defineStore('chat', () => {
     window.api.chat.offTitleUpdated()
   }
 
+  /**
+   * 监听 image_gen fire-and-forget 完成事件：主进程后台跑完 generateImages 后
+   * 发出 chat:appendMessage，此处接收后把消息追加到 messages.value。
+   *
+   * 仅当 currentConversationId 匹配时追加；切走的会话不影响（消息已写入 DB，下次 selectConversation 会拉到）。
+   * 同时也要清理 streaming 状态：图片到达意味着这一轮工具任务完成，
+   * 清理 streamingConvIds 让对话气泡的"工具调用进行中"折叠面板复位。
+   */
+  function listenAppendMessage() {
+    window.api.chat.onAppendMessage((data: any) => {
+      if (!data?.conversationId || !data?.message) return
+      // 当前正在显示这个 conversation → 立刻追加；否则 DB 已写入，切回时 fetch 即可
+      if (currentConversationId.value === data.conversationId) {
+        messages.value.push(data.message)
+      }
+    })
+  }
+
+  function stopListenAppendMessage() {
+    window.api.chat.offAppendMessage()
+  }
+
   async function sendMessage(content: string, attachments?: any[], overrides?: {
     kbCategoryIds?: string[]
     skillIds?: string[]
@@ -215,8 +260,16 @@ export const useChatStore = defineStore('chat', () => {
         if (msg) msg.content = streamContent.value
       } else if (data.type === 'tool_start') {
         streamContent.value = ''
-        const names = (data.tools as string[])?.join(', ') || ''
-        if (names) toolLogs.push(`> calling: ${names}`)
+        const tools = (data.tools as string[]) || []
+        if (tools.length) {
+          // image_gen 是异步 fire-and-forget：tool_start 几乎立即被 tool_result 的 pending 摘要覆盖，
+          // 真正的等待发生在后台。用户感知顺序：提交 → 立即解锁 → 后台生成 → 图片自动追加进对话。
+          const others = tools.filter((t) => t !== 'image_gen')
+          if (tools.includes('image_gen')) {
+            toolLogs.push('> 提交生图任务…（约 30-90 秒后图片会自动出现在对话和右上角）')
+          }
+          if (others.length) toolLogs.push(`> calling: ${others.join(', ')}`)
+        }
         const msg = messages.value.find((m) => m.id === tempId)
         if (msg) {
           msg.content = ''
@@ -321,11 +374,14 @@ export const useChatStore = defineStore('chat', () => {
     fetchConversations,
     createConversation,
     updateConversationModel,
+    updateConversationImageModel,
     selectConversation,
     deleteConversation,
     updateTitle,
     listenTitleUpdates,
     stopListenTitleUpdates,
+    listenAppendMessage,
+    stopListenAppendMessage,
     sendMessage,
     cancel,
     getDraft,

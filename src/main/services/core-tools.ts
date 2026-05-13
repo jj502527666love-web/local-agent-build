@@ -8,6 +8,8 @@ import { listCategories, listKnowledgeBases, type KnowledgeBase } from './knowle
 import { embedText, EmbeddingUnavailableError } from './embedding'
 import { searchHybrid } from './vector-store'
 import { getVectorStatsForUI } from './vectorize'
+import { addMessage, getConversation } from './conversation'
+import type { BrowserWindow } from 'electron'
 
 const PREVIEW_MAX_BYTES = 200_000
 
@@ -282,11 +284,19 @@ function withWorkspace(result: any, sandboxDir?: string): any {
   return { result, workspace: sandboxDir }
 }
 
+export interface ToolExecContext {
+  /** 当前会话 id（用于 image_gen 进度事件 scope 到对应会话浮窗） */
+  conversationId?: string
+  /** 主窗口引用（用于进度事件转发到 renderer） */
+  window?: BrowserWindow | null
+}
+
 export async function executeCoreToolCall(
   functionName: string,
   args: any,
   sandboxDir?: string,
-  kbContext?: KbToolContext
+  kbContext?: KbToolContext,
+  execContext?: ToolExecContext
 ): Promise<{ handled: boolean; result?: any }> {
   if (functionName === 'file_ops') {
     // 二进制办公文档（PDF/DOCX/DOC/XLS/XLSX）拦截：sandbox 内的 readFileSync(p, 'utf-8')
@@ -334,7 +344,7 @@ export async function executeCoreToolCall(
     return { handled: true, result: withWorkspace(payload, sandboxDir) }
   }
   if (functionName === 'image_gen') {
-    const result = await executeImageGen(args, sandboxDir)
+    const result = await executeImageGen(args, sandboxDir, execContext)
     return { handled: true, result: withWorkspace(result, sandboxDir) }
   }
   if (KB_TOOL_NAMES.includes(functionName)) {
@@ -491,7 +501,7 @@ async function executeKbTool(
 
 const IMAGE_KEYWORDS = ['image', 'dall-e', 'flux', 'stable-diffusion', 'sdxl', 'cogview', 'wanx', 'kolors']
 
-async function executeImageGen(args: any, sandboxDir?: string): Promise<any> {
+async function executeImageGen(args: any, sandboxDir?: string, execContext?: ToolExecContext): Promise<any> {
   try {
     if (args.action === 'list_providers') {
       const providers = listModelProviders()
@@ -512,15 +522,37 @@ async function executeImageGen(args: any, sandboxDir?: string): Promise<any> {
       if (!args.model_provider_id) return { error: '缺少 model_provider_id 参数，请先调用 list_providers 获取' }
       if (!args.model_id) return { error: '缺少 model_id 参数，请先调用 list_providers 获取' }
 
-      const generations = await generateImages({
-        prompt: args.prompt,
-        modelProviderId: args.model_provider_id,
-        modelId: args.model_id,
-        size: args.size || '1:1',
-        quality: args.quality || 'auto',
-        batchCount: 1,
-        refImages: args.ref_images || undefined
-      })
+      // chat 路径下走 fire-and-forget：工具立即返回 status:'pending'，
+      // generateImages 在后台异步跑，完成后追加 assistant 消息到对话流。
+      // 这样 LLM 不会阻塞 30-90 秒等图片，用户能立即继续对话。
+      const conversationId = execContext?.conversationId
+      const window = execContext?.window || null
+      if (conversationId) {
+        // 后台执行（不 await）—— 任何异常都在 helper 内自我消化，避免吞掉
+        runImageGenInBackground(args, sandboxDir, conversationId, window).catch((e) => {
+          console.error('[image_gen] background task threw:', e)
+        })
+        return {
+          success: true,
+          status: 'pending',
+          message:
+            '已提交生图任务，约 30-90 秒。请告诉用户：图片完成后会自动出现在对话和右上角浮窗，本次回复无需嵌入图片。'
+        }
+      }
+
+      // 兜底：无 conversationId（理论上不会发生在 chat 路径下）走同步行为，保持向后兼容
+      const generations = await generateImages(
+        {
+          prompt: args.prompt,
+          modelProviderId: args.model_provider_id,
+          modelId: args.model_id,
+          size: args.size || '1:1',
+          quality: args.quality || 'auto',
+          batchCount: 1,
+          refImages: args.ref_images || undefined
+        },
+        window
+      )
 
       const gen = generations[0]
       if (!gen) return { error: '生成失败：无结果返回' }
@@ -529,7 +561,6 @@ async function executeImageGen(args: any, sandboxDir?: string): Promise<any> {
       const dataDir = getDataDir()
       const absolutePath = gen.result_path ? join(dataDir, gen.result_path) : ''
 
-      // Determine output_dir: explicit arg takes priority, else default to {workspace}/images when we have a sandbox.
       let outputDir: string | undefined = args.output_dir
       if (!outputDir && sandboxDir) outputDir = 'images'
       const resolvedOutputDir = outputDir ? resolveInWorkspace(outputDir, sandboxDir) : ''
@@ -557,5 +588,95 @@ async function executeImageGen(args: any, sandboxDir?: string): Promise<any> {
     return { error: '未知操作: ' + args.action }
   } catch (e: any) {
     return { error: e.message || '图片生成失败' }
+  }
+}
+
+/**
+ * chat 路径下的 image_gen 后台执行：generateImages → addMessage → IPC。
+ *
+ * 工具调用本身已经立即返回 status:'pending'，LLM 拿到后会回复"已开始生成"
+ * 然后流结束（输入框解锁）。本函数在后台慢慢跑，完成后把图片以 markdown 形式
+ * 追加为 assistant 消息到对话流，并通过 chat:appendMessage 通知前端 store
+ * 实时插入消息。
+ *
+ * 失败/异常时同样追加一条 assistant 消息（含错误信息），不会静默丢失。
+ *
+ * 安全：
+ *  - 所有写盘 / DB 操作都包在 try/catch 里
+ *  - 追加消息前用 getConversation 校验 conversation 是否仍存在（用户可能在等待期间删除会话）
+ */
+async function runImageGenInBackground(
+  args: any,
+  sandboxDir: string | undefined,
+  conversationId: string,
+  window: BrowserWindow | null
+): Promise<void> {
+  let assistantContent = ''
+  try {
+    const generations = await generateImages(
+      {
+        prompt: args.prompt,
+        modelProviderId: args.model_provider_id,
+        modelId: args.model_id,
+        size: args.size || '1:1',
+        quality: args.quality || 'auto',
+        batchCount: 1,
+        refImages: args.ref_images || undefined,
+        progressContext: {
+          conversationId,
+          source: 'chat'
+        }
+      },
+      window
+    )
+    const gen = generations[0]
+    if (!gen) {
+      assistantContent = '[生图失败] 服务商未返回结果'
+    } else if (gen.status === 'error') {
+      assistantContent = `[生图失败] ${gen.error || '未知错误'}`
+    } else {
+      // 与原同步路径保持一致：把生成结果按 output_dir 拷贝到工作区，便于后续 file_ops 引用
+      const dataDir = getDataDir()
+      const absolutePath = gen.result_path ? join(dataDir, gen.result_path) : ''
+      let outputDir: string | undefined = args.output_dir
+      if (!outputDir && sandboxDir) outputDir = 'images'
+      let outputPath = absolutePath
+      try {
+        const resolvedOutputDir = outputDir ? resolveInWorkspace(outputDir, sandboxDir) : ''
+        if (resolvedOutputDir && absolutePath && existsSync(absolutePath)) {
+          mkdirSync(resolvedOutputDir, { recursive: true })
+          const ext = basename(absolutePath).split('.').pop() || 'png'
+          const filename = args.output_filename ? `${args.output_filename}.${ext}` : basename(absolutePath)
+          outputPath = join(resolvedOutputDir, filename)
+          copyFileSync(absolutePath, outputPath)
+        }
+      } catch (copyErr: any) {
+        console.error('[image_gen bg] copy to workspace failed (non-fatal):', copyErr)
+      }
+      const displayUrl = outputPath
+        ? `local-file://img?p=${encodeURIComponent(outputPath.replace(/\\/g, '/'))}`
+        : ''
+      const promptHint = args.prompt ? String(args.prompt).slice(0, 60) : ''
+      assistantContent = displayUrl
+        ? `![${promptHint || '已生成图片'}](${displayUrl})`
+        : '[生图失败] 图片路径无效'
+    }
+  } catch (e: any) {
+    assistantContent = `[生图失败] ${e?.message || String(e)}`
+  }
+
+  // 校验 conversation 仍存在（用户可能已删除会话）
+  try {
+    if (!getConversation(conversationId)) return
+    const message = addMessage({
+      conversation_id: conversationId,
+      role: 'assistant',
+      content: assistantContent
+    })
+    if (window) {
+      window.webContents.send('chat:appendMessage', { conversationId, message })
+    }
+  } catch (e: any) {
+    console.error('[image_gen bg] failed to append message:', e)
   }
 }

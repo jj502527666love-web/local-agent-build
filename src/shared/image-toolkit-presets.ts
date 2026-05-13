@@ -93,7 +93,7 @@ export const TOOL_CARDS: ToolCard[] = [
   },
   {
     id: 'id-photo',
-    label: '证件照',
+    label: 'AI 证件照',
     iconPath: 'M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.501 20.118a7.5 7.5 0 0 1 14.998 0A17.933 17.933 0 0 1 12 21.75c-2.676 0-5.216-.584-7.499-1.632Z',
     category: 'recommend',
     action: {
@@ -101,6 +101,35 @@ export const TOOL_CARDS: ToolCard[] = [
       needRef: true,
       presetSize: '2:3',
       presetPrompt: '专业证件照：纯白底色、正装、表情自然、正面证件照构图、干净的棚拍光、面部焦点清晰。'
+    }
+  },
+  {
+    id: 'ai-outfit-change',
+    label: 'AI 换装',
+    // lucide 「shirt」图标 path，表示上衣轮廓
+    iconPath: 'M20.38 3.46 16 2a4 4 0 0 1-8 0L3.62 3.46a2 2 0 0 0-1.34 2.23l.58 3.47a1 1 0 0 0 .99.84H6v10c0 1.1.9 2 2 2h8a2 2 0 0 0 2-2V10h2.15a1 1 0 0 0 .99-.84l.58-3.47a2 2 0 0 0-1.34-2.23z',
+    category: 'recommend',
+    action: {
+      type: 'pick-then-gen',
+      needRef: true,
+      autoSize: true,
+      // 兑底 prompt：ImageToolkitView 会用 composeOutfitChangePrompt 动态覆盖
+      presetPrompt: '将照片中人物身上的服装替换为得体服装。严格保留人物的脸部五官、肤色、发型、姿势与背景。'
+    }
+  },
+  {
+    id: 'ai-pose-change',
+    label: 'AI 换姿势',
+    // lucide 「person-standing」多 subpath：圆头 + 躯干竖线 + 双臂横展 + 双腿 V 字
+    // 关键改良：双腿在 (12,14) 与躯干底部连接，整体连贯
+    iconPath: 'M12 5a2 2 0 1 0 0-4 2 2 0 0 0 0 4ZM12 7v7M6 10l6 2 6-2M9 22l3-8 3 8',
+    category: 'recommend',
+    action: {
+      type: 'pick-then-gen',
+      needRef: true,
+      autoSize: true,
+      // 兑底 prompt：ImageToolkitView 会用 composePoseChangePrompt 动态覆盖
+      presetPrompt: '将照片中人物的姿势调整为更自然得体的姿势。严格保留人物的脸部五官、肤色、服装、发型与背景。'
     }
   },
   {

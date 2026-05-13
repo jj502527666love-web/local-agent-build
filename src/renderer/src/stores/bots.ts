@@ -20,6 +20,8 @@ export interface Bot {
   mcp_ids: string[]
   prompt_skill_dirs: string[]
   tool_approval: ToolApproval
+  /** 是否启用 AI 生图能力（image_gen tool）。0=关、1=开。默认关，避免对无图需求的智能体浪费 prompt 与 LLM 误调。 */
+  enable_image_gen: number
   created_at: string
   updated_at: string
 }

@@ -109,8 +109,13 @@ export function registerIpcHandlers(): void {
   )
   ipcMain.handle(
     'chat:createConversation',
-    (_, botId: string, title?: string, initialModel?: { provider_id: string; model_id: string }) =>
-      conversationService.createConversation(botId, title, initialModel)
+    (
+      _,
+      botId: string,
+      title?: string,
+      initialModel?: { provider_id: string; model_id: string },
+      initialImageModel?: { provider_id: string; model_id: string }
+    ) => conversationService.createConversation(botId, title, initialModel, initialImageModel)
   )
   ipcMain.handle('chat:updateTitle', (_, id: string, title: string) =>
     conversationService.updateConversationTitle(id, title)
@@ -120,6 +125,12 @@ export function registerIpcHandlers(): void {
     'chat:updateConversationModel',
     (_, id: string, provider_id: string, model_id: string) =>
       conversationService.updateConversationModel(id, provider_id, model_id)
+  )
+  // v0.6.6+ 切换会话使用的生图模型（输入框左下角第二个切换器）。
+  ipcMain.handle(
+    'chat:updateConversationImageModel',
+    (_, id: string, provider_id: string, model_id: string) =>
+      conversationService.updateConversationImageModel(id, provider_id, model_id)
   )
   ipcMain.handle('chat:deleteConversation', (_, id: string) =>
     conversationService.deleteConversation(id)

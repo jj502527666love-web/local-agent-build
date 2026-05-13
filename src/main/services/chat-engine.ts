@@ -413,6 +413,36 @@ export async function sendMessage(
     `- 查看工作区内容请调用 file_ops({action:'tree', path:'.'}) 或 ({action:'list', path:'.'})`
   )
 
+  // v0.6.6+ 智能体「调用生图能力」总开关：关时不给 LLM 注入任何生图相关信息（默认默认生图模型、工作流说明），
+  // 避免某些小型模型看到 image_gen tool 定义后误调。同时 buildToolsList 也会过滤掉 image_gen tool，双重防护。
+  if (bot.enable_image_gen) {
+    // 会话默认生图模型：告知 LLM 调 image_gen 时可以跳过 list_providers，减少一轮 tool call。
+    // 不告知（conv 未设）时走原本路径：LLM 先 list_providers 拿完整服务商列表再 generate。
+    if (conv.active_image_provider_id && conv.active_image_model_id) {
+      baseSystemParts.push(
+        `[当前会话默认生图模型]:\n` +
+        `- model_provider_id: ${conv.active_image_provider_id}\n` +
+        `- model_id: ${conv.active_image_model_id}\n` +
+        `- 调用 image_gen 工具且用户未明确指定服务商或模型时，直接用此默认值 generate，不必先调 list_providers\n` +
+        `- 用户明确说"用某某服务商/某某模型"时应 list_providers 查找后再 generate`
+      )
+    }
+
+    // 图片生成工作流约定：image_gen 是 fire-and-forget 异步工具，避免阻塞对话 30-90 秒。
+    // 工具立即返回 status:'pending'，后台异步生成；完成后系统自动追加图片消息到对话流。
+    baseSystemParts.push(
+      `[图片生成工作流（异步、不等图）]:\n` +
+      `- 用户请求绘图/生成图片时：把用户需求总结、补全为高质量提示词，调用 image_gen({action:'generate', prompt:<提示词>}) 一次\n` +
+      `- 工具会**立即返回 status:'pending'**，表示任务已提交。这是正常的——不要等图、不要重试、不要再次调用\n` +
+      `- 收到 pending 后用一句话简短告诉用户："已为你提交生图任务，约 30-90 秒后图片会自动出现在对话和右上角"，然后立即结束本轮回复\n` +
+      `- 不要在回复里嵌入 markdown 图片：图片还没生成完，url 此刻并不存在\n` +
+      `- 生成完成后系统会自动追加一条 assistant 消息（含 markdown 图片）到对话，无需你做任何操作\n` +
+      `- 用户在等待期间可以继续聊天，你正常回应即可。新一轮请求若再次需要画图，再次调用 image_gen\n` +
+      `- 不要在调用前列出 providers，不要重复调用\n` +
+      `- 失败时（tool 返回 error 字段）：简要说明原因并给出建议，不要重试`
+    )
+  }
+
   // System prompt from persona
   if (bot.persona_id) {
     const persona = getPersona(bot.persona_id)
@@ -611,7 +641,7 @@ export async function sendMessage(
   messages.push(...included)
 
   // Build tools list from skills and MCP (KB tools auto-included when KB enabled)
-  const tools = buildToolsList(effectiveSkillIds, effectiveMcpIds, effectivePromptSkillDirs, effectiveKbCategoryIds)
+  const tools = buildToolsList(effectiveSkillIds, effectiveMcpIds, effectivePromptSkillDirs, effectiveKbCategoryIds, !!bot.enable_image_gen)
 
   const systemCount = messages.length - included.length
   console.log(`[chat] context: ${systemCount} system + ${included.length} history msgs, ~${estimateMessagesTokens([...messages])} tokens, ${tools.length} tools`)
@@ -686,6 +716,29 @@ export async function sendMessage(
         let parsedArgs: any = {}
         try { parsedArgs = JSON.parse(toolCall.function?.arguments || '{}') } catch {}
 
+        // v0.6.6+ image_gen 默认值回退：若 LLM args 未传 provider/model，用会话级默认值。
+        // 与 system prompt 注入形成双重保证：prompt 让 LLM 主动填，这里是 LLM 不听话的兑底。
+        if (
+          fnName === 'image_gen' &&
+          parsedArgs?.action === 'generate' &&
+          (conv.active_image_provider_id || conv.active_image_model_id)
+        ) {
+          let mutated = false
+          if (!parsedArgs.model_provider_id && conv.active_image_provider_id) {
+            parsedArgs.model_provider_id = conv.active_image_provider_id
+            mutated = true
+          }
+          if (!parsedArgs.model_id && conv.active_image_model_id) {
+            parsedArgs.model_id = conv.active_image_model_id
+            mutated = true
+          }
+          if (mutated) {
+            // 同步回填 toolCall.function.arguments，让 executeToolCall / DB 记录拿到补齐后的 args
+            toolCall.function.arguments = JSON.stringify(parsedArgs)
+            console.log(`[chat] image_gen args fallback: provider=${conv.active_image_provider_id}, model=${conv.active_image_model_id}`)
+          }
+        }
+
         if (needsApproval(bot.tool_approval, fnName, parsedArgs)) {
           const preview = fnName === 'file_ops' ? previewFileWrite(parsedArgs, sandboxDir) : null
           const approved = await requestToolApproval(window, options.conversationId, toolCall, parsedArgs, preview, signal)
@@ -709,12 +762,10 @@ export async function sendMessage(
       const pendingExecs = plans.map(async (p) => {
         if (p.resultStr !== undefined) return p
         if (signal.aborted) throw new AbortedError()
-        const result = await executeToolCall(p.toolCall, effectiveSkillIds, effectiveMcpIds, options.conversationId, effectiveKbCategoryIds)
+        const result = await executeToolCall(p.toolCall, effectiveSkillIds, effectiveMcpIds, options.conversationId, effectiveKbCategoryIds, window)
         const resultStr = JSON.stringify(result)
         if (window) {
-          const summary = typeof result === 'string'
-            ? (result.length > 100 ? result.slice(0, 100) + '...' : result)
-            : (resultStr.length > 100 ? resultStr.slice(0, 100) + '...' : resultStr)
+          const summary = buildToolSummary(p.fnName, result, resultStr)
           window.webContents.send('chat:stream', { type: 'tool_result', tool: p.fnName, summary })
         }
         return { ...p, resultStr }
@@ -907,12 +958,18 @@ function buildToolsList(
   skillIds: string[],
   mcpIds: string[],
   promptSkillDirs: string[] = [],
-  kbCategoryIds: string[] = []
+  kbCategoryIds: string[] = [],
+  enableImageGen: boolean = false
 ): any[] {
-  // Core tools 默认全量加入；当未启用知识库时剔除 kb_* 工具，避免给模型展示无意义入口
-  const filteredCore = kbCategoryIds.length > 0
-    ? coreToolDefs
-    : coreToolDefs.filter((t: any) => !KB_TOOL_NAMES.includes(t?.function?.name))
+  // Core tools 默认全量加入；但会进一步过滤:
+  // - 未启用知识库时剔除 kb_* 工具，避免给模型展示无意义入口
+  // - 智能体未开启「调用生图能力」时剔除 image_gen，避免 LLM 误调、节省 prompt
+  const filteredCore = coreToolDefs.filter((t: any) => {
+    const name = t?.function?.name
+    if (!enableImageGen && name === 'image_gen') return false
+    if (kbCategoryIds.length === 0 && KB_TOOL_NAMES.includes(name)) return false
+    return true
+  })
   const tools: any[] = [...filteredCore]
 
   // Add user skills as tools (skip core tool names to avoid duplicates)
@@ -969,12 +1026,37 @@ function buildToolsList(
   return tools
 }
 
+/**
+ * 把 tool result 压成对用户友好的简短文案，用于对话气泡里的工具调用折叠面板。
+ * 默认行为：JSON.stringify 后截断 100 字（兼容旧逻辑）；
+ * 对 image_gen 工具走专用文案：成功显示"图片已生成 ${basename}"，失败显示"生成失败: ${error}"。
+ * 这样用户在折叠面板里看到的不是裸 JSON，体验更好。
+ */
+function buildToolSummary(toolName: string, result: any, resultStr: string): string {
+  if (toolName === 'image_gen' && result && typeof result === 'object') {
+    // chat 路径下 image_gen 是异步 fire-and-forget：立即返回 status:'pending'，
+    // 实际图片在后台生成，完成后会以独立 assistant 消息追加到对话流。
+    if (result.status === 'pending') return '已提交生图任务，正在后台生成…'
+    if (result.error) return `生成失败：${String(result.error).slice(0, 80)}`
+    if (result.success) {
+      const path = String(result.path || '')
+      const fileName = path ? path.split(/[\\/]/).pop() : ''
+      return fileName ? `图片已生成 ${fileName}` : '图片已生成'
+    }
+  }
+  if (typeof result === 'string') {
+    return result.length > 100 ? result.slice(0, 100) + '...' : result
+  }
+  return resultStr.length > 100 ? resultStr.slice(0, 100) + '...' : resultStr
+}
+
 async function executeToolCall(
   toolCall: any,
   skillIds: string[],
   mcpIds: string[],
   conversationId?: string,
-  kbCategoryIds: string[] = []
+  kbCategoryIds: string[] = [],
+  window?: BrowserWindow | null
 ): Promise<any> {
   const functionName = toolCall.function?.name
   let args: any = {}
@@ -1000,7 +1082,8 @@ async function executeToolCall(
   // Try core tools first
   const sandboxDir = conversationId ? getWorkspaceDir(conversationId) : undefined
   const kbContext = { kbCategoryIds }
-  const coreResult = await executeCoreToolCall(functionName, args, sandboxDir, kbContext)
+  const execContext = { conversationId, window: window || null }
+  const coreResult = await executeCoreToolCall(functionName, args, sandboxDir, kbContext, execContext)
   if (coreResult.handled) return coreResult.result
 
   // Try user skills

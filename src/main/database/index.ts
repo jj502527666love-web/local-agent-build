@@ -66,6 +66,11 @@ function runMigrations(): void {
   if (!botColNames.includes('tool_approval')) {
     db.exec("ALTER TABLE bots ADD COLUMN tool_approval TEXT NOT NULL DEFAULT 'destructive'")
   }
+  // v0.6.6+ 「调用生图能力」总开关：智能体级别控制是否暴露 image_gen tool +「生图：」切换条
+  // 默认 0=关：避免对没图片需求的智能体浪费 system prompt token、避免 LLM 误调
+  if (!botColNames.includes('enable_image_gen')) {
+    db.exec("ALTER TABLE bots ADD COLUMN enable_image_gen INTEGER NOT NULL DEFAULT 0")
+  }
   // messages: persist tool_call_id so OpenAI tool_calls/tool pairs replay correctly
   const msgCols = db.prepare("PRAGMA table_info(messages)").all() as any[]
   const msgColNames = msgCols.map((c: any) => c.name)
@@ -117,6 +122,15 @@ function runMigrations(): void {
   }
   if (convCols.length > 0 && !convColNames.includes('active_model_id')) {
     db.exec("ALTER TABLE conversations ADD COLUMN active_model_id TEXT NOT NULL DEFAULT ''")
+  }
+  // v0.6.6+ 「对话内生图模型独立选择」：会话级记忆生图服务商/模型，输入框第二个切换器写回。
+  // 默认空字符串：chat-engine 调 image_gen tool 时若 args 缺 provider/model 才回退到这两列；
+  // 仍空则让 LLM 自行 list_providers（保持向后兼容）
+  if (convCols.length > 0 && !convColNames.includes('active_image_provider_id')) {
+    db.exec("ALTER TABLE conversations ADD COLUMN active_image_provider_id TEXT NOT NULL DEFAULT ''")
+  }
+  if (convCols.length > 0 && !convColNames.includes('active_image_model_id')) {
+    db.exec("ALTER TABLE conversations ADD COLUMN active_image_model_id TEXT NOT NULL DEFAULT ''")
   }
 
   // Populate FTS index from existing chunks if FTS table is empty

@@ -61,7 +61,14 @@
       </aside>
 
       <!-- Chat Area -->
-      <div class="flex-1 flex flex-col bg-surface-1">
+      <div class="flex-1 flex flex-col bg-surface-1 relative">
+        <!-- 生图进度浮窗：只在有会话时挂载，监听 imageGen:progress 按 conversationId 过滤。
+             单行紧凑版，定位在聊天主区域右上角顶部栏框内，避开输入栏和会话列表。 -->
+        <ChatImageGenProgress
+          v-if="chatStore.currentConversationId"
+          :conversation-id="chatStore.currentConversationId"
+          class="absolute top-3 right-4 z-30"
+        />
         <div v-if="!chatStore.currentConversationId" class="flex-1 empty-state">
           <div class="w-20 h-20 rounded-2xl bg-surface-2 flex items-center justify-center mb-5">
             <svg class="w-10 h-10 text-text-disabled" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8.625 12a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0H8.25m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0H12m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 0 1-2.555-.337A5.972 5.972 0 0 1 5.41 20.97a5.969 5.969 0 0 1-.474-.065 4.48 4.48 0 0 0 .978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25Z" /></svg>
@@ -263,19 +270,32 @@
                     :placeholder="dragging ? '松开以添加附件' : '输入消息，按 Enter 发送...'"
                     class="px-3 pt-2.5 pb-1 text-sm bg-transparent resize-none focus:outline-none placeholder:text-text-disabled"
                   ></textarea>
-                  <!-- 底部条：左侧 模型切换器（IDE 风格）、右侧 发送/中断按钮 -->
+                  <!-- 底部条：左侧 「对话：」+ 「生图：」两个模型切换器并排（IDE 风格）、右侧 发送/中断按钮。
+                       生图切换器控制 image_gen tool 默认 provider/model，LLM args 未传时作为兑底 -->
                   <div class="flex items-center justify-between gap-2 px-2 pb-2">
-                    <ChatModelSwitcher
-                      :provider-id="chatStore.currentConversation?.active_model_provider_id || ''"
-                      :model-id="chatStore.currentConversation?.active_model_id || ''"
-                      @change="onChatModelChange"
-                    />
-                    <button v-if="chatStore.streaming" @click="chatStore.cancel()" class="w-8 h-8 flex items-center justify-center bg-red-600 text-white rounded-lg hover:bg-red-700 transition-all flex-shrink-0" title="中断当前回复">
-                      <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1.5" /></svg>
-                    </button>
-                    <button v-else @click="send" :disabled="!inputText.trim() && !pendingAttachments.length" class="w-8 h-8 flex items-center justify-center bg-primary-600 text-white rounded-lg hover:bg-primary-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all flex-shrink-0" title="发送">
-                      <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5" /></svg>
-                    </button>
+                    <div class="flex items-center gap-1 min-w-0">
+                      <ChatModelSwitcher
+                        type="chat"
+                        :provider-id="chatStore.currentConversation?.active_model_provider_id || ''"
+                        :model-id="chatStore.currentConversation?.active_model_id || ''"
+                        @change="onChatModelChange"
+                      />
+                      <ChatModelSwitcher
+                        v-if="currentBot?.enable_image_gen"
+                        type="image"
+                        :provider-id="chatStore.currentConversation?.active_image_provider_id || ''"
+                        :model-id="chatStore.currentConversation?.active_image_model_id || ''"
+                        @change="onImageModelChange"
+                      />
+                    </div>
+                    <div class="flex items-center gap-2 flex-shrink-0">
+                      <button v-if="chatStore.streaming" @click="chatStore.cancel()" class="w-8 h-8 flex items-center justify-center bg-red-600 text-white rounded-lg hover:bg-red-700 transition-all flex-shrink-0" title="中断当前回复">
+                        <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1.5" /></svg>
+                      </button>
+                      <button v-else @click="send" :disabled="!inputText.trim() && !pendingAttachments.length" class="w-8 h-8 flex items-center justify-center bg-primary-600 text-white rounded-lg hover:bg-primary-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all flex-shrink-0" title="发送">
+                        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5" /></svg>
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -411,6 +431,7 @@ import { stripImageMetadata } from '@shared/strip-image-metadata'
 import GalleryPicker from '@/components/GalleryPicker.vue'
 import ImageLightbox from '@/components/ImageLightbox.vue'
 import ChatModelSwitcher from '@/components/ChatModelSwitcher.vue'
+import ChatImageGenProgress from '@/components/ChatImageGenProgress.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -593,6 +614,10 @@ const selectedBotName = computed(() => {
   return bot?.name || ''
 })
 
+// 当前选中智能体的完整对象：以 selectedBotId 索引。
+// 请不要考虑「生图：」切换器是否渲染（如果 bot.enable_image_gen=0 则隐藏）；chat-engine 同样会跳过生图工作流。
+const currentBot = computed(() => bots.value.find((b) => b.id === selectedBotId.value))
+
 const botInitial = computed(() => {
   const name = selectedBotName.value
   return name ? name.charAt(0) : 'AI'
@@ -702,7 +727,7 @@ function resolveDefaultModel(): { provider_id: string; model_id: string } {
         : cloud.model_id,
     }
   }
-  // 兜底：本地所有 provider 里第一个 chat 类型模型
+  // 兑底：本地所有 provider 里第一个 chat 类型模型
   // 与 ChatModelSwitcher 用同一套过滤规则（hasCap）保持一致，
   // 避免本地 provider 把图像/embedding 模型当作默认对话模型选中
   for (const p of modelStore.providers) {
@@ -715,22 +740,44 @@ function resolveDefaultModel(): { provider_id: string; model_id: string } {
   return { provider_id: '', model_id: '' }
 }
 
+/**
+ * 「生图默认模型」解析（v0.6.6+）：本地所有 image 类型模型中第一个。
+ *
+ * 说明：
+ * - 云控端未下发 image_default_model（后端未提供），只走本地兑底链
+ * - 返回空时 chat-engine 调 image_gen 仍可让 LLM 自行 list_providers（向后兼容）
+ * - 与 ChatModelSwitcher type="image" 用同一套 hasCap 过滤规则
+ */
+function resolveDefaultImageModel(): { provider_id: string; model_id: string } {
+  for (const p of modelStore.providers) {
+    for (const m of p.models) {
+      const cloudType = modelStore.cloudTypeOf(p.id, m)
+      if (!hasCap(m, 'image', cloudType)) continue
+      return { provider_id: p.id, model_id: m }
+    }
+  }
+  return { provider_id: '', model_id: '' }
+}
+
 async function newConversation() {
   if (!selectedBotId.value) return
   // 「智能体不再绑定模型」（v0.6.5+）：新会话预填云控默认模型；db 层 active_model_*
-  // 以后用户可随时在输入框左下角切换，每个会话独立记忆
+  // 以后用户可随时在输入框左下角切换，每个会话独立记忆。
+  // v0.6.6+：生图模型同理预填本地第一个 image 模型，带不出时让 chat-engine fallback 到 list_providers
   const initialModel = resolveDefaultModel()
+  const initialImageModel = resolveDefaultImageModel()
   const conv = await chatStore.createConversation(
     selectedBotId.value,
     undefined,
-    initialModel.model_id ? initialModel : undefined
+    initialModel.model_id ? initialModel : undefined,
+    initialImageModel.model_id ? initialImageModel : undefined
   )
   await chatStore.selectConversation(conv.id)
 }
 
 /**
- * 打开旧会话时的兼容兜底：若 conversation.active_model_* 为空（v0.6.5 之前创建的会话），
- * 自动用 resolveDefaultModel 填充一次并持久化。让升级用户也能享受「打开会话即默认模型」的体验。
+ * 打开旧会话时的兼容兜底：若 conversation.active_model_* / active_image_* 为空（老会话、跨版本升级），
+ * 自动用 resolveDefaultModel / resolveDefaultImageModel 填充一次并持久化。让升级用户也能享受「打开会话即默认模型」。
  */
 watch(
   () => chatStore.currentConversationId,
@@ -738,22 +785,44 @@ watch(
     if (!newId) return
     const conv = chatStore.currentConversation
     if (!conv) return
-    if (conv.active_model_id) return  // 已有模型记录，跳过
-    const m = resolveDefaultModel()
-    if (!m.model_id) return  // 本地也没可用模型，让 chat-engine 在 sendMessage 时再抛错
-    await chatStore.updateConversationModel(newId, m.provider_id, m.model_id)
+    // 对话模型兜底
+    if (!conv.active_model_id) {
+      const m = resolveDefaultModel()
+      if (m.model_id) {
+        await chatStore.updateConversationModel(newId, m.provider_id, m.model_id)
+      }
+      // 本地也没可用模型，让 chat-engine 在 sendMessage 时再抛错
+    }
+    // 生图模型兜底（v0.6.6+）：老会话表里 image 字段原本为空，首次打开填一次
+    if (!conv.active_image_model_id) {
+      const im = resolveDefaultImageModel()
+      if (im.model_id) {
+        await chatStore.updateConversationImageModel(newId, im.provider_id, im.model_id)
+      }
+      // 本地没 image 模型就留空，chat-engine 让 LLM 自行 list_providers
+    }
   },
   { immediate: false }
 )
 
 /**
- * 输入框左下角 ChatModelSwitcher 选定模型后的回调。
+ * 输入框左下角 ChatModelSwitcher type="chat" 选定模型后的回调。
  * 写回主进程 conversation 表，同时同步本地 conversations 缓存。
  */
 async function onChatModelChange(val: { provider_id: string; model_id: string }) {
   const convId = chatStore.currentConversationId
   if (!convId) return
   await chatStore.updateConversationModel(convId, val.provider_id, val.model_id)
+}
+
+/**
+ * 输入框左下角 ChatModelSwitcher type="image" 选定生图模型后的回调（v0.6.6+）。
+ * 写回主进程；chat-engine 下一轮调 image_gen tool 时作为默认 args。
+ */
+async function onImageModelChange(val: { provider_id: string; model_id: string }) {
+  const convId = chatStore.currentConversationId
+  if (!convId) return
+  await chatStore.updateConversationImageModel(convId, val.provider_id, val.model_id)
 }
 
 const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp'])
@@ -953,13 +1022,35 @@ async function openWorkspace() {
   ;(window as any).api.shell.openPath(wsPath)
 }
 
-function onMessagesClick(e: MouseEvent) {
-  const img = (e.target as HTMLElement).closest('.prose img') as HTMLImageElement | null
+async function onMessagesClick(e: MouseEvent) {
+  const target = e.target as HTMLElement
+  const img = target.closest('.prose img') as HTMLImageElement | null
   if (img?.src) {
     previewImage.value = img.src
     return
   }
-  const btn = (e.target as HTMLElement).closest('.link-jump-btn') as HTMLElement | null
+  // Markdown 代码块右上角「复制」按钮：用事件委托替代 inline onclick，
+  // 因为生产 CSP（main/index.ts 的 script-src 'self'）不允许 inline handler。
+  const copyBtn = target.closest('.copy-btn[data-action="copy-code"]') as HTMLButtonElement | null
+  if (copyBtn) {
+    const wrapper = copyBtn.closest('.code-block-wrapper')
+    const codeEl = wrapper?.querySelector('code')
+    const text = codeEl?.textContent || ''
+    if (text) {
+      try {
+        await navigator.clipboard.writeText(text)
+        const orig = copyBtn.textContent || '复制'
+        copyBtn.textContent = '已复制'
+        copyBtn.disabled = true
+        setTimeout(() => {
+          copyBtn.textContent = orig
+          copyBtn.disabled = false
+        }, 1500)
+      } catch { /* ignore */ }
+    }
+    return
+  }
+  const btn = target.closest('.link-jump-btn') as HTMLElement | null
   if (btn?.dataset?.link) {
     const link = btn.dataset.link
     const type = btn.dataset.linkType
@@ -971,9 +1062,51 @@ function onMessagesClick(e: MouseEvent) {
   }
 }
 
+/**
+ * 从 markdown 内容提取所有图片本地路径。
+ * 支持两种 url 形态：
+ *  - `local-file://img?p=<encoded-abs>` 或 `local-file://img?rel=<encoded-rel>`（应用内自定义协议）
+ *  - 裸绝对路径（如 `C:\...` 或 `/...`）
+ * 其它（http(s) / data:）当前剪贴板写图链路不支持，跳过。
+ */
+function extractImagePathsFromMarkdown(content: string): string[] {
+  const paths: string[] = []
+  const regex = /!\[[^\]]*\]\(([^)]+)\)/g
+  let m: RegExpExecArray | null
+  while ((m = regex.exec(content)) !== null) {
+    const url = m[1].trim()
+    if (url.startsWith('local-file://')) {
+      try {
+        const u = new URL(url)
+        const p = u.searchParams.get('p') || u.searchParams.get('rel')
+        if (p) paths.push(p)
+      } catch {
+        // bad URL，跳过
+      }
+    } else if (/^[A-Za-z]:[\\/]/.test(url) || url.startsWith('/')) {
+      paths.push(url)
+    }
+  }
+  return paths
+}
+
 async function copyMessage(msg: any) {
   try {
-    await navigator.clipboard.writeText(msg.content || '')
+    const content = String(msg.content || '')
+    // 优先：消息含 markdown 图片 → 复制图片本身（粘到 QQ/微信/邮件直接是图）
+    // 多张图取第一张；图片复制失败再回退到文本。
+    const imagePaths = extractImagePathsFromMarkdown(content)
+    if (imagePaths.length > 0) {
+      const res = (await (window as any).api.clipboard.writeImage(imagePaths[0])) as
+        | { success?: boolean }
+        | undefined
+      if (res?.success) {
+        copiedId.value = msg.id
+        setTimeout(() => { copiedId.value = null }, 2000)
+        return
+      }
+    }
+    await navigator.clipboard.writeText(content)
     copiedId.value = msg.id
     setTimeout(() => { copiedId.value = null }, 2000)
   } catch { /* ignore */ }
@@ -1019,6 +1152,8 @@ async function send() {
 onMounted(async () => {
   document.addEventListener('click', onClickOutside)
   chatStore.listenTitleUpdates()
+  // 监听 image_gen fire-and-forget 完成后追加的图片消息（异步生图工作流）
+  chatStore.listenAppendMessage()
   window.api.chat.onToolApproval((data: any) => {
     pendingApproval.value = data
   })
@@ -1057,6 +1192,7 @@ onUnmounted(() => {
   }
   document.removeEventListener('click', onClickOutside)
   chatStore.stopListenTitleUpdates()
+  chatStore.stopListenAppendMessage()
   window.api.chat.offToolApproval()
 })
 </script>

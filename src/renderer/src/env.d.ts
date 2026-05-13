@@ -24,6 +24,8 @@ interface Window {
       offTitleUpdated: () => void
       onToolApproval: (callback: (data: unknown) => void) => void
       offToolApproval: () => void
+      onAppendMessage: (callback: (data: unknown) => void) => void
+      offAppendMessage: () => void
     }
     skill: { invoke: (channel: string, ...args: unknown[]) => Promise<unknown> }
     mcp: { invoke: (channel: string, ...args: unknown[]) => Promise<unknown> }

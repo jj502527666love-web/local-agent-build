@@ -84,6 +84,15 @@
             </div>
           </div>
         </div>
+        <!-- v0.6.6+ 「调用生图能力」总开关：默认关。开启后该智能体的对话才会使用 image_gen 工具，输入框才会出现「生图：」切换条。
+             同时 chat-engine 不会注入生图工作流 system prompt 节省 token、避免闲聊智能体被 LLM 误判去调 image_gen。 -->
+        <div>
+          <label class="flex items-center gap-2 cursor-pointer select-none">
+            <input type="checkbox" v-model="form.enable_image_gen" :true-value="1" :false-value="0" class="rounded" />
+            <span class="text-xs font-medium text-text-primary">调用生图能力</span>
+          </label>
+          <p class="text-[11px] text-text-tertiary mt-1 ml-5 leading-snug">开启后，该智能体的对话中会出现「生图：」模型切换条，AI 可调用生图工具。关闭时不提供生图能力，prompt 更精简。</p>
+        </div>
         <div>
           <label class="form-label">工具调用确认</label>
           <div class="flex gap-2">
@@ -181,11 +190,12 @@ const form = ref({
   skill_ids: [] as string[],
   mcp_ids: [] as string[],
   prompt_skill_dirs: [] as string[],
-  tool_approval: 'destructive' as ToolApproval
+  tool_approval: 'destructive' as ToolApproval,
+  enable_image_gen: 0 as number
 })
 
 function resetForm() {
-  form.value = { name: '', description: '', persona_id: '', kb_only: 0, kb_category_ids: [], skill_ids: [], mcp_ids: [], prompt_skill_dirs: [], tool_approval: 'destructive' }
+  form.value = { name: '', description: '', persona_id: '', kb_only: 0, kb_category_ids: [], skill_ids: [], mcp_ids: [], prompt_skill_dirs: [], tool_approval: 'destructive', enable_image_gen: 0 }
 }
 
 function editBot(bot: Bot) {
@@ -199,7 +209,8 @@ function editBot(bot: Bot) {
     skill_ids: bot.skill_ids.filter(id => userSkills.value.some(s => s.id === id)),
     mcp_ids: [...bot.mcp_ids],
     prompt_skill_dirs: [...(bot.prompt_skill_dirs || [])],
-    tool_approval: bot.tool_approval || 'destructive'
+    tool_approval: bot.tool_approval || 'destructive',
+    enable_image_gen: bot.enable_image_gen || 0
   }
   showForm.value = true
 }

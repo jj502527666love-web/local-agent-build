@@ -427,7 +427,7 @@ async function saveSettings() {
   showSettings.value = false
 }
 
-const { zoomIn: vfZoomIn, zoomOut: vfZoomOut, fitView: vfFitView, getViewport, getNode: vfGetNode } = useVueFlow()
+const { zoomIn: vfZoomIn, zoomOut: vfZoomOut, fitView: vfFitView, getViewport, getNode: vfGetNode, getSelectedNodes } = useVueFlow()
 
 const currentZoom = ref(1)
 const zoomPercent = computed(() => Math.round(currentZoom.value * 100))
@@ -492,6 +492,20 @@ const flowNodes = computed<FlowNode[]>(() =>
   }))
 )
 
+// 「选中节点 → 点亮其直接出去的连线」的可视化辅助：
+// 仅一级——只取 source 是选中节点的 edge，不做 BFS 传递。
+// 这样视觉聚焦在「我连出去的下一站」，不会把整张图都点亮。
+const downstreamEdgeIds = computed<Set<string>>(() => {
+  const selected = getSelectedNodes.value
+  if (selected.length === 0) return new Set<string>()
+  const rootSet = new Set(selected.map(n => n.id))
+  const result = new Set<string>()
+  for (const e of canvasStore.edges) {
+    if (rootSet.has(e.source_node_id)) result.add(e.id)
+  }
+  return result
+})
+
 const flowEdges = computed<Edge[]>(() =>
   canvasStore.edges.map((e) => ({
     id: e.id,
@@ -501,7 +515,9 @@ const flowEdges = computed<Edge[]>(() =>
     target: e.target_node_id,
     targetHandle: e.target_handle,
     animated: false,
-    selectable: true
+    selectable: true,
+    // 选中节点的下游 edge 加 class，由 CSS「.edge-flow-downstream .vue-flow__edge-path」接手点亮流动
+    class: downstreamEdgeIds.value.has(e.id) ? 'edge-flow-downstream' : undefined
   }))
 )
 
@@ -1196,9 +1212,19 @@ onBeforeRouteLeave(() => {
   stroke: #6366f1;
   stroke-width: 3;
 }
-.vue-flow__edge.selected .vue-flow__edge-path {
+.vue-flow__edge.selected .vue-flow__edge-path,
+.vue-flow__edge.edge-flow-downstream .vue-flow__edge-path {
   stroke: #4f46e5;
   stroke-width: 3;
+  /* 选中连线 / 选中节点的全部下游连线加流动光带，强化「数据流」视觉 */
+  stroke-dasharray: 8 4;
+  animation: edge-flow 0.7s linear infinite;
+}
+@keyframes edge-flow {
+  to {
+    /* 负值 = 沿 source → target 方向移动 */
+    stroke-dashoffset: -12;
+  }
 }
 .vue-flow__connection-path {
   stroke: #6366f1;

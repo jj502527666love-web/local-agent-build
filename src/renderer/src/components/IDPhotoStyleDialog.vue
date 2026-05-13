@@ -4,7 +4,7 @@
       <!-- Header -->
       <div class="px-5 py-3 border-b border-surface-3 flex items-center justify-between flex-shrink-0">
         <div>
-          <h3 class="text-sm font-medium text-text-primary">证件照</h3>
+          <h3 class="text-sm font-medium text-text-primary">AI 证件照</h3>
           <p class="text-[11px] text-text-tertiary mt-0.5">选择规格与背景色，AI 会自动生成对应版式</p>
         </div>
         <button @click="cancel" class="p-1.5 rounded-lg text-text-tertiary hover:text-text-primary hover:bg-surface-2 transition-colors">

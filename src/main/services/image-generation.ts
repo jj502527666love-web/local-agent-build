@@ -6,7 +6,7 @@ import { getDataDir } from './data-path'
 import { getCloudToken, getCloudGatewayUrl, resolveCloudModelId } from './cloud-token'
 import { join } from 'path'
 import { mkdirSync, writeFileSync, unlinkSync, existsSync } from 'fs'
-import { BrowserWindow } from 'electron'
+import { BrowserWindow, nativeImage } from 'electron'
 import { recordUsage } from './usage-stats'
 import { resolveSizeToPixels, getModelMode } from '@shared/image-size'
 import { stripBase64 } from '@shared/strip-image-metadata'
@@ -92,7 +92,15 @@ async function readResponseError(res: Response): Promise<string> {
       (j && typeof j === 'object' && j.error && typeof j.error === 'object' && j.error.message) ||
       (j && typeof j === 'object' && typeof j.error === 'string' ? j.error : undefined) ||
       (j && typeof j === 'object' && typeof j.message === 'string' ? j.message : undefined)
-    if (inner) return truncateError(String(inner))
+    if (inner) {
+      // inner 短（≤50 字符的错误码，如多米 'fail_to_submit_task'）且 raw 还有其他字段时，
+      // 附带 raw 全文，避免丢失 details / description / reason / data 等上下文（排错关键）。
+      const innerStr = String(inner)
+      if (innerStr.length <= 50 && raw.length > innerStr.length + 30) {
+        return truncateError(`${innerStr} | raw: ${raw}`)
+      }
+      return truncateError(innerStr)
+    }
   } catch {}
   return truncateError(raw)
 }
@@ -217,6 +225,14 @@ export interface GenerateImageOptions {
   tierId?: string
   quality?: string
   batchCount?: number
+  /**
+   * 进度事件附加上下文：让前端能区分调用来源（chat 工具 / ImageGenView 等），
+   * 并按会话 id 做 scope，避免多会话浮窗串台。
+   */
+  progressContext?: {
+    conversationId?: string
+    source?: 'chat' | 'image-gen' | 'batch' | 'edit' | 'canvas'
+  }
 }
 
 /** 解析 UI 传入的 size（预设 / 比例 / 像素）为上游 API 接受的 "WxH" 像素串。
@@ -816,11 +832,106 @@ async function callCloudImageAPI(
 }
 
 /**
- * 多米 API（duomiapi.com）图片生成。与 OpenAI 协议的差异点：
+ * 把 UI size + tierId 解析为多米接受的实际像素串（如 '3840x2160' / '2048x1152'）。
+ *
+ * v0.6.6+ 重设：多米实测支持标准 gpt-image-2 规则的任意像素串（上限 3840×2160，
+ * 在 capability 表中的 maxTotalPixels=8_294_400），原先反向 snap 到比例 enum 会丢掉用户选的
+ * 2K/4K 档位。现在直接用 resolvePixels （与 OpenAI 路径一致），让档位生效。
+ *
+ * 兑底：解析失败（非法 size）返回 'auto'，多米会用默认尺寸渲染。
+ */
+function resolveDuoMiSize(size: string, tierId?: string): string {
+  const s = (size || '').toLowerCase().trim()
+  if (s === '' || s === 'auto') return 'auto'
+  try {
+    return resolvePixels(size, 'gpt-image-2', tierId)
+  } catch {
+    return 'auto'
+  }
+}
+
+/**
+ * 把参考图压缩到多米可接受的大小。
+ *
+ * 多米 /v1/images/generations 对 image 字段 base64 长度有上限（2026-05-13 实测：
+ * 16K chars 通过、2K 于 16K-140K 之间，140K+ 触发 400 fail_to_submit_task）。
+ * 安全阈值取 50K，预留足够余量适应 prompt / model / quality 等其他字段叠加后的 body 总大小。
+ *
+ * 策略：
+ *   1. 原 base64 已 ≤ 50K → 原样返回（避免无意义重编码）
+ *   2. 超阈值 → nativeImage 解码 → 长边 ≤ 1024 → JPEG q=82 → 70 → 55 递减
+ *   3. q=55 仍超 → 长边再降到 768 + q=70
+ *   4. 任何异常（解码失败 / nativeImage 识别不了、类型如 webp/gif）→ 原样返回，
+ *      让多米上游决定是否拒 —— 不隐藏问题。
+ *
+ * 返回是完整 dataUri。调用方不需再拼接。
+ */
+function shrinkImageForDuoMi(base64: string, format: 'jpeg' | 'png'): string {
+  const SAFE_LEN = 50_000
+  const inputMime = format === 'png' ? 'image/png' : 'image/jpeg'
+
+  if (base64.length <= SAFE_LEN) {
+    return `data:${inputMime};base64,${base64}`
+  }
+
+  let buf: Buffer
+  try {
+    buf = Buffer.from(base64, 'base64')
+  } catch {
+    console.warn('[ImageGen] DuoMi shrink: base64 decode failed, passthrough')
+    return `data:${inputMime};base64,${base64}`
+  }
+
+  let img = nativeImage.createFromBuffer(buf)
+  if (img.isEmpty()) {
+    console.warn('[ImageGen] DuoMi shrink: nativeImage empty (不可识别的格式如 webp/gif), passthrough')
+    return `data:${inputMime};base64,${base64}`
+  }
+
+  const origSize = img.getSize()
+  if (origSize.width > 1024 || origSize.height > 1024) {
+    img = origSize.width >= origSize.height
+      ? img.resize({ width: 1024, quality: 'good' })
+      : img.resize({ height: 1024, quality: 'good' })
+  }
+
+  for (const q of [82, 70, 55]) {
+    const out = img.toJPEG(q).toString('base64')
+    if (out.length <= SAFE_LEN) {
+      const sz = img.getSize()
+      console.log(`[ImageGen] DuoMi shrink: ${base64.length} → ${out.length} chars (${origSize.width}x${origSize.height} → ${sz.width}x${sz.height} jpeg q=${q})`)
+      return `data:image/jpeg;base64,${out}`
+    }
+  }
+
+  // 递减到 q=55 仍超边：长边再降到 768
+  const cur = img.getSize()
+  img = cur.width >= cur.height
+    ? img.resize({ width: 768, quality: 'good' })
+    : img.resize({ height: 768, quality: 'good' })
+  const finalOut = img.toJPEG(70).toString('base64')
+  const finalSize = img.getSize()
+  console.log(`[ImageGen] DuoMi shrink (二轮): ${base64.length} → ${finalOut.length} chars (${origSize.width}x${origSize.height} → ${finalSize.width}x${finalSize.height} jpeg q=70)`)
+  return `data:image/jpeg;base64,${finalOut}`
+}
+
+/**
+ * 多米 API（duomiapi.com）图片生成 — 官方文档 https://duomiapi.com/doc/55。
+ *
+ * 官方当前**仅支持 gpt-image-2 一个模型**。请求 body 仅 4 个字段：model / prompt / size / image。
+ *
+ * 与 OpenAI 协议的差异点：
  *   1. 鉴权头是裸 token（`Authorization: <key>`），不带 Bearer 前缀
  *   2. 仅支持异步：POST /v1/images/generations?async=true 返回 { id }，再 GET /v1/tasks/{id} 轮询
- *   3. size 同时接比例与像素；为让 UI 档位（1k/2k/4k）生效，这里走 resolvePixels 转成像素串后发出。
- *   4. 不支持 n>1、不支持 base64 参考图（多米只接受参考图 URL）。
+ *   3. size 字段接受标准 gpt-image-2 规则的任意 WxH 像素串（上限 3840×2160 = 8.29M 像素）以及
+ *      比例字符串 / 'auto'。UI 档位（1k/2k/4k）生效，由 resolvePixels 按 capability 计算真实像素。
+ *   4. 不支持 n>1。
+ *   5. 参考图：用单数 `image` 字段（schema 允许 string 或 string[]），元素是 https URL 或
+ *      `data:image/...;base64,...` dataUri（2026-05-13 实测 dataUri 数组 succeeded）。
+ *      不走 OpenAI 协议的 /images/edits + multipart 路径，仍是 /generations + JSON。
+ *
+ * model_id 防护：本地 provider.models 如果不是 gpt-image-2（例如老数据 / 手工编辑），
+ * submit 前自动覆盖为 gpt-image-2，与 Adapter 层 cleanseDuoMiBody 一致。
  *
  * 返回形态：[{ url }]，上层 generateImages 会调 downloadImageToFile 下载到本地。
  */
@@ -836,22 +947,66 @@ async function callDuoMiImageAPI(
   const apiBase = normalizeApiBase(provider.api_base)
   const apiKey = provider.api_key
 
-  if (refImages && refImages.length > 0) {
-    throw new Error('多米 API 参考图需要公网 URL，桌面端只有 base64。请改为纯文生图，或通过云控端中转使用。')
-  }
-
   if (n > 1) {
     console.warn('[ImageGen] 多米 API 不支持单次 n>1，已强制 n=1（上层 batchCount 路径会多次调用）')
     n = 1
   }
 
-  // 把 UI 的 size 预设 / 比例 / 像素输入按模型能力域 + tierId 档位解析为像素串（多米 gpt-image-2 与云端同 capability）
-  const resolvedPx = resolvePixels(size, modelId, tierId)
+  // v0.6.6+ 多米 size 接受标准 gpt-image-2 规则的真实像素串（如 '3840x2160'），与 OpenAI 路径一致走
+  // resolvePixels 计算：UI 档位（1k/2k/4k）、比例、预设、自定义像素都转成代码使用 capability
+  // 表 maxTotalPixels=8_294_400 上限兑底。原先反向 snap 到比例 enum 会丢掉用户的 2K/4K 档位。
+  const duomiSize = resolveDuoMiSize(size, tierId)
+
+  // 多米官方文档仅列 gpt-image-2 一个模型。本地 provider.models 与之不一致时自动覆盖，
+  // 兼容历史不规范数据（UI 层 ModelView.vue 已锁定，此处是异常路径兑底）。
+  if (modelId !== 'gpt-image-2') {
+    console.warn(`[ImageGen] 多米 API 官方仅支持 gpt-image-2，自动覆盖 modelId: ${modelId} → gpt-image-2`)
+  }
 
   const submitUrl = `${apiBase}/images/generations?async=true`
-  const submitBody: Record<string, any> = { model: modelId, prompt, size: resolvedPx }
+  const submitBody: Record<string, any> = { model: 'gpt-image-2', prompt, size: duomiSize }
+
+  // 参考图处理：
+  //   1. 拆出 mime + 纯 base64；无 dataUri 前缀默认按 png
+  //   2. stripBase64 去 EXIF/ICC 段（避免上游 WAF 拒微信图 ICC v4 profile）
+  //   3. shrinkImageForDuoMi 压缩到 ≤ 50K base64 chars（多米 image 字段实测阈值介于 16K-140K）
+  if (refImages && refImages.length > 0) {
+    submitBody.image = refImages.map((img) => {
+      const match = img.match(/^data:([^;]+);base64,/)
+      let raw: string
+      let format: 'jpeg' | 'png'
+      if (match) {
+        raw = img.slice(match[0].length)
+        format = match[1].includes('png') ? 'png' : 'jpeg'
+      } else {
+        raw = img
+        format = 'png'
+      }
+      const stripped = stripBase64(raw, format)
+      return shrinkImageForDuoMi(stripped, format)
+    })
+  }
+
   // 用户 customParams + requestOverridePatch 叠加（最后写入，可覆盖系统默认字段）
   applyProviderPatches(submitBody, provider)
+
+  // 提交前打印请求摘要（不含完整 base64）：失败排错时配合 readResponseError 的 raw 一并定位字段问题
+  const imageSummary = Array.isArray(submitBody.image)
+    ? submitBody.image.map((s: any, i: number) => {
+        const str = typeof s === 'string' ? s : String(s)
+        return `[${i}] ${str.slice(0, 64)}... len=${str.length}`
+      })
+    : []
+  console.log('[ImageGen] DuoMi submit body summary:', {
+    url: submitUrl,
+    model: submitBody.model,
+    size: submitBody.size,
+    promptLen: typeof submitBody.prompt === 'string' ? submitBody.prompt.length : 0,
+    imageCount: imageSummary.length,
+    imageSummary,
+    extraKeys: Object.keys(submitBody).filter(k => !['model', 'prompt', 'size', 'image'].includes(k))
+  })
+
   const submitRes = await fetchWithRetry(submitUrl, {
     method: 'POST',
     headers: {
@@ -1050,6 +1205,19 @@ export async function generateImages(
   const batchCount = Math.min(Math.max(options.batchCount || 1, 1), 10)
   const quality = options.quality || 'auto'
   const results: ImageGeneration[] = []
+  const progressCtx = options.progressContext || {}
+
+  // 统一进度事件发送：自动附加 progressContext（conversationId / source），
+  // 让前端能按来源过滤（chat 浮窗 vs ImageGenView）。
+  function emitProgress(payload: Record<string, any>): void {
+    if (!window) return
+    window.webContents.send('imageGen:progress', {
+      ...payload,
+      sessionId,
+      conversationId: progressCtx.conversationId,
+      source: progressCtx.source || 'image-gen'
+    })
+  }
 
   // Pre-create all generation records as pending
   const genIds: string[] = []
@@ -1074,14 +1242,7 @@ export async function generateImages(
   }
 
   // Send initial progress
-  if (window) {
-    window.webContents.send('imageGen:progress', {
-      type: 'start',
-      total: batchCount,
-      completed: 0,
-      sessionId
-    })
-  }
+  emitProgress({ type: 'start', total: batchCount, completed: 0, prompt: options.prompt })
 
   // 独立 API 调用模式（n=1 each）。
   // worker 数量直接取 batchCount（上限 10），全局 semaphore（默认 6）天然限流，
@@ -1095,16 +1256,14 @@ export async function generateImages(
       const genId = genIds[i]
       try {
         updateGenerationStatus(genId, 'generating', {})
-        if (window) {
-          window.webContents.send('imageGen:progress', {
-            type: 'generating',
-            index: i,
-            total: batchCount,
-            completed: completedCount,
-            genId,
-            sessionId
-          })
-        }
+        emitProgress({
+          type: 'generating',
+          index: i,
+          total: batchCount,
+          completed: completedCount,
+          genId,
+          prompt: options.prompt
+        })
 
         const apiResults = await callImageAPI(
           options.modelProviderId,
@@ -1138,17 +1297,14 @@ export async function generateImages(
         ordered[i] = gen
         completedCount++
 
-        if (window) {
-          window.webContents.send('imageGen:progress', {
-            type: 'completed',
-            index: i,
-            total: batchCount,
-            completed: completedCount,
-            genId,
-            generation: gen,
-            sessionId
-          })
-        }
+        emitProgress({
+          type: 'completed',
+          index: i,
+          total: batchCount,
+          completed: completedCount,
+          genId,
+          generation: gen
+        })
       } catch (e: any) {
         const errorMsg = e?.message || 'Unknown error'
         updateGenerationStatus(genId, 'error', { error: errorMsg })
@@ -1157,17 +1313,14 @@ export async function generateImages(
         ordered[i] = gen
         completedCount++
 
-        if (window) {
-          window.webContents.send('imageGen:progress', {
-            type: 'error',
-            index: i,
-            total: batchCount,
-            completed: completedCount,
-            genId,
-            error: errorMsg,
-            sessionId
-          })
-        }
+        emitProgress({
+          type: 'error',
+          index: i,
+          total: batchCount,
+          completed: completedCount,
+          genId,
+          error: errorMsg
+        })
       }
     }
 
@@ -1185,14 +1338,7 @@ export async function generateImages(
   }
 
   // Send done
-  if (window) {
-    window.webContents.send('imageGen:progress', {
-      type: 'done',
-      total: batchCount,
-      completed: batchCount,
-      sessionId
-    })
-  }
+  emitProgress({ type: 'done', total: batchCount, completed: batchCount })
 
   return results
 }

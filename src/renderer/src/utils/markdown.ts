@@ -78,7 +78,8 @@ const renderer = new marked.Renderer()
 renderer.code = function ({ text, lang }: { text: string; lang?: string }) {
   const language = lang && hljs.getLanguage(lang) ? lang : 'plaintext'
   const highlighted = hljs.highlight(text, { language }).value
-  return `<div class="code-block-wrapper"><div class="code-block-header"><span class="code-lang">${language}</span><button class="copy-btn" onclick="navigator.clipboard.writeText(this.closest('.code-block-wrapper').querySelector('code').textContent)">复制</button></div><pre><code class="hljs language-${language}">${highlighted}</code></pre></div>`
+  // 用 data-action 走事件委托，避免 inline onclick 被生产环境 CSP 拦截（main/index.ts 的 script-src 'self' 不允许 inline）
+  return `<div class="code-block-wrapper"><div class="code-block-header"><span class="code-lang">${language}</span><button class="copy-btn" data-action="copy-code" type="button">复制</button></div><pre><code class="hljs language-${language}">${highlighted}</code></pre></div>`
 }
 
 marked.use({ renderer })
@@ -159,7 +160,7 @@ export function renderMarkdown(content: string): string {
     return `__LINK_JUMP_BTN_${jumpButtons.length - 1}__`
   })
   let sanitized = DOMPurify.sanitize(shielded, {
-    ADD_ATTR: ['onclick', 'data-link', 'data-link-type'],
+    ADD_ATTR: ['data-link', 'data-link-type', 'data-action'],
     ADD_TAGS: ['button'],
     ADD_URI_SAFE_ATTR: ['src'],
     ALLOWED_URI_REGEXP: /^(?:(?:https?|data|local-file):)/i

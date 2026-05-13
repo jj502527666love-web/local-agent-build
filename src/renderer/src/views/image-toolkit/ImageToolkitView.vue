@@ -112,12 +112,25 @@
       :hint="pickerHint"
       :multiple="pickerMultiple"
       @select="onImagesSelected"
+      @cancel="onPickerCancel"
     />
 
     <!-- O10: 证件照样式选择弹窗（先选样式 + 背景色，再进选图） -->
     <IDPhotoStyleDialog
       v-model:visible="idPhotoDialogVisible"
       @confirm="onIDPhotoStyleConfirm"
+    />
+
+    <!-- AI 换装弹窗（先选服装来源 / 颜色 / 风格 / 保留项，再选人物照） -->
+    <OutfitChangeDialog
+      v-model:visible="outfitChangeDialogVisible"
+      @confirm="onOutfitChangeConfirm"
+    />
+
+    <!-- AI 换姿势弹窗（先选姿势来源 / 朝向 / 保留项，再选人物照） -->
+    <PoseChangeDialog
+      v-model:visible="poseChangeDialogVisible"
+      @confirm="onPoseChangeConfirm"
     />
 
     <!-- 加载提示（处理大图时短暂显示） -->
@@ -146,12 +159,16 @@ import {
 } from '@shared/image-toolkit-presets'
 import ImageSourcePickerDialog from '@/components/ImageSourcePickerDialog.vue'
 import IDPhotoStyleDialog from '@/components/IDPhotoStyleDialog.vue'
+import OutfitChangeDialog from '@/components/OutfitChangeDialog.vue'
+import PoseChangeDialog from '@/components/PoseChangeDialog.vue'
 import IllustrationGen from '@/components/illustrations/IllustrationGen.vue'
 import IllustrationBatch from '@/components/illustrations/IllustrationBatch.vue'
 import IllustrationEdit from '@/components/illustrations/IllustrationEdit.vue'
 import { loadAsDataUri } from '@/utils/image-source'
 import { useHandoffStore } from '@/stores/handoff'
 import { composeIDPhotoPrompt, type IDPhotoStyle } from '@shared/id-photo-styles'
+import { composeOutfitChangePrompt, type OutfitSource, type OutfitPreserveOptions } from '@shared/outfit-change-presets'
+import { composePoseChangePrompt, type PoseSource, type PosePreserveOptions } from '@shared/pose-change-presets'
 
 // Hero 卡片的 3 张抽象插画（顺序与 HERO_CARDS 一一对应）
 const HERO_ILLUSTRATIONS = [IllustrationGen, IllustrationBatch, IllustrationEdit]
@@ -198,6 +215,35 @@ const idPhotoDialogVisible = ref(false)
 // 用户在弹窗里选好的证件照样式+背景，会注入后续 pick-then-gen 流程，覆盖卡片自带 preset
 let pendingIDPhoto: { style: IDPhotoStyle; bgColor: string; bgLabel: string; outfit: string } | null = null
 
+// ---- AI 换姿势弹窗状态 ----
+const poseChangeDialogVisible = ref(false)
+// 用户在弹窗里选好的姿势配置，会注入后续 pick-then-gen 流程。
+// poseRefDataUri 如果有值，会作为 refImages 第 2 张追加。
+let pendingPoseChange: {
+  source: PoseSource
+  poseText: string
+  orientationLabel?: string
+  orientationPrompt?: string
+  poseRefDataUri?: string
+  preserve: PosePreserveOptions
+  summary: string
+} | null = null
+
+// ---- AI 换装弹窗状态 ----
+const outfitChangeDialogVisible = ref(false)
+// 用户在弹窗里选好的服装配置，会注入后续 pick-then-gen 流程。
+// outfitRefDataUri 如果有值，会作为 refImages 第 2 张追加。
+let pendingOutfitChange: {
+  source: OutfitSource
+  outfitText: string
+  colorLabel?: string
+  colorHex?: string
+  styles: string[]
+  outfitRefDataUri?: string
+  preserve: OutfitPreserveOptions
+  summary: string
+} | null = null
+
 // ---- 卡片点击分流 ----
 function onCardClick(card: ToolCard) {
   const action = card.action
@@ -211,6 +257,20 @@ function onCardClick(card: ToolCard) {
   if (card.id === 'id-photo' && action.type === 'pick-then-gen') {
     pendingCard = card
     idPhotoDialogVisible.value = true
+    return
+  }
+
+  // AI 换装特殊路径——先弹服装选择弹窗，再进入 pick-then-gen 主流程
+  if (card.id === 'ai-outfit-change' && action.type === 'pick-then-gen') {
+    pendingCard = card
+    outfitChangeDialogVisible.value = true
+    return
+  }
+
+  // AI 换姿势特殊路径——先弹姿势选择弹窗，再进入 pick-then-gen 主流程
+  if (card.id === 'ai-pose-change' && action.type === 'pick-then-gen') {
+    pendingCard = card
+    poseChangeDialogVisible.value = true
     return
   }
 
@@ -299,6 +359,7 @@ async function onImagesSelected(paths: string[]) {
       // O10：证件照走特殊 prompt + 固定 size（由样式弹窗给定，覆盖卡片自带 preset）
       let finalPrompt = action.presetPrompt
       let finalSize = action.presetSize
+      let refImageList = items.map(i => i.dataUri)
       if (pendingIDPhoto) {
         finalPrompt = composeIDPhotoPrompt(
           pendingIDPhoto.style,
@@ -308,6 +369,43 @@ async function onImagesSelected(paths: string[]) {
         )
         finalSize = pendingIDPhoto.style.presetSize
         pendingIDPhoto = null
+      } else if (pendingOutfitChange) {
+        // AI 换装：动态合成 prompt + 追加服装参考图（如果有）
+        finalPrompt = composeOutfitChangePrompt({
+          source: pendingOutfitChange.source,
+          outfitText: pendingOutfitChange.outfitText,
+          colorLabel: pendingOutfitChange.colorLabel,
+          colorHex: pendingOutfitChange.colorHex,
+          styles: pendingOutfitChange.styles,
+          hasOutfitRefImage: !!pendingOutfitChange.outfitRefDataUri,
+          preserve: pendingOutfitChange.preserve
+        })
+        if (pendingOutfitChange.outfitRefDataUri) {
+          // 服装参考图作为 refImages 第 2 张追加（人物图在前）
+          refImageList = [...refImageList, pendingOutfitChange.outfitRefDataUri]
+        }
+        if (action.autoSize && items[0]) {
+          finalSize = findClosestPresetSize(items[0].width, items[0].height)
+        }
+        pendingOutfitChange = null
+      } else if (pendingPoseChange) {
+        // AI 换姿势：动态合成 prompt + 追加姿势参考图（如有）
+        finalPrompt = composePoseChangePrompt({
+          source: pendingPoseChange.source,
+          poseText: pendingPoseChange.poseText,
+          orientationLabel: pendingPoseChange.orientationLabel,
+          orientationPrompt: pendingPoseChange.orientationPrompt,
+          hasPoseRefImage: !!pendingPoseChange.poseRefDataUri,
+          preserve: pendingPoseChange.preserve
+        })
+        if (pendingPoseChange.poseRefDataUri) {
+          // 姿势参考图作为 refImages 第 2 张追加（人物图在前）
+          refImageList = [...refImageList, pendingPoseChange.poseRefDataUri]
+        }
+        if (action.autoSize && items[0]) {
+          finalSize = findClosestPresetSize(items[0].width, items[0].height)
+        }
+        pendingPoseChange = null
       } else if (action.autoSize && items[0]) {
         // O9：如果卡片标记了 autoSize，按图片实际宽高比找最接近的预设尺寸
         finalSize = findClosestPresetSize(items[0].width, items[0].height)
@@ -315,7 +413,7 @@ async function onImagesSelected(paths: string[]) {
       handoff.set('imageGen', {
         presetPrompt: finalPrompt,
         presetSize: finalSize,
-        refImages: items.map(i => i.dataUri)
+        refImages: refImageList
       })
       router.push('/image-gen')
     } catch (e: any) {
@@ -332,6 +430,52 @@ function onIDPhotoStyleConfirm(payload: { style: IDPhotoStyle; bgColor: string; 
   if (!pendingCard) return
   pickerTitle.value = `选择照片 - ${payload.style.label}`
   pickerHint.value = '挑一张正脸照片，AI 会按所选规格与背景色重新生成'
+  pickerMultiple.value = false
+  pickerVisible.value = true
+}
+
+// 用户在选图弹窗点「取消」时触发：清空所有待注入下一步的 pending 状态，
+// 避免“点 AI 卡片 → 选好配置 → 点选图 → 取消”后残留状态污染下次别的卡片流程。
+function onPickerCancel() {
+  pendingIDPhoto = null
+  pendingOutfitChange = null
+  pendingPoseChange = null
+  pendingCard = null
+}
+
+// AI 换姿势弹窗确认回调 → 打开选人物照弹窗
+function onPoseChangeConfirm(payload: {
+  poseText: string
+  orientationLabel?: string
+  orientationPrompt?: string
+  poseRefDataUri?: string
+  preserve: PosePreserveOptions
+  summary: string
+  source: PoseSource
+}) {
+  pendingPoseChange = { ...payload }
+  if (!pendingCard) return
+  pickerTitle.value = '选择照片 - AI 换姿势'
+  pickerHint.value = '挑一张人物正面或半身照，AI 会保留脸、服装与背景，仅改变姿势'
+  pickerMultiple.value = false
+  pickerVisible.value = true
+}
+
+// AI 换装弹窗确认回调 → 打开选人物照弹窗
+function onOutfitChangeConfirm(payload: {
+  outfitText: string
+  colorLabel?: string
+  colorHex?: string
+  styles: string[]
+  outfitRefDataUri?: string
+  preserve: OutfitPreserveOptions
+  summary: string
+  source: OutfitSource
+}) {
+  pendingOutfitChange = { ...payload }
+  if (!pendingCard) return
+  pickerTitle.value = '选择照片 - AI 换装'
+  pickerHint.value = '挑一张人物正面或半身照，AI 会保留脸、姿势与背景，仅替换服装'
   pickerMultiple.value = false
   pickerVisible.value = true
 }
