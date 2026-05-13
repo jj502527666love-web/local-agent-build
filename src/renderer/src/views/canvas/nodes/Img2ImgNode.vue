@@ -68,6 +68,7 @@
   </div>
   <ImageLightbox
     :src="previewSrc"
+    :on-copy="copyImage"
     :on-locate="openInFolder"
     @close="previewSrc = null"
   />
@@ -124,6 +125,12 @@ function getImageSrc(path: string): string {
 function previewImage() {
   if (props.data.result_path) {
     previewSrc.value = getImageSrc(props.data.result_path)
+  }
+}
+
+function copyImage() {
+  if (props.data.result_path) {
+    api().clipboard.writeImage(props.data.result_path)
   }
 }
 

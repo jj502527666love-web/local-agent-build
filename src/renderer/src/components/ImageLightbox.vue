@@ -32,11 +32,11 @@
           <button
             @click.stop="emitClose"
             @mousedown.stop
-            class="absolute top-2 right-2 z-10 w-9 h-9 rounded-full bg-surface-0/85 backdrop-blur-sm shadow-[0_4px_24px_rgba(0,0,0,0.18)] flex items-center justify-center text-text-secondary hover:bg-surface-0 hover:text-text-primary transition-colors"
+            class="lb-close-btn"
             title="关闭 (Esc)"
             aria-label="关闭预览"
           >
-            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+            <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
           </button>
         </div>
 
@@ -104,11 +104,11 @@
           <button
             @click.stop="emitClose"
             @mousedown.stop
-            class="absolute top-2 right-2 z-10 w-9 h-9 rounded-full bg-surface-0/85 backdrop-blur-sm shadow-[0_4px_24px_rgba(0,0,0,0.18)] flex items-center justify-center text-text-secondary hover:bg-surface-0 hover:text-text-primary transition-colors"
+            class="lb-close-btn"
             title="关闭 (Esc)"
             aria-label="关闭预览"
           >
-            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+            <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
           </button>
         </div>
 
@@ -562,5 +562,55 @@ onUnmounted(() => {
 .lb-fade-enter-from,
 .lb-fade-leave-to {
   opacity: 0;
+}
+
+/*
+ * 关闭按钮：任何背景色 / 明暗模式都清晰可见。
+ *
+ * 四层防护：
+ *   1. 黑色半透底（bg rgba(0,0,0,0.7)）— 浅色背景上不融合
+ *   2. 白色外圈（box-shadow inset 伪装 ring + outline）— 深色背景上仍有边界
+ *   3. 白色加粗图标（text-white + stroke-width 2.5）— 视觉量足
+ *   4. 悬停变红 + 放大（明确收到点击意图反馈）
+ * 位置：top/right 12px 距离系统标题栏关闭按钮更远；40×40px 点击区更大。
+ */
+.lb-close-btn {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 10;
+  width: 40px;
+  height: 40px;
+  border: none;
+  border-radius: 9999px;
+  background: rgba(0, 0, 0, 0.7);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  /* 双层边界：内侧白环（深背景可见） + 外侧黑环（白背景可见） + 投射阴影增强立体感 */
+  box-shadow:
+    0 0 0 2px rgba(255, 255, 255, 0.95),
+    0 0 0 3px rgba(0, 0, 0, 0.5),
+    0 4px 16px rgba(0, 0, 0, 0.5);
+  transition: background 150ms ease-out, transform 150ms ease-out, box-shadow 150ms ease-out;
+}
+.lb-close-btn:hover {
+  background: #dc2626; /* red-600 — 明确点击意图反馈 */
+  transform: scale(1.08);
+  box-shadow:
+    0 0 0 2px rgba(255, 255, 255, 1),
+    0 0 0 3px rgba(0, 0, 0, 0.5),
+    0 6px 20px rgba(220, 38, 38, 0.5);
+}
+.lb-close-btn:active {
+  transform: scale(0.94);
+}
+.lb-close-btn:focus-visible {
+  outline: 2px solid #3b82f6;
+  outline-offset: 4px;
 }
 </style>
