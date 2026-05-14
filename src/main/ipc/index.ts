@@ -467,23 +467,85 @@ export function registerIpcHandlers(): void {
   )
 
   // === Dialog ===
-  ipcMain.handle('dialog:openFile', async (_, options) => {
-    const result = await dialog.showOpenDialog(options)
-    return result
+  ipcMain.handle('dialog:openFile', async (event, options) => {
+    // 必须传 BrowserWindow 作为 parent：mac 上无 parent 的 dialog 偶发不可见 / 弹到屏幕外 /
+    // 在某些会话状态下被 WindowServer 拒绝展示，导致「点击附件按钮没反应」。
+    // 拿不到 parent 时退化为独立模态（与原行为兼容）。
+    try {
+      const parent = BrowserWindow.fromWebContents(event.sender)
+      const result = parent
+        ? await dialog.showOpenDialog(parent, options)
+        : await dialog.showOpenDialog(options)
+      return result
+    } catch (e: any) {
+      console.error('[dialog:openFile] failed:', e?.message || e)
+      return { canceled: true, filePaths: [], error: e?.message || String(e) }
+    }
   })
 
   // === Shell ===
   ipcMain.handle('shell:openPath', async (_, path: string) => {
     const { shell } = require('electron')
-    return shell.openPath(path)
-  })
-  ipcMain.handle('shell:showItemInFolder', (_, path: string) => {
-    const { shell } = require('electron')
-    // 如果是相对路径（不以盘符或 / 开头），拼接数据目录
-    if (path && !/^[A-Za-z]:|^\//.test(path)) {
-      path = require('path').join(dataPathService.getDataDir(), path)
+    const { existsSync } = require('fs')
+    // shell.openPath 返回 Promise<string>：空串=成功，非空=错误。统一加日志方便 mac 排查。
+    if (!path) {
+      console.error('[shell:openPath] empty path')
+      return 'empty path'
     }
-    shell.showItemInFolder(path)
+    if (!existsSync(path)) {
+      console.error('[shell:openPath] path not found:', path)
+      return `path not found: ${path}`
+    }
+    try {
+      const errMsg = await shell.openPath(path)
+      if (errMsg) console.error('[shell:openPath]', path, '→', errMsg)
+      return errMsg
+    } catch (e: any) {
+      const msg = e?.message || String(e)
+      console.error('[shell:openPath] exception:', path, msg)
+      return msg
+    }
+  })
+  ipcMain.handle('shell:showItemInFolder', async (_, path: string) => {
+    const { shell } = require('electron')
+    const { existsSync } = require('fs')
+    const nodePath = require('path')
+    if (!path) {
+      console.error('[shell:showItemInFolder] empty path')
+      return { success: false, error: 'empty path' }
+    }
+    // 相对路径（不以盘符或 / 开头）→ 拼接数据目录得到绝对路径
+    let resolved = path
+    if (!/^[A-Za-z]:|^\//.test(resolved)) {
+      resolved = nodePath.join(dataPathService.getDataDir(), resolved)
+    }
+    console.log('[shell:showItemInFolder] resolved:', resolved)
+    if (existsSync(resolved)) {
+      try {
+        shell.showItemInFolder(resolved)
+        return { success: true, path: resolved }
+      } catch (e: any) {
+        console.error('[shell:showItemInFolder] exception:', resolved, e?.message || e)
+        return { success: false, path: resolved, error: e?.message || String(e) }
+      }
+    }
+    // 目标文件已被移动/删除：mac 上 showItemInFolder 对不存在路径静默无响应，
+    // 退化为打开父目录，至少让用户看到所在文件夹的位置。
+    console.warn('[shell:showItemInFolder] target missing, fallback to parent dir')
+    const parent = nodePath.dirname(resolved)
+    if (existsSync(parent)) {
+      try {
+        const errMsg = await shell.openPath(parent)
+        if (errMsg) {
+          console.error('[shell:showItemInFolder] openPath(parent) failed:', parent, errMsg)
+          return { success: false, path: resolved, error: `target not found; opening folder failed: ${errMsg}` }
+        }
+        return { success: true, path: parent, fallback: 'parent' }
+      } catch (e: any) {
+        return { success: false, path: resolved, error: e?.message || String(e) }
+      }
+    }
+    return { success: false, path: resolved, error: 'target and parent both missing' }
   })
   ipcMain.handle('shell:openExternal', async (_, url: string) => {
     const { shell } = require('electron')

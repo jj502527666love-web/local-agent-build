@@ -763,7 +763,12 @@ export async function sendMessage(
         if (p.resultStr !== undefined) return p
         if (signal.aborted) throw new AbortedError()
         const result = await executeToolCall(p.toolCall, effectiveSkillIds, effectiveMcpIds, options.conversationId, effectiveKbCategoryIds, window)
-        const resultStr = JSON.stringify(result)
+        // 工具已经返回字符串（如 use_skill 返回的 markdown skill 正文）就直接用；
+        // 再 JSON.stringify 会在原文外面再裹一层引号 + 转义全部 \n 和 "，
+        // 使 tool message content 变成 "\"# title\\n...\\n...\""，部分 OpenAI 兼容
+        // 上游（deepseek/智谱/豆包/Moonshot 等）拿到这种「双重转义字符串」会触发
+        // silent 200 + 空 SSE，表现为「调用工具后 AI 不再回复」。
+        const resultStr = typeof result === 'string' ? result : JSON.stringify(result)
         if (window) {
           const summary = buildToolSummary(p.fnName, result, resultStr)
           window.webContents.send('chat:stream', { type: 'tool_result', tool: p.fnName, summary })
@@ -954,6 +959,57 @@ async function maybeGenerateSummary(
   }
 }
 
+/**
+ * 把 OpenAI function schema 兜底成上游能稳定解析的形态。修两类常见缺陷：
+ * - parameters 缺失 / 不是对象（例如 MCP tool 用 inputSchema 字段被裸塞过来；用户表单填错）
+ *   → 兜成最小合法 { type: 'object', properties: {...} }
+ * - properties 缺失 / 为空对象 {} / 不是对象
+ *   部分 OpenAI 兼容上游（DeepSeek/智谱/豆包/Moonshot 等）遇到空 properties 会触发 silent 200 + 空 SSE，
+ *   塞一个永远不会被模型用到的占位字段就能绕过该 bug，对正常调用无副作用。
+ * 不修改输入对象，返回新对象，避免污染 DB / 内存里的原始 function_def。
+ */
+function normalizeFunctionSchema(fn: any): any {
+  if (!fn || typeof fn !== 'object') return fn
+  const rawParams = fn.parameters
+  const baseParams =
+    rawParams && typeof rawParams === 'object' && !Array.isArray(rawParams) ? rawParams : {}
+  const normalizedParams: any = {
+    ...baseParams,
+    type: typeof baseParams.type === 'string' ? baseParams.type : 'object'
+  }
+  const props = normalizedParams.properties
+  const isEmptyProps =
+    !props ||
+    typeof props !== 'object' ||
+    Array.isArray(props) ||
+    Object.keys(props).length === 0
+  if (isEmptyProps) {
+    normalizedParams.properties = {
+      _placeholder: {
+        type: 'string',
+        description: '保留字段，模型无需填充'
+      }
+    }
+  }
+  return { ...fn, parameters: normalizedParams }
+}
+
+/**
+ * MCP 协议 tools/list 返回的工具用 inputSchema 字段，OpenAI function 协议用 parameters。
+ * 直接把 MCP tool 当作 OpenAI function 转发会让上游收到没有 parameters 的 function，
+ * 部分上游会触发 silent 200。这里做字段映射，name/description 原样保留。
+ * 已经是 OpenAI 形态（含 parameters）的不动。
+ */
+function mcpToolToOpenAIFunction(tool: any): any {
+  if (!tool || typeof tool !== 'object') return tool
+  if (tool.parameters) return tool
+  if (tool.inputSchema) {
+    const { inputSchema, ...rest } = tool
+    return { ...rest, parameters: inputSchema }
+  }
+  return tool
+}
+
 function buildToolsList(
   skillIds: string[],
   mcpIds: string[],
@@ -970,15 +1026,20 @@ function buildToolsList(
     if (kbCategoryIds.length === 0 && KB_TOOL_NAMES.includes(name)) return false
     return true
   })
-  const tools: any[] = [...filteredCore]
+  const tools: any[] = filteredCore.map((t: any) => ({
+    type: 'function',
+    function: normalizeFunctionSchema(t.function)
+  }))
 
   // Add user skills as tools (skip core tool names to avoid duplicates)
+  // 走 normalize 兜底：用户自建小工具的 function_def 可能 properties 为空 {} 或缺失 parameters，
+  // 直接转发会让部分上游 silent 200。
   const allSkills = listSkills()
   for (const skill of allSkills) {
     if (skillIds.includes(skill.id) && skill.enabled && !CORE_TOOL_NAMES.includes(skill.function_def?.name)) {
       tools.push({
         type: 'function',
-        function: skill.function_def
+        function: normalizeFunctionSchema(skill.function_def)
       })
     }
   }
@@ -1011,13 +1072,15 @@ function buildToolsList(
   }
 
   // Add MCP server tools
+  // 双层兜底：先把 MCP 的 inputSchema 字段映射成 OpenAI 的 parameters，再走 normalize
+  // 处理空 properties 等剩余 schema 缺陷。
   for (const mcpId of mcpIds) {
     const server = getMcpServer(mcpId)
     if (server && server.enabled) {
       for (const tool of server.tools) {
         tools.push({
           type: 'function',
-          function: tool
+          function: normalizeFunctionSchema(mcpToolToOpenAIFunction(tool))
         })
       }
     }

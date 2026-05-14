@@ -18,7 +18,7 @@ export type CardCategory = 'hero' | 'recommend' | 'tool' | 'ai-enhance' | 'ecomm
 export type CardAction =
   | { type: 'direct-route'; path: string }
   | { type: 'pick-then-tool'; toolRoute: string; multiple?: boolean; minImages?: number; maxImages?: number }
-  | { type: 'pick-then-edit'; tool: 'inpaint' | 'crop'; template?: 'replace' | 'remove' | 'fix' | 'enhance'; presetPrompt?: string }
+  | { type: 'pick-then-edit'; tool: 'inpaint' | 'crop' | 'sticker'; template?: 'replace' | 'remove' | 'fix' | 'enhance'; presetPrompt?: string }
   | { type: 'pick-then-gen'; presetPrompt: string; presetSize?: string; needRef: boolean; autoSize?: boolean }
 
 export interface ToolCard {
@@ -167,16 +167,12 @@ export const TOOL_CARDS: ToolCard[] = [
     action: { type: 'pick-then-edit', tool: 'inpaint', template: 'remove' }
   },
   {
-    id: 'ai-sticker',
-    label: 'AI 贴图',
-    iconPath: 'M9 12h6m-6 4h6m2 5H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5.586a1 1 0 0 1 .707.293l5.414 5.414a1 1 0 0 1 .293.707V19a2 2 0 0 1-2 2Z',
+    id: 'sticker',
+    label: '贴图',
+    // heroicons 24-outline face-smile，贴近贴纸/表情语义
+    iconPath: 'M15.182 15.182a4.5 4.5 0 0 1-6.364 0M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0ZM9.75 9.75h.008v.008H9.75V9.75Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm4.875 0h.008v.008h-.008V9.75Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z',
     category: 'recommend',
-    action: {
-      type: 'pick-then-gen',
-      needRef: false,
-      presetSize: '1:1',
-      presetPrompt: '可爱贴纸风插画：白色描边、透明背景质感、颜色鲜艳、扁平设计、卡哇伊风格、主体独立。'
-    }
+    action: { type: 'pick-then-edit', tool: 'sticker' }
   },
   {
     id: 'add-watermark',

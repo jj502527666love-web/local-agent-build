@@ -144,6 +144,23 @@
           </div>
         </div>
 
+        <!-- Sticker controls -->
+        <div v-if="activeTool === 'sticker'">
+          <StickerLibraryPanel
+            :has-selection="stickerSelected"
+            :blend-mode="stickerBlendMode"
+            :opacity="stickerOpacity"
+            @pick="addSticker"
+            @update:blend-mode="updateStickerBlendMode"
+            @update:opacity="updateStickerOpacity"
+            @flip="flipSticker"
+            @duplicate="duplicateSticker"
+            @bring-forward="bringStickerForward"
+            @send-backward="sendStickerBackward"
+            @delete="deleteSelectedSticker"
+          />
+        </div>
+
         <!-- Inpaint controls -->
         <div v-if="activeTool === 'inpaint'" class="space-y-3">
           <h4 class="text-xs font-medium text-text-secondary">AI 局部重绘</h4>
@@ -359,6 +376,7 @@ import { useSiteConfigStore } from '@/stores/site-config'
 import { useModelStore } from '@/stores/models'
 import ImageEditModelDialog from '@/components/ImageEditModelDialog.vue'
 import GallerySaveDialog from '@/components/GallerySaveDialog.vue'
+import StickerLibraryPanel from '@/components/StickerLibraryPanel.vue'
 import { useGalleryStore } from '@/stores/gallery'
 
 const route = useRoute()
@@ -405,6 +423,14 @@ const textColor = ref('#ffffff')
 // Draw tool
 const drawBrushSize = ref(5)
 const drawColor = ref('#ff0000')
+
+// Sticker tool: 选中贴图时面板控件回显这些响应式值（由 selection 事件同步）
+const stickerSelected = ref(false)
+const stickerBlendMode = ref('source-over')
+const stickerOpacity = ref(100)
+// 连续添加贴图（图库多选 / 重复点同一形状）时的位置偏移计数器，
+// 0..4 循环，每张沿对角线 +24px 错开，避免堆在同一点看不到差异
+let stickerJitterCounter = 0
 
 // Inpaint tool
 type MaskShape = 'brush' | 'eraser' | 'rect' | 'ellipse'
@@ -508,10 +534,11 @@ const tools = [
   { id: 'rotate', label: '旋转/翻转', icon: 'M19.5 12c0-1.232-.046-2.453-.138-3.662a4.006 4.006 0 0 0-3.7-3.7 48.678 48.678 0 0 0-7.324 0 4.006 4.006 0 0 0-3.7 3.7c-.017.22-.032.441-.046.662M19.5 12l3-3m-3 3-3-3m-12 3c0 1.232.046 2.453.138 3.662a4.006 4.006 0 0 0 3.7 3.7 48.656 48.656 0 0 0 7.324 0 4.006 4.006 0 0 0 3.7-3.7c.017-.22.032-.441.046-.662M4.5 12l3 3m-3-3-3 3' },
   { id: 'filter', label: '滤镜', icon: 'M10.5 6h9.75M10.5 6a1.5 1.5 0 1 1-3 0m3 0a1.5 1.5 0 1 0-3 0M3.75 6H7.5m3 12h9.75m-9.75 0a1.5 1.5 0 0 1-3 0m3 0a1.5 1.5 0 0 0-3 0m-3.75 0H7.5m9-6h3.75m-3.75 0a1.5 1.5 0 0 1-3 0m3 0a1.5 1.5 0 0 0-3 0m-9.75 0h9.75' },
   { id: 'text', label: '文字', icon: 'M7.5 8.25h9m-9 3H12m-9.75 1.51c0 1.6 1.123 2.994 2.707 3.227 1.087.16 2.185.283 3.293.369V21l4.076-4.076a1.526 1.526 0 0 1 1.037-.443 48.282 48.282 0 0 0 5.68-.494c1.584-.233 2.707-1.626 2.707-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0 0 12 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018Z' },
+  { id: 'sticker', label: '贴图', icon: 'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0ZM9 10h.008v.008H9V10Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0ZM15 10h.008v.008H15V10Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0ZM15.182 15.182a4.5 4.5 0 0 1-6.364 0' },
   { id: 'draw', label: '画笔', icon: 'm16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897L16.863 4.487Zm0 0L19.5 7.125' },
 ]
 
-const showRightPanel = computed(() => ['crop', 'rotate', 'filter', 'text', 'draw', 'inpaint'].includes(activeTool.value))
+const showRightPanel = computed(() => ['crop', 'rotate', 'filter', 'text', 'draw', 'inpaint', 'sticker'].includes(activeTool.value))
 
 // ---- Lifecycle ----
 // Bug #6: 用 unsubscribe 模式，避免 offProgress() removeAllListeners 误清其他视图监听
@@ -596,7 +623,7 @@ onMounted(async () => {
 
 /**
  * 解析路由 query 上的预设并应用：
- *   - tool='inpaint' | 'crop' | 'rotate' | 'filter' | 'text' | 'draw'  → selectTool
+ *   - tool='inpaint' | 'crop' | 'rotate' | 'filter' | 'text' | 'draw' | 'sticker'  → selectTool
  *   - template='replace' | 'remove' | 'fix' | 'enhance'                → 切 inpaint 模板
  *   - presetPrompt='...'                                                → 填入 inpaintPrompt
  *
@@ -608,7 +635,7 @@ function applyEditPresetsFromQuery() {
   const presetTpl = typeof q.template === 'string' ? q.template : ''
   const presetPrompt = typeof q.presetPrompt === 'string' ? q.presetPrompt : ''
 
-  if (presetTool && ['select', 'crop', 'rotate', 'filter', 'text', 'draw', 'inpaint'].includes(presetTool)) {
+  if (presetTool && ['select', 'crop', 'rotate', 'filter', 'text', 'draw', 'inpaint', 'sticker'].includes(presetTool)) {
     selectTool(presetTool)
   }
   if (presetTpl && ['replace', 'remove', 'fix', 'enhance'].includes(presetTpl)) {
@@ -769,6 +796,12 @@ async function initCanvas(imagePath: string) {
       saveHistory()
     }
   })
+
+  // Selection events: 把选中贴图的属性回显到右侧面板控件（混合模式 / 不透明度）
+  fabricCanvas.on('selection:created', syncStickerStateFromSelection)
+  fabricCanvas.on('selection:updated', syncStickerStateFromSelection)
+  fabricCanvas.on('selection:cleared', resetStickerState)
+  fabricCanvas.on('object:modified', syncStickerStateFromSelection)
 
   // Initial history snapshot
   saveHistory()
@@ -1407,6 +1440,159 @@ function addText() {
   saveHistory()
 }
 
+// ---- Sticker ----
+/**
+ * 把当前选中对象（仅当 role === 'sticker'）的混合模式 / 不透明度回显到响应式 state，
+ * 这样右侧 StickerLibraryPanel 控件就能正确展示已选贴图的真实属性。
+ * 选中的不是贴图时（text/draw 或 nothing），state 重置为「无选中」。
+ */
+function syncStickerStateFromSelection() {
+  if (!fabricCanvas) {
+    resetStickerState()
+    return
+  }
+  const obj = fabricCanvas.getActiveObject() as FabricObject | null
+  const isSticker = !!obj && (obj as any).data?.role === 'sticker'
+  stickerSelected.value = isSticker
+  if (isSticker && obj) {
+    stickerBlendMode.value = (obj as any).globalCompositeOperation || 'source-over'
+    stickerOpacity.value = Math.round(((obj as any).opacity ?? 1) * 100)
+  }
+}
+
+function resetStickerState() {
+  stickerSelected.value = false
+  stickerBlendMode.value = 'source-over'
+  stickerOpacity.value = 100
+}
+
+/**
+ * 把一张贴纸（data URL，PNG / JPG / SVG 任意）添加到画布。
+ * - 默认尺寸：贴纸占画布短边的 30%，方便用户立刻看到、再手动微调
+ * - 自动居中、置顶、选中，沿用 text 工具相同的体验
+ * - data.role = 'sticker'，使其参与 inpaint 的 keepEditLayers 联动
+ */
+async function addSticker(dataUri: string) {
+  if (!fabricCanvas) return
+  let img: FabricImage
+  try {
+    img = await FabricImage.fromURL(dataUri)
+  } catch (e: any) {
+    showToast('贴图加载失败: ' + (e?.message || ''))
+    return
+  }
+  const canvasShort = Math.min(fabricCanvas.width || 200, fabricCanvas.height || 200)
+  const imgShort = Math.min(img.width || 100, img.height || 100) || 100
+  const targetScale = (canvasShort * 0.3) / imgShort
+  // 0..4 循环，每张沿对角线 +24px 错开
+  const offset = (stickerJitterCounter++ % 5) * 24
+  img.set({
+    left: (fabricCanvas.width || 200) / 2 + offset,
+    top: (fabricCanvas.height || 200) / 2 + offset,
+    originX: 'center',
+    originY: 'center',
+    scaleX: targetScale,
+    scaleY: targetScale,
+    selectable: true,
+    evented: true,
+  } as any)
+  ;(img as any).data = { role: 'sticker' }
+  attachDeleteControl(img as unknown as FabricObject)
+  fabricCanvas.add(img)
+  fabricCanvas.bringObjectToFront(img)
+  fabricCanvas.setActiveObject(img)
+  fabricCanvas.renderAll()
+  syncStickerStateFromSelection()
+  saveHistory()
+}
+
+/**
+ * 更新选中贴图的 globalCompositeOperation。
+ * 非默认 blend mode 时主动关闭 objectCaching，避免 fabric 旧 cache 与新合成模式打架
+ * （v7 修过此问题，但显式关闭更稳）。
+ */
+function updateStickerBlendMode(mode: string) {
+  if (!fabricCanvas) return
+  const obj = fabricCanvas.getActiveObject() as FabricObject | null
+  if (!obj || (obj as any).data?.role !== 'sticker') return
+  ;(obj as any).globalCompositeOperation = mode
+  obj.objectCaching = mode === 'source-over'
+  obj.dirty = true
+  stickerBlendMode.value = mode
+  fabricCanvas.requestRenderAll()
+  saveHistory()
+}
+
+function updateStickerOpacity(value: number) {
+  if (!fabricCanvas) return
+  const obj = fabricCanvas.getActiveObject() as FabricObject | null
+  if (!obj || (obj as any).data?.role !== 'sticker') return
+  obj.set('opacity', value / 100)
+  stickerOpacity.value = value
+  fabricCanvas.requestRenderAll()
+  saveHistory()
+}
+
+function flipSticker(axis: 'x' | 'y') {
+  if (!fabricCanvas) return
+  const obj = fabricCanvas.getActiveObject() as FabricObject | null
+  if (!obj || (obj as any).data?.role !== 'sticker') return
+  if (axis === 'x') obj.set('flipX', !obj.flipX)
+  else obj.set('flipY', !obj.flipY)
+  fabricCanvas.requestRenderAll()
+  saveHistory()
+}
+
+async function duplicateSticker() {
+  if (!fabricCanvas) return
+  const obj = fabricCanvas.getActiveObject() as FabricObject | null
+  if (!obj || (obj as any).data?.role !== 'sticker') return
+  const cloned = await (obj as any).clone(['data', 'globalCompositeOperation']) as FabricObject
+  ;(cloned as any).data = { role: 'sticker' }
+  ;(cloned as any).globalCompositeOperation = (obj as any).globalCompositeOperation || 'source-over'
+  cloned.set({
+    left: (obj.left || 0) + 16,
+    top: (obj.top || 0) + 16
+  })
+  attachDeleteControl(cloned)
+  fabricCanvas.add(cloned)
+  fabricCanvas.bringObjectToFront(cloned)
+  fabricCanvas.setActiveObject(cloned)
+  fabricCanvas.requestRenderAll()
+  saveHistory()
+}
+
+function bringStickerForward() {
+  if (!fabricCanvas) return
+  const obj = fabricCanvas.getActiveObject() as FabricObject | null
+  if (!obj || (obj as any).data?.role !== 'sticker') return
+  fabricCanvas.bringObjectForward(obj)
+  fabricCanvas.requestRenderAll()
+  saveHistory()
+}
+
+function sendStickerBackward() {
+  if (!fabricCanvas) return
+  const obj = fabricCanvas.getActiveObject() as FabricObject | null
+  if (!obj || (obj as any).data?.role !== 'sticker') return
+  fabricCanvas.sendObjectBackwards(obj)
+  // 防御：贴图不能被推到 base image 之下
+  if (baseImage) fabricCanvas.sendObjectToBack(baseImage)
+  fabricCanvas.requestRenderAll()
+  saveHistory()
+}
+
+function deleteSelectedSticker() {
+  if (!fabricCanvas) return
+  const obj = fabricCanvas.getActiveObject() as FabricObject | null
+  if (!obj || (obj as any).data?.role !== 'sticker') return
+  fabricCanvas.remove(obj)
+  fabricCanvas.discardActiveObject()
+  resetStickerState()
+  fabricCanvas.requestRenderAll()
+  saveHistory()
+}
+
 // ---- Delete control (X button on selected objects) ----
 function attachDeleteControl(obj: FabricObject) {
   ;(obj as any).controls = {
@@ -1788,7 +1974,7 @@ async function getSourceForInpaint(): Promise<string | null> {
   fabricCanvas.getObjects().forEach(o => {
     const role = (o as any).data?.role
     let shouldHide = role === 'mask' || role === 'mask-erase' || role === 'mask-shape' || role === 'mask-shape-erase' || role === 'crop-rect'
-    if (keepEditLayers.value && (role === 'text' || role === 'draw')) shouldHide = true
+    if (keepEditLayers.value && (role === 'text' || role === 'draw' || role === 'sticker')) shouldHide = true
     if (shouldHide && o.visible !== false) {
       hidden.push(o)
       o.visible = false

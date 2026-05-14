@@ -105,8 +105,9 @@ interface Window {
     }
     dialog: { openFile: (options?: unknown) => Promise<unknown> }
     shell: {
-      openPath: (path: string) => Promise<unknown>
-      showItemInFolder: (path: string) => Promise<unknown>
+      openPath: (path: string) => Promise<string>
+      showItemInFolder: (path: string) => Promise<{ success: boolean; path?: string; fallback?: string; error?: string }>
+      openExternal: (url: string) => Promise<unknown>
     }
     window: {
       minimize: () => void
