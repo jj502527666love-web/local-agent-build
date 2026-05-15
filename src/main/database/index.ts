@@ -112,6 +112,15 @@ function runMigrations(): void {
     db.exec("ALTER TABLE skills ADD COLUMN is_builtin INTEGER NOT NULL DEFAULT 0")
   }
 
+  // image_generations: 失败诊断用「原始请求快照」字段（v0.6.7+）
+  // 每次生图调用上游 API 前抓一份脱敏后的 {url, method, headers, body} JSON，失败时写入此列
+  // 与 error 字段一同展示，供用户复制贴给排错方定位字段/协议问题
+  const igCols = db.prepare("PRAGMA table_info(image_generations)").all() as any[]
+  const igColNames = igCols.map((c: any) => c.name)
+  if (igCols.length > 0 && !igColNames.includes('raw_request')) {
+    db.exec("ALTER TABLE image_generations ADD COLUMN raw_request TEXT NOT NULL DEFAULT ''")
+  }
+
   // conversations: 「智能体不再绑定模型」改造（v0.6.5+）
   // 每个会话独立记忆模型：新建会话从云控端默认拉取，用户输入框切换持久写回
   // 旧库的 conversation 行为：active_model_* 为空字符串，sendMessage 时按回退链解析

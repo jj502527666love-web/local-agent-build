@@ -100,17 +100,24 @@
 
         <!-- Add Reference Images -->
         <div>
+          <div v-if="isDuomiProvider" class="mb-1.5 text-[10px] text-amber-600 dark:text-amber-400">
+            多米参考图生图适配中
+          </div>
           <div class="flex gap-2">
             <button
               @click="pickRefImages"
-              class="flex-1 px-3 py-2.5 text-xs font-medium border-2 border-dashed border-surface-4 rounded-lg text-text-tertiary hover:text-text-secondary hover:border-surface-5 transition-colors flex items-center justify-center gap-2"
+              :disabled="isDuomiProvider"
+              :title="isDuomiProvider ? '多米参考图生图适配中' : ''"
+              :class="['flex-1 px-3 py-2.5 text-xs font-medium border-2 border-dashed border-surface-4 rounded-lg text-text-tertiary transition-colors flex items-center justify-center gap-2', isDuomiProvider ? 'opacity-40 cursor-not-allowed' : 'hover:text-text-secondary hover:border-surface-5']"
             >
               <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.5v15m7.5-7.5h-15" /></svg>
               添加参考图
             </button>
             <button
               @click="showGalleryPicker = true"
-              class="flex-1 px-3 py-2.5 text-xs font-medium border-2 border-dashed border-surface-4 rounded-lg text-text-tertiary hover:text-text-secondary hover:border-surface-5 transition-colors flex items-center justify-center gap-2"
+              :disabled="isDuomiProvider"
+              :title="isDuomiProvider ? '多米参考图生图适配中' : ''"
+              :class="['flex-1 px-3 py-2.5 text-xs font-medium border-2 border-dashed border-surface-4 rounded-lg text-text-tertiary transition-colors flex items-center justify-center gap-2', isDuomiProvider ? 'opacity-40 cursor-not-allowed' : 'hover:text-text-secondary hover:border-surface-5']"
             >
               <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><rect x="3" y="3" width="18" height="18" rx="2" ry="2" stroke-width="2"/><circle cx="8.5" cy="8.5" r="1.5" stroke-width="2"/><polyline points="21 15 16 10 5 21" stroke-width="2"/></svg>
               图库选图
@@ -425,6 +432,9 @@ const selectedProvider = computed(() =>
   modelStore.providers.find(p => p.id === selectedProviderId.value) || null
 )
 const selectedProviderModels = computed(() => selectedProvider.value?.models ?? [])
+// 多米参考图协议仍在适配中（同 ImageGenView 注释）。BatchGenView 全流程基于参考图，
+// 选多米时实际上整个批量入口不可用；按用户口径仅禁用「添加参考图 / 图库选图」按钮 + 提示。
+const isDuomiProvider = computed(() => selectedProvider.value?.type === 'duomi')
 const selectedModelGroups = computed(() => {
   hintsTick.value
   if (!selectedProvider.value) return { recommended: [], others: [] }

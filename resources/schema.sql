@@ -196,6 +196,8 @@ CREATE TABLE IF NOT EXISTS image_generations (
   result_url TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'pending',
   error TEXT NOT NULL DEFAULT '',
+  -- 失败诊断用：发送给上游 API 的原始请求快照（脱敏后 JSON 字符串）；成功记录通常为空
+  raw_request TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (session_id) REFERENCES image_sessions(id) ON DELETE CASCADE
 );

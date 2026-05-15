@@ -288,6 +288,8 @@ interface ImageGeneration {
   result_url: string
   status: string
   error: string
+  /** 失败诊断快照（脱敏后 JSON 字符串）。本视图仅展示 status='done' 的记录，此字段始终为空，仅为类型一致性保留 */
+  raw_request: string
   created_at: string
 }
 

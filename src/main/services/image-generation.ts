@@ -9,10 +9,15 @@ import { mkdirSync, writeFileSync, unlinkSync, existsSync } from 'fs'
 import { BrowserWindow, nativeImage } from 'electron'
 import { recordUsage } from './usage-stats'
 import { resolveSizeToPixels, getModelMode } from '@shared/image-size'
-import { stripBase64 } from '@shared/strip-image-metadata'
 import { stripModelId } from '@shared/model-id'
 import { normalizeApiBase } from './api-base-normalize'
 import { addToCreation, removeByRelativePath } from './gallery'
+import {
+  buildRequestSnapshot,
+  describeFormData,
+  attachSnapshotToError,
+  extractRawRequest
+} from './request-snapshot'
 
 // ---- Global concurrency limit (Bug #3) ----
 // 所有入口（ImageGenView / BatchGenView / ImageEditView / Canvas / Chat 工具）共享此上限，
@@ -210,6 +215,12 @@ export interface ImageGeneration {
   result_url: string
   status: string
   error: string
+  /**
+   * 失败诊断用：发送给上游 API 的原始请求快照（脱敏后 JSON 字符串）。
+   * 成功记录通常为空；仅失败记录在 status='error' 时同步写入，
+   * 供 ErrorDetailDialog 展示与一键复制。
+   */
+  raw_request: string
   created_at: string
 }
 
@@ -643,6 +654,10 @@ async function callImageAPI(
     }
 
     let fetchOptions: RequestInit
+    // 失败诊断快照：根据 multipart / JSON 路径分别保留请求体描述
+    // multipart：await describeFormData 把 FormData 转为 { __multipart: true, parts: [...] }
+    // JSON：直接保留 body 对象，buildRequestSnapshot 内部会 sanitize
+    let snapshotBody: unknown
 
     let resolvedPx: string | null = null
     if (hasRefImages) {
@@ -657,25 +672,35 @@ async function callImageAPI(
       form.append('response_format', 'b64_json')
 
       for (const img of refImages) {
-        // Strip data URI prefix if present, and remove EXIF/ICC/XMP/COM segments
-        // to avoid upstream rejecting non-standard ICC v4 profiles (e.g. WeChat images).
+        // 直接 base64 → Buffer 透传原始字节，不再 stripBase64。
+        // 历史原因：stripJpeg 会丢掉 APP0(JFIF)/APP1(EXIF) 等所有 APPn 段，产出"裸 JPEG"。
+        // 实测苍 api / sub2api 等中间网关对裸 JPEG 严格校验时会 502 / 400 拒收，
+        // lingmi-ai 等同类项目也直接 io.Copy 透传原始字节。stripBase64 原本是为了
+        // Chromium Canvas 重编码场景设计的（注释见 strip-image-metadata.ts），
+        // 而 multipart 直传链路不经过 Canvas，原始字节透传更稳。
+        // 体积兜底由 shrinkRefImageIfTooLarge 接管，仅在 > 2MB 时用 nativeImage 重编码。
         const match = img.match(/^data:([^;]+);base64,/)
-        const mimeType = match ? match[1] : 'image/png'
+        const sourceMime = match ? match[1] : 'image/png'
         const raw = match ? img.slice(match[0].length) : img
-        const format: 'jpeg' | 'png' = mimeType.includes('png') ? 'png' : 'jpeg'
-        const cleaned = stripBase64(raw, format)
-        const buffer = Buffer.from(cleaned, 'base64')
-        const blob = new Blob([buffer], { type: mimeType })
-        const ext = format === 'png' ? 'png' : 'jpg'
+        const { buffer, mimeType } = shrinkRefImageIfTooLarge(
+          Buffer.from(raw, 'base64'),
+          sourceMime
+        )
+        // Node 22+ / Electron 31+ 严格 TS 类型下，Buffer.buffer 是 ArrayBufferLike 而
+        // BlobPart 要求 ArrayBuffer，类型可赋值严格不互通；运行时 Buffer 作为 Uint8Array
+        // 子类 100% 可作为 BlobPart（Node undici / Blob 实现支持），只是编译期报错。
+        const blob = new Blob([buffer as unknown as BlobPart], { type: mimeType })
+        const ext = mimeType.includes('png') ? 'png' : 'jpg'
         form.append('image', blob, `ref.${ext}`)
       }
 
       if (mask) {
+        // mask 保留原始 PNG 字节：OpenAI 要求 alpha 通道标识编辑区域，
+        // 不能 toJPEG 重编码（会丢 alpha）；mask 通常远小于主图，无需压缩兜底。
         const maskMatch = mask.match(/^data:([^;]+);base64,/)
         const maskRaw = maskMatch ? mask.slice(maskMatch[0].length) : mask
-        const cleanedMask = stripBase64(maskRaw, 'png')
-        const maskBuffer = Buffer.from(cleanedMask, 'base64')
-        const maskBlob = new Blob([maskBuffer], { type: 'image/png' })
+        const maskBuffer = Buffer.from(maskRaw, 'base64')
+        const maskBlob = new Blob([maskBuffer as unknown as BlobPart], { type: 'image/png' })
         form.append('mask', maskBlob, 'mask.png')
       }
 
@@ -683,6 +708,7 @@ async function callImageAPI(
       applyProviderPatches(form, provider)
 
       fetchOptions = { method: 'POST', headers, body: form }
+      snapshotBody = await describeFormData(form)
     } else {
       headers['Content-Type'] = 'application/json'
       resolvedPx = resolvePixels(size, modelId, tierId)
@@ -697,42 +723,58 @@ async function callImageAPI(
       // 用户 customParams + requestOverridePatch 叠加（最后写入，可覆盖系统默认字段）
       applyProviderPatches(body, provider)
       fetchOptions = { method: 'POST', headers, body: JSON.stringify(body) }
+      snapshotBody = body
     }
 
-    // 单次 15min timeout + 5xx/429 自动退避重试（已统一为全档位 15min，tierId 仅为兼容签名）
-    const response = await fetchWithRetry(url, fetchOptions, getImageApiTimeout(tierId), {
-      retries: 2,
-      errorPrefix: 'Image API error'
+    // 失败诊断：在 fetch 前构造脱敏后的请求快照；catch 块挂载到 error.rawRequest，
+    // 由 generateImages.runOne 写入 image_generations.raw_request 列供 UI 展示与复制。
+    const snapshot = buildRequestSnapshot({
+      channel: 'custom',
+      url,
+      method: 'POST',
+      headers,
+      body: snapshotBody
     })
 
-    // 响应体也可能是非法 JSON（如某些代理返回 HTML 200）— 安全解析
-    let data: any
     try {
-      data = await response.json()
-    } catch (e: any) {
-      throw new Error(`Image API 响应解析失败：${truncateError(String(e?.message || e))}`)
-    }
+      // 单次 15min timeout + 5xx/429 自动退避重试（已统一为全档位 15min，tierId 仅为兼容签名）
+      const response = await fetchWithRetry(url, fetchOptions, getImageApiTimeout(tierId), {
+        retries: 2,
+        errorPrefix: 'Image API error'
+      })
 
-    if (data.usage) {
+      // 响应体也可能是非法 JSON（如某些代理返回 HTML 200）— 安全解析
+      let data: any
       try {
-        recordUsage(
-          providerId,
-          modelId,
-          data.usage.prompt_tokens || 0,
-          data.usage.completion_tokens || 0,
-          data.usage.total_tokens || 0
-        )
-      } catch {}
+        data = await response.json()
+      } catch (e: any) {
+        throw new Error(`Image API 响应解析失败：${truncateError(String(e?.message || e))}`)
+      }
+
+      if (data.usage) {
+        try {
+          recordUsage(
+            providerId,
+            modelId,
+            data.usage.prompt_tokens || 0,
+            data.usage.completion_tokens || 0,
+            data.usage.total_tokens || 0
+          )
+        } catch {}
+      }
+
+      const items = data.data as any[]
+      if (!items || items.length === 0) throw new Error('No image data in response')
+
+      return items.map((item: any) => ({
+        b64_json: item.b64_json,
+        url: item.url,
+        revised_prompt: item.revised_prompt
+      }))
+    } catch (e: any) {
+      attachSnapshotToError(e, snapshot)
+      throw e
     }
-
-    const items = data.data as any[]
-    if (!items || items.length === 0) throw new Error('No image data in response')
-
-    return items.map((item: any) => ({
-      b64_json: item.b64_json,
-      url: item.url,
-      revised_prompt: item.revised_prompt
-    }))
   } finally {
     releaseApiSlot()
   }
@@ -774,61 +816,81 @@ async function callCloudImageAPI(
 
   if (hasRefImages) {
     body.images = refImages.map((img) => {
+      // 不再 stripBase64：理由同 multipart 路径（裸 JPEG 被苍 api / sub2api 拒收）。
+      // 体积兜底由 shrinkRefImageIfTooLarge 接管，仅在 > 2MB 时用 nativeImage 重编码。
       const match = img.match(/^data:([^;]+);base64,/)
-      const mimeType = match?.[1] || 'image/jpeg'
-      const base64 = match ? img.slice(match[0].length) : img
-      const format: 'jpeg' | 'png' = mimeType.includes('png') ? 'png' : 'jpeg'
-      return stripBase64(base64, format)
+      const sourceMime = match?.[1] || 'image/jpeg'
+      const raw = match ? img.slice(match[0].length) : img
+      const { buffer } = shrinkRefImageIfTooLarge(Buffer.from(raw, 'base64'), sourceMime)
+      return buffer.toString('base64')
     })
   }
 
   if (mask) {
+    // mask 直接透传（PNG，必须保留 alpha 通道）；不重编码，不 stripBase64。
     const maskMatch = mask.match(/^data:([^;]+);base64,/)
     const maskRaw = maskMatch ? mask.slice(maskMatch[0].length) : mask
-    body.mask = stripBase64(maskRaw, 'png')
+    body.mask = maskRaw
   }
 
-  // Step 1: Submit task — 60s 超时 + 5xx/429 退避重试
-  const submitRes = await fetchWithRetry(`${gatewayUrl}${endpoint}`, {
+  const submitUrl = `${gatewayUrl}${endpoint}`
+  // 失败诊断：在 fetch 前构造脱敏后的请求快照，catch 块挂载到 error.rawRequest
+  const snapshot = buildRequestSnapshot({
+    channel: 'cloud',
+    url: submitUrl,
     method: 'POST',
     headers,
-    body: JSON.stringify(body)
-  }, 60_000, { retries: 2, errorPrefix: 'Image API error' })
-
-  let submitData: any
-  try {
-    submitData = await submitRes.json()
-  } catch (e: any) {
-    throw new Error(`云端生图响应解析失败：${truncateError(String(e?.message || e))}`)
-  }
-  const taskId = submitData.task_id
-  if (!taskId) {
-    // Direct response (no async)
-    const items = submitData.data as any[]
-    if (!items || items.length === 0) throw new Error('No image data in response')
-    return items.map((item: any) => ({ b64_json: item.b64_json, url: item.url, revised_prompt: item.revised_prompt }))
-  }
-
-  // Step 2: Poll for result — 软重试到 deadline（429/5xx/网络/解析错误持续重试，不早退）
-  console.log('[ImageGen] Cloud task submitted:', taskId)
-  return pollAsyncTask({
-    statusUrl: `${gatewayUrl}/images/status/${taskId}`,
-    headers: { 'Authorization': `Bearer ${token}` },
-    taskId,
-    errorPrefix: 'Image API error',
-    extractDiagnostic: (statusData) => statusData?.status,
-    parseStatus: (statusData) => {
-      if (statusData.status === 'completed') {
-        const items = (statusData.result?.data || statusData.data) as any[]
-        if (!items || items.length === 0) throw new Error('No image data in response')
-        return items.map((item: any) => ({ b64_json: item.b64_json, url: item.url, revised_prompt: item.revised_prompt }))
-      }
-      if (statusData.status === 'failed') {
-        throw new Error(truncateError(statusData.error || 'Image generation failed'))
-      }
-      return null  // 进行中，继续轮询
-    }
+    body
   })
+
+  try {
+    // Step 1: Submit task — 60s 超时 + 5xx/429 退避重试
+    const submitRes = await fetchWithRetry(submitUrl, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body)
+    }, 60_000, { retries: 2, errorPrefix: 'Image API error' })
+
+    let submitData: any
+    try {
+      submitData = await submitRes.json()
+    } catch (e: any) {
+      throw new Error(`云端生图响应解析失败：${truncateError(String(e?.message || e))}`)
+    }
+    const taskId = submitData.task_id
+    if (!taskId) {
+      // Direct response (no async)
+      const items = submitData.data as any[]
+      if (!items || items.length === 0) throw new Error('No image data in response')
+      return items.map((item: any) => ({ b64_json: item.b64_json, url: item.url, revised_prompt: item.revised_prompt }))
+    }
+
+    // Step 2: Poll for result — 软重试到 deadline（429/5xx/网络/解析错误持续重试，不早退）
+    console.log('[ImageGen] Cloud task submitted:', taskId)
+    // 注意：必须 await，否则 pollAsyncTask 内的 reject 不会被外层 try/catch 捕获，
+    // 导致轮询失败时丢失快照挂载。
+    return await pollAsyncTask({
+      statusUrl: `${gatewayUrl}/images/status/${taskId}`,
+      headers: { 'Authorization': `Bearer ${token}` },
+      taskId,
+      errorPrefix: 'Image API error',
+      extractDiagnostic: (statusData) => statusData?.status,
+      parseStatus: (statusData) => {
+        if (statusData.status === 'completed') {
+          const items = (statusData.result?.data || statusData.data) as any[]
+          if (!items || items.length === 0) throw new Error('No image data in response')
+          return items.map((item: any) => ({ b64_json: item.b64_json, url: item.url, revised_prompt: item.revised_prompt }))
+        }
+        if (statusData.status === 'failed') {
+          throw new Error(truncateError(statusData.error || 'Image generation failed'))
+        }
+        return null  // 进行中，继续轮询
+      }
+    })
+  } catch (e: any) {
+    attachSnapshotToError(e, snapshot)
+    throw e
+  }
 }
 
 /**
@@ -851,41 +913,41 @@ function resolveDuoMiSize(size: string, tierId?: string): string {
 }
 
 /**
- * 把参考图压缩到多米可接受的大小。
+ * 参考图体积兜底：base64/Buffer 字节数超阈值时，用 nativeImage 重编码为较小 JPEG。
  *
- * 多米 /v1/images/generations 对 image 字段 base64 长度有上限（2026-05-13 实测：
- * 16K chars 通过、2K 于 16K-140K 之间，140K+ 触发 400 fail_to_submit_task）。
- * 安全阈值取 50K，预留足够余量适应 prompt / model / quality 等其他字段叠加后的 body 总大小。
+ * 阈值取 100KB 字节的精确算法依据：
+ *   多米 /v1/images/generations 对 image 字段 base64 长度有硬性上限（实测 140K chars
+ *   触发 400 fail_to_submit_task）。100KB 字节 → base64 ≈ 133K chars，给多米 140K 上限
+ *   留 5% 安全余量。同链路（苍 api / sub2api / 云控端 cloud_model_id 路由到多米类后端）
+ *   都受同一上限约束，统一一个阈值兼顾三条路径。
  *
- * 策略：
- *   1. 原 base64 已 ≤ 50K → 原样返回（避免无意义重编码）
- *   2. 超阈值 → nativeImage 解码 → 长边 ≤ 1024 → JPEG q=82 → 70 → 55 递减
- *   3. q=55 仍超 → 长边再降到 768 + q=70
- *   4. 任何异常（解码失败 / nativeImage 识别不了、类型如 webp/gif）→ 原样返回，
- *      让多米上游决定是否拒 —— 不隐藏问题。
+ * 注意：100KB 比"画质优先"的直觉小很多——很多生图参考图（高质量小图）都会被压缩。
+ *   但参考图本来就是给模型做风格/构图引导，不需要原画质，损失可接受。
  *
- * 返回是完整 dataUri。调用方不需再拼接。
+ * 设计要点：
+ *   1. 阈值 100KB：精确卡在多米 140K base64 chars 上限下方
+ *   2. 超阈值时长边收敛到 ≤ 1024px，JPEG 质量 80→65→50 递降
+ *   3. 二轮兜底：长边降到 768 + q=65（极端微信原图等场景）
+ *   4. 已 ≤ 阈值 / 解码失败：原样返回 —— 不冒重编码风险
+ *
+ * 故意不做 EXIF/ICC 段剥离：实测 sub2api（苍 api）等中间网关对"裸 JPEG（无 JFIF
+ * 段）"严格校验时会拒收，反而把合法图弄成不合法图。原始字节透传是最稳的策略；
+ * 真要去 ICC 也由 nativeImage 重编码顺带完成（输出标准 JFIF JPEG）。
  */
-function shrinkImageForDuoMi(base64: string, format: 'jpeg' | 'png'): string {
-  const SAFE_LEN = 50_000
-  const inputMime = format === 'png' ? 'image/png' : 'image/jpeg'
+function shrinkRefImageIfTooLarge(
+  buffer: Buffer,
+  mimeType: string
+): { buffer: Buffer; mimeType: string } {
+  const MAX_BYTES = 100 * 1024 // 100KB → base64 ~133K chars，留 5% 余量在多米 140K chars 上限下
 
-  if (base64.length <= SAFE_LEN) {
-    return `data:${inputMime};base64,${base64}`
+  if (buffer.length <= MAX_BYTES) {
+    return { buffer, mimeType }
   }
 
-  let buf: Buffer
-  try {
-    buf = Buffer.from(base64, 'base64')
-  } catch {
-    console.warn('[ImageGen] DuoMi shrink: base64 decode failed, passthrough')
-    return `data:${inputMime};base64,${base64}`
-  }
-
-  let img = nativeImage.createFromBuffer(buf)
+  let img = nativeImage.createFromBuffer(buffer)
   if (img.isEmpty()) {
-    console.warn('[ImageGen] DuoMi shrink: nativeImage empty (不可识别的格式如 webp/gif), passthrough')
-    return `data:${inputMime};base64,${base64}`
+    console.warn(`[ImageGen] shrinkRef: nativeImage 无法解码 ${mimeType} (${buffer.length} bytes), 原样透传由上游决定`)
+    return { buffer, mimeType }
   }
 
   const origSize = img.getSize()
@@ -895,24 +957,24 @@ function shrinkImageForDuoMi(base64: string, format: 'jpeg' | 'png'): string {
       : img.resize({ height: 1024, quality: 'good' })
   }
 
-  for (const q of [82, 70, 55]) {
-    const out = img.toJPEG(q).toString('base64')
-    if (out.length <= SAFE_LEN) {
+  for (const q of [80, 65, 50]) {
+    const out = img.toJPEG(q)
+    if (out.length > 0 && out.length <= MAX_BYTES) {
       const sz = img.getSize()
-      console.log(`[ImageGen] DuoMi shrink: ${base64.length} → ${out.length} chars (${origSize.width}x${origSize.height} → ${sz.width}x${sz.height} jpeg q=${q})`)
-      return `data:image/jpeg;base64,${out}`
+      console.log(`[ImageGen] shrinkRef: ${buffer.length} → ${out.length} bytes (${origSize.width}x${origSize.height} → ${sz.width}x${sz.height} jpeg q=${q})`)
+      return { buffer: out, mimeType: 'image/jpeg' }
     }
   }
 
-  // 递减到 q=55 仍超边：长边再降到 768
+  // 二轮：长边再降到 768 + q=65 兜底
   const cur = img.getSize()
   img = cur.width >= cur.height
     ? img.resize({ width: 768, quality: 'good' })
     : img.resize({ height: 768, quality: 'good' })
-  const finalOut = img.toJPEG(70).toString('base64')
+  const finalOut = img.toJPEG(65)
   const finalSize = img.getSize()
-  console.log(`[ImageGen] DuoMi shrink (二轮): ${base64.length} → ${finalOut.length} chars (${origSize.width}x${origSize.height} → ${finalSize.width}x${finalSize.height} jpeg q=70)`)
-  return `data:image/jpeg;base64,${finalOut}`
+  console.log(`[ImageGen] shrinkRef (二轮): ${buffer.length} → ${finalOut.length} bytes (${origSize.width}x${origSize.height} → ${finalSize.width}x${finalSize.height} jpeg q=65)`)
+  return { buffer: finalOut, mimeType: 'image/jpeg' }
 }
 
 /**
@@ -966,24 +1028,22 @@ async function callDuoMiImageAPI(
   const submitUrl = `${apiBase}/images/generations?async=true`
   const submitBody: Record<string, any> = { model: 'gpt-image-2', prompt, size: duomiSize }
 
-  // 参考图处理：
-  //   1. 拆出 mime + 纯 base64；无 dataUri 前缀默认按 png
-  //   2. stripBase64 去 EXIF/ICC 段（避免上游 WAF 拒微信图 ICC v4 profile）
-  //   3. shrinkImageForDuoMi 压缩到 ≤ 50K base64 chars（多米 image 字段实测阈值介于 16K-140K）
+  // 参考图处理（1）拆出 mime + 纯 base64；无 dataUri 前缀默认按 png。
+  //         （2）不再 stripBase64：同 custom / cloud 路径，裸 JPEG 反而可能被上游
+  //             中间层拒收；多米是直连服务商 API，不走 WAF 网关，原始字节透传更稳。
+  //         （3）不再 50K chars 阈值：之前阈值是对 fail_to_submit_task 的错判，
+  //             多米实际能接受更大字节；体积兜底统一用 shrinkRefImageIfTooLarge（2MB）。
   if (refImages && refImages.length > 0) {
     submitBody.image = refImages.map((img) => {
       const match = img.match(/^data:([^;]+);base64,/)
-      let raw: string
-      let format: 'jpeg' | 'png'
-      if (match) {
-        raw = img.slice(match[0].length)
-        format = match[1].includes('png') ? 'png' : 'jpeg'
-      } else {
-        raw = img
-        format = 'png'
-      }
-      const stripped = stripBase64(raw, format)
-      return shrinkImageForDuoMi(stripped, format)
+      const sourceMime = match?.[1] || 'image/png'
+      const raw = match ? img.slice(match[0].length) : img
+      const { buffer, mimeType } = shrinkRefImageIfTooLarge(
+        Buffer.from(raw, 'base64'),
+        sourceMime
+      )
+      // 多米 image 字段接受 dataUri 数组（上游实测格式），拼回完整 dataUri。
+      return `data:${mimeType};base64,${buffer.toString('base64')}`
     })
   }
 
@@ -1007,56 +1067,76 @@ async function callDuoMiImageAPI(
     extraKeys: Object.keys(submitBody).filter(k => !['model', 'prompt', 'size', 'image'].includes(k))
   })
 
-  const submitRes = await fetchWithRetry(submitUrl, {
+  // 失败诊断：在 fetch 前构造脱敏后的请求快照；catch 块挂载到 error.rawRequest，
+  // 由 generateImages.runOne 写入 image_generations.raw_request 列供 UI 展示与复制。
+  const snapshot = buildRequestSnapshot({
+    channel: 'duomi',
+    url: submitUrl,
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'Authorization': apiKey
     },
-    body: JSON.stringify(submitBody)
-  }, 60_000, { retries: 2, errorPrefix: '多米 API 提交失败' })
-
-  let submitData: any
-  try {
-    submitData = await submitRes.json()
-  } catch (e: any) {
-    throw new Error(`多米 API 响应解析失败：${truncateError(String(e?.message || e))}`)
-  }
-  const taskId: string | undefined = submitData?.id
-  if (!taskId) {
-    throw new Error(`多米 API 响应缺少 task id：${truncateError(JSON.stringify(submitData))}`)
-  }
-
-  // 轮询任务状态 — 多米策略：连续 12 次瞬态失败提前抛错（避免上游持续不可用时白等 5 分钟）
-  console.log('[ImageGen] DuoMi task submitted:', taskId)
-  return pollAsyncTask({
-    statusUrl: `${apiBase}/tasks/${taskId}`,
-    headers: { 'Authorization': apiKey },  // 多米是裸 token，无 Bearer 前缀
-    taskId,
-    errorPrefix: '多米 API',
-    maxConsecutiveTransientFailures: 12,  // 12 * 3s ≈ 36s 持续失败后早退
-    extractDiagnostic: (statusData) => statusData?.state,
-    parseStatus: (statusData) => {
-      const state: string | undefined = statusData?.state
-      if (state === 'succeeded') {
-        const images = Array.isArray(statusData?.data?.images) ? statusData.data.images : []
-        const out: ImageAPIResult[] = []
-        for (const img of images) {
-          if (img?.url) out.push({ url: String(img.url) })
-        }
-        if (out.length === 0) {
-          throw new Error(`多米 API 任务声明成功但未返回图片 URL（task_id=${taskId}）`)
-        }
-        return out
-      }
-      if (state === 'failed' || state === 'error' || state === 'cancelled') {
-        const msg = statusData?.data?.description || statusData?.message || '任务执行失败'
-        throw new Error(`多米 API 任务失败（state=${state}, task_id=${taskId}）：${truncateError(String(msg))}`)
-      }
-      // pending / running / processing / queued / 未知 → 继续轮询
-      return null
-    }
+    body: submitBody
   })
+
+  try {
+    const submitRes = await fetchWithRetry(submitUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': apiKey
+      },
+      body: JSON.stringify(submitBody)
+    }, 60_000, { retries: 2, errorPrefix: '多米 API 提交失败' })
+
+    let submitData: any
+    try {
+      submitData = await submitRes.json()
+    } catch (e: any) {
+      throw new Error(`多米 API 响应解析失败：${truncateError(String(e?.message || e))}`)
+    }
+    const taskId: string | undefined = submitData?.id
+    if (!taskId) {
+      throw new Error(`多米 API 响应缺少 task id：${truncateError(JSON.stringify(submitData))}`)
+    }
+
+    // 轮询任务状态 — 多米策略：连续 12 次瞬态失败提前抛错（避免上游持续不可用时白等 5 分钟）
+    console.log('[ImageGen] DuoMi task submitted:', taskId)
+    // 注意：必须 await，否则 pollAsyncTask 内的 reject 不会被外层 try/catch 捕获，
+    // 导致轮询失败时丢失快照挂载。
+    return await pollAsyncTask({
+      statusUrl: `${apiBase}/tasks/${taskId}`,
+      headers: { 'Authorization': apiKey },  // 多米是裸 token，无 Bearer 前缀
+      taskId,
+      errorPrefix: '多米 API',
+      maxConsecutiveTransientFailures: 12,  // 12 * 3s ≈ 36s 持续失败后早退
+      extractDiagnostic: (statusData) => statusData?.state,
+      parseStatus: (statusData) => {
+        const state: string | undefined = statusData?.state
+        if (state === 'succeeded') {
+          const images = Array.isArray(statusData?.data?.images) ? statusData.data.images : []
+          const out: ImageAPIResult[] = []
+          for (const img of images) {
+            if (img?.url) out.push({ url: String(img.url) })
+          }
+          if (out.length === 0) {
+            throw new Error(`多米 API 任务声明成功但未返回图片 URL（task_id=${taskId}）`)
+          }
+          return out
+        }
+        if (state === 'failed' || state === 'error' || state === 'cancelled') {
+          const msg = statusData?.data?.description || statusData?.message || '任务执行失败'
+          throw new Error(`多米 API 任务失败（state=${state}, task_id=${taskId}）：${truncateError(String(msg))}`)
+        }
+        // pending / running / processing / queued / 未知 → 继续轮询
+        return null
+      }
+    })
+  } catch (e: any) {
+    attachSnapshotToError(e, snapshot)
+    throw e
+  }
 }
 
 function saveImageToFile(sessionId: string, genId: string, b64Data: string): string {
@@ -1112,12 +1192,14 @@ function insertGeneration(data: {
   result_url: string
   status: string
   error: string
+  /** 可选：预创建 pending 记录时默认空字符串；失败时由 updateGenerationStatus 写入 */
+  raw_request?: string
 }): ImageGeneration {
   const db = getDatabase()
   const now = new Date().toISOString()
   db.prepare(
-    `INSERT INTO image_generations (id, session_id, prompt, revised_prompt, ref_images, model_provider_id, model_id, size, quality, result_path, result_url, status, error, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO image_generations (id, session_id, prompt, revised_prompt, ref_images, model_provider_id, model_id, size, quality, result_path, result_url, status, error, raw_request, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     data.id,
     data.session_id,
@@ -1132,6 +1214,7 @@ function insertGeneration(data: {
     data.result_url,
     data.status,
     data.error,
+    data.raw_request || '',
     now
   )
   // Update session timestamp
@@ -1172,7 +1255,7 @@ async function saveOrDownloadResult(
   return { result_path: resultPath, result_url: resultUrl }
 }
 
-function updateGenerationStatus(id: string, status: string, updates: Partial<{ result_path: string; result_url: string; revised_prompt: string; error: string }>): void {
+function updateGenerationStatus(id: string, status: string, updates: Partial<{ result_path: string; result_url: string; revised_prompt: string; error: string; raw_request: string }>): void {
   const db = getDatabase()
   const sets: string[] = ['status = ?']
   const params: any[] = [status]
@@ -1180,6 +1263,8 @@ function updateGenerationStatus(id: string, status: string, updates: Partial<{ r
   if (updates.result_url !== undefined) { sets.push('result_url = ?'); params.push(updates.result_url) }
   if (updates.revised_prompt !== undefined) { sets.push('revised_prompt = ?'); params.push(updates.revised_prompt) }
   if (updates.error !== undefined) { sets.push('error = ?'); params.push(updates.error) }
+  // raw_request 仅在失败路径写入：generateImages.runOne 的 catch 块从 error.rawRequest 读取
+  if (updates.raw_request !== undefined) { sets.push('raw_request = ?'); params.push(updates.raw_request) }
   params.push(id)
   db.prepare(`UPDATE image_generations SET ${sets.join(', ')} WHERE id = ?`).run(...params)
 }
@@ -1307,19 +1392,28 @@ export async function generateImages(
         })
       } catch (e: any) {
         const errorMsg = e?.message || 'Unknown error'
-        updateGenerationStatus(genId, 'error', { error: errorMsg })
+        // 失败诊断：从 error.rawRequest 提取 callXxxImageAPI 在 fetch 前抓的请求快照（已脱敏 JSON 字符串），
+        // 与 error 字段一同写入数据库；UI 端 ErrorDetailDialog 据此展示「原始请求」并支持复制。
+        // 历史失败记录及非生图路径错误（无快照挂载）会写入空字符串。
+        const rawRequest = extractRawRequest(e)
+        updateGenerationStatus(genId, 'error', { error: errorMsg, raw_request: rawRequest })
 
         const gen = getGeneration(genId)!
         ordered[i] = gen
         completedCount++
 
+        // raw_request 同时通过 progress 事件回传渲染端：
+        // 失败的生成项始终留在 store.inFlight 中（不会触发 fetchPage 重新拉 DB），
+        // 因此必须从 IPC 直接带进 store，否则 ErrorDetailDialog 拿不到。
+        // 快照已脱敏（base64 替换为占位符），通常 < 5KB，IPC 传输无压力。
         emitProgress({
           type: 'error',
           index: i,
           total: batchCount,
           completed: completedCount,
           genId,
-          error: errorMsg
+          error: errorMsg,
+          raw_request: rawRequest
         })
       }
     }

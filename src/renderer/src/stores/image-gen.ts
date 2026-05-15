@@ -20,6 +20,12 @@ export interface ImageGeneration {
   status: string
   /** 后端原文错误。展示时在 UI 层调 translateError 转换为友好文案 */
   error: string
+  /**
+   * 失败诊断用：发送给上游 API 的原始请求快照（脱敏后 JSON 字符串）。
+   * 仅 status='error' 时由主进程写入；其他状态及历史失败记录均为空字符串。
+   * 由 ErrorDetailDialog 展示与一键复制，便于用户贴给排错方定位字段/协议问题。
+   */
+  raw_request: string
   created_at: string
 }
 
@@ -256,6 +262,7 @@ export const useImageGenStore = defineStore('imageGen', () => {
             result_url: '',
             status: 'generating',
             error: '',
+            raw_request: '',
             created_at: new Date().toISOString()
           })
         } else if (existsInFlight) {
@@ -274,6 +281,9 @@ export const useImageGenStore = defineStore('imageGen', () => {
         if (gen) {
           gen.status = 'error'
           gen.error = data.error || ''
+          // 失败诊断快照：主进程通过 progress 事件直接传脱敏后的 JSON 字符串，
+          // 不依赖 fetchPage 拉取（失败项不在 status='done' 列表里，永远不会被刷新）
+          gen.raw_request = data.raw_request || ''
         } else {
           // 保险分支：此前 generating 事件丢失或已被合并走 completed，直接补一条
           inFlight.value.unshift({
@@ -290,6 +300,7 @@ export const useImageGenStore = defineStore('imageGen', () => {
             result_url: '',
             status: 'error',
             error: data.error || '',
+            raw_request: data.raw_request || '',
             created_at: new Date().toISOString()
           })
         }

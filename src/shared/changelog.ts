@@ -21,6 +21,13 @@ export interface ReleaseNote {
 
 export const CHANGELOG: ReleaseNote[] = [
   {
+    version: '0.6.8',
+    date: '2026-05-16',
+    notes: [
+      '提升 OpenAI 兼容协议接口使用参考图生图时的成功率，弃用了兼容性较差的 stripBase64 图像压缩方式'
+    ]
+  },
+  {
     version: '0.6.7',
     date: '2026-05-15',
     notes: [

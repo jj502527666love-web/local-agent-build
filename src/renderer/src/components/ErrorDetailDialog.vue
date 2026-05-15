@@ -53,6 +53,47 @@
                 class="text-xs leading-relaxed text-text-secondary whitespace-pre-wrap break-all font-mono bg-surface-1 border border-surface-2 rounded-lg px-3 py-2.5"
               >{{ rawError }}</pre>
             </div>
+            <!-- 原始请求快照：快照包含脱敏后的 url/method/headers/body，默认折叠，独立复制按钮仅复制 JSON 原文 -->
+            <div v-if="rawRequest" class="border border-surface-2 rounded-lg overflow-hidden">
+              <div class="flex items-center justify-between px-3 py-2 bg-surface-1">
+                <button
+                  type="button"
+                  @click="showRawRequest = !showRawRequest"
+                  class="flex items-center gap-1.5 text-[11px] text-text-secondary hover:text-text-primary transition-colors"
+                >
+                  <svg
+                    class="w-3 h-3 transition-transform"
+                    :class="{ 'rotate-90': showRawRequest }"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <polyline points="9 18 15 12 9 6" />
+                  </svg>
+                  <span>原始请求（已脱敏）</span>
+                </button>
+                <button
+                  type="button"
+                  @click="copyRawRequest"
+                  class="flex items-center gap-1 text-[11px] text-text-tertiary hover:text-primary-600 transition-colors"
+                >
+                  <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect width="14" height="14" x="8" y="8" rx="2" ry="2" />
+                    <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
+                  </svg>
+                  <span>{{ rawRequestCopied ? '已复制' : '复制' }}</span>
+                </button>
+              </div>
+              <Transition name="raw-request">
+                <pre
+                  v-if="showRawRequest"
+                  class="text-[11px] leading-relaxed text-text-secondary whitespace-pre-wrap break-all font-mono bg-surface-0 px-3 py-2.5 max-h-80 overflow-auto border-t border-surface-2"
+                >{{ rawRequest }}</pre>
+              </Transition>
+            </div>
           </div>
 
           <!-- Footer -->
@@ -90,6 +131,11 @@ const props = defineProps<{
   visible: boolean
   /** 后端错误原文（未翻译）。组件内部调 translateError 派生友好翻译 */
   rawError: string
+  /**
+   * 发送给上游 API 的原始请求快照（脱敏后的 JSON 字符串）。
+   * 仅失败记录且主进程已写入时会传递，有值时在 body 区预默认折叠的「原始请求」区块，提供独立复制按钮。
+   */
+  rawRequest?: string
   title?: string
 }>()
 
@@ -109,6 +155,11 @@ const hasRaw = computed(() => {
 const copied = ref(false)
 let copyTimer: number | null = null
 
+// 原始请求面板状态：默认折叠，按需展开
+const showRawRequest = ref(false)
+const rawRequestCopied = ref(false)
+let rawRequestCopyTimer: number | null = null
+
 async function copy() {
   const parts: string[] = []
   if (friendly.value) parts.push(friendly.value)
@@ -127,15 +178,36 @@ async function copy() {
   }
 }
 
-// 关闭时重置提示状态，避免下次打开残留“已复制”
+async function copyRawRequest() {
+  const text = props.rawRequest || ''
+  if (!text) return
+  try {
+    await navigator.clipboard.writeText(text)
+    rawRequestCopied.value = true
+    if (rawRequestCopyTimer) window.clearTimeout(rawRequestCopyTimer)
+    rawRequestCopyTimer = window.setTimeout(() => {
+      rawRequestCopied.value = false
+    }, 1500)
+  } catch {
+    // 降级：保持 rawRequestCopied=false
+  }
+}
+
+// 关闭时重置提示状态，避免下次打开残留“已复制”与展开状态
 watch(
   () => props.visible,
   (v) => {
     if (!v) {
       copied.value = false
+      rawRequestCopied.value = false
+      showRawRequest.value = false
       if (copyTimer) {
         window.clearTimeout(copyTimer)
         copyTimer = null
+      }
+      if (rawRequestCopyTimer) {
+        window.clearTimeout(rawRequestCopyTimer)
+        rawRequestCopyTimer = null
       }
     }
   }
@@ -151,5 +223,13 @@ watch(
 .dialog-leave-to {
   opacity: 0;
   transform: scale(0.98);
+}
+.raw-request-enter-active,
+.raw-request-leave-active {
+  transition: opacity 120ms ease;
+}
+.raw-request-enter-from,
+.raw-request-leave-to {
+  opacity: 0;
 }
 </style>

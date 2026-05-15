@@ -48,7 +48,10 @@
               <!-- Reference Images -->
               <div>
                 <div class="flex items-center justify-between mb-1.5">
-                  <label class="text-xs font-medium text-text-secondary">参考图</label>
+                  <div class="flex items-center gap-2 min-w-0">
+                    <label class="text-xs font-medium text-text-secondary">参考图</label>
+                    <span v-if="isDuomiProvider" class="text-[10px] text-amber-600 dark:text-amber-400 truncate">多米参考图生图适配中</span>
+                  </div>
                   <span class="text-[10px] text-text-tertiary">{{ refImages.length }} / 10</span>
                 </div>
                 <div class="flex gap-2 flex-wrap">
@@ -61,7 +64,9 @@
                   <button
                     v-if="refImages.length < 10"
                     @click="pickRefImage"
-                    class="w-14 h-14 rounded-lg border-2 border-dashed border-surface-4 flex flex-col items-center justify-center text-text-tertiary hover:text-text-secondary hover:border-surface-5 transition-colors"
+                    :disabled="isDuomiProvider"
+                    :title="isDuomiProvider ? '多米参考图生图适配中' : ''"
+                    :class="['w-14 h-14 rounded-lg border-2 border-dashed border-surface-4 flex flex-col items-center justify-center text-text-tertiary transition-colors', isDuomiProvider ? 'opacity-40 cursor-not-allowed' : 'hover:text-text-secondary hover:border-surface-5']"
                   >
                     <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.5v15m7.5-7.5h-15" /></svg>
                     <span class="text-[9px] mt-0.5">添加</span>
@@ -69,7 +74,9 @@
                   <button
                     v-if="refImages.length < 10"
                     @click="showGalleryPicker = true"
-                    class="w-14 h-14 rounded-lg border-2 border-dashed border-surface-4 flex flex-col items-center justify-center text-text-tertiary hover:text-text-secondary hover:border-surface-5 transition-colors"
+                    :disabled="isDuomiProvider"
+                    :title="isDuomiProvider ? '多米参考图生图适配中' : ''"
+                    :class="['w-14 h-14 rounded-lg border-2 border-dashed border-surface-4 flex flex-col items-center justify-center text-text-tertiary transition-colors', isDuomiProvider ? 'opacity-40 cursor-not-allowed' : 'hover:text-text-secondary hover:border-surface-5']"
                   >
                     <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><rect x="3" y="3" width="18" height="18" rx="2" ry="2" stroke-width="2"/><circle cx="8.5" cy="8.5" r="1.5" stroke-width="2"/><polyline points="21 15 16 10 5 21" stroke-width="2"/></svg>
                     <span class="text-[9px] mt-0.5">图库</span>
@@ -427,6 +434,7 @@
   <ErrorDetailDialog
     :visible="errorDialog.visible"
     :raw-error="errorDialog.rawError"
+    :raw-request="errorDialog.rawRequest"
     title="生成失败详情"
     @close="errorDialog.visible = false"
   />
@@ -490,13 +498,19 @@ const {
   viewMode,
 } = storeToRefs(formStore)
 
-// 错误详情弹窗：仅存原文，友好翻译由 ErrorDetailDialog 内部派生
-const errorDialog = ref<{ visible: boolean; rawError: string }>({
+// 错误详情弹窗：仅存原文 + 原始请求快照（已脱敏 JSON），友好翻译由 ErrorDetailDialog 内部派生。
+// rawRequest 仅主进程在 status='error' 路径写入，历史失败记录可能为空
+const errorDialog = ref<{ visible: boolean; rawError: string; rawRequest: string }>({
   visible: false,
-  rawError: ''
+  rawError: '',
+  rawRequest: ''
 })
-function openErrorDialog(gen: Pick<ImageGeneration, 'error'>) {
-  errorDialog.value = { visible: true, rawError: gen.error || '' }
+function openErrorDialog(gen: Pick<ImageGeneration, 'error' | 'raw_request'>) {
+  errorDialog.value = {
+    visible: true,
+    rawError: gen.error || '',
+    rawRequest: gen.raw_request || ''
+  }
 }
 
 // 确认弹窗：避免误点直接触发重新生成
@@ -671,6 +685,10 @@ const selectedProvider = computed(() =>
   modelStore.providers.find(p => p.id === selectedProviderId.value) || null
 )
 const selectedProviderModels = computed(() => selectedProvider.value?.models ?? [])
+// 多米官方 /v1/images/generations?async=true 仍在适配中：当前 image[] base64 dataURI 协议在
+// 部分图上触发上游 `fail_to_submit_task`，UI 层先临时禁用参考图入口，避免用户撞坑。
+// 行为：禁用「添加 / 图库」两个按钮 + 顶部展示提示文本；已上传的参考图保留，用户可自行删除。
+const isDuomiProvider = computed(() => selectedProvider.value?.type === 'duomi')
 
 const selectedModelGroups = computed(() => {
   hintsTick.value
