@@ -113,6 +113,13 @@ export function freshRuntimeFields(
       base.image_data = ''
       base.image_path = ''
       break
+    case 'reverse':
+      // 反推产物是运行态，导入时重置；用户配置（vision_*、style_preset、output_lang、custom_prompt）
+      // 不在 RUNTIME_DATA_FIELDS 黑名单里，会通过 stripRuntimeFields 自动保留
+      base.result = ''
+      base.status = 'idle'
+      base.error = ''
+      break
   }
   return base
 }

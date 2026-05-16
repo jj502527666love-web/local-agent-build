@@ -244,6 +244,42 @@ export interface GenerateImageOptions {
     conversationId?: string
     source?: 'chat' | 'image-gen' | 'batch' | 'edit' | 'canvas'
   }
+  /**
+   * v0.6.9+ 来自流式画布节点的生图调用：传入后图片落盘到 canvas/{projectId}/，
+   * 而非默认的 images/{sessionId}/。文件名前缀使用 canvasNodeId，让
+   * deleteNode 时的 cleanupNodeFiles 能按 nodeId 前缀级联清理（避免孤儿文件）。
+   */
+  canvasProjectId?: string
+  canvasNodeId?: string
+}
+
+/**
+ * v0.6.9+ 生图落盘上下文：把"图存到哪、文件叫啥"两件事抽出来。
+ *
+ * - 普通调用（image-gen 页 / chat 工具）：dir = images/{sessionId}/，filename = {genId}.{ext}
+ * - 画布调用（text2img/img2img 节点）：dir = canvas/{projectId}/，filename = {nodeId}_{genId}.{ext}
+ *
+ * 文件名加 nodeId 前缀的目的：与 canvas.ts 的 cleanupNodeFiles 约定对齐，
+ * 节点被删除时 `${nodeId}_` 前缀匹配能一次清掉所有关联生成图。
+ */
+interface OutputContext {
+  sessionId: string
+  canvasProjectId?: string
+  canvasNodeId?: string
+}
+
+function getOutputDir(ctx: OutputContext): string {
+  if (ctx.canvasProjectId) {
+    const dir = join(getDataDir(), 'canvas', ctx.canvasProjectId)
+    mkdirSync(dir, { recursive: true })
+    return dir
+  }
+  return getImageDir(ctx.sessionId)
+}
+
+function buildOutputFilename(ctx: OutputContext, genId: string, ext: string): string {
+  if (ctx.canvasNodeId) return `${ctx.canvasNodeId}_${genId}.${ext}`
+  return `${genId}.${ext}`
 }
 
 /** 解析 UI 传入的 size（预设 / 比例 / 像素）为上游 API 接受的 "WxH" 像素串。
@@ -1139,8 +1175,7 @@ async function callDuoMiImageAPI(
   }
 }
 
-function saveImageToFile(sessionId: string, genId: string, b64Data: string): string {
-  const dir = getImageDir(sessionId)
+function saveImageToFile(ctx: OutputContext, genId: string, b64Data: string): string {
   // Detect format from base64 header or default to png
   let ext = 'png'
   let rawBase64 = b64Data
@@ -1151,14 +1186,15 @@ function saveImageToFile(sessionId: string, genId: string, b64Data: string): str
       rawBase64 = b64Data.slice(match[0].length)
     }
   }
-  const filename = `${genId}.${ext}`
+  const dir = getOutputDir(ctx)
+  const filename = buildOutputFilename(ctx, genId, ext)
   const filePath = join(dir, filename)
   const buffer = Buffer.from(rawBase64, 'base64')
   writeFileSync(filePath, buffer)
   return toRelativePath(filePath)   // 返回相对路径
 }
 
-async function downloadImageToFile(sessionId: string, genId: string, imageUrl: string): Promise<string> {
+async function downloadImageToFile(ctx: OutputContext, genId: string, imageUrl: string): Promise<string> {
   // 3 分钟覆盖 4K / 多张大文件场景；retries=1：图片 URL 通常时效短（多米 ~15min），
   // 多次重试反而拖延错误反馈。1 次足够覆盖偶发网络抖动；URL 失效（403/410/404）直接抛错。
   const response = await fetchWithRetry(imageUrl, { method: 'GET' }, 180_000, {
@@ -1171,8 +1207,8 @@ async function downloadImageToFile(sessionId: string, genId: string, imageUrl: s
   let ext = 'png'
   if (contentType.includes('jpeg') || contentType.includes('jpg')) ext = 'jpg'
   else if (contentType.includes('webp')) ext = 'webp'
-  const dir = getImageDir(sessionId)
-  const filename = `${genId}.${ext}`
+  const dir = getOutputDir(ctx)
+  const filename = buildOutputFilename(ctx, genId, ext)
   const filePath = join(dir, filename)
   writeFileSync(filePath, buffer)
   return toRelativePath(filePath)   // 返回相对路径
@@ -1228,14 +1264,14 @@ function insertGeneration(data: {
  * 返回 { result_path, result_url } 仅在成功路径下使用。
  */
 async function saveOrDownloadResult(
-  sessionId: string,
+  ctx: OutputContext,
   genId: string,
   apiResult: ImageAPIResult
 ): Promise<{ result_path: string; result_url: string }> {
   let resultPath = ''
   let resultUrl = ''
   if (apiResult.b64_json) {
-    resultPath = saveImageToFile(sessionId, genId, apiResult.b64_json)
+    resultPath = saveImageToFile(ctx, genId, apiResult.b64_json)
   } else if (apiResult.url) {
     resultUrl = apiResult.url
     // 先持久化 URL，避免 download 失败时 catch 里没机会回填
@@ -1246,7 +1282,7 @@ async function saveOrDownloadResult(
       console.error('[ImageGen] Failed to persist result_url before download:', e)
     }
     try {
-      resultPath = await downloadImageToFile(sessionId, genId, apiResult.url)
+      resultPath = await downloadImageToFile(ctx, genId, apiResult.url)
     } catch (e: any) {
       const detail = truncateError(String(e?.message || e))
       throw new Error(`图片下载失败：${detail}（已保留原 URL，可手动复制访问）`)
@@ -1366,7 +1402,14 @@ export async function generateImages(
 
         // 下载失败时 saveOrDownloadResult 抛错，进 worker 外层 catch 标 'error'；
         // result_url 已在 helper 内提前写库，便于用户手动救援。
-        const { result_path, result_url } = await saveOrDownloadResult(sessionId, genId, apiResult)
+        // OutputContext 控制落盘路径：画布调用传了 canvasProjectId/canvasNodeId 则进 canvas/{projectId}/，
+        // 其他调用者（image-gen 页 / chat 工具）不传则保持原 images/{sessionId}/ 行为不变。
+        const outputCtx: OutputContext = {
+          sessionId,
+          canvasProjectId: options.canvasProjectId,
+          canvasNodeId: options.canvasNodeId
+        }
+        const { result_path, result_url } = await saveOrDownloadResult(outputCtx, genId, apiResult)
 
         updateGenerationStatus(genId, 'done', {
           result_path,

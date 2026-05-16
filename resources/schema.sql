@@ -301,3 +301,53 @@ CREATE TABLE IF NOT EXISTS gallery_items (
 CREATE INDEX IF NOT EXISTS idx_gallery_items_category ON gallery_items(category_id);
 CREATE INDEX IF NOT EXISTS idx_gallery_items_path ON gallery_items(file_path);
 CREATE INDEX IF NOT EXISTS idx_gallery_items_name ON gallery_items(name);
+
+-- AI 抠图自定义接口（v0.6.9+）。仅当用户在「模型服务 → 抠图接口」tab 配置自己的阿里 AK 时
+-- 才写入；云控端中转模式不依赖此表。ak/sk 用 AES-256-GCM 加密后存储（key 由 device-id 派生）。
+CREATE TABLE IF NOT EXISTS matting_providers (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  -- 当前仅支持 type='aliyun_viapi'（阿里 SegmentHDCommonImage）。预留字段方便后续接腾讯 / 移除轻量等
+  type TEXT NOT NULL DEFAULT 'aliyun_viapi',
+  -- AK ID 明文存，便于列表展示（masked）
+  access_key_id TEXT NOT NULL DEFAULT '',
+  -- AK Secret 加密存：格式 "v1:{iv_hex}:{authTag_hex}:{ciphertext_hex}"，解密 key 由 device-id 派生
+  access_key_secret_enc TEXT NOT NULL DEFAULT '',
+  endpoint TEXT NOT NULL DEFAULT 'imageseg.cn-shanghai.aliyuncs.com',
+  region_id TEXT NOT NULL DEFAULT 'cn-shanghai',
+  is_default INTEGER NOT NULL DEFAULT 0,
+  remark TEXT NOT NULL DEFAULT '',
+  last_test_at TEXT NOT NULL DEFAULT '',
+  last_test_status TEXT NOT NULL DEFAULT '',
+  last_test_message TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- 抠图本地任务历史（v0.6.9+）。云端模式 / 自定义模式都记一条，便于「我的抠图」分类展示 + 失败重试
+CREATE TABLE IF NOT EXISTS matting_tasks (
+  id TEXT PRIMARY KEY,
+  -- 任务来源：'cloud'（云控端中转）/ 'custom'（自定义阿里 AK 直连）
+  source TEXT NOT NULL DEFAULT 'cloud',
+  -- custom 模式下指向 matting_providers.id；cloud 模式留空
+  provider_id TEXT NOT NULL DEFAULT '',
+  -- 原图绝对路径（用户选的或临时落盘的）；用于失败重试
+  source_image_path TEXT NOT NULL DEFAULT '',
+  -- 结果 PNG 绝对路径；保存到 dataDir/matting/{taskId}.png
+  result_path TEXT NOT NULL DEFAULT '',
+  -- 结果 URL（阿里临时 URL，24h 过期，仅作 trace）
+  result_url TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending',
+  error TEXT NOT NULL DEFAULT '',
+  -- 阿里端 trace ID
+  aliyun_request_id TEXT NOT NULL DEFAULT '',
+  elapsed_ms INTEGER NOT NULL DEFAULT 0,
+  -- 关联画布节点（画布抠图节点用），普通 AI 抠图页面留空
+  canvas_project_id TEXT NOT NULL DEFAULT '',
+  canvas_node_id TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_matting_tasks_status ON matting_tasks(status);
+CREATE INDEX IF NOT EXISTS idx_matting_tasks_created ON matting_tasks(created_at);
+CREATE INDEX IF NOT EXISTS idx_matting_tasks_canvas ON matting_tasks(canvas_project_id);

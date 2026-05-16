@@ -2,6 +2,13 @@ import { ref, computed } from 'vue'
 import { useCanvasStore } from '@/stores/canvas'
 import { recordUsage } from '@/utils/model-usage-hints'
 import { getNodeTypeDef } from './useNodeTypes'
+import {
+  getSystemPrompt as resolveSystemPrompt,
+  getUserPrompt,
+  type StylePreset,
+  type OutputLang,
+} from '@/utils/image2prompt-presets'
+import { compressImage } from '@/utils/compress-image'
 
 export type TaskStatus = 'pending' | 'running' | 'done' | 'error' | 'skipped' | 'blocked'
 
@@ -299,7 +306,11 @@ export function useWorkflowEngine() {
           modelId: project.image_model_id,
           size: node.data.size || '1:1',
           tierId: node.data.tier_id || '2k',
-          quality: node.data.quality || 'auto'
+          quality: node.data.quality || 'auto',
+          // v0.6.9+ 指示主进程落盘到 canvas/{projectId}/，文件名用 {nodeId}_{genId}.ext
+          // 使 deleteNode 能级联清理、打开画布文件夹能看到所有此画布产出的图
+          canvasProjectId: project.id,
+          canvasNodeId: nodeId
         }
         if (refImageData.length > 0) {
           genOptions.refImages = refImageData
@@ -369,7 +380,10 @@ export function useWorkflowEngine() {
           modelId: project.image_model_id,
           size: node.data.size || '1:1',
           tierId: node.data.tier_id || '2k',
-          quality: node.data.quality || 'auto'
+          quality: node.data.quality || 'auto',
+          // v0.6.9+ 同 text2img，让画布产物落盘到 canvas/{projectId}/{nodeId}_{genId}.ext
+          canvasProjectId: project.id,
+          canvasNodeId: nodeId
         })
 
         const gen = genResults?.[0]
@@ -391,6 +405,93 @@ export function useWorkflowEngine() {
         break
       }
 
+      case 'reverse': {
+        // 图片反推节点：image → text 桥，复用 Image2PromptView 同款调用链
+        if (!upstream.images.length) {
+          throw new Error('图片反推节点需要上游图像：请连接参考图、生图节点或图片结果节点')
+        }
+
+        const project = canvasStore.currentProject
+        // 视觉模型优先级：节点覆盖 > project 默认；都为空则报错让用户去设置
+        const visionProviderId = node.data.vision_provider_id || project?.vision_provider_id || ''
+        const visionModelId = node.data.vision_model_id || project?.vision_model_id || ''
+        if (!visionProviderId || !visionModelId) {
+          throw new Error('请在节点上选择视觉模型，或在画布设置中配置默认视觉模型')
+        }
+
+        await canvasStore.updateNode(nodeId, {
+          data: { ...node.data, status: 'running' }
+        })
+
+        // 上游图像转 dataURI：反推一次只针对一张图，多连只拿第一张避免混淆模型输出
+        const firstImage = upstream.images[0]
+        const refImageData = await resolveRefImages([firstImage])
+        const failedRefRev = (refImageData as any).__failedCount || 0
+        if (refImageData.length === 0) {
+          throw new Error('参考图读取失败：请检查上游节点是否仍保留文件')
+        }
+        if (failedRefRev > 0) {
+          refImageWarnings.value = [
+            ...refImageWarnings.value,
+            { nodeId, failed: failedRefRev, total: 1 }
+          ]
+        }
+
+        // 压缩后再上传：上游生图节点产出常为 1024+ 超清 PNG，几 MB 的 dataURI 直接
+        // 推送云端会使视觉模型推理超过 100 秒被 Cloudflare 网关切断（524）。
+        // 参数与 Image2PromptView 一致：长边 1280px / JPEG 0.85，反推场景画质足够。
+        let compressedImage: string
+        try {
+          compressedImage = await compressImage(refImageData[0])
+        } catch (e: any) {
+          throw new Error(`参考图压缩失败：${e?.message || e}`)
+        }
+
+        // 提示词优先级：节点 custom_prompt > 风格预设（style + lang 合拼）
+        const customPrompt = (node.data.custom_prompt || '').trim()
+        const stylePreset = (node.data.style_preset as StylePreset) || 'general'
+        const outputLang = (node.data.output_lang as OutputLang) || 'cn'
+        const sys = customPrompt || resolveSystemPrompt(stylePreset, outputLang)
+        const userText = getUserPrompt(outputLang)
+
+        const messages = [
+          { role: 'system', content: sys },
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: userText },
+              { type: 'image_url', image_url: { url: compressedImage } }
+            ]
+          }
+        ]
+
+        const result = await api().llm.invoke(
+          'call',
+          visionProviderId,
+          visionModelId,
+          messages
+        )
+
+        // llm.invoke 返回形状不统一：string / { content } / object，兑底三种形式
+        let resultText = ''
+        if (typeof result === 'string') {
+          resultText = result.trim()
+        } else if (result?.content) {
+          resultText = String(result.content).trim()
+        } else {
+          resultText = String(result || '').trim()
+        }
+        if (!resultText) {
+          throw new Error('反推未返回结果：可能是模型不支持图像输入或上游服务异常')
+        }
+
+        await canvasStore.updateNode(nodeId, {
+          data: { ...node.data, status: 'done', result: resultText }
+        })
+        await recordUsage('vision', visionProviderId, visionModelId)
+        break
+      }
+
       case 'imageResult': {
         // Pull result from upstream image
         if (upstream.images.length > 0) {
@@ -398,6 +499,77 @@ export function useWorkflowEngine() {
             data: { ...node.data, result_path: upstream.images[0] }
           })
         }
+        break
+      }
+
+      case 'matting': {
+        // v0.6.9+ 画布抠图节点：image → 透明 PNG image
+        // 上游图必须存在；模式由 node.data.matting_source 决定（默认 'cloud'）
+        if (!upstream.images.length) {
+          throw new Error('抠图节点需要上游图像：请连接参考图、生图节点或图片结果节点')
+        }
+        const project = canvasStore.currentProject
+        if (!project) throw new Error('画布项目未加载')
+
+        const source: 'cloud' | 'custom' = node.data.matting_source === 'custom' ? 'custom' : 'cloud'
+        const providerId: string | undefined = source === 'custom' ? (node.data.matting_provider_id || undefined) : undefined
+        if (source === 'custom' && !providerId) {
+          throw new Error('自定义模式需要在节点上选择阿里抠图接口')
+        }
+
+        await canvasStore.updateNode(nodeId, {
+          data: { ...node.data, status: 'running', error: '' }
+        })
+
+        // 把上游图（relative path 或 data URI）解析为本地绝对路径
+        // 反推节点用 dataURI，但 matting 服务需要本地路径（阿里 Advance API + 云控端 multipart 都要本地 stream）
+        // 注：canvas:saveNodeImage 返回 { image_path: 相对路径 }，所以两条分支都需要拼接 dataDir
+        const mattingDataDir = await api().dataDir.get()
+        let localPath: string
+        const firstImage = upstream.images[0]
+        if (firstImage.startsWith('data:')) {
+          // data URI：先用 canvas:saveNodeImage 落盘到画布目录（saveNodeImage 内部会先清理本节点旧文件再写）
+          const saved = await api().canvas.invoke('saveNodeImage', project.id, nodeId, firstImage) as { image_path?: string }
+          if (!saved?.image_path) throw new Error('上游 data URI 落盘失败')
+          localPath = `${mattingDataDir}/${saved.image_path}`
+        } else {
+          localPath = `${mattingDataDir}/${firstImage}`
+        }
+
+        let result: { taskId: string; status: 'completed' | 'failed'; resultPath?: string; error?: string }
+        try {
+          result = await api().matting.invoke('segment', {
+            localPath,
+            source,
+            providerId,
+            // 画布节点不入「我的抠图」分类（结果已在节点上展示）
+            addToGallery: false,
+            canvasProjectId: project.id,
+            canvasNodeId: nodeId,
+          }) as any
+        } catch (e: any) {
+          throw new Error(`抠图调用失败：${e?.message || e}`)
+        }
+
+        if (result.status === 'failed' || !result.resultPath) {
+          throw new Error(result.error || '抠图失败')
+        }
+
+        // 结果路径转相对（与生图节点 result_path 字段语义一致）
+        // matting service 写到 dataDir/canvas/{projectId}/{nodeId}_{taskId}.png，这里转成 canvas/{projectId}/... 相对形式
+        let relPath = result.resultPath
+        if (relPath.startsWith(mattingDataDir)) {
+          relPath = relPath.slice(mattingDataDir.length).replace(/^[/\\]/, '').replace(/\\/g, '/')
+        }
+
+        await canvasStore.updateNode(nodeId, {
+          data: {
+            ...node.data,
+            status: 'done',
+            result_path: relPath,
+            matting_task_id: result.taskId,
+          }
+        })
         break
       }
     }

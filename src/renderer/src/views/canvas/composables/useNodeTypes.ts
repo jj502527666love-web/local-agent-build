@@ -63,6 +63,25 @@ export const NODE_TYPE_DEFS: NodeTypeDef[] = [
     inputs: [],
     outputs: [{ handle: 'output-0', dataType: 'text' }],
     dynamicOutputs: true
+  },
+  // v0.6.9+：图片反推。把上游 image 反推为可直接用于生图模型的 prompt 文本。
+  // 输入 image → 输出 text，是画布上唯一的 image→text 桥；解锁「参考图风格迁移」「多图融合」等工作流。
+  // 视觉模型优先级：node.data.vision_provider_id > project.vision_provider_id；都为空时报错。
+  {
+    type: 'reverse',
+    label: '图片反推',
+    color: '#14b8a6',
+    inputs: [{ handle: 'image-input', dataType: 'image', required: true }],
+    outputs: [{ handle: 'output', dataType: 'text' }]
+  },
+  // v0.6.9+：AI 抠图。上游 image → 透明 PNG image。基于阿里 viapi SegmentHDCommonImage。
+  // 模式：node.data.matting_source = 'cloud' | 'custom'；custom 时 node.data.matting_provider_id 指向本地 provider
+  {
+    type: 'matting',
+    label: 'AI 抠图',
+    color: '#a855f7',
+    inputs: [{ handle: 'image-input', dataType: 'image', required: true }],
+    outputs: [{ handle: 'output', dataType: 'image' }]
   }
 ]
 

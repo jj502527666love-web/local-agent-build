@@ -92,6 +92,18 @@ function runMigrations(): void {
   if (canvasCols.length > 0 && !canvasColNames.includes('system_prompt')) {
     db.exec("ALTER TABLE canvas_projects ADD COLUMN system_prompt TEXT NOT NULL DEFAULT ''")
   }
+  // 画布自动整理布局方向：'LR' 左到右（默认，保持老画布行为不变）/ 'TB' 上到下。
+  // dagre.rankdir 的子集，仅暴露 LR / TB 两种到 UI；RL / BT 算法层支持但不暴露。
+  if (canvasCols.length > 0 && !canvasColNames.includes('layout_direction')) {
+    db.exec("ALTER TABLE canvas_projects ADD COLUMN layout_direction TEXT NOT NULL DEFAULT 'LR'")
+  }
+  // v0.6.9+ 「图片反推」节点的视觉模型默认值（project 级）：
+  // 反推节点本身可单独覆盖；不覆盖时回退到这两列。
+  // 默认空字符串：未配置时反推节点会要求用户先在画布设置或节点上选模型
+  if (canvasCols.length > 0 && !canvasColNames.includes('vision_provider_id')) {
+    db.exec("ALTER TABLE canvas_projects ADD COLUMN vision_provider_id TEXT NOT NULL DEFAULT ''")
+    db.exec("ALTER TABLE canvas_projects ADD COLUMN vision_model_id TEXT NOT NULL DEFAULT ''")
+  }
   // vector_chunks: track which embedding model/dim/source produced each chunk's vector
   // 用于检测模型变更后强制重向量化（不同模型的向量空间不可混用）
   const chunkCols = db.prepare("PRAGMA table_info(vector_chunks)").all() as any[]
@@ -166,6 +178,64 @@ function runMigrations(): void {
       new Date().toISOString()
     )
   }
+
+  // v0.6.9+ gallery 系统「我的抠图」分类：AI 抠图 / 画布抠图节点产图自动归档
+  // 固定 id __sys_matting__ 跟 __sys_creation__ 同等地位
+  const sysMattingExists = db
+    .prepare("SELECT id FROM gallery_categories WHERE id = ?")
+    .get('__sys_matting__') as any
+  if (!sysMattingExists) {
+    db.prepare(
+      "INSERT INTO gallery_categories (id, name, description, is_system, sort_order, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+    ).run(
+      '__sys_matting__',
+      '我的抠图',
+      'AI 抠图 / 画布抠图节点自动归档（透明 PNG）',
+      1,
+      -999,
+      new Date().toISOString()
+    )
+  }
+
+  // v0.6.9+ matting_providers / matting_tasks 表幂等建表（旧库升级路径）
+  // 注：schema.sql 已 CREATE TABLE IF NOT EXISTS，正常启动时由 db.exec(schema) 完成；
+  // 这里仅作兜底，处理 schema.sql 未及时刷新但 migrations 已跑的边界场景
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS matting_providers (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      type TEXT NOT NULL DEFAULT 'aliyun_viapi',
+      access_key_id TEXT NOT NULL DEFAULT '',
+      access_key_secret_enc TEXT NOT NULL DEFAULT '',
+      endpoint TEXT NOT NULL DEFAULT 'imageseg.cn-shanghai.aliyuncs.com',
+      region_id TEXT NOT NULL DEFAULT 'cn-shanghai',
+      is_default INTEGER NOT NULL DEFAULT 0,
+      remark TEXT NOT NULL DEFAULT '',
+      last_test_at TEXT NOT NULL DEFAULT '',
+      last_test_status TEXT NOT NULL DEFAULT '',
+      last_test_message TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS matting_tasks (
+      id TEXT PRIMARY KEY,
+      source TEXT NOT NULL DEFAULT 'cloud',
+      provider_id TEXT NOT NULL DEFAULT '',
+      source_image_path TEXT NOT NULL DEFAULT '',
+      result_path TEXT NOT NULL DEFAULT '',
+      result_url TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'pending',
+      error TEXT NOT NULL DEFAULT '',
+      aliyun_request_id TEXT NOT NULL DEFAULT '',
+      elapsed_ms INTEGER NOT NULL DEFAULT 0,
+      canvas_project_id TEXT NOT NULL DEFAULT '',
+      canvas_node_id TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_matting_tasks_status ON matting_tasks(status);
+    CREATE INDEX IF NOT EXISTS idx_matting_tasks_created ON matting_tasks(created_at);
+    CREATE INDEX IF NOT EXISTS idx_matting_tasks_canvas ON matting_tasks(canvas_project_id);
+  `)
 }
 
 export function closeDatabase(): void {

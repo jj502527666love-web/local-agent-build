@@ -33,6 +33,13 @@ export interface CloudPermissions {
   max_context_messages: number
   // 「灵感大王」：开启后桌面端创作详情可将作品上传到灵感广场
   inspiration_uploader: boolean
+  // v0.6.9+ AI 抠图（阿里 viapi）相关 3 个权限：
+  // - allow_image_matting：是否允许使用云接口抠图，关闭后桌面端「AI 抠图」入口隐藏
+  // - allow_custom_matting_provider：是否允许桌面端配置自己的阿里 AK/SK 直连，关闭后「抠图接口」tab 隐藏
+  // - image_matting_quota_per_month：每月配额（张），0=不限；超出后云接口会拒绝
+  allow_image_matting: boolean
+  allow_custom_matting_provider: boolean
+  image_matting_quota_per_month: number
 }
 
 export interface RegisterBonus {
@@ -78,6 +85,9 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
     allow_knowledge_base: true,
     max_context_messages: 50,
     inspiration_uploader: false,
+    allow_image_matting: true,
+    allow_custom_matting_provider: false,
+    image_matting_quota_per_month: 100,
   })
   const balances = ref<{ type: string; amount: number }[]>([])
   const billingRules = ref<any[]>([])
@@ -148,6 +158,9 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
       allow_knowledge_base: true,
       max_context_messages: 50,
       inspiration_uploader: false,
+      allow_image_matting: true,
+      allow_custom_matting_provider: false,
+      image_matting_quota_per_month: 100,
     }
     window.api?.cloud?.setPermissions({
       allow_custom_provider: false,

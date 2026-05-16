@@ -25,6 +25,9 @@ import * as promptPresetService from '../services/prompt-preset'
 import * as backupService from '../services/backup'
 import * as canvasService from '../services/canvas'
 import * as galleryService from '../services/gallery'
+import * as mattingService from '../services/matting'
+import * as mattingProviderService from '../services/matting-providers'
+import { fetchQuota as fetchMattingQuotaFromCloud } from '../services/cloud-matting'
 import {
   setCloudToken,
   getCloudToken,
@@ -836,6 +839,26 @@ export function registerIpcHandlers(): void {
     canvasService.deleteNodeImage(projectId, nodeId)
   )
 
+  // v0.6.9+ 打开画布的独立图片文件夹：getProjectImageDir 会保证目录存在（mkdir -p），
+  // 因此即使该画布从未生成 / 上传过图片，按钮也能打开一个空目录给用户看路径。
+  // 返回 { success, dir, error? } 让 renderer 显示具体反馈。
+  ipcMain.handle('canvas:openProjectImageDir', async (_, projectId: string) => {
+    if (!projectId) return { success: false, error: '画布 ID 为空' }
+    try {
+      const { shell } = require('electron')
+      const dir = canvasService.getProjectImageDir(projectId)
+      const errMsg = await shell.openPath(dir)
+      if (errMsg) {
+        console.error('[canvas:openProjectImageDir]', dir, '→', errMsg)
+        return { success: false, dir, error: errMsg }
+      }
+      return { success: true, dir }
+    } catch (e: any) {
+      console.error('[canvas:openProjectImageDir] exception:', e)
+      return { success: false, error: e?.message || String(e) }
+    }
+  })
+
   // 流式画布导出：弹保存对话框 → 写 .lacanvas.json 文件
   // 仅 prompt + 节点结构，不打包图片字节，跨设备分享用
   ipcMain.handle('canvas:exportProjects', async (event, ids: string[]) => {
@@ -982,4 +1005,57 @@ export function registerIpcHandlers(): void {
     promptLang: 'cn' | 'en'
     promptText: string
   }) => uploadInspirationToCloud(params))
+
+  // === AI 抠图（v0.6.9+，阿里 viapi SegmentHDCommonImage）===
+  // 自定义模式（provider 管理）：本地存 AK/SK，直连阿里
+  ipcMain.handle('matting:listProviders', () => mattingProviderService.listProviders())
+  ipcMain.handle('matting:getProvider', (_, id: string) => {
+    const p = mattingProviderService.getProvider(id)
+    if (!p) return null
+    // 返回 masked 摘要，不暴露密文
+    return {
+      id: p.id,
+      name: p.name,
+      type: p.type,
+      access_key_id_masked: p.access_key_id ? (p.access_key_id.slice(0, 4) + '****' + p.access_key_id.slice(-4)) : '',
+      endpoint: p.endpoint,
+      region_id: p.region_id,
+      is_default: !!p.is_default,
+      remark: p.remark,
+      last_test_at: p.last_test_at,
+      last_test_status: p.last_test_status,
+      last_test_message: p.last_test_message,
+      created_at: p.created_at,
+      updated_at: p.updated_at,
+    }
+  })
+  ipcMain.handle('matting:createProvider', (_, data: mattingProviderService.CreateProviderInput) =>
+    mattingProviderService.createProvider(data),
+  )
+  ipcMain.handle('matting:updateProvider', (_, id: string, data: mattingProviderService.UpdateProviderInput) =>
+    mattingProviderService.updateProvider(id, data),
+  )
+  ipcMain.handle('matting:deleteProvider', (_, id: string) =>
+    mattingProviderService.deleteProvider(id),
+  )
+
+  // 测试 provider 凭证：上传一张本地图（renderer 提供绝对路径）跑通端到端
+  ipcMain.handle('matting:testProvider', (_, providerId: string, testImagePath: string) =>
+    mattingService.testProvider(providerId, testImagePath),
+  )
+
+  // 核心：抠图调用（输入 + 模式）。同步阻塞最长 90s，进度通过 'matting:progress' 事件推送
+  ipcMain.handle('matting:segment', (_, input: mattingService.SegmentInput) =>
+    mattingService.segment(input),
+  )
+
+  // 任务历史（本地 matting_tasks 表）
+  ipcMain.handle('matting:listTasks', (_, limit?: number, offset?: number) =>
+    mattingService.listTasks(limit ?? 50, offset ?? 0),
+  )
+  ipcMain.handle('matting:getTask', (_, id: string) => mattingService.getTask(id))
+  ipcMain.handle('matting:deleteTask', (_, id: string) => mattingService.deleteTask(id))
+
+  // 拉云控端配额状态（剩余张数 / 单次扣费）。用于桌面端 MattingView 顶部 banner 展示
+  ipcMain.handle('matting:fetchCloudQuota', () => fetchMattingQuotaFromCloud())
 }

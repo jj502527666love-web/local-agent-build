@@ -1,6 +1,6 @@
 {
   "name": "local-agent",
-  "version": "0.6.8",
+  "version": "0.6.9",
   "description": "Local AI Agent Platform",
   "main": "./out/main/index.js",
   "scripts": {
@@ -11,6 +11,10 @@
     "dist": "electron-vite build && electron-builder"
   },
   "dependencies": {
+    "@alicloud/credentials": "^2.4.4",
+    "@alicloud/imageseg20191230": "^4.0.0",
+    "@alicloud/openapi-client": "^0.4.13",
+    "@alicloud/tea-util": "^1.4.10",
     "@dagrejs/dagre": "^3.0.0",
     "@electron-toolkit/preload": "^3.0.0",
     "@electron-toolkit/utils": "^2.0.1",

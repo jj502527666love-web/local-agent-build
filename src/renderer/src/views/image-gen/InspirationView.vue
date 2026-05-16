@@ -5,7 +5,8 @@
         <span class="text-sm font-medium text-text-secondary">灵感广场</span>
       </div>
       <div class="flex items-center gap-2">
-        <button @click="refreshRandom" :disabled="loading" class="flex items-center gap-1.5 px-3 py-2 text-xs text-text-secondary hover:text-primary-600 border border-surface-3 rounded-lg bg-surface-0 hover:bg-surface-1 transition-colors disabled:opacity-50" title="换一批">
+        <!-- 「换一批」仅默认（ERNIE）随机源显示；自定义来源是有限数据集，改走下方分页控件不重复拉 -->
+        <button v-if="!isCustomSource" @click="refreshRandom" :disabled="loading" class="flex items-center gap-1.5 px-3 py-2 text-xs text-text-secondary hover:text-primary-600 border border-surface-3 rounded-lg bg-surface-0 hover:bg-surface-1 transition-colors disabled:opacity-50" title="换一批">
           <svg :class="['w-3.5 h-3.5', loading && 'animate-spin']" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182M21.015 4.356v4.992" /></svg>
           换一批
         </button>
@@ -45,7 +46,7 @@
           <svg class="w-8 h-8 text-text-disabled" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 18v-5.25m0 0a6.01 6.01 0 0 0 1.5-.189m-1.5.189a6.01 6.01 0 0 1-1.5-.189m3.75 7.478a12.06 12.06 0 0 1-4.5 0m3.75 2.383a14.406 14.406 0 0 1-3 0M14.25 18v-.192c0-.983.658-1.823 1.508-2.316a7.5 7.5 0 1 0-7.517 0c.85.493 1.509 1.333 1.509 2.316V18" /></svg>
         </div>
         <p class="text-sm font-medium text-text-secondary mb-1">暂无匹配的灵感</p>
-        <p class="text-xs text-text-tertiary">尝试切换分类或点击「换一批」</p>
+        <p class="text-xs text-text-tertiary">尝试切换分类或{{ isCustomSource ? '点击下一页' : '点击「换一批」' }}</p>
       </div>
 
       <!-- Grid -->
@@ -74,27 +75,48 @@
           </div>
         </div>
       </div>
+
+      <!-- 分页控件：仅自定义来源且不是在打口资源加载的中文注释。默认 ERNIE 随机源走「换一批」不需要分页 -->
+      <div v-if="isCustomSource && !loading && total > pageSize" class="mt-5 flex items-center justify-center gap-3 text-xs">
+        <button
+          class="px-3 py-1.5 border border-surface-3 rounded-lg bg-surface-0 hover:bg-surface-1 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          :disabled="page <= 1 || loading"
+          @click="goToPage(page - 1)"
+        >上一页</button>
+        <span class="text-text-secondary">第 <strong class="text-text-primary">{{ page }}</strong> 页 / 共 {{ totalPages }} 页（{{ total }} 个灵感）</span>
+        <button
+          class="px-3 py-1.5 border border-surface-3 rounded-lg bg-surface-0 hover:bg-surface-1 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          :disabled="page >= totalPages || loading"
+          @click="goToPage(page + 1)"
+        >下一页</button>
+      </div>
     </div>
 
-    <!-- Detail Modal -->
-    <div v-if="detailItem" class="fixed inset-0 z-50 flex items-center justify-center" @click.self="detailItem = null">
-      <div class="bg-surface-0 rounded-2xl shadow-[0_0_30px_rgba(0,0,0,0.12)] w-[640px] max-h-[85vh] flex flex-col overflow-hidden">
-        <!-- Cover -->
-        <div class="aspect-[16/9] bg-surface-2 flex-shrink-0 overflow-hidden">
-          <img v-if="detailItem.cover_image" :src="detailItem.cover_image" class="w-full h-full object-cover" />
-          <div v-else class="w-full h-full flex items-center justify-center">
+    <!-- Detail Modal：图片原图尺寸展示（不超出视口） + 右上角独立悬浮关闭按钮提亮 -->
+    <div v-if="detailItem" class="fixed inset-0 z-50 flex items-center justify-center p-6" @click.self="detailItem = null">
+      <div class="relative bg-surface-0 rounded-2xl shadow-[0_0_30px_rgba(0,0,0,0.12)] max-w-[min(90vw,1200px)] max-h-[90vh] flex flex-col overflow-hidden">
+        <!-- 右上角悬浮关闭按钮：36px 圆形 + 半透明黑底 + 白色粗体 X + 高 z-index，原图上也能看清 -->
+        <button
+          @click="detailItem = null"
+          class="absolute top-3 right-3 z-10 w-9 h-9 rounded-full bg-black/55 hover:bg-black/75 text-white flex items-center justify-center transition-colors shadow-lg"
+          title="关闭"
+          aria-label="关闭详情"
+        >
+          <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+        </button>
+
+        <!-- Cover：原图宽高按比例自适应，不裁剪，超过视口时高度被 max-h-[55vh] 限住。详情部分可独立滚动 -->
+        <div class="flex-shrink-0 bg-surface-2 flex items-center justify-center overflow-hidden" style="max-height: 55vh;">
+          <img v-if="detailItem.cover_image" :src="detailItem.cover_image" class="max-w-full max-h-[55vh] w-auto h-auto object-contain block" />
+          <div v-else class="w-full h-40 flex items-center justify-center">
             <svg class="w-16 h-16 text-text-disabled" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909M3.75 21h16.5A2.25 2.25 0 0 0 22.5 18.75V5.25A2.25 2.25 0 0 0 20.25 3H3.75A2.25 2.25 0 0 0 1.5 5.25v13.5A2.25 2.25 0 0 0 3.75 21Z" /></svg>
           </div>
         </div>
         <div class="p-5 overflow-y-auto flex-1">
-          <div class="flex items-start justify-between mb-4 gap-3">
-            <div class="flex-1 min-w-0">
-              <h3 class="text-sm font-semibold text-text-primary">{{ detailItem.title }}</h3>
-              <p v-if="detailItem.uploader_nickname" class="text-[11px] text-text-tertiary mt-1">by @{{ detailItem.uploader_nickname }}</p>
-            </div>
-            <button @click="detailItem = null" class="text-text-tertiary hover:text-text-primary flex-shrink-0">
-              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
-            </button>
+          <!-- 标题 / 上传者：右侧预留问关闭按钮位置避免遮挡 -->
+          <div class="mb-4 pr-12">
+            <h3 class="text-sm font-semibold text-text-primary">{{ detailItem.title }}</h3>
+            <p v-if="detailItem.uploader_nickname" class="text-[11px] text-text-tertiary mt-1">by @{{ detailItem.uploader_nickname }}</p>
           </div>
 
           <!-- Reference image -->
@@ -172,6 +194,12 @@ const DEFAULT_CATEGORIES = ['人物', '风景', '动漫', '设计', '创意']
 const dynamicCategories = ref<string[]>([])
 const isCustomSource = ref(false)
 
+// 分页（仅自定义来源用；ERNIE 默认源走「换一批」一次性 random，不分页）
+const page = ref(1)
+const pageSize = ref(40)
+const total = ref(0)
+const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
+
 const displayCategories = computed(() => {
   return isCustomSource.value ? dynamicCategories.value : DEFAULT_CATEGORIES
 })
@@ -192,20 +220,28 @@ const filteredItems = computed(() => {
   return list
 })
 
-async function fetchOnline() {
+async function fetchOnline(targetPage?: number) {
   loading.value = true
   try {
-    const result = await api().imageGen.invoke('fetchOnlineInspirations', { pageSize: 40 })
+    const wantedPage = targetPage ?? page.value
+    const result = await api().imageGen.invoke('fetchOnlineInspirations', {
+      page: wantedPage,
+      pageSize: pageSize.value,
+    })
     allItems.value = result.items
     _cachedItems = result.items
     // Distinguish source by presence of categories key (not its length)
-    // - undefined => default (ERNIE) source
-    // - array (incl. empty) => custom source from cloud admin
+    // - undefined => default (ERNIE) source（页内随机 + 一次性，不分页）
+    // - array (incl. empty) => custom source from cloud admin（按 page/pageSize 分页）
     if (Array.isArray(result.categories)) {
       dynamicCategories.value = result.categories
       isCustomSource.value = true
+      total.value = typeof result.total === 'number' ? result.total : result.items.length
+      page.value = wantedPage
     } else {
       isCustomSource.value = false
+      total.value = 0
+      page.value = 1
     }
   } catch (e) {
     console.error('Failed to fetch inspirations:', e)
@@ -214,10 +250,21 @@ async function fetchOnline() {
   }
 }
 
+/** 「换一批」：默认（ERNIE）源专用，触发服务端 random page，自定义源已隐藏此按钮 */
 function refreshRandom() {
   selectedCategory.value = ''
   search.value = ''
   fetchOnline()
+}
+
+/** 翻页：仅自定义来源使用；切换页时滚到顶 + 清空当前的搜索过滤避免误以为「这页没数据」 */
+function goToPage(p: number) {
+  if (p < 1 || p > totalPages.value || loading.value) return
+  search.value = ''
+  fetchOnline(p)
+  try {
+    document.querySelector('.page-body')?.scrollTo({ top: 0, behavior: 'smooth' })
+  } catch { /* ignore */ }
 }
 
 function openDetail(item: Inspiration) {

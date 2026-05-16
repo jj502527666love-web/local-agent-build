@@ -260,7 +260,15 @@ import { useImage2PromptStore } from '@/stores/image2prompt'
 import type { Task as Image2PromptTask } from '@/stores/image2prompt'
 import { groupAndSort } from '@/utils/model-caps'
 import { recordUsage, warmHintsCache, getHintsSync } from '@/utils/model-usage-hints'
-import { stripImageMetadata } from '@shared/strip-image-metadata'
+import { compressImage } from '@/utils/compress-image'
+import {
+  STYLE_OPTIONS as styleOptions,
+  LANG_OPTIONS as langOptions,
+  isEnOnly,
+  getSystemPrompt as resolveSystemPrompt,
+  isPresetText,
+  getUserPrompt,
+} from '@/utils/image2prompt-presets'
 import GalleryPicker from '@/components/GalleryPicker.vue'
 import ImageLightbox from '@/components/ImageLightbox.vue'
 
@@ -310,43 +318,12 @@ const modelGroups = computed(() => {
   })
 })
 
-// ---- Output language / style ----
-const langOptions = [
-  { label: '中文', value: 'cn' as const },
-  { label: '英文', value: 'en' as const }
-]
-
-const styleOptions = [
-  { label: '通用描述', value: 'general' as const },
-  { label: 'SD 短语', value: 'sd_phrase' as const },
-  { label: 'SD 标签', value: 'sd_tag' as const },
-  { label: 'Midjourney', value: 'mj' as const },
-  { label: 'Danbooru', value: 'danbooru' as const }
-]
-
-// Styles that only support English output
-const EN_ONLY_STYLES = new Set(['sd_tag', 'danbooru'])
-const forceEnglish = computed(() => EN_ONLY_STYLES.has(stylePreset.value))
-
-const SYSTEM_PROMPTS: Record<string, string> = {
-  'general_cn': `你是一位 AI 生图提示词反推专家。你的任务是观察图片，反推出一段可直接用于 AI 文生图模型的中文提示词。根据图片实际内容，描述关键要素（如主体、场景、风格、材质、视角、光线等），简单图片简短描述，复杂图片详细描述，无需固定字数。只输出提示词本身。`,
-  'general_en': `You are an AI image prompt reverse-engineering expert. Your task is to observe the image and produce a prompt that can be directly used with AI text-to-image models. Describe the key elements based on actual image content (e.g. subject, scene, style, materials, perspective, lighting). Keep it concise for simple images and detailed for complex ones — no fixed word limit. Output only the prompt itself.`,
-  'sd_phrase_cn': `你是 Stable Diffusion / Flux 提示词反推专家。请观察图片，反推出可直接用于 SD/Flux 文生图的中文短语式提示词。按主体、场景、风格、材质、光影、画面质感的顺序，使用逗号分隔的短语。根据图片复杂度自行控制长度，简单图片精炼，复杂图片详尽。只输出提示词本身。`,
-  'sd_phrase_en': `You are a Stable Diffusion / Flux prompt reverse-engineering expert. Observe the image and produce a phrase-style English prompt suitable for SD/Flux text-to-image generation. Use comma-separated natural-language phrases covering subject, scene, style, materials, lighting, and quality modifiers. Adapt length to image complexity. Output only the prompt itself.`,
-  'sd_tag_en': `You are a Stable Diffusion tag reverse-engineering expert. Observe the image and produce an English comma-separated tag list suitable for SD text-to-image generation. Include subject, scene, style, and quality tags using concise words or short compounds. Adapt the number of tags to image complexity. Output only the tags.`,
-  'mj_cn': `你是 Midjourney 提示词反推专家。请观察图片，反推出可直接用于 Midjourney 的中文提示词。描述主体、场景细节、风格氛围、光影与视角，结尾根据图片内容推荐合适的参数（如 --ar、--v、--style 等）。只输出提示词本身。`,
-  'mj_en': `You are a Midjourney prompt reverse-engineering expert. Observe the image and produce an English prompt suitable for Midjourney. Describe the main subject, scene details, style and mood, camera angle and lighting. Append appropriate parameters (e.g. --ar, --v, --style) based on the image content. Output only the prompt itself.`,
-  'danbooru_en': `You are a Danbooru tag reverse-engineering expert. Observe the image and produce Danbooru-style English tags separated by commas. Cover subject, clothing, pose, expression, background, and style using standard Danbooru tag format with underscores. Adapt the number of tags to image complexity. Output only the tags.`
-}
-
-function buildPromptKey(): string {
-  const lang = forceEnglish.value ? 'en' : outputLang.value
-  return `${stylePreset.value}_${lang}`
-}
+// 风格 / 语言选项、强制英文判定、system prompt 模板都从共享 utils 取，
+// 与画布「图片反推」节点共用一份文案
+const forceEnglish = computed(() => isEnOnly(stylePreset.value))
 
 function getSystemPrompt(): string {
-  const key = buildPromptKey()
-  return SYSTEM_PROMPTS[key] || SYSTEM_PROMPTS['general_cn']
+  return resolveSystemPrompt(stylePreset.value, outputLang.value)
 }
 
 function resetSystemPrompt() {
@@ -354,42 +331,18 @@ function resetSystemPrompt() {
 }
 
 // Auto-update system prompt when language/style changes (only if user hasn't diverged from presets)
-const presetTexts = new Set(Object.values(SYSTEM_PROMPTS))
 watch([outputLang, stylePreset], () => {
   // Force english for tag/danbooru styles
   if (forceEnglish.value && outputLang.value !== 'en') {
     outputLang.value = 'en'
     return // watch will trigger again with lang=en
   }
-  if (!systemPrompt.value || presetTexts.has(systemPrompt.value)) {
+  if (!systemPrompt.value || isPresetText(systemPrompt.value)) {
     systemPrompt.value = getSystemPrompt()
   }
 })
 
 // ---- Image upload ----
-function compressImage(dataUri: string, maxSize: number, quality: number): Promise<string> {
-  const cleanUri = stripImageMetadata(dataUri)
-  return new Promise((resolve, reject) => {
-    const img = new Image()
-    img.onload = () => {
-      let { width, height } = img
-      if (width > maxSize || height > maxSize) {
-        const ratio = Math.min(maxSize / width, maxSize / height)
-        width = Math.round(width * ratio)
-        height = Math.round(height * ratio)
-      }
-      const canvas = document.createElement('canvas')
-      canvas.width = width
-      canvas.height = height
-      const ctx = canvas.getContext('2d')!
-      ctx.drawImage(img, 0, 0, width, height)
-      resolve(canvas.toDataURL('image/jpeg', quality))
-    }
-    img.onerror = reject
-    img.src = cleanUri
-  })
-}
-
 async function pickImages() {
   if (tasks.value.length >= MAX_TASKS) return
   try {
@@ -487,7 +440,7 @@ async function runOne(task: Task) {
   task.error = ''
   try {
     const sys = systemPrompt.value.trim() || getSystemPrompt()
-    const userText = outputLang.value === 'cn' ? '请为这张图片生成提示词。' : 'Please generate a prompt for this image.'
+    const userText = getUserPrompt(outputLang.value)
     const messages = [
       { role: 'system', content: sys },
       {

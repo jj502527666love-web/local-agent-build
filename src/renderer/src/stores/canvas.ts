@@ -8,8 +8,13 @@ export interface CanvasProject {
   text_model_id: string
   image_provider_id: string
   image_model_id: string
+  /** v0.6.9+ 「图片反推」节点默认视觉模型（节点可覆盖，可为空字符串） */
+  vision_provider_id: string
+  vision_model_id: string
   concurrency: number
   system_prompt: string
+  /** 布局方向：'LR' 左到右（默认）/ 'TB' 上到下 */
+  layout_direction: string
   created_at: string
   updated_at: string
 }
@@ -54,8 +59,11 @@ export const useCanvasStore = defineStore('canvas', () => {
     text_model_id?: string
     image_provider_id?: string
     image_model_id?: string
+    vision_provider_id?: string
+    vision_model_id?: string
     concurrency?: number
     system_prompt?: string
+    layout_direction?: string
   }): Promise<CanvasProject> {
     const project = await api().canvas.invoke('createProject', JSON.parse(JSON.stringify(data)))
     projects.value.unshift(project)
@@ -68,14 +76,26 @@ export const useCanvasStore = defineStore('canvas', () => {
     text_model_id?: string
     image_provider_id?: string
     image_model_id?: string
+    vision_provider_id?: string
+    vision_model_id?: string
     concurrency?: number
     system_prompt?: string
+    layout_direction?: string
   }): Promise<CanvasProject | null> {
     const updated = await api().canvas.invoke('updateProject', id, data)
     const idx = projects.value.findIndex((p) => p.id === id)
     if (idx >= 0 && updated) projects.value[idx] = updated
     if (currentProject.value?.id === id && updated) currentProject.value = updated
     return updated
+  }
+
+  /**
+   * v0.6.9+ 打开画布的独立图片目录（dataDir/canvas/{projectId}/）。
+   * 主进程的 canvas:openProjectImageDir 会保证目录存在再调 shell.openPath，
+   * 返回 { success, dir, error? } 让 UI 显示具体反馈。
+   */
+  async function openProjectImageDir(id: string): Promise<{ success: boolean; dir?: string; error?: string }> {
+    return await api().canvas.invoke('openProjectImageDir', id)
   }
 
   async function deleteProject(id: string) {
@@ -208,8 +228,11 @@ export const useCanvasStore = defineStore('canvas', () => {
       text_model_id: source.text_model_id,
       image_provider_id: source.image_provider_id,
       image_model_id: source.image_model_id,
+      vision_provider_id: source.vision_provider_id,
+      vision_model_id: source.vision_model_id,
       concurrency: source.concurrency,
-      system_prompt: source.system_prompt
+      system_prompt: source.system_prompt,
+      layout_direction: source.layout_direction
     })
 
     // Load source nodes and edges
@@ -237,6 +260,19 @@ export const useCanvasStore = defineStore('canvas', () => {
           return { generation_id: '', result_path: '', result_url: '' }
         case 'promptSlice':
           return { rows: (data.rows || []).map((r: any) => ({ id: r.id, text: r.text || '' })) }
+        case 'reverse':
+          // 复制画布作为模板：保留用户配置（视觉模型 / 风格 / 语言 / 自定义提示词），
+          // 清空运行态（result / status / error），让新画布从 idle 开始
+          return {
+            vision_provider_id: data.vision_provider_id || '',
+            vision_model_id: data.vision_model_id || '',
+            style_preset: data.style_preset || 'general',
+            output_lang: data.output_lang || 'cn',
+            custom_prompt: data.custom_prompt || '',
+            result: '',
+            status: 'idle',
+            error: ''
+          }
         default:
           return { ...data, status: undefined, error: undefined }
       }
@@ -326,6 +362,7 @@ export const useCanvasStore = defineStore('canvas', () => {
     deleteProject,
     duplicateProject,
     loadProject,
+    openProjectImageDir,
     addNode,
     updateNode,
     updateNodePositions,

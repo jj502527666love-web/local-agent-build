@@ -34,16 +34,25 @@ export const routes: RouteRecordRaw[] = [
         meta: { title: '向量统计' }
       },
       {
+        // v0.6.9+ /models 改为 tab 容器：通用模型 / 视频模型 / 抠图接口
+        // 子 tab 通过 ?tab=general|video|matting 控制，老链接 /video-models 重定向到 ?tab=video
         path: 'models',
         name: 'models',
-        component: () => import('@/views/models/ModelView.vue'),
+        component: () => import('@/views/models/ModelsView.vue'),
         meta: { title: '模型服务' }
       },
       {
+        // v0.6.9+ 视频模型菜单已并入「模型服务」tab。
+        // 老链接 /video-models 重定向到 /models?tab=video，避免外链 / 收藏夹失效
         path: 'video-models',
-        name: 'videoModels',
-        component: () => import('@/views/common/DevelopingView.vue'),
-        meta: { title: '视频模型' }
+        redirect: { name: 'models', query: { tab: 'video' } },
+      },
+      {
+        // v0.6.9+ AI 抠图（阿里 viapi SegmentHDCommonImage）
+        path: 'ai-matting',
+        name: 'aiMatting',
+        component: () => import('@/views/matting/MattingView.vue'),
+        meta: { title: 'AI 抠图' }
       },
       {
         path: 'personas',

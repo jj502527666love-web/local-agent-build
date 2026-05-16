@@ -12,6 +12,20 @@ interface Window {
     db: { query: (channel: string, ...args: unknown[]) => Promise<unknown> }
     canvas: { invoke: (channel: string, ...args: unknown[]) => Promise<unknown> }
     gallery: { invoke: (channel: string, ...args: unknown[]) => Promise<unknown> }
+    matting: {
+      invoke: (channel: string, ...args: unknown[]) => Promise<unknown>
+      /**
+       * 抠图任务进度回调；payload = { taskId, phase: 'uploading'|'processing'|'downloading'|'done', message? }
+       * 返回 unsubscribe 函数，多视图共用此信道时可安全 off 自己的监听器。
+       */
+      onProgress: (
+        callback: (data: {
+          taskId: string
+          phase: 'uploading' | 'processing' | 'downloading' | 'done'
+          message?: string
+        }) => void,
+      ) => () => void
+    }
     model: { invoke: (channel: string, ...args: unknown[]) => Promise<unknown> }
     persona: { invoke: (channel: string, ...args: unknown[]) => Promise<unknown> }
     knowledge: { invoke: (channel: string, ...args: unknown[]) => Promise<unknown> }

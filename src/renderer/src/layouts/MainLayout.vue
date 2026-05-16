@@ -130,12 +130,12 @@ import IconInspiration from '@/components/icons/IconInspiration.vue'
 import IconCreation from '@/components/icons/IconCreation.vue'
 import IconBatchGen from '@/components/icons/IconBatchGen.vue'
 import IconImage2Prompt from '@/components/icons/IconImage2Prompt.vue'
+import IconImageMatting from '@/components/icons/IconImageMatting.vue'
 import IconPrompt from '@/components/icons/IconPrompt.vue'
 import IconCanvas from '@/components/icons/IconCanvas.vue'
 import IconGallery from '@/components/icons/IconGallery.vue'
 import IconUser from '@/components/icons/IconUser.vue'
 import IconAICreation from '@/components/icons/IconAICreation.vue'
-import IconVideoModel from '@/components/icons/IconVideoModel.vue'
 import IconVideoGen from '@/components/icons/IconVideoGen.vue'
 import IconVideoCreation from '@/components/icons/IconVideoCreation.vue'
 import IconCanvasSquare from '@/components/icons/IconCanvasSquare.vue'
@@ -187,8 +187,10 @@ const allNavItems = [
   { path: '/chat', label: '对话', icon: IconChat },
   { path: '/bots', label: '智能体', icon: IconBot },
   { path: '/knowledge', label: '知识库', icon: IconKnowledge },
-  { path: '/models', label: '模型服务', icon: IconModel, requirePermission: 'allow_custom_provider' },
-  { path: '/video-models', label: '视频模型', icon: IconVideoModel, requirePermission: 'allow_custom_video_provider' },
+  // v0.6.9+「模型服务」并入了「视频模型」+「抠图接口」tab，因此可见性改成
+  // OR 关系：自定义模型/视频模型/抠图接口任一权限开启即可见。
+  // 视频模型独立顶级菜单已下线（重定向到 /models?tab=video）。
+  { path: '/models', label: '模型服务', icon: IconModel, requireAnyPermission: ['allow_custom_provider', 'allow_custom_video_provider', 'allow_custom_matting_provider'] },
   { path: '/personas', label: '人格规则', icon: IconPersona },
   {
     label: 'AI 创作',
@@ -197,6 +199,7 @@ const allNavItems = [
       { path: '/image-gen', label: 'AI 生图', icon: IconImageGen },
       { path: '/batch-gen', label: '批量生图', icon: IconBatchGen },
       { path: '/image-to-prompt', label: '图片反推', icon: IconImage2Prompt },
+      { path: '/ai-matting', label: 'AI 抠图', icon: IconImageMatting, requireAnyPermission: ['allow_image_matting', 'allow_custom_matting_provider'] },
       { path: '/canvas', label: '流式画布', icon: IconCanvas },
       { path: '/ai-video', label: 'AI 视频', icon: IconVideoGen }
     ]
@@ -255,14 +258,30 @@ function isGroupActive(item: any) {
   return item.children?.some((child: any) => pathMatches(route.path, child.path))
 }
 
+function passesPermissionFilter(item: any): boolean {
+  // 单个 key：requirePermission 必须为真
+  if (item.requirePermission && !(cloudAuth.permissions as any)[item.requirePermission]) {
+    return false
+  }
+  // 任一 key 命中即可：requireAnyPermission（数组），用于「模型服务」这种合并入口
+  if (Array.isArray(item.requireAnyPermission)) {
+    const anyTrue = item.requireAnyPermission.some(
+      (k: string) => Boolean((cloudAuth.permissions as any)[k]),
+    )
+    if (!anyTrue) return false
+  }
+  return true
+}
+
 const navItems = computed(() => {
-  return allNavItems.filter(item => {
-    // 通用权限过滤：动态从 cloudAuth.permissions 取字段，项 requirePermission 存在则该位为真才显示
-    if (item.requirePermission) {
-      return Boolean((cloudAuth.permissions as any)[item.requirePermission])
-    }
-    return true
-  })
+  return allNavItems
+    .filter(passesPermissionFilter)
+    .map((item) => {
+      if (!item.children) return item
+      // 二级菜单同样过滤；若过滤后子项全空就保留父项（避免误隐藏分组本体）
+      const visibleChildren = item.children.filter(passesPermissionFilter)
+      return { ...item, children: visibleChildren.length > 0 ? visibleChildren : item.children }
+    })
 })
 </script>
 

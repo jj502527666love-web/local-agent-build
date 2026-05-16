@@ -104,6 +104,19 @@ const api = {
     invoke: (channel: string, ...args: unknown[]) =>
       ipcRenderer.invoke(`gallery:${channel}`, ...args)
   },
+  matting: {
+    invoke: (channel: string, ...args: unknown[]) =>
+      ipcRenderer.invoke(`matting:${channel}`, ...args),
+    /**
+     * 注册抠图任务进度回调；payload = { taskId, phase: 'uploading'|'processing'|'downloading'|'done', message? }
+     * 返回 unsubscribe 函数，多视图共用此信道时可安全 off 自己的监听器。
+     */
+    onProgress: (callback: (data: unknown) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, data: unknown) => callback(data)
+      ipcRenderer.on('matting:progress', handler)
+      return () => ipcRenderer.off('matting:progress', handler)
+    },
+  },
   cloud: {
     setToken: (token: string | null) => ipcRenderer.invoke('cloud:setToken', token),
     getToken: () => ipcRenderer.invoke('cloud:getToken'),

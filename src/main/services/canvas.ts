@@ -3,6 +3,7 @@ import { v4 as uuid } from 'uuid'
 import { join } from 'path'
 import { existsSync, mkdirSync, writeFileSync, rmSync, readdirSync } from 'fs'
 import { getDataDir } from './data-path'
+import { removeByRelativePath } from './gallery'
 import {
   CANVAS_EXPORT_SCHEMA_VERSION,
   type CanvasExportFile,
@@ -21,8 +22,13 @@ export interface CanvasProject {
   text_model_id: string
   image_provider_id: string
   image_model_id: string
+  /** v0.6.9+ 「图片反推」节点默认视觉模型（节点可覆盖，可为空字符串） */
+  vision_provider_id: string
+  vision_model_id: string
   concurrency: number
   system_prompt: string
+  /** 布局方向：'LR' 左到右（默认）/ 'TB' 上到下。dagre rankdir 的子集 */
+  layout_direction: string
   created_at: string
   updated_at: string
 }
@@ -64,7 +70,13 @@ function getCanvasDir(): string {
   return dir
 }
 
-function getProjectImageDir(projectId: string): string {
+/**
+ * 确保 canvas/{projectId}/ 目录存在并返回其绝对路径。
+ *
+ * v0.6.9+ 改为 export：IPC handler 「打开画布文件夹」需要这个绝对路径调 shell.openPath。
+ * 模块内部 saveNodeImage / image-generation 等仍按原逻辑使用。
+ */
+export function getProjectImageDir(projectId: string): string {
   const dir = join(getCanvasDir(), projectId)
   mkdirSync(dir, { recursive: true })
   return dir
@@ -89,11 +101,27 @@ function parseDataUrl(dataUrl: string): { buffer: Buffer; ext: string } {
   return { buffer: Buffer.from(raw, 'base64'), ext }
 }
 
-function cleanupNodeFiles(dir: string, nodeId: string): void {
+/**
+ * 按 nodeId 前缀清理 canvas/{projectId}/ 下的所有关联文件。
+ *
+ * 文件名约定（两种）：
+ *   - refImage 节点：{nodeId}_{ts}.{ext}                   → saveNodeImage 写入
+ *   - text2img / img2img 节点：{nodeId}_{genId}.{ext}    → v0.6.9+ image-generation 写入
+ *
+ * 同时需联动清理 gallery_items（“我的创作”分类）里的指向记录，
+ * 否则除了文件会出现图库孤儿记录。removeByRelativePath 幂等，
+ * 不存在则何作为。
+ */
+function cleanupNodeFiles(projectId: string, nodeId: string): void {
+  const dir = join(getCanvasDir(), projectId)
   if (!existsSync(dir)) return
   try {
     for (const name of readdirSync(dir)) {
       if (name.startsWith(`${nodeId}_`) || name.startsWith(`${nodeId}.`)) {
+        // 先清 gallery 记录再删磁盘文件：
+        // image_generations.result_path 与 gallery_items.file_path 都存相对路径
+        const relPath = `canvas/${projectId}/${name}`
+        try { removeByRelativePath(relPath) } catch {}
         try { rmSync(join(dir, name), { force: true }) } catch {}
       }
     }
@@ -104,7 +132,7 @@ export function saveNodeImage(projectId: string, nodeId: string, dataUrl: string
   const { buffer, ext } = parseDataUrl(dataUrl)
   const dir = getProjectImageDir(projectId)
   // Clean any previous image(s) for this node so old files don't accumulate
-  cleanupNodeFiles(dir, nodeId)
+  cleanupNodeFiles(projectId, nodeId)
   const filename = `${nodeId}_${Date.now()}.${ext}`
   const filePath = join(dir, filename)
   writeFileSync(filePath, buffer)
@@ -112,7 +140,7 @@ export function saveNodeImage(projectId: string, nodeId: string, dataUrl: string
 }
 
 function deleteNodeImageFiles(projectId: string, nodeId: string): void {
-  cleanupNodeFiles(join(getCanvasDir(), projectId), nodeId)
+  cleanupNodeFiles(projectId, nodeId)
 }
 
 export function deleteNodeImage(projectId: string, nodeId: string): { ok: true } {
@@ -145,14 +173,17 @@ export function createProject(data: {
   text_model_id?: string
   image_provider_id?: string
   image_model_id?: string
+  vision_provider_id?: string
+  vision_model_id?: string
   concurrency?: number
   system_prompt?: string
+  layout_direction?: string
 }): CanvasProject {
   const db = getDatabase()
   const id = uuid()
   const now = new Date().toISOString()
   db.prepare(
-    'INSERT INTO canvas_projects (id, title, text_provider_id, text_model_id, image_provider_id, image_model_id, concurrency, system_prompt, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    'INSERT INTO canvas_projects (id, title, text_provider_id, text_model_id, image_provider_id, image_model_id, vision_provider_id, vision_model_id, concurrency, system_prompt, layout_direction, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
   ).run(
     id,
     data.title || 'New Canvas',
@@ -160,12 +191,20 @@ export function createProject(data: {
     data.text_model_id || '',
     data.image_provider_id || '',
     data.image_model_id || '',
+    data.vision_provider_id || '',
+    data.vision_model_id || '',
     data.concurrency || 1,
     data.system_prompt || '',
+    normalizeLayoutDirection(data.layout_direction),
     now,
     now
   )
   return getProject(id)!
+}
+
+/** 只接受 'LR' / 'TB'，其他值一律回退到 'LR'（防脟数据脱出 UI 那两个选项） */
+function normalizeLayoutDirection(v: string | undefined): 'LR' | 'TB' {
+  return v === 'TB' ? 'TB' : 'LR'
 }
 
 export function updateProject(id: string, data: Partial<{
@@ -174,8 +213,11 @@ export function updateProject(id: string, data: Partial<{
   text_model_id: string
   image_provider_id: string
   image_model_id: string
+  vision_provider_id: string
+  vision_model_id: string
   concurrency: number
   system_prompt: string
+  layout_direction: string
 }>): CanvasProject | null {
   const db = getDatabase()
   const sets: string[] = ['updated_at = ?']
@@ -185,8 +227,11 @@ export function updateProject(id: string, data: Partial<{
   if (data.text_model_id !== undefined) { sets.push('text_model_id = ?'); params.push(data.text_model_id) }
   if (data.image_provider_id !== undefined) { sets.push('image_provider_id = ?'); params.push(data.image_provider_id) }
   if (data.image_model_id !== undefined) { sets.push('image_model_id = ?'); params.push(data.image_model_id) }
+  if (data.vision_provider_id !== undefined) { sets.push('vision_provider_id = ?'); params.push(data.vision_provider_id) }
+  if (data.vision_model_id !== undefined) { sets.push('vision_model_id = ?'); params.push(data.vision_model_id) }
   if (data.concurrency !== undefined) { sets.push('concurrency = ?'); params.push(data.concurrency) }
   if (data.system_prompt !== undefined) { sets.push('system_prompt = ?'); params.push(data.system_prompt) }
+  if (data.layout_direction !== undefined) { sets.push('layout_direction = ?'); params.push(normalizeLayoutDirection(data.layout_direction)) }
   params.push(id)
   db.prepare(`UPDATE canvas_projects SET ${sets.join(', ')} WHERE id = ?`).run(...params)
   return getProject(id)
@@ -271,10 +316,12 @@ export function deleteNode(id: string): boolean {
   const node = getNode(id)
   const result = db.prepare('DELETE FROM canvas_nodes WHERE id = ?').run(id)
   if (node) {
-    // Cascade: remove any disk-stored ref image files associated with this node
-    if (node.type === 'refImage') {
-      deleteNodeImageFiles(node.project_id, id)
-    }
+    // v0.6.9+ 级联清理所有节点类型的磁盘文件 + gallery 记录。
+    // cleanupNodeFiles 按 `${nodeId}_` 前缀匹配，文件名约定覆盖：
+    //   - refImage:        {nodeId}_{ts}.{ext}
+    //   - text2img/img2img:{nodeId}_{genId}.{ext}（v0.6.9+ 落盘到 canvas/{projectId}/ 后）
+    // 无图节点（aiText / textInput / reverse 等）扫不到匹配项，是 no-op。
+    deleteNodeImageFiles(node.project_id, id)
     touchProject(node.project_id)
   }
   return result.changes > 0

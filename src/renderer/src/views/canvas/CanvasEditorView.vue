@@ -65,7 +65,7 @@
             </button>
           </div>
         </div>
-        <!-- 整理布局：dagre 拓扑分层；带 5 秒撤销窗口 -->
+        <!-- 整理布局：dagre 拓扑分层；下拉选方向；带 5 秒撤销窗口 -->
         <template v-if="layoutUndoCountdown > 0">
           <button
             @click="undoAutoLayout"
@@ -76,16 +76,28 @@
             撤销整理 ({{ layoutUndoCountdown }}s)
           </button>
         </template>
-        <button
-          v-else
-          @click="onAutoLayout"
-          :disabled="anyRunning || canvasStore.nodes.length < 2"
-          class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-surface-3 rounded-lg text-text-secondary hover:bg-surface-2 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-          title="一键整理布局：按工作流方向自动分层、对齐、去除堆叠"
-        >
-          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" /></svg>
-          整理布局
-        </button>
+        <div v-else class="relative" ref="layoutMenuRef">
+          <button
+            @click="showLayoutMenu = !showLayoutMenu"
+            :disabled="anyRunning || canvasStore.nodes.length < 2"
+            class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-surface-3 rounded-lg text-text-secondary hover:bg-surface-2 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            title="整理布局：选择方向后自动分层、对齐、去除堆叠"
+          >
+            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" /></svg>
+            整理布局
+            <svg class="w-3 h-3 opacity-60" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.5 8.25l-7.5 7.5-7.5-7.5" /></svg>
+          </button>
+          <div v-if="showLayoutMenu" class="absolute right-0 top-full mt-1 w-40 bg-surface-0 border border-surface-3 rounded-xl shadow-lg z-50 py-1">
+            <button @click="runAutoLayout('LR')" class="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-text-secondary hover:bg-surface-2 transition-colors">
+              <span class="w-2 h-2 rounded-full flex-shrink-0" :class="currentLayoutDir === 'LR' ? 'bg-primary-600' : 'bg-transparent border border-surface-3'"></span>
+              左到右整理
+            </button>
+            <button @click="runAutoLayout('TB')" class="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-text-secondary hover:bg-surface-2 transition-colors">
+              <span class="w-2 h-2 rounded-full flex-shrink-0" :class="currentLayoutDir === 'TB' ? 'bg-primary-600' : 'bg-transparent border border-surface-3'"></span>
+              上到下整理
+            </button>
+          </div>
+        </div>
         <!-- Run / Cancel workflow：运行中点击触发软取消（已开始的节点跑完，未开始的不发） -->
         <button
           @click="onRunOrCancel"
@@ -97,6 +109,10 @@
           <svg v-if="workflowRunning" class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5" /></svg>
           <svg v-else class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 0 1 0 1.972l-11.54 6.347a1.125 1.125 0 0 1-1.667-.986V5.653Z" /></svg>
           {{ workflowRunning ? '停止' : '执行工作流' }}
+        </button>
+        <!-- v0.6.9+ 打开当前画布的独立图片目录（参考图 + 生成图都在这） -->
+        <button @click="openImageDir" :disabled="!canvasStore.currentProject" class="p-1.5 rounded-lg text-text-tertiary hover:text-text-primary hover:bg-surface-2 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" title="打开画布图片文件夹">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 0 0-1.883 2.542l.857 6a2.25 2.25 0 0 0 2.227 1.932H19.05a2.25 2.25 0 0 0 2.227-1.932l.857-6a2.25 2.25 0 0 0-1.883-2.542m-16.5 0V6A2.25 2.25 0 0 1 6 3.75h3.879a1.5 1.5 0 0 1 1.06.44l2.122 2.12a1.5 1.5 0 0 0 1.06.44H18A2.25 2.25 0 0 1 20.25 9v.776" /></svg>
         </button>
         <!-- Settings -->
         <button @click="openSettings" :disabled="workflowRunning" class="p-1.5 rounded-lg text-text-tertiary hover:text-text-primary hover:bg-surface-2 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" title="画布设置">
@@ -225,6 +241,23 @@
             </select>
           </div>
           <div>
+            <label class="form-label">视觉模型服务商</label>
+            <select v-model="settingsForm.vision_provider_id" class="select-field" @change="settingsForm.vision_model_id = ''">
+              <option value="">未配置（反推节点需在节点上单独选择）</option>
+              <option v-for="p in modelStore.providers" :key="p.id" :value="p.id">{{ p.name }}</option>
+            </select>
+            <p class="text-[10px] text-text-disabled mt-1">「图片反推」节点默认使用。需多模态模型（GPT-4o / Claude / Gemini / Qwen-VL 等）</p>
+          </div>
+          <div v-if="settingsForm.vision_provider_id">
+            <label class="form-label">视觉模型</label>
+            <select v-model="settingsForm.vision_model_id" class="select-field">
+              <option value="">-- 请选择 --</option>
+              <optgroup v-if="settingsVisionGroups.recommended.length" label="推荐（视觉）">
+                <option v-for="m in settingsVisionGroups.recommended" :key="m" :value="m">{{ modelStore.optionLabel(settingsForm.vision_provider_id, m) }}</option>
+              </optgroup>
+            </select>
+          </div>
+          <div>
             <label class="form-label">并发数</label>
             <input v-model.number="settingsForm.concurrency" type="number" min="1" max="20" class="input-field" />
             <p class="text-[10px] text-text-disabled mt-1">请确认接口的实际并发限制，并确保设备性能满足并发要求</p>
@@ -292,6 +325,8 @@ import Img2ImgNode from './nodes/Img2ImgNode.vue'
 import RefImageNode from './nodes/RefImageNode.vue'
 import ImageResultNode from './nodes/ImageResultNode.vue'
 import PromptSliceNode from './nodes/PromptSliceNode.vue'
+import ReverseNode from './nodes/ReverseNode.vue'
+import MattingNode from './nodes/MattingNode.vue'
 import DeletableEdge from './edges/DeletableEdge.vue'
 import HandleCreateMenu from './components/HandleCreateMenu.vue'
 import AiOrchestrateDialog from './components/AiOrchestrateDialog.vue'
@@ -332,9 +367,19 @@ function showToast(text: string, type: 'success' | 'error' = 'success', duration
 }
 const globalPromptRef = ref<HTMLElement | null>(null)
 const addMenuRef = ref<HTMLElement | null>(null)
+const layoutMenuRef = ref<HTMLElement | null>(null)
+const showLayoutMenu = ref(false)
+// 上次使用的布局方向（持久化在 project.layout_direction）——
+// 下拉菜单用它在选项前点个小色块提示用户，注意不是「默认」而是「上次」。
+// 老画布 / 脟数据会被主进程 normalizeLayoutDirection 打到 'LR'
+const currentLayoutDir = computed<'LR' | 'TB'>(() =>
+  canvasStore.currentProject?.layout_direction === 'TB' ? 'TB' : 'LR'
+)
 const customNodeTypes: Record<string, any> = {
   textInput: markRaw(TextInputNode),
   aiText: markRaw(AiTextNode),
+  reverse: markRaw(ReverseNode),
+  matting: markRaw(MattingNode),
   text2img: markRaw(Text2ImgNode),
   img2img: markRaw(Img2ImgNode),
   refImage: markRaw(RefImageNode),
@@ -356,6 +401,9 @@ const settingsForm = ref({
   text_model_id: '',
   image_provider_id: '',
   image_model_id: '',
+  // v0.6.9+ 「图片反推」节点默认视觉模型（节点可覆盖，可为空）
+  vision_provider_id: '',
+  vision_model_id: '',
   concurrency: 1
 })
 
@@ -381,6 +429,35 @@ const settingsImageGroups = computed(() => {
     usageHints: getHintsSync('image', settingsImageProvider.value.id)
   })
 })
+const settingsVisionProvider = computed(() =>
+  modelStore.providers.find(p => p.id === settingsForm.value.vision_provider_id) || null
+)
+const settingsVisionGroups = computed(() => {
+  hintsTick.value
+  if (!settingsVisionProvider.value) return { recommended: [], others: [] }
+  return groupAndSort(settingsVisionProvider.value.models, 'vision', {
+    cloudTypeOf: (mid) => modelStore.cloudTypeOf(settingsVisionProvider.value!.id, mid),
+    usageHints: getHintsSync('vision', settingsVisionProvider.value.id)
+  })
+})
+
+/**
+ * v0.6.9+ 打开当前画布的独立图片目录（dataDir/canvas/{projectId}/）。
+ * 该目录里包含：用户上传的参考图 + text2img/img2img 节点产出的生成图。
+ * 主进程 canvas:openProjectImageDir 会保证目录存在（mkdir -p），即使该画布从未产出图也能打开空目录。
+ */
+async function openImageDir() {
+  const proj = canvasStore.currentProject
+  if (!proj) return
+  try {
+    const result = await canvasStore.openProjectImageDir(proj.id)
+    if (!result?.success) {
+      showToast(`打开失败：${result?.error || '未知错误'}`, 'error', 4000)
+    }
+  } catch (e: any) {
+    showToast(`打开失败：${e?.message || e}`, 'error', 4000)
+  }
+}
 
 function openSettings() {
   const proj = canvasStore.currentProject
@@ -389,12 +466,18 @@ function openSettings() {
   // openSettings 时把纯 model_id 升级为复合 key 让 select 能命中具体某家服务商的 option。
   const isCloudText = proj.text_provider_id === 'cloud:default'
   const isCloudImage = proj.image_provider_id === 'cloud:default'
+  // 视觉模型在云端 cloud_models 表中 type='chat'（capsFromCloudType('chat') 返回 ['chat','vision']），
+  // 主进程 resolveCloudModelId(modelId, 'chat') 会反查到对应 cloud_model_id 实现精确路由，
+  // 这里走和 text / image 一样的复合 key 升级路径，让 select option 能命中具体某家服务商
+  const isCloudVision = proj.vision_provider_id === 'cloud:default'
   settingsForm.value = {
     title: proj.title,
     text_provider_id: proj.text_provider_id || '',
     text_model_id: isCloudText ? modelStore.upgradeToCompositeKey(proj.text_model_id || '') : (proj.text_model_id || ''),
     image_provider_id: proj.image_provider_id || '',
     image_model_id: isCloudImage ? modelStore.upgradeToCompositeKey(proj.image_model_id || '') : (proj.image_model_id || ''),
+    vision_provider_id: proj.vision_provider_id || '',
+    vision_model_id: isCloudVision ? modelStore.upgradeToCompositeKey(proj.vision_model_id || '') : (proj.vision_model_id || ''),
     concurrency: proj.concurrency || 1
   }
   showSettings.value = true
@@ -422,6 +505,8 @@ async function saveSettings() {
     text_model_id: settingsForm.value.text_model_id,
     image_provider_id: settingsForm.value.image_provider_id,
     image_model_id: settingsForm.value.image_model_id,
+    vision_provider_id: settingsForm.value.vision_provider_id,
+    vision_model_id: settingsForm.value.vision_model_id,
     concurrency
   })
   showSettings.value = false
@@ -929,7 +1014,7 @@ function _clearLayoutCountdown() {
   _layoutSnapshot = null
 }
 
-async function onAutoLayout() {
+async function onAutoLayout(direction?: 'LR' | 'TB') {
   if (!projectId.value || anyRunning.value) return
   if (canvasStore.nodes.length < 2) {
     showToast('画布节点不足，无需整理', 'success', 2000)
@@ -938,11 +1023,18 @@ async function onAutoLayout() {
   // 整理前清掉一次旧的撤销窗口（如果用户连续点）
   _clearLayoutCountdown()
 
-  // 用 VueFlow 运行时实测尺寸喂给 dagre，DB 的 height=0 对孤儿节点不可靠
+  // 用 VueFlow 运行时实测尺寸嗂给 dagre，DB 的 height=0 对孤儿节点不可靠
+  // 优先用传入的方向，其次读 project 上次记忆，均不同时回退 LR
+  const rankdir: 'LR' | 'TB' = direction
+    ?? (canvasStore.currentProject?.layout_direction === 'TB' ? 'TB' : 'LR')
+  // TB 模式下同层节点是「水平」间距，节点宽普遍较宽（240），适当压缩避免布局太稀疏；
+  // LR 模式保持原参数不变，避免老用户感知变化
+  const nodesep = rankdir === 'TB' ? 40 : 60
+  const ranksep = rankdir === 'TB' ? 80 : 120
   const { newPositions, snapshot } = computeLayout(projectId.value, {
-    rankdir: 'LR',
-    nodesep: 60,
-    ranksep: 120,
+    rankdir,
+    nodesep,
+    ranksep,
     getNodeDimensions: (id) => {
       // VueFlow 1.48 的 getNode 是 ComputedRef<fn>，需要 .value 解包再调用
       const fn = (vfGetNode as any)?.value || vfGetNode
@@ -969,6 +1061,21 @@ async function onAutoLayout() {
   }, 1000)
 
   showToast('已整理布局，5 秒内可撤销', 'success', 2500)
+}
+
+/**
+ * 下拉菜单选中某个方向后的入口：
+ *   1. 关闭菜单
+ *   2. 若选择与 project 上次记忆不同，写回库（下次打开菜单能高亮该项）
+ *   3. 调用 onAutoLayout(direction) 走原有 dagre 布局 + 5s 撤销逻辑
+ */
+async function runAutoLayout(direction: 'LR' | 'TB') {
+  showLayoutMenu.value = false
+  // 仅在变化时写库，避免无谓 IPC；normalizeLayoutDirection 会再检一道
+  if (projectId.value && canvasStore.currentProject?.layout_direction !== direction) {
+    await canvasStore.updateProject(projectId.value, { layout_direction: direction })
+  }
+  await onAutoLayout(direction)
 }
 
 async function undoAutoLayout() {
@@ -1003,11 +1110,31 @@ function getDefaultNodeData(type: string): Record<string, any> {
   switch (type) {
     case 'textInput': return { text: '' }
     case 'aiText': return { text: '', result: '', status: 'idle' }
+    // 图片反推：默认 general / cn；vision_* 留空表示走画布设置默认视觉模型
+    case 'reverse': return {
+      vision_provider_id: '',
+      vision_model_id: '',
+      style_preset: 'general',
+      output_lang: 'cn',
+      custom_prompt: '',
+      result: '',
+      status: 'idle',
+      error: ''
+    }
     case 'text2img': return { model_provider_id: '', model_id: '', size: '1:1', tier_id: '2k', quality: 'auto', status: 'idle', generation_id: '', result_path: '' }
     case 'img2img': return { model_provider_id: '', model_id: '', size: '1:1', tier_id: '2k', quality: 'auto', status: 'idle', generation_id: '', result_path: '' }
     case 'refImage': return { image_data: '', image_path: '' }
     case 'imageResult': return { generation_id: '', result_path: '', result_url: '' }
     case 'promptSlice': return { rows: [] }
+    // v0.6.9+ AI 抠图节点：默认走云接口；用户在「模型服务 → 抠图接口」加了默认接口时自动直连阿里
+    case 'matting': return {
+      matting_source: 'cloud',
+      matting_provider_id: '',
+      status: 'idle',
+      result_path: '',
+      matting_task_id: '',
+      error: ''
+    }
     default: return {}
   }
 }
@@ -1071,6 +1198,9 @@ async function doClearCanvas() {
 function onClickOutside(e: MouseEvent) {
   if (addMenuRef.value && !addMenuRef.value.contains(e.target as globalThis.Node)) {
     showAddMenu.value = false
+  }
+  if (layoutMenuRef.value && !layoutMenuRef.value.contains(e.target as globalThis.Node)) {
+    showLayoutMenu.value = false
   }
   if (globalPromptRef.value && !globalPromptRef.value.contains(e.target as globalThis.Node)) {
     globalPromptExpanded.value = false
