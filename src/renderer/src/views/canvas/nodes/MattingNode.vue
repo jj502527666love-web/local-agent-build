@@ -28,7 +28,16 @@
       <!-- 结果缩略图（透明背景棋盘格） -->
       <div v-if="data.result_path && data.status === 'done'" class="mb-2">
         <div class="checkerboard rounded-lg overflow-hidden border border-surface-3">
-          <img :src="resultImageUrl" alt="抠图结果" class="w-full h-auto block" />
+          <img
+            :src="resultImageUrl"
+            alt="抠图结果"
+            class="w-full h-auto block cursor-pointer"
+            @click.stop="previewImage"
+          />
+        </div>
+        <div class="flex gap-1 mt-1.5">
+          <button @click="copyImage" class="flex-1 py-1 text-[10px] font-medium border border-surface-3 rounded-lg text-text-secondary hover:bg-surface-2 transition-colors">复制</button>
+          <button @click="openInFolder" class="flex-1 py-1 text-[10px] font-medium border border-surface-3 rounded-lg text-text-secondary hover:bg-surface-2 transition-colors">定位</button>
         </div>
       </div>
 
@@ -51,6 +60,12 @@
       @click="(e: MouseEvent) => onHandleClick?.(e, data.nodeId, 'output', 'image')"
     />
   </div>
+  <ImageLightbox
+    :src="previewSrc"
+    :on-copy="copyImage"
+    :on-locate="openInFolder"
+    @close="previewSrc = null"
+  />
 </template>
 
 <script setup lang="ts">
@@ -60,6 +75,7 @@ import { useCanvasStore } from '@/stores/canvas'
 import { useMattingStore } from '@/stores/matting'
 import { useCloudAuthStore } from '@/stores/cloud-auth'
 import { useWorkflowEngine } from '../composables/useWorkflowEngine'
+import ImageLightbox from '@/components/ImageLightbox.vue'
 
 type HandleClickHandler = (e: MouseEvent, nodeId: string, handleId: string, dataType: 'text' | 'image') => void
 
@@ -69,6 +85,8 @@ const mattingStore = useMattingStore()
 const cloudAuth = useCloudAuthStore()
 const { executeSingleNode } = useWorkflowEngine()
 const onHandleClick = inject<HandleClickHandler | null>('onHandleClick', null)
+const api = () => (window as any).api
+const previewSrc = ref<string | null>(null)
 
 // 上游连接判断（参考 ReverseNode）
 const hasUpstreamImage = computed(() => {
@@ -131,6 +149,18 @@ async function runMatting() {
     matting_provider_id: useCustom ? mattingStore.defaultProvider!.id : '',
   })
   await executeSingleNode(props.data.nodeId, props.data.projectId)
+}
+
+function previewImage() {
+  if (resultImageUrl.value) previewSrc.value = resultImageUrl.value
+}
+
+function copyImage() {
+  if (props.data.result_path) api().clipboard.writeImage(props.data.result_path)
+}
+
+function openInFolder() {
+  if (props.data.result_path) api().shell.showItemInFolder(props.data.result_path)
 }
 
 function deleteNode() {
