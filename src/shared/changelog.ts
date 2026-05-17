@@ -21,6 +21,17 @@ export interface ReleaseNote {
 
 export const CHANGELOG: ReleaseNote[] = [
   {
+    version: '0.7.0',
+    date: '2026-05-17',
+    notes: [
+      '对话生图更稳定，生成完成后会自动回到对话中',
+      '对话生图可自动使用最近上传的图片作为参考图',
+      '切换会话或页面时，回复和生图进度不再串台',
+      '修复生图结果为空时仍显示完成的问题',
+      '减少对话中重复回复和重复图片消息的情况'
+    ]
+  },
+  {
     version: '0.6.9',
     date: '2026-05-17',
     notes: [

@@ -324,6 +324,70 @@ export interface SendMessageOptions {
   overridePromptSkillDirs?: string[]
 }
 
+function normalizeAttachments(attachments?: any[]): any[] | undefined {
+  if (!attachments || attachments.length === 0) return attachments
+  return attachments.map((att) => {
+    if (!att || typeof att !== 'object') return att
+    if (att.id) return att
+    return { ...att, id: `att_${uuid()}` }
+  })
+}
+
+function isImageAttachment(att: any): boolean {
+  return !!att && att.type === 'image' && typeof att.data === 'string' && att.data.startsWith('data:image/')
+}
+
+function collectImageAttachmentRefs(history: any[], limit = 12): Array<{ id: string; name: string; data: string; messageId: string }> {
+  const refs: Array<{ id: string; name: string; data: string; messageId: string }> = []
+  const seen = new Set<string>()
+  for (let i = history.length - 1; i >= 0 && refs.length < limit; i--) {
+    const msg = history[i]
+    if (msg?.role !== 'user' || !Array.isArray(msg.attachments)) continue
+    for (let j = msg.attachments.length - 1; j >= 0 && refs.length < limit; j--) {
+      const att = msg.attachments[j]
+      if (!isImageAttachment(att)) continue
+      const id = String(att.id || `${msg.id}:${j}`)
+      if (seen.has(id)) continue
+      seen.add(id)
+      refs.push({
+        id,
+        name: String(att.name || `image-${j + 1}`),
+        data: att.data,
+        messageId: String(msg.id || '')
+      })
+    }
+  }
+  return refs
+}
+
+function normalizeStringList(value: any): string[] {
+  if (Array.isArray(value)) return value.map((v) => String(v).trim()).filter(Boolean)
+  if (typeof value === 'string') return value.split(',').map((v) => v.trim()).filter(Boolean)
+  return []
+}
+
+function shouldAutoInjectRecentImages(args: any, userContent: string): boolean {
+  const text = `${userContent || ''}\n${args?.prompt || ''}`.toLowerCase()
+  return /这张|这幅|这图|图片|照片|参考|基于|根据|保持|改成|修改|编辑|用.*图|image|photo|picture|reference|based on|edit|modify|this image/.test(text)
+}
+
+function resolveImageGenRefImages(args: any, refs: Array<{ id: string; name: string; data: string; messageId: string }>, currentTurnRefs: Array<{ id: string; name: string; data: string; messageId: string }>, userContent: string): string[] {
+  const direct = Array.isArray(args.ref_images)
+    ? args.ref_images.filter((v: any) => typeof v === 'string' && v.startsWith('data:image/'))
+    : []
+  const ids = normalizeStringList(args.ref_image_ids)
+  const byId = new Map(refs.map((r) => [r.id, r]))
+  const byName = new Map(refs.map((r) => [r.name, r]))
+  const resolved = ids
+    .map((id) => byId.get(id) || byName.get(id))
+    .filter(Boolean)
+    .map((r: any) => r.data)
+  const autoRefs = direct.length || resolved.length
+    ? []
+    : (currentTurnRefs.length > 0 || shouldAutoInjectRecentImages(args, userContent) ? (currentTurnRefs.length ? currentTurnRefs : refs).slice(0, 4).map((r) => r.data) : [])
+  return Array.from(new Set([...direct, ...resolved, ...autoRefs])).slice(0, 10)
+}
+
 export async function sendMessage(
   options: SendMessageOptions,
   window: BrowserWindow | null
@@ -345,15 +409,18 @@ export async function sendMessage(
   }
 
   // Save user message
-  addMessage({
+  const normalizedAttachments = normalizeAttachments(options.attachments)
+  const savedUserMessage = addMessage({
     conversation_id: options.conversationId,
     role: 'user',
     content: options.content,
-    attachments: options.attachments
+    attachments: normalizedAttachments
   })
 
   // Build message history
   const history = getMessages(options.conversationId)
+  const imageAttachmentRefs = collectImageAttachmentRefs(history)
+  const currentTurnImageAttachmentRefs = collectImageAttachmentRefs([savedUserMessage])
   const messages: ChatMessage[] = []
 
   // Resolve effective config (overrides take precedence)
@@ -428,11 +495,24 @@ export async function sendMessage(
       )
     }
 
+    if (imageAttachmentRefs.length > 0) {
+      const refList = imageAttachmentRefs
+        .map((r, i) => `${i + 1}. id=${r.id}, name=${r.name}`)
+        .join('\n')
+      baseSystemParts.push(
+        `[可用于生图参考的最近图片附件]:\n${refList}\n` +
+        `- 若用户要求基于附件、参考图、修改图片或延续上一张图，调用 image_gen 时可传 ref_image_ids: ["附件id"]\n` +
+        `- 若用户本轮刚上传了图片并要求生图/改图，即使不传 ref_image_ids，系统也会自动把本轮图片作为参考图注入\n` +
+        `- 不要把图片 data URI/base64 原文写进 ref_images，优先使用 ref_image_ids`
+      )
+    }
+
     // 图片生成工作流约定：image_gen 是 fire-and-forget 异步工具，避免阻塞对话 30-90 秒。
     // 工具立即返回 status:'pending'，后台异步生成；完成后系统自动追加图片消息到对话流。
     baseSystemParts.push(
       `[图片生成工作流（异步、不等图）]:\n` +
       `- 用户请求绘图/生成图片时：把用户需求总结、补全为高质量提示词，调用 image_gen({action:'generate', prompt:<提示词>}) 一次\n` +
+      `- 不要传 quality 参数；对话生图统一由系统使用 auto\n` +
       `- 工具会**立即返回 status:'pending'**，表示任务已提交。这是正常的——不要等图、不要重试、不要再次调用\n` +
       `- 收到 pending 后用一句话简短告诉用户："已为你提交生图任务，约 30-90 秒后图片会自动出现在对话和右上角"，然后立即结束本轮回复\n` +
       `- 不要在回复里嵌入 markdown 图片：图片还没生成完，url 此刻并不存在\n` +
@@ -654,6 +734,13 @@ export async function sendMessage(
   const abortController = new AbortController()
   activeControllers.set(options.conversationId, abortController)
   const signal = abortController.signal
+  const emitStream = (payload: Record<string, any>): void => {
+    if (!window) return
+    window.webContents.send('chat:stream', {
+      ...payload,
+      conversationId: options.conversationId
+    })
+  }
   try {
     let currentMessages: ChatMessage[] = [...messages]
     let round = 0
@@ -668,7 +755,8 @@ export async function sendMessage(
           messages: currentMessages,
           tools: tools.length > 0 ? tools : undefined,
           stream: true,
-          signal
+          signal,
+          streamContext: { conversationId: options.conversationId }
         },
         window
       )
@@ -702,12 +790,10 @@ export async function sendMessage(
 
       // Notify renderer which tools are being called
       const toolNames = response.tool_calls.map((tc: any) => tc.function?.name || 'unknown')
-      if (window) {
-        window.webContents.send('chat:stream', { type: 'tool_start', tools: toolNames })
-      }
+      emitStream({ type: 'tool_start', tools: toolNames })
 
       // Pass 1 (serial): approval gate, collect rejections eagerly so the user sees them paired with the right call.
-      type Plan = { toolCall: any; fnName: string; resultStr?: string }
+      type Plan = { toolCall: any; fnName: string; result?: any; resultStr?: string }
       const plans: Plan[] = []
       const sandboxDir = getWorkspaceDir(options.conversationId)
       for (const toolCall of response.tool_calls) {
@@ -716,13 +802,7 @@ export async function sendMessage(
         let parsedArgs: any = {}
         try { parsedArgs = JSON.parse(toolCall.function?.arguments || '{}') } catch {}
 
-        // v0.6.6+ image_gen 默认值回退：若 LLM args 未传 provider/model，用会话级默认值。
-        // 与 system prompt 注入形成双重保证：prompt 让 LLM 主动填，这里是 LLM 不听话的兑底。
-        if (
-          fnName === 'image_gen' &&
-          parsedArgs?.action === 'generate' &&
-          (conv.active_image_provider_id || conv.active_image_model_id)
-        ) {
+        if (fnName === 'image_gen' && parsedArgs?.action === 'generate') {
           let mutated = false
           if (!parsedArgs.model_provider_id && conv.active_image_provider_id) {
             parsedArgs.model_provider_id = conv.active_image_provider_id
@@ -732,10 +812,18 @@ export async function sendMessage(
             parsedArgs.model_id = conv.active_image_model_id
             mutated = true
           }
+          if (parsedArgs.quality !== 'auto') {
+            parsedArgs.quality = 'auto'
+            mutated = true
+          }
+          const refImages = resolveImageGenRefImages(parsedArgs, imageAttachmentRefs, currentTurnImageAttachmentRefs, options.content)
+          if (refImages.length > 0) {
+            parsedArgs.ref_images = refImages
+            mutated = true
+          }
           if (mutated) {
-            // 同步回填 toolCall.function.arguments，让 executeToolCall / DB 记录拿到补齐后的 args
             toolCall.function.arguments = JSON.stringify(parsedArgs)
-            console.log(`[chat] image_gen args fallback: provider=${conv.active_image_provider_id}, model=${conv.active_image_model_id}`)
+            console.log(`[chat] image_gen args normalized: provider=${parsedArgs.model_provider_id || ''}, model=${parsedArgs.model_id || ''}, refs=${parsedArgs.ref_images?.length || 0}`)
           }
         }
 
@@ -749,9 +837,7 @@ export async function sendMessage(
               fnName,
               resultStr: JSON.stringify({ error: '用户拒绝了该工具调用', tool: fnName })
             })
-            if (window) {
-              window.webContents.send('chat:stream', { type: 'tool_result', tool: fnName, summary: '[已拒绝]' })
-            }
+            emitStream({ type: 'tool_result', tool: fnName, summary: '[已拒绝]' })
             continue
           }
         }
@@ -769,11 +855,9 @@ export async function sendMessage(
         // 上游（deepseek/智谱/豆包/Moonshot 等）拿到这种「双重转义字符串」会触发
         // silent 200 + 空 SSE，表现为「调用工具后 AI 不再回复」。
         const resultStr = typeof result === 'string' ? result : JSON.stringify(result)
-        if (window) {
-          const summary = buildToolSummary(p.fnName, result, resultStr)
-          window.webContents.send('chat:stream', { type: 'tool_result', tool: p.fnName, summary })
-        }
-        return { ...p, resultStr }
+        const summary = buildToolSummary(p.fnName, result, resultStr)
+        emitStream({ type: 'tool_result', tool: p.fnName, summary })
+        return { ...p, result, resultStr }
       })
       const completed = await Promise.all(pendingExecs)
       if (signal.aborted) throw new AbortedError()
@@ -794,14 +878,30 @@ export async function sendMessage(
         })
       }
 
+      const hasPendingImageGen = completed.some((p) =>
+        p.fnName === 'image_gen' &&
+        p.result &&
+        typeof p.result === 'object' &&
+        p.result.status === 'pending'
+      )
+      if (hasPendingImageGen) {
+        const content = '已为你提交生图任务，约 30-90 秒后图片会自动出现在对话和右上角。'
+        emitStream({ type: 'tool_done' })
+        emitStream({ type: 'content', content })
+        addMessage({
+          conversation_id: options.conversationId,
+          role: 'assistant',
+          content
+        })
+        break
+      }
+
       round++
 
       // Safety: if max rounds reached, do one final call without tools
       if (round >= MAX_TOOL_ROUNDS) {
         console.log(`[chat] max tool rounds (${MAX_TOOL_ROUNDS}) reached, final call without tools`)
-        if (window) {
-          window.webContents.send('chat:stream', { type: 'tool_done' })
-        }
+        emitStream({ type: 'tool_done' })
         if (signal.aborted) throw new AbortedError()
         const finalResponse = await callLLM(
           effectiveProviderId,
@@ -809,7 +909,8 @@ export async function sendMessage(
             modelId: effectiveModelId,
             messages: currentMessages,
             stream: true,
-            signal
+            signal,
+            streamContext: { conversationId: options.conversationId }
           },
           window
         )
@@ -822,9 +923,7 @@ export async function sendMessage(
       }
 
       // Notify renderer that tool execution is done, next round streaming follows
-      if (window) {
-        window.webContents.send('chat:stream', { type: 'tool_done' })
-      }
+      emitStream({ type: 'tool_done' })
     }
     // Auto-generate title on 1st or 5th user message
     maybeGenerateTitle(options.conversationId, effectiveProviderId, effectiveModelId, window)
@@ -833,21 +932,14 @@ export async function sendMessage(
   } catch (error: any) {
     if (isAbortedError(error)) {
       // User-initiated cancel: surface as a friendly aborted marker, not an error.
-      if (window) {
-        window.webContents.send('chat:stream', { type: 'aborted' })
-      }
+      emitStream({ type: 'aborted' })
       addMessage({
         conversation_id: options.conversationId,
         role: 'assistant',
         content: '[已中断]'
       })
     } else {
-      if (window) {
-        window.webContents.send('chat:stream', {
-          type: 'error',
-          error: error.message
-        })
-      }
+      emitStream({ type: 'error', error: error.message })
       addMessage({
         conversation_id: options.conversationId,
         role: 'assistant',

@@ -62,13 +62,6 @@
 
       <!-- Chat Area -->
       <div class="flex-1 flex flex-col bg-surface-1 relative">
-        <!-- 生图进度浮窗：只在有会话时挂载，监听 imageGen:progress 按 conversationId 过滤。
-             单行紧凑版，定位在聊天主区域右上角顶部栏框内，避开输入栏和会话列表。 -->
-        <ChatImageGenProgress
-          v-if="chatStore.currentConversationId"
-          :conversation-id="chatStore.currentConversationId"
-          class="absolute top-3 right-4 z-30"
-        />
         <div v-if="!chatStore.currentConversationId" class="flex-1 empty-state">
           <div class="w-20 h-20 rounded-2xl bg-surface-2 flex items-center justify-center mb-5">
             <svg class="w-10 h-10 text-text-disabled" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8.625 12a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0H8.25m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0H12m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 0 1-2.555-.337A5.972 5.972 0 0 1 5.41 20.97a5.969 5.969 0 0 1-.474-.065 4.48 4.48 0 0 0 .978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25Z" /></svg>
@@ -431,7 +424,6 @@ import { stripImageMetadata } from '@shared/strip-image-metadata'
 import GalleryPicker from '@/components/GalleryPicker.vue'
 import ImageLightbox from '@/components/ImageLightbox.vue'
 import ChatModelSwitcher from '@/components/ChatModelSwitcher.vue'
-import ChatImageGenProgress from '@/components/ChatImageGenProgress.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -1179,6 +1171,7 @@ onMounted(async () => {
   // 路由进入后恢复当前对话的未发送草稿。watch 只在 currentConversationId
   // 变化时触发；如果 chat 页面重新进入但对话 id 未变，需要这里手动 load。
   if (chatStore.currentConversationId) {
+    await chatStore.selectConversation(chatStore.currentConversationId)
     loadDraftFor(chatStore.currentConversationId)
   }
 

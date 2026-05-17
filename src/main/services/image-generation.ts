@@ -12,6 +12,7 @@ import { resolveSizeToPixels, getModelMode } from '@shared/image-size'
 import { stripModelId } from '@shared/model-id'
 import { normalizeApiBase } from './api-base-normalize'
 import { addToCreation, removeByRelativePath } from './gallery'
+import { probeImage } from './image-probe'
 import {
   buildRequestSnapshot,
   describeFormData,
@@ -706,6 +707,17 @@ async function callImageAPI(
       form.append('size', resolvedPx)
       form.append('quality', quality)
       form.append('response_format', 'b64_json')
+      console.log('[ImageGen] request', {
+        channel: 'custom',
+        endpoint: 'edits',
+        model: modelId,
+        size,
+        tierId,
+        resolvedPx,
+        refCount: refImages.length,
+        hasMask: !!mask,
+        qualitySent: true
+      })
 
       for (const img of refImages) {
         // 直接 base64 → Buffer 透传原始字节，不再 stripBase64。
@@ -845,6 +857,18 @@ async function callCloudImageAPI(
     quality,
     response_format: 'b64_json'
   }
+  console.log('[ImageGen] request', {
+    channel: 'cloud',
+    endpoint: hasRefImages ? 'edits' : 'generations',
+    model: modelId,
+    size,
+    tierId,
+    resolvedPx: body.size,
+    refCount: refImages?.length || 0,
+    hasMask: !!mask,
+    qualitySent: true,
+    cloudModelId
+  })
   // 云端网关按 cloud_model_id 主键精确路由到具体服务商，避免同 model_id 多家时 first() 错位
   if (cloudModelId !== null) {
     body.cloud_model_id = cloudModelId
@@ -1288,6 +1312,9 @@ async function saveOrDownloadResult(
       throw new Error(`图片下载失败：${detail}（已保留原 URL，可手动复制访问）`)
     }
   }
+  if (!resultPath && !resultUrl) {
+    throw new Error('服务商返回的图片数据为空：缺少 b64_json 或 url')
+  }
   return { result_path: resultPath, result_url: resultUrl }
 }
 
@@ -1332,12 +1359,16 @@ export async function generateImages(
   // 让前端能按来源过滤（chat 浮窗 vs ImageGenView）。
   function emitProgress(payload: Record<string, any>): void {
     if (!window) return
-    window.webContents.send('imageGen:progress', {
-      ...payload,
-      sessionId,
-      conversationId: progressCtx.conversationId,
-      source: progressCtx.source || 'image-gen'
-    })
+    try {
+      window.webContents.send('imageGen:progress', {
+        ...payload,
+        sessionId,
+        conversationId: progressCtx.conversationId,
+        source: progressCtx.source || 'image-gen'
+      })
+    } catch (e) {
+      console.error('[ImageGen] emitProgress failed:', e)
+    }
   }
 
   // Pre-create all generation records as pending
@@ -1410,6 +1441,17 @@ export async function generateImages(
           canvasNodeId: options.canvasNodeId
         }
         const { result_path, result_url } = await saveOrDownloadResult(outputCtx, genId, apiResult)
+        if (result_path) {
+          const absoluteResultPath = getAbsolutePath(result_path)
+          const imageInfo = probeImage(absoluteResultPath)
+          console.log('[ImageGen] result', {
+            genId,
+            resultPath: result_path,
+            width: imageInfo.width,
+            height: imageInfo.height,
+            bytes: imageInfo.size
+          })
+        }
 
         updateGenerationStatus(genId, 'done', {
           result_path,

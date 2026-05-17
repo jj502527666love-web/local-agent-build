@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
+import { ref, onMounted, onBeforeUnmount } from 'vue'
 
 /**
  * 聊天对话内的生图进度浮窗。
@@ -15,11 +15,6 @@ import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
  *
  * 布局：调用方负责绝对定位（建议 absolute bottom-24 left-4 z-30）。
  */
-
-interface Props {
-  conversationId: string | null
-}
-const props = defineProps<Props>()
 
 interface ProgressTask {
   genId: string
@@ -66,7 +61,6 @@ function dismiss(genId: string): void {
 
 function handleProgress(data: any): void {
   if (!data || data.source !== 'chat') return
-  if (!props.conversationId || data.conversationId !== props.conversationId) return
 
   const genId = data.genId as string | undefined
 
@@ -149,16 +143,6 @@ onBeforeUnmount(() => {
   for (const t of autoCloseTimers.values()) clearTimeout(t)
   autoCloseTimers.clear()
 })
-
-// 切换会话时清空当前显示，避免上一个会话的卡片串到新会话
-watch(
-  () => props.conversationId,
-  () => {
-    for (const t of autoCloseTimers.values()) clearTimeout(t)
-    autoCloseTimers.clear()
-    tasks.value = []
-  }
-)
 
 function statusText(task: ProgressTask): string {
   if (task.status === 'generating') return '正在生成图片…'

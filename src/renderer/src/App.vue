@@ -197,6 +197,7 @@
   </div>
 
   <router-view v-if="!showSetup" />
+  <ChatImageGenProgress v-if="!showSetup" class="fixed top-4 right-4 z-[8500]" />
 
   <!-- Register bonus toast (non-blocking) -->
   <RegisterBonusToast />
@@ -205,6 +206,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import RegisterBonusToast from '@/components/RegisterBonusToast.vue'
+import ChatImageGenProgress from '@/components/ChatImageGenProgress.vue'
 import { appName, appAbbr } from '@/utils/branding'
 import { getReleaseNotes, parseUpstreamReleaseNotes } from '@shared/changelog'
 

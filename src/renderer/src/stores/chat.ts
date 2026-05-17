@@ -205,7 +205,10 @@ export const useChatStore = defineStore('chat', () => {
       if (!data?.conversationId || !data?.message) return
       // 当前正在显示这个 conversation → 立刻追加；否则 DB 已写入，切回时 fetch 即可
       if (currentConversationId.value === data.conversationId) {
-        messages.value.push(data.message)
+        const messageId = data.message.id
+        if (!messageId || !messages.value.some((m) => m.id === messageId)) {
+          messages.value.push(data.message)
+        }
       }
     })
   }
@@ -253,13 +256,17 @@ export const useChatStore = defineStore('chat', () => {
 
     // Listen for stream events
     const toolLogs: string[] = []
-    window.api.chat.onStream((data: any) => {
+    let localStreamContent = ''
+    const unsubscribeStream = window.api.chat.onStream((data: any) => {
+      if (data?.conversationId !== convId) return
       if (data.type === 'content') {
-        streamContent.value += data.content
+        localStreamContent += data.content
+        if (currentConversationId.value === convId) streamContent.value = localStreamContent
         const msg = messages.value.find((m) => m.id === tempId)
-        if (msg) msg.content = streamContent.value
+        if (msg) msg.content = localStreamContent
       } else if (data.type === 'tool_start') {
-        streamContent.value = ''
+        localStreamContent = ''
+        if (currentConversationId.value === convId) streamContent.value = ''
         const tools = (data.tools as string[]) || []
         if (tools.length) {
           // image_gen 是异步 fire-and-forget：tool_start 几乎立即被 tool_result 的 pending 摘要覆盖，
@@ -283,7 +290,8 @@ export const useChatStore = defineStore('chat', () => {
         const msg = messages.value.find((m) => m.id === tempId)
         if (msg) msg._toolLogs = [...toolLogs]
       } else if (data.type === 'tool_done') {
-        streamContent.value = ''
+        localStreamContent = ''
+        if (currentConversationId.value === convId) streamContent.value = ''
         const msg = messages.value.find((m) => m.id === tempId)
         if (msg) msg.content = ''
       } else if (data.type === 'aborted') {
@@ -319,12 +327,14 @@ export const useChatStore = defineStore('chat', () => {
       }
       streamingConvIds.value.delete(convId)
       streamingConvIds.value = new Set(streamingConvIds.value)
-      window.api.chat.offStream()
+      const unsubscribe = unsubscribeStream as unknown as (() => void) | undefined
+      if (typeof unsubscribe === 'function') unsubscribe()
+      else window.api.chat.offStream()
     }
 
     // Refresh messages from DB - preserve streamed content to avoid flash
     if (currentConversationId.value === convId) {
-      const lastContent = streamContent.value
+      const lastContent = localStreamContent
       const dbMessages = (await window.api.chat.invoke('getMessages', convId)) as Message[]
       // If the last DB assistant message matches streamed content, swap seamlessly
       if (dbMessages.length > 0) {

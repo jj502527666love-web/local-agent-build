@@ -160,10 +160,9 @@ export const coreToolDefs = [
           model_provider_id: { type: 'string', description: '服务商ID（generate 时必填，从 list_providers 获取）' },
           model_id: { type: 'string', description: '模型ID（generate 时必填，从 list_providers 获取）' },
           size: { type: 'string', description: '图片尺寸比例：1:1, 3:2, 2:3, 16:9, 9:16（默认 1:1）' },
-          quality: { type: 'string', description: '图片质量：auto, hd（默认 auto）' },
           output_dir: { type: 'string', description: '可选，将生成的图片复制到此目录。相对路径相对当前对话工作区;未指定时默认落在 {工作区}/images/' },
           output_filename: { type: 'string', description: '可选，自定义输出文件名（不含扩展名，如 cover_bg）' },
-          ref_images: { type: 'array', items: { type: 'string' }, description: '可选，参考图片的 base64 data URI 数组（用于图片编辑/风格参考）' }
+          ref_image_ids: { type: 'array', items: { type: 'string' }, description: '可选，参考图片附件 ID 数组。优先使用系统提示列出的最近图片附件 id，不要传 base64' }
         },
         required: ['action']
       }
@@ -547,7 +546,7 @@ async function executeImageGen(args: any, sandboxDir?: string, execContext?: Too
           modelProviderId: args.model_provider_id,
           modelId: args.model_id,
           size: args.size || '1:1',
-          quality: args.quality || 'auto',
+          quality: 'auto',
           batchCount: 1,
           refImages: args.ref_images || undefined
         },
@@ -619,7 +618,7 @@ async function runImageGenInBackground(
         modelProviderId: args.model_provider_id,
         modelId: args.model_id,
         size: args.size || '1:1',
-        quality: args.quality || 'auto',
+        quality: 'auto',
         batchCount: 1,
         refImages: args.ref_images || undefined,
         progressContext: {

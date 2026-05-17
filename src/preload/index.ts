@@ -25,8 +25,11 @@ const api = {
   chat: {
     invoke: (channel: string, ...args: unknown[]) =>
       ipcRenderer.invoke(`chat:${channel}`, ...args),
-    onStream: (callback: (data: unknown) => void) =>
-      ipcRenderer.on('chat:stream', (_event, data) => callback(data)),
+    onStream: (callback: (data: unknown) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, data: unknown) => callback(data)
+      ipcRenderer.on('chat:stream', handler)
+      return () => ipcRenderer.off('chat:stream', handler)
+    },
     offStream: () => ipcRenderer.removeAllListeners('chat:stream'),
     onTitleUpdated: (callback: (data: unknown) => void) =>
       ipcRenderer.on('chat:titleUpdated', (_event, data) => callback(data)),

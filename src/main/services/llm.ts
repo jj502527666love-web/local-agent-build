@@ -30,6 +30,9 @@ export interface LLMRequestOptions {
   /** When true (default), streaming chunks are forwarded via chat:stream.
    *  Set to false for background / non-chat LLM calls to avoid cross-talk. */
   notifyStream?: boolean
+  streamContext?: {
+    conversationId?: string
+  }
 }
 
 export class AbortedError extends Error {
@@ -200,7 +203,7 @@ export async function callLLM(
 
   if (options.stream) {
     const notify = options.notifyStream !== false
-    return streamLLM(url, headers, body, window ?? null, providerId, options.modelId, options.signal, notify)
+    return streamLLM(url, headers, body, window ?? null, providerId, options.modelId, options.signal, notify, options.streamContext)
   }
 
   const response = await fetchWithRetry(url, {
@@ -249,7 +252,8 @@ async function streamLLM(
   providerId: string,
   modelId: string,
   signal?: AbortSignal,
-  notifyStream = true
+  notifyStream = true,
+  streamContext?: LLMRequestOptions['streamContext']
 ): Promise<LLMResponse> {
   body.stream_options = { include_usage: true }
 
@@ -258,7 +262,7 @@ async function streamLLM(
   while (attempt <= MAX_STREAM_RETRIES) {
     if (signal?.aborted) throw new AbortedError()
     try {
-      return await streamLLMOnce(url, headers, body, window, providerId, modelId, signal, notifyStream)
+      return await streamLLMOnce(url, headers, body, window, providerId, modelId, signal, notifyStream, streamContext)
     } catch (err: any) {
       if (isAbortedError(err)) throw err
       lastErr = err
@@ -292,7 +296,8 @@ async function streamLLMOnce(
   providerId: string,
   modelId: string,
   signal?: AbortSignal,
-  notifyStream = true
+  notifyStream = true,
+  streamContext?: LLMRequestOptions['streamContext']
 ): Promise<LLMResponse> {
   const response = await fetchWithRetry(url, {
     method: 'POST',
@@ -360,7 +365,8 @@ async function streamLLMOnce(
           if (window && notifyStream) {
             window.webContents.send('chat:stream', {
               type: 'content',
-              content: delta.content
+              content: delta.content,
+              conversationId: streamContext?.conversationId
             })
           }
         }
@@ -394,7 +400,7 @@ async function streamLLMOnce(
   }
 
   if (window && notifyStream) {
-    window.webContents.send('chat:stream', { type: 'done' })
+    window.webContents.send('chat:stream', { type: 'done', conversationId: streamContext?.conversationId })
   }
 
   if (usage) {
