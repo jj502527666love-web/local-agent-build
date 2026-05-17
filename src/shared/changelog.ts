@@ -21,6 +21,16 @@ export interface ReleaseNote {
 
 export const CHANGELOG: ReleaseNote[] = [
   {
+    version: '0.7.1',
+    date: '2026-05-17',
+    notes: [
+      '切图新增「裁边」：开启后可分别调整上下左右要去掉的边距，再按所选模式切片',
+      '切图页面右上角新增「前往图库」按钮，保存后可一键跳转查看',
+      'AI 抠图完成后新增「去切图」按钮，可直接把抠出的透明 PNG 送到切图工具',
+      '修复部分 GPT 生图模型因请求参数不兼容导致失败的问题'
+    ]
+  },
+  {
     version: '0.7.0',
     date: '2026-05-17',
     notes: [

@@ -454,6 +454,10 @@ function toRelativePath(absolutePath: string): string {
 
 type ImageAPIResult = { b64_json?: string; url?: string; revised_prompt?: string }
 
+function isGptImageModel(modelId: string): boolean {
+  return /^gpt-image(?:-|$)|^chatgpt-image-latest$/i.test(stripModelId(modelId))
+}
+
 /**
  * 把用户在 ModelProvider 上配置的 custom_params + request_override_patch 叠加到生图请求 body 上。
  * 顺序：先 custom_params（逐条 set），再 request_override_patch（最终覆盖）。
@@ -706,7 +710,7 @@ async function callImageAPI(
       form.append('n', String(n))
       form.append('size', resolvedPx)
       form.append('quality', quality)
-      form.append('response_format', 'b64_json')
+      if (!isGptImageModel(modelId)) form.append('response_format', 'b64_json')
       console.log('[ImageGen] request', {
         channel: 'custom',
         endpoint: 'edits',
@@ -754,6 +758,7 @@ async function callImageAPI(
 
       // 用户 customParams + requestOverridePatch 叠加（最后写入，可覆盖系统默认字段）
       applyProviderPatches(form, provider)
+      if (isGptImageModel(modelId)) form.delete('response_format')
 
       fetchOptions = { method: 'POST', headers, body: form }
       snapshotBody = await describeFormData(form)
@@ -765,11 +770,12 @@ async function callImageAPI(
         prompt,
         n,
         size: resolvedPx,
-        quality,
-        response_format: 'b64_json'
+        quality
       }
+      if (!isGptImageModel(modelId)) body.response_format = 'b64_json'
       // 用户 customParams + requestOverridePatch 叠加（最后写入，可覆盖系统默认字段）
       applyProviderPatches(body, provider)
+      if (isGptImageModel(modelId)) delete body.response_format
       fetchOptions = { method: 'POST', headers, body: JSON.stringify(body) }
       snapshotBody = body
     }
@@ -854,9 +860,9 @@ async function callCloudImageAPI(
     prompt,
     n,
     size: resolvePixels(size, modelId, tierId),
-    quality,
-    response_format: 'b64_json'
+    quality
   }
+  if (!isGptImageModel(modelId)) body.response_format = 'b64_json'
   console.log('[ImageGen] request', {
     channel: 'cloud',
     endpoint: hasRefImages ? 'edits' : 'generations',

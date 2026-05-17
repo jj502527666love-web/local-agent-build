@@ -144,20 +144,72 @@ const CAPABILITIES: Record<string, ModelImageCapability> = {
     maxTotalPixels: 8_294_400,
     qualities: GPT_IMAGE_QUALITIES
   },
-  'gpt-image-1': {
+  'gpt-image-2-2026-04-21': {
     tiers: [
       { id: '1k', label: '1K', longSide: 1024 },
-      { id: '2k', label: '2K', longSide: 2048 }
+      { id: '2k', label: '2K', longSide: 2048 },
+      { id: '4k', label: '4K', longSide: 3840, note: '较慢' }
+    ],
+    maxRatio: 4,
+    maxTotalPixels: 8_294_400,
+    qualities: GPT_IMAGE_QUALITIES
+  },
+  'gpt-image-1.5': {
+    tiers: [
+      { id: '1k', label: '1K', longSide: 1024 }
+    ],
+    maxRatio: 4,
+    qualities: GPT_IMAGE_QUALITIES
+  },
+  'gpt-image-1': {
+    tiers: [
+      { id: '1k', label: '1K', longSide: 1024 }
+    ],
+    maxRatio: 4,
+    qualities: GPT_IMAGE_QUALITIES
+  },
+  'gpt-image-1-mini': {
+    tiers: [
+      { id: '1k', label: '1K', longSide: 1024 }
+    ],
+    maxRatio: 4,
+    qualities: GPT_IMAGE_QUALITIES
+  },
+  'chatgpt-image-latest': {
+    tiers: [
+      { id: '1k', label: '1K', longSide: 1024 }
     ],
     maxRatio: 4,
     qualities: GPT_IMAGE_QUALITIES
   }
 }
 
+const GPT_STANDARD_IMAGE_MODEL_IDS = new Set([
+  'gpt-image-1.5',
+  'gpt-image-1',
+  'gpt-image-1-mini',
+  'chatgpt-image-latest'
+])
+
+function getBaseModelId(modelId?: string): string {
+  return (modelId || '').split('#@')[0].trim().toLowerCase()
+}
+
+function isGptStandardImageModel(modelId?: string): boolean {
+  return GPT_STANDARD_IMAGE_MODEL_IDS.has(getBaseModelId(modelId))
+}
+
+function resolveGptStandardSize(w: number, h: number): { pixels: string; w: number; h: number } {
+  const ratio = w / h
+  if (ratio >= 1.225) return { pixels: '1536x1024', w: 1536, h: 1024 }
+  if (ratio <= 0.816) return { pixels: '1024x1536', w: 1024, h: 1536 }
+  return { pixels: '1024x1024', w: 1024, h: 1024 }
+}
+
 /** 查某个模型的能力域。未注册返回 DEFAULT_CAPABILITY。 */
 export function getModelCapability(modelId?: string): ModelImageCapability {
   if (!modelId) return DEFAULT_CAPABILITY
-  return CAPABILITIES[modelId] ?? DEFAULT_CAPABILITY
+  return CAPABILITIES[getBaseModelId(modelId)] ?? DEFAULT_CAPABILITY
 }
 
 /**
@@ -357,6 +409,26 @@ export interface SizeResolution {
 export function resolveSizeToPixelsDetailed(size: string, opts?: ResolveOptions): SizeResolution | null {
   if (!size) return null
   const s = normalizeSizeInput(size)
+
+  if (isGptStandardImageModel(opts?.modelId)) {
+    const preset = PRESET_BY_VALUE[size] ?? PRESET_BY_VALUE[s]
+    if (preset) {
+      const [rw, rh] = preset.ratio
+      const mapped = resolveGptStandardSize(rw, rh)
+      return { ...mapped, fromPreset: true, clamped: mapped.pixels !== preset.pixels }
+    }
+    const px = parsePixels(s)
+    if (px) {
+      const mapped = resolveGptStandardSize(px.w, px.h)
+      return { ...mapped, fromPreset: false, clamped: mapped.pixels !== `${px.w}x${px.h}` }
+    }
+    const ratio = parseRatio(s)
+    if (ratio) {
+      const mapped = resolveGptStandardSize(ratio.w, ratio.h)
+      return { ...mapped, fromPreset: false, clamped: true }
+    }
+    return null
+  }
 
   const snapStep = opts?.snap ?? PIXEL_SNAP
 

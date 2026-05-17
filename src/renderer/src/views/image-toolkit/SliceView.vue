@@ -10,6 +10,7 @@
       </div>
       <div class="flex items-center gap-1.5">
         <button @click="changeImage" class="px-3 py-1.5 text-xs text-text-secondary border border-surface-3 rounded-lg hover:bg-surface-2 transition-colors">更换图片</button>
+        <button @click="goGallery" class="px-3 py-1.5 text-xs text-text-secondary border border-surface-3 rounded-lg hover:bg-surface-2 transition-colors">前往图库</button>
         <button @click="prepareSave" :disabled="!image || exporting" class="px-3 py-1.5 text-xs text-white bg-primary-600 hover:bg-primary-700 rounded-lg transition-colors disabled:opacity-50">{{ exporting ? `保存 ${exportProgress}/${totalSlices}` : `保存 ${totalSlices} 张到图库` }}</button>
       </div>
     </header>
@@ -78,14 +79,57 @@
                 <span class="text-[11px] text-text-secondary">宽度</span>
                 <span class="text-[10px] text-text-tertiary">{{ tileW }}px</span>
               </div>
-              <input type="range" min="100" :max="image?.width || 2000" step="10" v-model.number="tileW" class="w-full h-1 accent-primary-600" />
+              <input type="range" min="100" :max="effectiveRect?.w || image?.width || 2000" step="10" v-model.number="tileW" class="w-full h-1 accent-primary-600" />
             </div>
             <div>
               <div class="flex items-center justify-between mb-1">
                 <span class="text-[11px] text-text-secondary">高度</span>
                 <span class="text-[10px] text-text-tertiary">{{ tileH }}px</span>
               </div>
-              <input type="range" min="100" :max="image?.height || 2000" step="10" v-model.number="tileH" class="w-full h-1 accent-primary-600" />
+              <input type="range" min="100" :max="effectiveRect?.h || image?.height || 2000" step="10" v-model.number="tileH" class="w-full h-1 accent-primary-600" />
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <div class="flex items-center justify-between mb-2">
+            <h4 class="text-xs font-medium text-text-secondary">裁边</h4>
+            <label class="flex items-center gap-1.5 cursor-pointer">
+              <input type="checkbox" v-model="trimEnabled" class="accent-primary-600" />
+              <span class="text-[11px] text-text-secondary">{{ trimEnabled ? '已开启' : '关闭' }}</span>
+            </label>
+          </div>
+          <div v-if="trimEnabled" class="space-y-2">
+            <div>
+              <div class="flex items-center justify-between mb-1">
+                <span class="text-[11px] text-text-secondary">上</span>
+                <span class="text-[10px] text-text-tertiary">{{ trimTop }}px</span>
+              </div>
+              <input type="range" min="0" :max="trimMaxY" step="1" v-model.number="trimTop" class="w-full h-1 accent-primary-600" />
+            </div>
+            <div>
+              <div class="flex items-center justify-between mb-1">
+                <span class="text-[11px] text-text-secondary">右</span>
+                <span class="text-[10px] text-text-tertiary">{{ trimRight }}px</span>
+              </div>
+              <input type="range" min="0" :max="trimMaxX" step="1" v-model.number="trimRight" class="w-full h-1 accent-primary-600" />
+            </div>
+            <div>
+              <div class="flex items-center justify-between mb-1">
+                <span class="text-[11px] text-text-secondary">下</span>
+                <span class="text-[10px] text-text-tertiary">{{ trimBottom }}px</span>
+              </div>
+              <input type="range" min="0" :max="trimMaxY" step="1" v-model.number="trimBottom" class="w-full h-1 accent-primary-600" />
+            </div>
+            <div>
+              <div class="flex items-center justify-between mb-1">
+                <span class="text-[11px] text-text-secondary">左</span>
+                <span class="text-[10px] text-text-tertiary">{{ trimLeft }}px</span>
+              </div>
+              <input type="range" min="0" :max="trimMaxX" step="1" v-model.number="trimLeft" class="w-full h-1 accent-primary-600" />
+            </div>
+            <div class="pt-1 flex justify-end">
+              <button @click="resetTrim" class="px-2 py-0.5 text-[10px] text-text-tertiary border border-surface-3 rounded hover:bg-surface-2">重置</button>
             </div>
           </div>
         </div>
@@ -120,6 +164,12 @@
               stroke-width="2"
               stroke-dasharray="4 3"
             />
+            <g v-if="trimEnabled" fill="rgba(0,0,0,0.45)">
+              <rect x="0" y="0" :width="imgRendered.w" :height="(trimTop / image.height) * imgRendered.h" />
+              <rect x="0" :y="((image.height - trimBottom) / image.height) * imgRendered.h" :width="imgRendered.w" :height="(trimBottom / image.height) * imgRendered.h" />
+              <rect x="0" :y="(trimTop / image.height) * imgRendered.h" :width="(trimLeft / image.width) * imgRendered.w" :height="((image.height - trimTop - trimBottom) / image.height) * imgRendered.h" />
+              <rect :x="((image.width - trimRight) / image.width) * imgRendered.w" :y="(trimTop / image.height) * imgRendered.h" :width="(trimRight / image.width) * imgRendered.w" :height="((image.height - trimTop - trimBottom) / image.height) * imgRendered.h" />
+            </g>
           </svg>
         </div>
       </div>
@@ -166,6 +216,35 @@ const pickerVisible = ref(false)
 const imgEl = ref<HTMLImageElement | null>(null)
 const imgRendered = ref({ w: 0, h: 0 })
 
+const trimEnabled = ref(false)
+const trimTop = ref(0)
+const trimRight = ref(0)
+const trimBottom = ref(0)
+const trimLeft = ref(0)
+
+const trimMaxX = computed(() => Math.max(0, Math.floor((image.value?.width || 0) * 0.45)))
+const trimMaxY = computed(() => Math.max(0, Math.floor((image.value?.height || 0) * 0.45)))
+
+const effectiveRect = computed(() => {
+  if (!image.value) return null
+  const W = image.value.width, H = image.value.height
+  if (!trimEnabled.value) return { x: 0, y: 0, w: W, h: H }
+  const t = Math.max(0, Math.min(trimTop.value, trimMaxY.value))
+  const b = Math.max(0, Math.min(trimBottom.value, trimMaxY.value))
+  const l = Math.max(0, Math.min(trimLeft.value, trimMaxX.value))
+  const r = Math.max(0, Math.min(trimRight.value, trimMaxX.value))
+  const w = Math.max(1, W - l - r)
+  const h = Math.max(1, H - t - b)
+  return { x: l, y: t, w, h }
+})
+
+function resetTrim() {
+  trimTop.value = 0
+  trimRight.value = 0
+  trimBottom.value = 0
+  trimLeft.value = 0
+}
+
 const modes: Array<{ id: Mode; label: string }> = [
   { id: 'grid', label: '网格' },
   { id: 'horizontal', label: '横切' },
@@ -183,8 +262,9 @@ const gridPresets = [
 ]
 
 const slices = computed<Slice[]>(() => {
-  if (!image.value) return []
-  const W = image.value.width, H = image.value.height
+  const rect = effectiveRect.value
+  if (!rect) return []
+  const { x: ox, y: oy, w: W, h: H } = rect
   const out: Slice[] = []
   let idx = 0
 
@@ -196,20 +276,20 @@ const slices = computed<Slice[]>(() => {
         // 最后一行/列吃掉剩余像素，避免整除误差
         const w = c === cols.value - 1 ? W - c * cw : cw
         const h = r === rows.value - 1 ? H - r * ch : ch
-        out.push({ x: c * cw, y: r * ch, w, h, idx: idx++, row: r, col: c })
+        out.push({ x: ox + c * cw, y: oy + r * ch, w, h, idx: idx++, row: r, col: c })
       }
     }
   } else if (mode.value === 'horizontal') {
     const ch = Math.floor(H / rows.value)
     for (let r = 0; r < rows.value; r++) {
       const h = r === rows.value - 1 ? H - r * ch : ch
-      out.push({ x: 0, y: r * ch, w: W, h, idx: idx++, row: r, col: 0 })
+      out.push({ x: ox, y: oy + r * ch, w: W, h, idx: idx++, row: r, col: 0 })
     }
   } else if (mode.value === 'vertical') {
     const cw = Math.floor(W / cols.value)
     for (let c = 0; c < cols.value; c++) {
       const w = c === cols.value - 1 ? W - c * cw : cw
-      out.push({ x: c * cw, y: 0, w, h: H, idx: idx++, row: 0, col: c })
+      out.push({ x: ox + c * cw, y: oy, w, h: H, idx: idx++, row: 0, col: c })
     }
   } else if (mode.value === 'fixed') {
     let r = 0
@@ -218,7 +298,7 @@ const slices = computed<Slice[]>(() => {
       for (let x = 0; x < W; x += tileW.value) {
         const w = Math.min(tileW.value, W - x)
         const h = Math.min(tileH.value, H - y)
-        out.push({ x, y, w, h, idx: idx++, row: r, col: c })
+        out.push({ x: ox + x, y: oy + y, w, h, idx: idx++, row: r, col: c })
         c++
       }
       r++
@@ -247,6 +327,8 @@ async function loadPath(path: string) {
     // tile 默认值跟随图片尺寸
     tileW.value = Math.min(500, Math.floor(items[0].width / 3))
     tileH.value = Math.min(500, Math.floor(items[0].height / 3))
+    trimEnabled.value = false
+    resetTrim()
   }
 }
 
@@ -317,6 +399,7 @@ async function onSaveConfirm(payload: { categoryId: string; filename: string }) 
 }
 
 function goBack() { router.back() }
+function goGallery() { router.push({ name: 'gallery' }) }
 function showToast(t: string) {
   toast.value = t
   setTimeout(() => { if (toast.value === t) toast.value = '' }, 2500)
