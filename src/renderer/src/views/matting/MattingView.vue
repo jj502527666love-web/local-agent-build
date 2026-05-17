@@ -141,6 +141,7 @@
           <button class="btn-secondary !py-1 !text-xs" @click="copyResult">复制图片</button>
           <button class="btn-secondary !py-1 !text-xs" @click="showResultInFolder">在文件夹中显示</button>
           <button class="btn-secondary !py-1 !text-xs" @click="retryTask">重做</button>
+          <button class="btn-secondary !py-1 !text-xs" @click="goSlice">去切图</button>
         </div>
       </section>
 
@@ -265,13 +266,17 @@
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { useMattingStore, type MattingTaskRow } from '@/stores/matting'
 import { useCloudAuthStore } from '@/stores/cloud-auth'
+import { useHandoffStore } from '@/stores/handoff'
 import GalleryPicker from '@/components/GalleryPicker.vue'
 import ImageLightbox from '@/components/ImageLightbox.vue'
 
 const store = useMattingStore()
 const cloudAuth = useCloudAuthStore()
+const router = useRouter()
+const handoff = useHandoffStore()
 
 /**
  * 单次提交上限：60 张 = 单用户并发 3 × 约 20 轮。
@@ -572,6 +577,12 @@ async function showResultInFolder() {
   try {
     await window.api.shell.showItemInFolder(currentTask.value.resultPath)
   } catch (e) { console.warn(e) }
+}
+function goSlice() {
+  const path = currentTask.value?.resultPath
+  if (!path) return
+  handoff.set('imageToolkit', { paths: [path] })
+  router.push({ name: 'imageToolkitSlice' })
 }
 async function retryTask() {
   if (!currentTask.value) return
