@@ -32,7 +32,7 @@ interface Window {
     bot: { invoke: (channel: string, ...args: unknown[]) => Promise<unknown> }
     chat: {
       invoke: (channel: string, ...args: unknown[]) => Promise<unknown>
-      onStream: (callback: (data: unknown) => void) => void
+      onStream: (callback: (data: unknown) => void) => () => void
       offStream: () => void
       onTitleUpdated: (callback: (data: unknown) => void) => void
       offTitleUpdated: () => void
