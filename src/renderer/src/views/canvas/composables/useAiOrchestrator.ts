@@ -472,7 +472,7 @@ export function useAiOrchestrator() {
       '- description：本组的主题、风格要求、差异化方向（不超 100 字）',
       '- referenceText（可选，**仅 textgen 有意义**）：如果用户原文中已经写了一段"参考页/设计规范/风格定调"性质的完整图片提示词，把这段原文一字不改填入 referenceText；没有则留空字符串',
       '- businessTexts（可选）：如果用户原文中已经写了具体业务页的完整提示词，按顺序一字不改放进该数组；长度应等于 businessCount；如果某些位置用户没写就放空字符串 ""，空位置将由后续 AI 自动撰写',
-      '- size（必填）：本组生图默认比例，正确值只能为 1:1 / 3:2 / 2:3 / 3:4 / 4:3 / 4:5 / 5:4 / 16:9 / 9:16 / 21:9 / 9:21 其中之一',
+      '- size（必填）：本组生图默认比例，正确值只能为 1:1 / 2:1 / 3:1 / 3:2 / 4:3 / 5:4 / 16:9 / 21:9 / 1:2 / 1:3 / 2:3 / 3:4 / 4:5 / 9:16 / 9:21 其中之一',
       '- quality（必填）：本组生图默认质量，正确值只能为 auto / standard / hd 其中之一',
       '- businessSizes（可选）：数组，长度应等于 businessCount；某位置如果与组级 size 不同就写比例字符串，相同则写空字符串 ""；全部相同时整个字段可省略',
       '- businessQualities（可选）：同 businessSizes，取值在 auto/standard/hd',

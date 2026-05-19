@@ -24,15 +24,19 @@ export interface ImageSizePreset {
  */
 export const IMAGE_SIZE_PRESETS: readonly ImageSizePreset[] = [
   { label: '1:1', value: '1:1', pixels: '1024x1024', ratio: [1, 1] },
+  { label: '2:1', value: '2:1', pixels: '1792x896', ratio: [2, 1] },
+  { label: '3:1', value: '3:1', pixels: '1536x512', ratio: [3, 1] },
   { label: '3:2', value: '3:2', pixels: '1536x1024', ratio: [3, 2] },
-  { label: '2:3', value: '2:3', pixels: '1024x1536', ratio: [2, 3] },
-  { label: '3:4', value: '3:4', pixels: '768x1024', ratio: [3, 4] },
   { label: '4:3', value: '4:3', pixels: '1024x768', ratio: [4, 3] },
-  { label: '4:5', value: '4:5', pixels: '816x1024', ratio: [4, 5] },
   { label: '5:4', value: '5:4', pixels: '1024x816', ratio: [5, 4] },
   { label: '16:9', value: '16:9', pixels: '1792x1024', ratio: [16, 9] },
-  { label: '9:16', value: '9:16', pixels: '1024x1792', ratio: [9, 16] },
   { label: '21:9', value: '21:9', pixels: '1792x768', ratio: [21, 9] },
+  { label: '1:2', value: '1:2', pixels: '896x1792', ratio: [1, 2] },
+  { label: '1:3', value: '1:3', pixels: '512x1536', ratio: [1, 3] },
+  { label: '2:3', value: '2:3', pixels: '1024x1536', ratio: [2, 3] },
+  { label: '3:4', value: '3:4', pixels: '768x1024', ratio: [3, 4] },
+  { label: '4:5', value: '4:5', pixels: '816x1024', ratio: [4, 5] },
+  { label: '9:16', value: '9:16', pixels: '1024x1792', ratio: [9, 16] },
   { label: '9:21', value: '9:21', pixels: '768x1792', ratio: [9, 21] }
 ] as const
 
@@ -48,6 +52,8 @@ export const PIXEL_MAX = 4096
 export const RATIO_MAX = 64
 /** 像素 snap 基数：上游 gpt-image-2 实测按 16 对齐，使用更小的 step 会被服务端二次降级 */
 export const PIXEL_SNAP = 16
+export const CUSTOM_ASPECT_RATIO_MIN = 1 / 3
+export const CUSTOM_ASPECT_RATIO_MAX = 3
 
 /**
  * 上游模型的"通用能力档位"边界。
@@ -114,10 +120,9 @@ export const DEFAULT_QUALITY_ID = 'auto'
 /** 默认能力：未注册模型都按 1K + 2K 走；不注册画质，UI 默认不显示 */
 const DEFAULT_CAPABILITY: ModelImageCapability = {
   tiers: [
-    { id: '1k', label: '1K', longSide: 1024 },
     { id: '2k', label: '2K', longSide: 2048 }
   ],
-  maxRatio: 4
+  maxRatio: CUSTOM_ASPECT_RATIO_MAX
 }
 
 /** gpt-image 系列的标准画质档位（官方 API 支持 auto/low/medium/high） */
@@ -136,21 +141,19 @@ const CAPABILITIES: Record<string, ModelImageCapability> = {
   // 云端网关的 gpt-image-2：实测上限 = 3840×2160 = 8_294_400 像素，超出会被静默降级
   'gpt-image-2': {
     tiers: [
-      { id: '1k', label: '1K', longSide: 1024 },
       { id: '2k', label: '2K', longSide: 2048 },
       { id: '4k', label: '4K', longSide: 3840, note: '较慢' }
     ],
-    maxRatio: 4,
+    maxRatio: CUSTOM_ASPECT_RATIO_MAX,
     maxTotalPixels: 8_294_400,
     qualities: GPT_IMAGE_QUALITIES
   },
   'gpt-image-2-2026-04-21': {
     tiers: [
-      { id: '1k', label: '1K', longSide: 1024 },
       { id: '2k', label: '2K', longSide: 2048 },
       { id: '4k', label: '4K', longSide: 3840, note: '较慢' }
     ],
-    maxRatio: 4,
+    maxRatio: CUSTOM_ASPECT_RATIO_MAX,
     maxTotalPixels: 8_294_400,
     qualities: GPT_IMAGE_QUALITIES
   },
@@ -158,28 +161,28 @@ const CAPABILITIES: Record<string, ModelImageCapability> = {
     tiers: [
       { id: '1k', label: '1K', longSide: 1024 }
     ],
-    maxRatio: 4,
+    maxRatio: CUSTOM_ASPECT_RATIO_MAX,
     qualities: GPT_IMAGE_QUALITIES
   },
   'gpt-image-1': {
     tiers: [
       { id: '1k', label: '1K', longSide: 1024 }
     ],
-    maxRatio: 4,
+    maxRatio: CUSTOM_ASPECT_RATIO_MAX,
     qualities: GPT_IMAGE_QUALITIES
   },
   'gpt-image-1-mini': {
     tiers: [
       { id: '1k', label: '1K', longSide: 1024 }
     ],
-    maxRatio: 4,
+    maxRatio: CUSTOM_ASPECT_RATIO_MAX,
     qualities: GPT_IMAGE_QUALITIES
   },
   'chatgpt-image-latest': {
     tiers: [
       { id: '1k', label: '1K', longSide: 1024 }
     ],
-    maxRatio: 4,
+    maxRatio: CUSTOM_ASPECT_RATIO_MAX,
     qualities: GPT_IMAGE_QUALITIES
   }
 }
@@ -299,6 +302,12 @@ export function parsePixels(v: string): { w: number; h: number } | null {
   return { w, h }
 }
 
+export function isWithinCustomAspectRatioRange(w: number, h: number): boolean {
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return false
+  const ratio = w / h
+  return ratio >= CUSTOM_ASPECT_RATIO_MIN && ratio <= CUSTOM_ASPECT_RATIO_MAX
+}
+
 /**
  * snap 到 step 倍数（向下），并 clamp 到 [min, max]。
  * 向下取整可保证 snap 后的值不会超过 clamp 已经满足的总像素上限。
@@ -344,7 +353,7 @@ export function clampToCapableRange(
 ): { w: number; h: number; clamped: boolean } {
   const longMax = options?.longEdgeMax ?? LONG_EDGE_MAX
   const shortMin = options?.shortEdgeMin ?? SHORT_EDGE_MIN
-  const ratioCap = options?.maxRatio ?? longMax / shortMin
+  const ratioCap = options?.maxRatio ?? CUSTOM_ASPECT_RATIO_MAX
   const totalMax = options?.maxTotalPixels
 
   if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) {
@@ -419,11 +428,13 @@ export function resolveSizeToPixelsDetailed(size: string, opts?: ResolveOptions)
     }
     const px = parsePixels(s)
     if (px) {
+      if (!isWithinCustomAspectRatioRange(px.w, px.h)) return null
       const mapped = resolveGptStandardSize(px.w, px.h)
       return { ...mapped, fromPreset: false, clamped: mapped.pixels !== `${px.w}x${px.h}` }
     }
     const ratio = parseRatio(s)
     if (ratio) {
+      if (!isWithinCustomAspectRatioRange(ratio.w, ratio.h)) return null
       const mapped = resolveGptStandardSize(ratio.w, ratio.h)
       return { ...mapped, fromPreset: false, clamped: true }
     }
@@ -469,6 +480,7 @@ export function resolveSizeToPixelsDetailed(size: string, opts?: ResolveOptions)
   // 2. 像素格式
   const px = parsePixels(s)
   if (px) {
+    if (!isWithinCustomAspectRatioRange(px.w, px.h)) return null
     const c = clampToCapableRange(px.w, px.h, clampOpts)
     const w = snap(c.w, snapStep, PIXEL_MIN, PIXEL_MAX)
     const h = snap(c.h, snapStep, PIXEL_MIN, PIXEL_MAX)
@@ -479,6 +491,7 @@ export function resolveSizeToPixelsDetailed(size: string, opts?: ResolveOptions)
   // 3. 比例格式
   const r = parseRatio(s)
   if (r) {
+    if (!isWithinCustomAspectRatioRange(r.w, r.h)) return null
     const long = Math.min(longSide, PIXEL_MAX)
     const maxR = Math.max(r.w, r.h)
     const minR = Math.min(r.w, r.h)
@@ -508,8 +521,10 @@ export function resolveSizeToPixels(size: string, opts?: ResolveOptions): string
 export function isValidSizeValue(v: string): boolean {
   if (!v) return false
   if (isPresetValue(v)) return true
-  if (parsePixels(v)) return true
-  if (parseRatio(v)) return true
+  const px = parsePixels(v)
+  if (px) return isWithinCustomAspectRatioRange(px.w, px.h)
+  const ratio = parseRatio(v)
+  if (ratio) return isWithinCustomAspectRatioRange(ratio.w, ratio.h)
   return false
 }
 

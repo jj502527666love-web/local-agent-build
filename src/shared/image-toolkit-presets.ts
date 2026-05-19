@@ -305,15 +305,19 @@ export function getCardsByCategory(cat: string): ToolCard[] {
  */
 const PRESET_RATIOS: Array<{ value: string; ratio: number }> = [
   { value: '1:1', ratio: 1 },
+  { value: '2:1', ratio: 2 },
+  { value: '3:1', ratio: 3 },
   { value: '3:2', ratio: 3 / 2 },
-  { value: '2:3', ratio: 2 / 3 },
-  { value: '3:4', ratio: 3 / 4 },
   { value: '4:3', ratio: 4 / 3 },
-  { value: '4:5', ratio: 4 / 5 },
   { value: '5:4', ratio: 5 / 4 },
   { value: '16:9', ratio: 16 / 9 },
-  { value: '9:16', ratio: 9 / 16 },
   { value: '21:9', ratio: 21 / 9 },
+  { value: '1:2', ratio: 1 / 2 },
+  { value: '1:3', ratio: 1 / 3 },
+  { value: '2:3', ratio: 2 / 3 },
+  { value: '3:4', ratio: 3 / 4 },
+  { value: '4:5', ratio: 4 / 5 },
+  { value: '9:16', ratio: 9 / 16 },
   { value: '9:21', ratio: 9 / 21 }
 ]
 

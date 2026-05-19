@@ -1871,15 +1871,20 @@ function hasAnyMask(): boolean {
 // ---- Size inference ----
 const SIZE_RATIOS: Array<{ key: string; ratio: number }> = [
   { key: '1:1', ratio: 1 },
+  { key: '2:1', ratio: 2 },
+  { key: '3:1', ratio: 3 },
   { key: '3:2', ratio: 1.5 },
-  { key: '2:3', ratio: 2 / 3 },
-  { key: '3:4', ratio: 0.75 },
   { key: '4:3', ratio: 4 / 3 },
-  { key: '4:5', ratio: 0.8 },
   { key: '5:4', ratio: 1.25 },
   { key: '16:9', ratio: 16 / 9 },
+  { key: '21:9', ratio: 21 / 9 },
+  { key: '1:2', ratio: 1 / 2 },
+  { key: '1:3', ratio: 1 / 3 },
+  { key: '2:3', ratio: 2 / 3 },
+  { key: '3:4', ratio: 0.75 },
+  { key: '4:5', ratio: 0.8 },
   { key: '9:16', ratio: 9 / 16 },
-  { key: '21:9', ratio: 21 / 9 }
+  { key: '9:21', ratio: 9 / 21 }
 ]
 
 function inferSizeKey(w: number, h: number, fallback: string): string {

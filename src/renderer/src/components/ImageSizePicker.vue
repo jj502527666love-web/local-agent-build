@@ -30,42 +30,60 @@
     </select>
 
     <!-- Grid layout：生图页 + Canvas 节点使用 -->
-    <div
-      v-else
-      class="grid gap-1.5"
-      :style="{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }"
-    >
-      <button
-        v-for="p in presets"
-        :key="p.value"
-        type="button"
-        :disabled="disabled"
-        @click="onPick(p.value)"
-        :class="buttonClass(modelValue === p.value)"
-      >{{ p.label }}</button>
-      <button
-        type="button"
-        ref="triggerRef"
-        :disabled="disabled"
-        :title="customButtonTitle"
-        @click="openCustomEditor()"
-        :class="buttonClass(isCustom)"
-      >
-        <svg
-          class="block flex-shrink-0"
-          :class="size === 'sm' ? 'w-3 h-3' : 'w-3.5 h-3.5'"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          aria-hidden="true"
+    <div v-else class="space-y-1.5">
+      <div class="grid grid-cols-3 gap-1.5">
+        <button
+          v-for="option in directionOptions"
+          :key="option.value"
+          type="button"
+          :disabled="disabled"
+          @click="activeDirection = option.value"
+          :class="buttonClass(activeDirection === option.value)"
         >
-          <rect width="12" height="20" x="6" y="2" rx="2" />
-          <rect width="20" height="12" x="2" y="6" rx="2" />
-        </svg>
-      </button>
+          <span
+            class="inline-block border border-current rounded-sm flex-shrink-0"
+            :style="directionShapeStyle(option.value)"
+            aria-hidden="true"
+          ></span>
+          <span>{{ option.label }}</span>
+        </button>
+      </div>
+      <div
+        class="grid gap-1.5"
+        :style="{ gridTemplateColumns: `repeat(${presetColumns}, minmax(0, 1fr))` }"
+      >
+        <button
+          v-for="p in visiblePresets"
+          :key="p.value"
+          type="button"
+          :disabled="disabled"
+          @click="onPick(p.value)"
+          :class="buttonClass(modelValue === p.value)"
+        >{{ p.label }}</button>
+        <button
+          type="button"
+          ref="triggerRef"
+          :disabled="disabled"
+          :title="customButtonTitle"
+          @click="openCustomEditor(undefined, activeDirection)"
+          :class="buttonClass(isActiveCustom)"
+        >
+          <svg
+            class="block flex-shrink-0"
+            :class="size === 'sm' ? 'w-3 h-3' : 'w-3.5 h-3.5'"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <rect width="12" height="20" x="6" y="2" rx="2" />
+            <rect width="20" height="12" x="2" y="6" rx="2" />
+          </svg>
+        </button>
+      </div>
     </div>
 
     <!-- Hint：形状预览 + 当前值对应像素，同一行避免增加纵向占位 -->
@@ -99,7 +117,7 @@
             :class="tabClass(tab === 'pixels')"
             @click="tab = 'pixels'"
           >像素</button>
-          <div class="ml-auto text-[10px] text-text-tertiary">{{ tab === 'ratio' ? '长边 1792' : '自动 snap 到 8 倍数' }}</div>
+          <div class="ml-auto text-[10px] text-text-tertiary">{{ tab === 'ratio' ? '范围 1:3-3:1' : '自动 snap 到 16 倍数' }}</div>
         </div>
 
         <div v-if="tab === 'ratio'" class="space-y-2">
@@ -123,10 +141,13 @@
           <div class="flex items-center justify-between text-[11px]">
             <span class="text-text-tertiary">预计输出</span>
             <span :class="ratioPreview ? 'text-text-primary font-medium' : 'text-red-500 dark:text-red-400'">
-              {{ ratioPreview || '格式非法' }}
+              {{ ratioPreview || ratioError || '格式非法' }}
             </span>
           </div>
-          <div v-if="ratioDetail?.clamped" class="text-[10px] text-amber-600 dark:text-amber-400">
+          <div v-if="ratioError" class="text-[10px] text-red-500 dark:text-red-400">
+            {{ ratioError }}
+          </div>
+          <div v-else-if="ratioDetail?.clamped" class="text-[10px] text-amber-600 dark:text-amber-400">
             已按模型能力域自动调整
           </div>
         </div>
@@ -152,14 +173,17 @@
           <div class="flex items-center justify-between text-[11px]">
             <span class="text-text-tertiary">snap 后</span>
             <span :class="pxPreview ? 'text-text-primary font-medium' : 'text-red-500 dark:text-red-400'">
-              {{ pxPreview || '格式非法' }}
+              {{ pxPreview || pxError || '格式非法' }}
             </span>
           </div>
-          <div v-if="pxDetail?.clamped" class="text-[10px] text-amber-600 dark:text-amber-400">
+          <div v-if="pxError" class="text-[10px] text-red-500 dark:text-red-400">
+            {{ pxError }}
+          </div>
+          <div v-else-if="pxDetail?.clamped" class="text-[10px] text-amber-600 dark:text-amber-400">
             已按模型能力域自动调整
           </div>
           <div v-else-if="pxPreview && pxSnapChanged" class="text-[10px] text-amber-600 dark:text-amber-400">
-            已自动调整为 8 的倍数
+            已自动调整为 16 的倍数
           </div>
         </div>
 
@@ -182,7 +206,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick, onBeforeUnmount } from 'vue'
+import { ref, computed, nextTick, onBeforeUnmount, watch } from 'vue'
 import {
   IMAGE_SIZE_PRESETS,
   isPresetValue,
@@ -192,6 +216,7 @@ import {
   resolveSizeToPixelsDetailed,
   formatSizeForDisplay,
   normalizeSizeInput,
+  isWithinCustomAspectRatioRange,
   PIXEL_MIN,
   PIXEL_MAX,
   RATIO_MAX
@@ -242,10 +267,47 @@ const emit = defineEmits<{
 
 const presets = IMAGE_SIZE_PRESETS
 const CUSTOM_SENTINEL = '__custom__'
+type SizeDirection = 'square' | 'landscape' | 'portrait'
+
+const directionOptions: Array<{ value: SizeDirection; label: string }> = [
+  { value: 'square', label: '正' },
+  { value: 'landscape', label: '横' },
+  { value: 'portrait', label: '竖' }
+]
+const directionPresetValues: Record<SizeDirection, string[]> = {
+  square: ['1:1'],
+  landscape: ['2:1', '3:1', '3:2', '4:3', '5:4', '16:9', '21:9'],
+  portrait: ['1:2', '1:3', '2:3', '3:4', '4:5', '9:16', '9:21']
+}
+const presetByValue = new Map(IMAGE_SIZE_PRESETS.map((p) => [p.value, p]))
+
+function directionForValue(value: string): SizeDirection {
+  const normalized = normalizeSizeInput(value)
+  const ratio = parseRatio(normalized)
+  if (ratio) {
+    if (ratio.w === ratio.h) return 'square'
+    return ratio.w > ratio.h ? 'landscape' : 'portrait'
+  }
+  const pixels = parsePixels(normalized)
+  if (pixels) {
+    if (pixels.w === pixels.h) return 'square'
+    return pixels.w > pixels.h ? 'landscape' : 'portrait'
+  }
+  return 'square'
+}
+
+const activeDirection = ref<SizeDirection>(directionForValue(props.modelValue))
+const visiblePresets = computed(() =>
+  directionPresetValues[activeDirection.value]
+    .map((value) => presetByValue.get(value))
+    .filter((p): p is (typeof IMAGE_SIZE_PRESETS)[number] => !!p)
+)
+const presetColumns = computed(() => Math.min(props.columns, visiblePresets.value.length + 1))
 
 const isCustom = computed(
   () => !!props.modelValue && !isPresetValue(props.modelValue)
 )
+const isActiveCustom = computed(() => isCustom.value && directionForValue(props.modelValue) === activeDirection.value)
 const displayValue = computed(() => formatSizeForDisplay(props.modelValue))
 
 /** 按钮只显示图标，完整自定义值靠 tooltip + showHint 展示 */
@@ -278,6 +340,12 @@ const shapeStyle = computed<Record<string, string> | null>(() => {
   const H = Math.max(MIN, Math.round((MAX * h) / longest))
   return { width: `${W}px`, height: `${H}px` }
 })
+
+function directionShapeStyle(direction: SizeDirection): Record<string, string> {
+  if (direction === 'landscape') return { width: '18px', height: '10px' }
+  if (direction === 'portrait') return { width: '10px', height: '18px' }
+  return { width: '13px', height: '13px' }
+}
 
 // ============ 按钮样式 ============
 const accentBorderClass = computed(() => {
@@ -362,12 +430,22 @@ const pxW = ref<number | null>(1024)
 const pxH = ref<number | null>(1024)
 
 /** 比例预览的完整解析结果（包含 clamp 标志），走当前模型+档位 capability */
+const ratioError = computed(() => {
+  if (ratioW.value == null || ratioH.value == null) return ''
+  return isWithinCustomAspectRatioRange(ratioW.value, ratioH.value) ? '' : '自定义尺寸范围为 1:3 到 3:1'
+})
+const pxError = computed(() => {
+  if (pxW.value == null || pxH.value == null) return ''
+  return isWithinCustomAspectRatioRange(pxW.value, pxH.value) ? '' : '自定义尺寸范围为 1:3 到 3:1'
+})
 const ratioDetail = computed(() => {
   if (ratioW.value == null || ratioH.value == null) return null
+  if (ratioError.value) return null
   return resolveSizeToPixelsDetailed(`${ratioW.value}:${ratioH.value}`, resolveOpts.value)
 })
 const pxDetail = computed(() => {
   if (pxW.value == null || pxH.value == null) return null
+  if (pxError.value) return null
   return resolveSizeToPixelsDetailed(`${pxW.value}x${pxH.value}`, resolveOpts.value)
 })
 const ratioPreview = computed(() => ratioDetail.value?.pixels || '')
@@ -378,15 +456,15 @@ const pxSnapChanged = computed(() => {
   return w !== pxW.value || h !== pxH.value
 })
 const canConfirm = computed(() =>
-  tab.value === 'ratio' ? !!ratioPreview.value : !!pxPreview.value
+  tab.value === 'ratio' ? !!ratioPreview.value && !ratioError.value : !!pxPreview.value && !pxError.value
 )
 
-function openCustomEditor(anchor?: HTMLElement) {
+function openCustomEditor(anchor?: HTMLElement, preferredDirection?: SizeDirection) {
   if (props.disabled) return
   activeAnchor.value = anchor ?? triggerRef.value
-  // 依据当前值预填初始值
+  const shouldUseCurrentValue = !preferredDirection || directionForValue(props.modelValue) === preferredDirection
   const v = props.modelValue
-  if (v) {
+  if (v && shouldUseCurrentValue) {
     const r = parseRatio(v)
     const p = parsePixels(normalizeSizeInput(v))
     if (p) {
@@ -407,6 +485,18 @@ function openCustomEditor(anchor?: HTMLElement) {
         pxW.value = pw
         pxH.value = ph
       }
+    }
+  } else if (preferredDirection) {
+    tab.value = 'ratio'
+    if (preferredDirection === 'landscape') {
+      ratioW.value = 3
+      ratioH.value = 2
+    } else if (preferredDirection === 'portrait') {
+      ratioW.value = 2
+      ratioH.value = 3
+    } else {
+      ratioW.value = 1
+      ratioH.value = 1
     }
   }
   positionPopover()
@@ -491,6 +581,13 @@ function onConfirm() {
   emit('update:modelValue', val)
   closePopover()
 }
+
+watch(
+  () => props.modelValue,
+  (value) => {
+    activeDirection.value = directionForValue(value)
+  }
+)
 
 onBeforeUnmount(() => {
   window.removeEventListener('mousedown', onOutsideClick, true)
