@@ -6,6 +6,8 @@ import {
   getCloudGatewayUrl,
   getAllowCustomProvider,
   resolveCloudModelId,
+  refreshCloudToken,
+  notifyCloudAuthExpired,
 } from './cloud-token'
 import { normalizeApiBase } from './api-base-normalize'
 
@@ -39,6 +41,15 @@ export class AbortedError extends Error {
   constructor() {
     super('Aborted')
     this.name = 'AbortedError'
+  }
+}
+
+class LLMHttpError extends Error {
+  status: number
+
+  constructor(status: number, body: string) {
+    super(`LLM API error ${status}: ${body}`)
+    this.status = status
   }
 }
 
@@ -201,21 +212,48 @@ export async function callLLM(
     headers['Authorization'] = `Bearer ${apiKey}`
   }
 
-  if (options.stream) {
-    const notify = options.notifyStream !== false
-    return streamLLM(url, headers, body, window ?? null, providerId, options.modelId, options.signal, notify, options.streamContext)
+  const refreshCloudHeaders = async (reason: string): Promise<boolean> => {
+    if (!isCloud) return false
+    const token = await refreshCloudToken()
+    if (!token) {
+      notifyCloudAuthExpired(reason)
+      return false
+    }
+    headers['Authorization'] = `Bearer ${token}`
+    return true
   }
 
-  const response = await fetchWithRetry(url, {
+  if (options.stream) {
+    const notify = options.notifyStream !== false
+    try {
+      return await streamLLM(url, headers, body, window ?? null, providerId, options.modelId, options.signal, notify, options.streamContext)
+    } catch (e: any) {
+      if (e instanceof LLMHttpError && e.status === 401 && await refreshCloudHeaders(e.message)) {
+        return streamLLM(url, headers, body, window ?? null, providerId, options.modelId, options.signal, notify, options.streamContext)
+      }
+      throw e
+    }
+  }
+
+  let response = await fetchWithRetry(url, {
     method: 'POST',
     headers,
     body: JSON.stringify(body),
     signal: options.signal
   })
 
+  if (response.status === 401 && await refreshCloudHeaders('LLM API error 401')) {
+    response = await fetchWithRetry(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal: options.signal
+    })
+  }
+
   if (!response.ok) {
     const errorText = await response.text()
-    throw new Error(`LLM API error ${response.status}: ${errorText}`)
+    throw new LLMHttpError(response.status, errorText)
   }
 
   const data = await response.json()

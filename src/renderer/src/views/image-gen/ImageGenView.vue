@@ -237,7 +237,7 @@
                     <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18 18 6M6 6l12 12" /></svg>
                   </button>
                   <div v-if="gen.status === 'done' && gen.result_path" class="aspect-square relative">
-                    <img :src="localFileUrl(gen.result_path)" class="w-full h-full object-cover cursor-pointer" @click.stop="selectMode ? toggleSelect(gen.id) : openPreview(gen.result_path, gen.ref_images)" />
+                    <img :src="localFileUrl(gen.result_path)" class="w-full h-full object-cover cursor-pointer" @click.stop="selectMode ? toggleSelect(gen.id) : openDetail(gen)" />
                     <div v-if="!selectMode" class="absolute bottom-1.5 right-1.5 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                       <button @click.stop="copyImage(gen.result_path)" class="w-7 h-7 rounded-lg bg-black/50 hover:bg-black/70 text-white flex items-center justify-center" title="复制图片">
                         <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.666 3.888A2.25 2.25 0 0 0 13.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 0 1-.75.75H9.75a.75.75 0 0 1-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 0 1-2.25 2.25H6.75A2.25 2.25 0 0 1 4.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 0 1 1.927-.184" /></svg>
@@ -294,7 +294,7 @@
                     </div>
                   </div>
                   <div class="w-20 h-20 rounded-lg overflow-hidden flex-shrink-0 bg-surface-2">
-                    <img v-if="gen.status === 'done' && gen.result_path" :src="localFileUrl(gen.result_path)" class="w-full h-full object-cover cursor-pointer" @click="openPreview(gen.result_path, gen.ref_images)" />
+                    <img v-if="gen.status === 'done' && gen.result_path" :src="localFileUrl(gen.result_path)" class="w-full h-full object-cover cursor-pointer" @click.stop="selectMode ? toggleSelect(gen.id) : openDetail(gen)" />
                     <div v-else-if="gen.status === 'generating' || gen.status === 'pending'" class="w-full h-full flex items-center justify-center">
                       <svg class="w-5 h-5 animate-spin text-primary-500" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
                     </div>
@@ -430,6 +430,26 @@
     @close="closePreview"
   />
 
+  <CreationDetailModal
+    v-if="detailItem"
+    :item="detailItem"
+    :image-src="detailItem.result_path ? localFileUrl(detailItem.result_path) : ''"
+    :model-label="modelStore.formatModelLabel(detailItem.model_provider_id, detailItem.model_id)"
+    :created-at-label="formatDate(detailItem.created_at)"
+    show-regenerate
+    @close="detailItem = null"
+    @preview="previewDetailItem"
+    @copy-image="copyDetailImage"
+    @edit="editDetailItem"
+    @open-folder="openDetailFolder"
+    @reuse-prompt="useDetailPrompt"
+    @reuse-revised-prompt="useDetailRevisedPrompt"
+    @regenerate="regenerateDetailItem"
+    @delete="deleteDetailItem"
+    @copy-prompt="copyText(detailItem.prompt)"
+    @copy-revised-prompt="copyText(detailItem.revised_prompt)"
+  />
+
   <!-- Error detail dialog -->
   <ErrorDetailDialog
     :visible="errorDialog.visible"
@@ -473,6 +493,7 @@ import ErrorDetailDialog from '@/components/ErrorDetailDialog.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import GalleryPicker from '@/components/GalleryPicker.vue'
 import ImageLightbox from '@/components/ImageLightbox.vue'
+import CreationDetailModal from '@/components/CreationDetailModal.vue'
 import type { ImageGeneration } from '@/stores/image-gen'
 
 const route = useRoute()
@@ -559,6 +580,7 @@ const pureSelectedModelId = computed(() => stripModelId(selectedModelId.value))
 const previewImage = ref<string | null>(null)
 const previewPath = ref<string>('')
 const previewRefImages = ref<string[]>([])
+const detailItem = ref<ImageGeneration | null>(null)
 const optimizing = ref(false)
 const optimizeError = ref('')
 const showPresetPopup = ref(false)
@@ -869,6 +891,78 @@ function openPreview(path: string, refImages?: string[]) {
   previewImage.value = localFileUrl(path)
   previewRefImages.value = refImages && refImages.length > 0 ? [...refImages] : []
 }
+
+function openDetail(gen: ImageGeneration) {
+  if (gen.status !== 'done' || !gen.result_path) return
+  detailItem.value = gen
+}
+
+function previewDetailItem() {
+  if (!detailItem.value?.result_path) return
+  openPreview(detailItem.value.result_path, detailItem.value.ref_images)
+}
+
+function copyDetailImage() {
+  if (!detailItem.value?.result_path) return
+  copyImage(detailItem.value.result_path)
+}
+
+function editDetailItem() {
+  if (!detailItem.value) return
+  editImage(detailItem.value.id)
+}
+
+function openDetailFolder() {
+  if (!detailItem.value?.result_path) return
+  openFolder(detailItem.value.result_path)
+}
+
+function useDetailPrompt() {
+  if (!detailItem.value) return
+  prompt.value = detailItem.value.prompt
+  refImages.value = detailItem.value.ref_images?.slice(0, 10) || []
+  detailItem.value = null
+}
+
+function useDetailRevisedPrompt() {
+  if (!detailItem.value?.revised_prompt) return
+  prompt.value = detailItem.value.revised_prompt
+  refImages.value = detailItem.value.ref_images?.slice(0, 10) || []
+  detailItem.value = null
+}
+
+function regenerateDetailItem() {
+  if (!detailItem.value) return
+  askRegenerate(detailItem.value)
+}
+
+async function deleteDetailItem() {
+  if (!detailItem.value) return
+  const id = detailItem.value.id
+  detailItem.value = null
+  await deleteSingle(id)
+}
+
+async function copyText(text: string) {
+  if (!text) return
+  try {
+    await navigator.clipboard.writeText(text)
+    copyToast.value = '已复制'
+  } catch {
+    copyToast.value = '复制失败'
+  }
+  setTimeout(() => { copyToast.value = '' }, 2000)
+}
+
+function formatDate(dateStr: string): string {
+  try {
+    const d = new Date(dateStr)
+    return d.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+  } catch {
+    return dateStr
+  }
+}
+
 function closePreview() {
   previewImage.value = null
   previewPath.value = ''

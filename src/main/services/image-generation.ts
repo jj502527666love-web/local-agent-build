@@ -3,7 +3,7 @@ import { v4 as uuid } from 'uuid'
 import { getModelProvider, type ModelProvider } from './model-provider'
 import { createImageSession } from './image-session'
 import { getDataDir } from './data-path'
-import { getCloudToken, getCloudGatewayUrl, resolveCloudModelId } from './cloud-token'
+import { getCloudToken, getCloudGatewayUrl, resolveCloudModelId, refreshCloudToken, notifyCloudAuthExpired } from './cloud-token'
 import { join } from 'path'
 import { mkdirSync, writeFileSync, unlinkSync, existsSync } from 'fs'
 import { BrowserWindow, nativeImage } from 'electron'
@@ -553,6 +553,7 @@ interface PollTaskConfig {
   headers: Record<string, string>
   taskId: string
   errorPrefix: string
+  refreshHeaders?: (reason: string) => Promise<Record<string, string> | null>
   /** 解析响应：成功 → 返回结果数组；进行中 → 返回 null 继续轮询；失败 → 抛错 */
   parseStatus: (statusData: any) => ImageAPIResult[] | null
   /**
@@ -603,6 +604,13 @@ async function pollAsyncTask(config: PollTaskConfig): Promise<ImageAPIResult[]> 
       continue
     }
 
+    if (statusRes.status === 401 && config.refreshHeaders) {
+      const nextHeaders = await config.refreshHeaders(`${config.errorPrefix} 401: ${await readResponseError(statusRes)}`)
+      if (nextHeaders) {
+        config.headers = nextHeaders
+        continue
+      }
+    }
     if (statusRes.status === 401 || statusRes.status === 403) {
       throw new Error(`${config.errorPrefix} ${statusRes.status}: ${await readResponseError(statusRes)}`)
     }
@@ -911,11 +919,27 @@ async function callCloudImageAPI(
 
   try {
     // Step 1: Submit task — 60s 超时 + 5xx/429 退避重试
-    const submitRes = await fetchWithRetry(submitUrl, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body)
-    }, 60_000, { retries: 2, errorPrefix: 'Image API error' })
+    let submitRes: Response
+    try {
+      submitRes = await fetchWithRetry(submitUrl, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body)
+      }, 60_000, { retries: 2, errorPrefix: 'Image API error' })
+    } catch (e: any) {
+      if (!String(e?.message || '').startsWith('Image API error 401:')) throw e
+      const nextToken = await refreshCloudToken()
+      if (!nextToken) {
+        notifyCloudAuthExpired(e.message)
+        throw e
+      }
+      headers['Authorization'] = `Bearer ${nextToken}`
+      submitRes = await fetchWithRetry(submitUrl, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body)
+      }, 60_000, { retries: 2, errorPrefix: 'Image API error' })
+    }
 
     let submitData: any
     try {
@@ -937,9 +961,17 @@ async function callCloudImageAPI(
     // 导致轮询失败时丢失快照挂载。
     return await pollAsyncTask({
       statusUrl: `${gatewayUrl}/images/status/${taskId}`,
-      headers: { 'Authorization': `Bearer ${token}` },
+      headers: { 'Authorization': headers['Authorization'] },
       taskId,
       errorPrefix: 'Image API error',
+      refreshHeaders: async (reason) => {
+        const nextToken = await refreshCloudToken()
+        if (!nextToken) {
+          notifyCloudAuthExpired(reason)
+          return null
+        }
+        return { 'Authorization': `Bearer ${nextToken}` }
+      },
       extractDiagnostic: (statusData) => statusData?.status,
       parseStatus: (statusData) => {
         if (statusData.status === 'completed') {

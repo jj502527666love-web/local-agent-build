@@ -24,7 +24,7 @@
             <button
               v-for="m in modes"
               :key="m.id"
-              @click="mode = m.id"
+              @click="setMode(m.id)"
               :class="['px-2 py-2 rounded-lg border text-[11px] font-medium transition-colors', mode === m.id ? 'border-primary-500 bg-primary-50 text-primary-700 dark:bg-primary-900/20' : 'border-surface-3 text-text-secondary hover:bg-surface-2']"
             >{{ m.label }}</button>
           </div>
@@ -49,6 +49,21 @@
             </div>
             <div class="grid grid-cols-3 gap-1.5 pt-2">
               <button v-for="p in gridPresets" :key="p.label" @click="applyPreset(p.cols, p.rows)" class="px-1.5 py-1 text-[10px] border border-surface-3 rounded hover:bg-surface-2 text-text-tertiary">{{ p.label }}</button>
+            </div>
+          </div>
+        </div>
+
+        <div v-else-if="mode === 'free'">
+          <h4 class="text-xs font-medium text-text-secondary mb-2">自由网格</h4>
+          <div class="space-y-2">
+            <div class="grid grid-cols-2 gap-1.5">
+              <button @click="addCut('vertical')" class="px-2 py-1.5 text-[10px] border border-surface-3 rounded hover:bg-surface-2 text-text-secondary">添加竖线</button>
+              <button @click="addCut('horizontal')" class="px-2 py-1.5 text-[10px] border border-surface-3 rounded hover:bg-surface-2 text-text-secondary">添加横线</button>
+              <button @click="resetFreeCutsFromGrid" class="px-2 py-1.5 text-[10px] border border-surface-3 rounded hover:bg-surface-2 text-text-secondary">按网格均分</button>
+              <button @click="clearFreeCuts" class="px-2 py-1.5 text-[10px] border border-surface-3 rounded hover:bg-surface-2 text-text-secondary">清空切线</button>
+            </div>
+            <div class="text-[10px] text-text-tertiary leading-5">
+              当前 {{ freeVerticalCutItems.length }} 条竖线、{{ freeHorizontalCutItems.length }} 条横线。拖动预览线调整位置，右键线删除。
             </div>
           </div>
         </div>
@@ -150,7 +165,7 @@
             v-if="imgRendered.w"
             :width="imgRendered.w"
             :height="imgRendered.h"
-            class="absolute top-0 left-0 pointer-events-none"
+            :class="['absolute top-0 left-0', mode === 'free' ? 'pointer-events-auto' : 'pointer-events-none']"
           >
             <rect
               v-for="(s, i) in slices"
@@ -169,6 +184,52 @@
               <rect x="0" :y="((image.height - trimBottom) / image.height) * imgRendered.h" :width="imgRendered.w" :height="(trimBottom / image.height) * imgRendered.h" />
               <rect x="0" :y="(trimTop / image.height) * imgRendered.h" :width="(trimLeft / image.width) * imgRendered.w" :height="((image.height - trimTop - trimBottom) / image.height) * imgRendered.h" />
               <rect :x="((image.width - trimRight) / image.width) * imgRendered.w" :y="(trimTop / image.height) * imgRendered.h" :width="(trimRight / image.width) * imgRendered.w" :height="((image.height - trimTop - trimBottom) / image.height) * imgRendered.h" />
+            </g>
+            <g v-if="mode === 'free'">
+              <g v-for="cut in freeVerticalCutItems" :key="`v-${cut.index}`">
+                <line
+                  :x1="cut.svgValue"
+                  :x2="cut.svgValue"
+                  :y1="cut.svgStart"
+                  :y2="cut.svgEnd"
+                  stroke="rgba(99,102,241,0.01)"
+                  stroke-width="14"
+                  class="cursor-ew-resize"
+                  @mousedown.prevent="startCutDrag('vertical', cut.index, $event)"
+                  @contextmenu.prevent="removeCut('vertical', cut.index)"
+                />
+                <line
+                  :x1="cut.svgValue"
+                  :x2="cut.svgValue"
+                  :y1="cut.svgStart"
+                  :y2="cut.svgEnd"
+                  stroke="rgb(79 70 229)"
+                  stroke-width="2"
+                  pointer-events="none"
+                />
+              </g>
+              <g v-for="cut in freeHorizontalCutItems" :key="`h-${cut.index}`">
+                <line
+                  :x1="cut.svgStart"
+                  :x2="cut.svgEnd"
+                  :y1="cut.svgValue"
+                  :y2="cut.svgValue"
+                  stroke="rgba(99,102,241,0.01)"
+                  stroke-width="14"
+                  class="cursor-ns-resize"
+                  @mousedown.prevent="startCutDrag('horizontal', cut.index, $event)"
+                  @contextmenu.prevent="removeCut('horizontal', cut.index)"
+                />
+                <line
+                  :x1="cut.svgStart"
+                  :x2="cut.svgEnd"
+                  :y1="cut.svgValue"
+                  :y2="cut.svgValue"
+                  stroke="rgb(79 70 229)"
+                  stroke-width="2"
+                  pointer-events="none"
+                />
+              </g>
             </g>
           </svg>
         </div>
@@ -189,7 +250,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { useHandoffStore } from '@/stores/handoff'
 import ImageSourcePickerDialog from '@/components/ImageSourcePickerDialog.vue'
@@ -197,8 +258,10 @@ import GallerySaveDialog from '@/components/GallerySaveDialog.vue'
 import { loadAsDataUri, buildOutputName, type LoadedImage } from '@/utils/image-source'
 import { useGalleryStore } from '@/stores/gallery'
 
-type Mode = 'grid' | 'horizontal' | 'vertical' | 'fixed'
+type Mode = 'grid' | 'free' | 'horizontal' | 'vertical' | 'fixed'
+type CutOrientation = 'vertical' | 'horizontal'
 interface Slice { x: number; y: number; w: number; h: number; idx: number; row: number; col: number }
+interface FreeCutItem { index: number; value: number; svgValue: number; svgStart: number; svgEnd: number }
 
 const router = useRouter()
 const handoff = useHandoffStore()
@@ -221,6 +284,12 @@ const trimTop = ref(0)
 const trimRight = ref(0)
 const trimBottom = ref(0)
 const trimLeft = ref(0)
+const freeVerticalCuts = ref<number[]>([])
+const freeHorizontalCuts = ref<number[]>([])
+const freeInitialized = ref(false)
+const activeCut = ref<{ orientation: CutOrientation; index: number } | null>(null)
+
+const MIN_FREE_SLICE_SIZE = 20
 
 const trimMaxX = computed(() => Math.max(0, Math.floor((image.value?.width || 0) * 0.45)))
 const trimMaxY = computed(() => Math.max(0, Math.floor((image.value?.height || 0) * 0.45)))
@@ -247,6 +316,7 @@ function resetTrim() {
 
 const modes: Array<{ id: Mode; label: string }> = [
   { id: 'grid', label: '网格' },
+  { id: 'free', label: '自由' },
   { id: 'horizontal', label: '横切' },
   { id: 'vertical', label: '纵切' },
   { id: 'fixed', label: '定尺寸' }
@@ -260,6 +330,30 @@ const gridPresets = [
   { label: '3×2', cols: 3, rows: 2 },
   { label: '1×9', cols: 1, rows: 9 }
 ]
+
+const freeVerticalCutItems = computed<FreeCutItem[]>(() => {
+  const rect = effectiveRect.value
+  if (!rect || !image.value || !imgRendered.value.w) return []
+  return normalizedFreeCuts('vertical').map((value, index) => ({
+    index,
+    value,
+    svgValue: (value / image.value!.width) * imgRendered.value.w,
+    svgStart: (rect.y / image.value!.height) * imgRendered.value.h,
+    svgEnd: ((rect.y + rect.h) / image.value!.height) * imgRendered.value.h
+  }))
+})
+
+const freeHorizontalCutItems = computed<FreeCutItem[]>(() => {
+  const rect = effectiveRect.value
+  if (!rect || !image.value || !imgRendered.value.h) return []
+  return normalizedFreeCuts('horizontal').map((value, index) => ({
+    index,
+    value,
+    svgValue: (value / image.value!.height) * imgRendered.value.h,
+    svgStart: (rect.x / image.value!.width) * imgRendered.value.w,
+    svgEnd: ((rect.x + rect.w) / image.value!.width) * imgRendered.value.w
+  }))
+})
 
 const slices = computed<Slice[]>(() => {
   const rect = effectiveRect.value
@@ -277,6 +371,16 @@ const slices = computed<Slice[]>(() => {
         const w = c === cols.value - 1 ? W - c * cw : cw
         const h = r === rows.value - 1 ? H - r * ch : ch
         out.push({ x: ox + c * cw, y: oy + r * ch, w, h, idx: idx++, row: r, col: c })
+      }
+    }
+  } else if (mode.value === 'free') {
+    const xs = [ox, ...normalizedFreeCuts('vertical'), ox + W]
+    const ys = [oy, ...normalizedFreeCuts('horizontal'), oy + H]
+    for (let r = 0; r < ys.length - 1; r++) {
+      for (let c = 0; c < xs.length - 1; c++) {
+        const x = xs[c]
+        const y = ys[r]
+        out.push({ x, y, w: xs[c + 1] - x, h: ys[r + 1] - y, idx: idx++, row: r, col: c })
       }
     }
   } else if (mode.value === 'horizontal') {
@@ -319,6 +423,10 @@ onMounted(async () => {
   await loadPath(payload.paths[0])
 })
 
+onBeforeUnmount(() => {
+  stopCutDrag()
+})
+
 async function loadPath(path: string) {
   // 切图保留原始尺寸（不能压缩，否则切出来会糊）
   const items = await loadAsDataUri([path], { maxSize: 6000, quality: 1 })
@@ -329,12 +437,121 @@ async function loadPath(path: string) {
     tileH.value = Math.min(500, Math.floor(items[0].height / 3))
     trimEnabled.value = false
     resetTrim()
+    clearFreeCuts()
+    freeInitialized.value = false
+    if (mode.value === 'free') resetFreeCutsFromGrid()
   }
 }
 
 function applyPreset(c: number, r: number) {
   cols.value = c
   rows.value = r
+}
+
+function setMode(next: Mode) {
+  mode.value = next
+  if (next === 'free' && !freeInitialized.value) resetFreeCutsFromGrid()
+}
+
+function getFreeCuts(orientation: CutOrientation): number[] {
+  return orientation === 'vertical' ? freeVerticalCuts.value : freeHorizontalCuts.value
+}
+
+function setFreeCuts(orientation: CutOrientation, cuts: number[]) {
+  if (orientation === 'vertical') freeVerticalCuts.value = cuts
+  else freeHorizontalCuts.value = cuts
+}
+
+function normalizedFreeCuts(orientation: CutOrientation): number[] {
+  const rect = effectiveRect.value
+  if (!rect) return []
+  const start = orientation === 'vertical' ? rect.x : rect.y
+  const end = orientation === 'vertical' ? rect.x + rect.w : rect.y + rect.h
+  const min = start + MIN_FREE_SLICE_SIZE
+  const max = end - MIN_FREE_SLICE_SIZE
+  if (max <= min) return []
+  const out: number[] = []
+  for (const raw of getFreeCuts(orientation)) {
+    const value = Math.round(Math.max(min, Math.min(max, raw)))
+    if (out.every((item) => Math.abs(item - value) >= MIN_FREE_SLICE_SIZE)) out.push(value)
+  }
+  return out.sort((a, b) => a - b)
+}
+
+function resetFreeCutsFromGrid() {
+  const rect = effectiveRect.value
+  if (!rect) return
+  const vertical: number[] = []
+  const horizontal: number[] = []
+  for (let i = 1; i < cols.value; i++) vertical.push(Math.round(rect.x + (rect.w * i) / cols.value))
+  for (let i = 1; i < rows.value; i++) horizontal.push(Math.round(rect.y + (rect.h * i) / rows.value))
+  freeVerticalCuts.value = vertical
+  freeHorizontalCuts.value = horizontal
+  freeInitialized.value = true
+}
+
+function clearFreeCuts() {
+  freeVerticalCuts.value = []
+  freeHorizontalCuts.value = []
+  freeInitialized.value = true
+}
+
+function addCut(orientation: CutOrientation) {
+  const rect = effectiveRect.value
+  if (!rect) return
+  const cuts = normalizedFreeCuts(orientation)
+  const start = orientation === 'vertical' ? rect.x : rect.y
+  const end = orientation === 'vertical' ? rect.x + rect.w : rect.y + rect.h
+  const edges = [start, ...cuts, end]
+  let bestStart = start
+  let bestEnd = end
+  for (let i = 0; i < edges.length - 1; i++) {
+    if (edges[i + 1] - edges[i] > bestEnd - bestStart) {
+      bestStart = edges[i]
+      bestEnd = edges[i + 1]
+    }
+  }
+  if (bestEnd - bestStart < MIN_FREE_SLICE_SIZE * 2) return
+  setFreeCuts(orientation, [...cuts, Math.round((bestStart + bestEnd) / 2)].sort((a, b) => a - b))
+  freeInitialized.value = true
+}
+
+function removeCut(orientation: CutOrientation, index: number) {
+  const cuts = normalizedFreeCuts(orientation)
+  cuts.splice(index, 1)
+  setFreeCuts(orientation, cuts)
+  freeInitialized.value = true
+}
+
+function startCutDrag(orientation: CutOrientation, index: number, event: MouseEvent) {
+  activeCut.value = { orientation, index }
+  updateCutFromMouse(event)
+  document.addEventListener('mousemove', updateCutFromMouse)
+  document.addEventListener('mouseup', stopCutDrag)
+}
+
+function updateCutFromMouse(event: MouseEvent) {
+  const active = activeCut.value
+  const rect = effectiveRect.value
+  if (!active || !rect || !image.value || !imgEl.value) return
+  const imageRect = imgEl.value.getBoundingClientRect()
+  const cuts = normalizedFreeCuts(active.orientation)
+  const start = active.orientation === 'vertical' ? rect.x : rect.y
+  const end = active.orientation === 'vertical' ? rect.x + rect.w : rect.y + rect.h
+  const raw = active.orientation === 'vertical'
+    ? ((event.clientX - imageRect.left) / imageRect.width) * image.value.width
+    : ((event.clientY - imageRect.top) / imageRect.height) * image.value.height
+  const previous = active.index > 0 ? cuts[active.index - 1] : start
+  const next = active.index < cuts.length - 1 ? cuts[active.index + 1] : end
+  cuts[active.index] = Math.round(Math.max(previous + MIN_FREE_SLICE_SIZE, Math.min(next - MIN_FREE_SLICE_SIZE, raw)))
+  setFreeCuts(active.orientation, cuts)
+  freeInitialized.value = true
+}
+
+function stopCutDrag() {
+  activeCut.value = null
+  document.removeEventListener('mousemove', updateCutFromMouse)
+  document.removeEventListener('mouseup', stopCutDrag)
 }
 
 function changeImage() { pickerVisible.value = true }

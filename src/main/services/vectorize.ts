@@ -1,17 +1,17 @@
 import { BrowserWindow } from 'electron'
-import { chunkFile } from './chunker'
+import { chunkFile, DocumentParseError } from './chunker'
 import { embedBatch, getEmbeddingConfig, EmbeddingUnavailableError } from './embedding'
 import { insertChunks, deleteChunksByKnowledgeBaseId, getVectorStats, getGlobalEmbeddingMeta } from './vector-store'
 import { getDatabase } from '../database'
 
 export interface VectorizeProgress {
   knowledgeBaseId: string
-  status: 'chunking' | 'embedding' | 'done' | 'error'
+  status: 'chunking' | 'embedding' | 'done' | 'error' | 'skipped'
   current: number
   total: number
   message: string
   /** 错误时附带的结构化代码，UI 据此引导用户 */
-  errorCode?: 'NO_CLOUD_MODEL' | 'INSUFFICIENT_BALANCE' | 'NOT_CONFIGURED' | 'UNAUTHORIZED' | 'GENERIC'
+  errorCode?: 'NO_CLOUD_MODEL' | 'INSUFFICIENT_BALANCE' | 'NOT_CONFIGURED' | 'UNAUTHORIZED' | 'NO_EXTRACTABLE_TEXT' | 'GENERIC'
 }
 
 function sendProgress(win: BrowserWindow | null, progress: VectorizeProgress): void {
@@ -64,10 +64,31 @@ export async function vectorizeDocument(
     // Delete existing chunks for re-vectorization
     deleteChunksByKnowledgeBaseId(knowledgeBaseId)
 
-    const chunks = await chunkFile(kb.file_path, {
-      chunkSize: 512,
-      chunkOverlap: 100
-    })
+    let chunks
+    try {
+      chunks = await chunkFile(kb.file_path, {
+        chunkSize: 512,
+        chunkOverlap: 100
+      })
+    } catch (err: any) {
+      if (err instanceof DocumentParseError && err.code === 'NO_EXTRACTABLE_TEXT') {
+        db.prepare('UPDATE knowledge_bases SET status = ?, chunk_count = ? WHERE id = ?').run(
+          'unvectorizable',
+          0,
+          knowledgeBaseId
+        )
+        sendProgress(win, {
+          knowledgeBaseId,
+          status: 'skipped',
+          current: 0,
+          total: 0,
+          message: `已跳过：${kb.name || '该文档'}未提取到可向量化文字，文档内图片内容当前不会被向量化`,
+          errorCode: 'NO_EXTRACTABLE_TEXT',
+        })
+        return { chunkCount: 0, embeddedCount: 0 }
+      }
+      throw err
+    }
 
     if (chunks.length === 0) {
       db.prepare('UPDATE knowledge_bases SET status = ?, chunk_count = ? WHERE id = ?').run(
@@ -434,6 +455,7 @@ export function getVectorStatsForUI(): Array<{
   total_docs: number
   pending_docs: number
   ready_docs: number
+  unvectorizable_docs: number
   error_docs: number
   total_chunks: number
   embedded_chunks: number
@@ -449,6 +471,7 @@ export function getVectorStatsForUI(): Array<{
         COUNT(kb.id) as total_docs,
         SUM(CASE WHEN kb.status = 'pending' THEN 1 ELSE 0 END) as pending_docs,
         SUM(CASE WHEN kb.status = 'ready' THEN 1 ELSE 0 END) as ready_docs,
+        SUM(CASE WHEN kb.status = 'unvectorizable' THEN 1 ELSE 0 END) as unvectorizable_docs,
         SUM(CASE WHEN kb.status = 'error' THEN 1 ELSE 0 END) as error_docs,
         COALESCE(SUM(kb.chunk_count), 0) as total_chunks
       FROM kb_categories c

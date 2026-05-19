@@ -68,6 +68,8 @@ interface Window {
     cloud: {
       setToken: (token: string | null) => Promise<void>
       getToken: () => Promise<string | null>
+      onTokenUpdated: (callback: (data: { token: string }) => void) => () => void
+      onAuthExpired: (callback: (data: { reason?: string }) => void) => () => void
       setPermissions: (perms: Record<string, any>) => Promise<void>
       getDeviceId: () => Promise<string>
       setEmbeddingModels: (models: Array<{ id: number; model_id: string; name: string }>) => Promise<void>

@@ -123,6 +123,16 @@ const api = {
   cloud: {
     setToken: (token: string | null) => ipcRenderer.invoke('cloud:setToken', token),
     getToken: () => ipcRenderer.invoke('cloud:getToken'),
+    onTokenUpdated: (callback: (data: { token: string }) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, data: { token: string }) => callback(data)
+      ipcRenderer.on('cloud:tokenUpdated', handler)
+      return () => ipcRenderer.off('cloud:tokenUpdated', handler)
+    },
+    onAuthExpired: (callback: (data: { reason?: string }) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, data: { reason?: string }) => callback(data)
+      ipcRenderer.on('cloud:authExpired', handler)
+      return () => ipcRenderer.off('cloud:authExpired', handler)
+    },
     setPermissions: (perms: Record<string, any>) => ipcRenderer.invoke('cloud:setPermissions', perms),
     getDeviceId: () => ipcRenderer.invoke('cloud:getDeviceId') as Promise<string>,
     setEmbeddingModels: (models: Array<{ id: number; model_id: string; name: string }>) =>

@@ -199,6 +199,12 @@
               <div v-if="attachLimitMsg" class="flex items-center gap-2 mb-2 px-1 text-xs text-amber-600">
                 最多添加 {{ MAX_ATTACHMENTS }} 个附件
               </div>
+              <div v-if="attachmentError" class="flex items-center gap-2 mb-2 px-1 text-xs text-red-500">
+                {{ attachmentError }}
+              </div>
+              <div v-if="attachmentNotice" class="flex items-center gap-2 mb-2 px-1 text-xs text-amber-600">
+                {{ attachmentNotice }}
+              </div>
               <div v-if="loadingAttachment" class="flex items-center gap-2 mb-2 px-1 text-xs text-text-tertiary">
                 <svg class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
                 正在处理附件...
@@ -544,6 +550,17 @@ const loadingAttachment = ref(false)
 const dragging = ref(false)
 const MAX_ATTACHMENTS = 5
 const attachLimitMsg = ref(false)
+const attachmentError = ref('')
+const attachmentNotice = ref('')
+
+interface ParsedDocumentResult {
+  ok: boolean
+  text: string
+  ext?: string
+  parser?: string
+  error?: string
+  warnings?: string[]
+}
 
 const showQuickPrompt = ref(false)
 const quickPromptSearch = ref('')
@@ -831,6 +848,31 @@ function canAddAttachment(): boolean {
   return true
 }
 
+function showAttachmentError(message: string) {
+  attachmentError.value = message
+  setTimeout(() => {
+    if (attachmentError.value === message) attachmentError.value = ''
+  }, 3000)
+}
+
+function showAttachmentNotice(message: string) {
+  attachmentNotice.value = message
+  setTimeout(() => {
+    if (attachmentNotice.value === message) attachmentNotice.value = ''
+  }, 6000)
+}
+
+function documentFallbackText(result: ParsedDocumentResult): string {
+  return `[文档解析失败：${result.error || '未知错误'}（解析器=${result.parser || '未知'}, 扩展名=${result.ext || '未知'}）]`
+}
+
+function resolveParsedDocumentText(result: ParsedDocumentResult): string {
+  if (result.warnings?.length) showAttachmentNotice(result.warnings[0])
+  if (result.ok) return result.text
+  showAttachmentError(`文档解析失败：${result.error || '未知错误'}`)
+  return documentFallbackText(result)
+}
+
 async function addImageFromBlob(blob: Blob, name: string) {
   if (!canAddAttachment()) return
   loadingAttachment.value = true
@@ -877,12 +919,10 @@ async function handleDrop(e: DragEvent) {
       try {
         let text: string
         if (BINARY_DOC_EXTENSIONS.has(ext)) {
-          // 二进制办公文档：通过 ArrayBuffer + IPC 走 main 进程对应解析器，
-          // 避免 file.text() 按 utf-8 直读产出乱码
           const buffer = await file.arrayBuffer()
-          text = await window.api.chat.invoke('parseBuffer', { buffer, ext }) as string
+          const parsed = await window.api.chat.invoke('parseDocumentBuffer', { buffer, ext }) as ParsedDocumentResult
+          text = resolveParsedDocumentText(parsed)
         } else {
-          // 纯文本扩展名（txt/md/csv/json）：file.text() 直读
           text = await file.text()
         }
         pendingAttachments.value.push({ name: file.name, type: 'document', data: text })
@@ -927,7 +967,11 @@ async function pickFile(fileType: 'image' | 'document') {
       title: fileType === 'image' ? '选择图片' : '选择文档',
       filters,
       properties: ['openFile', 'multiSelections']
-    }) as { canceled: boolean; filePaths: string[] }
+    }) as { canceled: boolean; filePaths: string[]; error?: string }
+    if (result.error) {
+      showAttachmentError(`打开文件选择器失败：${result.error}`)
+      return
+    }
     if (result.canceled || !result.filePaths.length) return
     loadingAttachment.value = true
 
@@ -942,12 +986,14 @@ async function pickFile(fileType: 'image' | 'document') {
         const compressed = await compressImage(dataUri, 1024, 0.8)
         pendingAttachments.value.push({ name, type: 'image', data: compressed })
       } else {
-        const data = await window.api.chat.invoke('readFileText', filePath) as string
+        const parsed = await window.api.chat.invoke('readDocument', filePath) as ParsedDocumentResult
+        const data = resolveParsedDocumentText(parsed)
         pendingAttachments.value.push({ name, type: 'document', data })
       }
     }
-  } catch (err) {
+  } catch (err: any) {
     console.error('Failed to pick file:', err)
+    showAttachmentError(`${fileType === 'image' ? '图片' : '文档'}添加失败：${err?.message || String(err)}`)
   } finally {
     loadingAttachment.value = false
   }

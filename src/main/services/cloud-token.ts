@@ -1,7 +1,9 @@
 import { getRuntimeConfig } from './runtime-config'
 import { CLOUD_KEY_SEP } from '@shared/model-id'
+import { BrowserWindow } from 'electron'
 
 let cloudToken: string | null = null
+let refreshing: Promise<string | null> | null = null
 
 interface CloudPermissions {
   allow_custom_provider: boolean
@@ -50,6 +52,82 @@ export function setCloudToken(token: string | null): void {
 
 export function getCloudToken(): string | null {
   return cloudToken
+}
+
+function notifyCloudTokenUpdated(token: string): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send('cloud:tokenUpdated', { token })
+  }
+}
+
+export function notifyCloudAuthExpired(reason: string): void {
+  setCloudToken(null)
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send('cloud:authExpired', { reason })
+  }
+}
+
+export async function refreshCloudToken(): Promise<string | null> {
+  if (refreshing) return refreshing
+
+  refreshing = (async () => {
+    const startToken = getCloudToken()
+    if (!startToken) return null
+
+    try {
+      const res = await fetch(`${getCloudApiBase()}/auth/refresh`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${startToken}`,
+        },
+      })
+      if (!res.ok) {
+        const currentToken = getCloudToken()
+        return currentToken && currentToken !== startToken ? currentToken : null
+      }
+      const data = await res.json().catch(() => null)
+      if (!data?.token) {
+        const currentToken = getCloudToken()
+        return currentToken && currentToken !== startToken ? currentToken : null
+      }
+      const currentToken = getCloudToken()
+      if (currentToken !== startToken) return currentToken
+      setCloudToken(data.token)
+      notifyCloudTokenUpdated(data.token)
+      return data.token
+    } catch {
+      const currentToken = getCloudToken()
+      return currentToken && currentToken !== startToken ? currentToken : null
+    }
+  })()
+
+  try {
+    return await refreshing
+  } finally {
+    refreshing = null
+  }
+}
+
+export async function fetchWithCloudAuth(url: string, init: RequestInit = {}, reason = 'Cloud API 401'): Promise<Response> {
+  const token = getCloudToken()
+  if (!token) throw new Error('Cloud login required')
+  const withToken = (t: string): RequestInit => {
+    const headers = new Headers(init.headers)
+    headers.set('Authorization', `Bearer ${t}`)
+    return { ...init, headers }
+  }
+
+  let res = await fetch(url, withToken(token))
+  if (res.status !== 401) return res
+
+  const nextToken = await refreshCloudToken()
+  if (!nextToken) {
+    notifyCloudAuthExpired(reason)
+    return res
+  }
+  res = await fetch(url, withToken(nextToken))
+  return res
 }
 
 export function getCloudApiBase(): string {

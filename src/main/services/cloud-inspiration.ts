@@ -2,7 +2,7 @@ import { readFileSync, existsSync, statSync } from 'fs'
 import { join, extname } from 'path'
 import { nativeImage } from 'electron'
 import { getDataDir } from './data-path'
-import { getCloudApiBase, getCloudToken } from './cloud-token'
+import { getCloudApiBase, getCloudToken, fetchWithCloudAuth } from './cloud-token'
 
 /**
  * 桌面端用户「上传创作到灵感广场」服务（主进程侧）。
@@ -144,11 +144,10 @@ export async function uploadInspiration(params: UploadInspirationParams): Promis
   const url = `${getCloudApiBase()}/client/inspirations`
   let resp: Response
   try {
-    resp = await fetch(url, {
+    resp = await fetchWithCloudAuth(url, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${token}` },
       body: fd,
-    })
+    }, '灵感广场上传 401')
   } catch (e: any) {
     return { ok: false, error: '网络请求失败：' + (e?.message || '未知错误') }
   }
