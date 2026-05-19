@@ -21,6 +21,13 @@ export interface ReleaseNote {
 
 export const CHANGELOG: ReleaseNote[] = [
   {
+    version: '0.7.3',
+    date: '2026-05-19',
+    notes: [
+      'AI 生图和图片创作列表改用缩略图加载，翻页和滚动更流畅'
+    ]
+  },
+  {
     version: '0.7.2',
     date: '2026-05-19',
     notes: [
