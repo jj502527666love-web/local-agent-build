@@ -237,7 +237,7 @@
                     <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18 18 6M6 6l12 12" /></svg>
                   </button>
                   <div v-if="gen.status === 'done' && gen.result_path" class="aspect-square relative">
-                    <img :src="localFileUrl(gen.result_path)" class="w-full h-full object-cover cursor-pointer" @click.stop="selectMode ? toggleSelect(gen.id) : openDetail(gen)" />
+                    <img :src="localFileUrl(gen.result_path, true)" class="w-full h-full object-cover cursor-pointer" @click.stop="selectMode ? toggleSelect(gen.id) : openDetail(gen)" />
                     <div v-if="!selectMode" class="absolute bottom-1.5 right-1.5 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                       <button @click.stop="copyImage(gen.result_path)" class="w-7 h-7 rounded-lg bg-black/50 hover:bg-black/70 text-white flex items-center justify-center" title="复制图片">
                         <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.666 3.888A2.25 2.25 0 0 0 13.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 0 1-.75.75H9.75a.75.75 0 0 1-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 0 1-2.25 2.25H6.75A2.25 2.25 0 0 1 4.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 0 1 1.927-.184" /></svg>
@@ -294,7 +294,7 @@
                     </div>
                   </div>
                   <div class="w-20 h-20 rounded-lg overflow-hidden flex-shrink-0 bg-surface-2">
-                    <img v-if="gen.status === 'done' && gen.result_path" :src="localFileUrl(gen.result_path)" class="w-full h-full object-cover cursor-pointer" @click.stop="selectMode ? toggleSelect(gen.id) : openDetail(gen)" />
+                    <img v-if="gen.status === 'done' && gen.result_path" :src="localFileUrl(gen.result_path, true)" class="w-full h-full object-cover cursor-pointer" @click.stop="selectMode ? toggleSelect(gen.id) : openDetail(gen)" />
                     <div v-else-if="gen.status === 'generating' || gen.status === 'pending'" class="w-full h-full flex items-center justify-center">
                       <svg class="w-5 h-5 animate-spin text-primary-500" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
                     </div>
@@ -567,11 +567,11 @@ function regenerate(gen: ImageGeneration) {
 
 const promptPresets = computed(() => presetStore.visibleGrouped('image_gen'))
 
-function localFileUrl(path: string): string {
+function localFileUrl(path: string, thumb = false): string {
   // 兼容旧绝对路径数据：以盘符或 / 开头视为绝对路径
   const isAbsolute = /^[A-Za-z]:|^\//.test(path)
   const param = isAbsolute ? 'p' : 'rel'
-  return 'local-file://img?' + param + '=' + encodeURIComponent(path)
+  return 'local-file://img?' + param + '=' + encodeURIComponent(path) + (thumb ? '&thumb=1' : '')
 }
 
 // selectedModelId 可能是复合 key `gpt-image-2#@多米`，Picker / supports* 都按纯关键字匹配，必须 strip
