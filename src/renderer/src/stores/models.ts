@@ -97,6 +97,30 @@ export const useModelStore = defineStore('models', () => {
     return Array.from(names).sort((a, b) => a.localeCompare(b))
   }
 
+  function cloudModelDisplayName(modelId: string, providerName?: string): string {
+    if (!modelId) return ''
+    const cloudAuth = useCloudAuthStore()
+    const pure = stripModelId(modelId)
+    const match = cloudAuth.models.find((m) => {
+      if (m.model_id !== pure) return false
+      return providerName ? m.provider_name === providerName : true
+    })
+    return match?.name || pure
+  }
+
+  function cloudModelLabelsOf(modelId: string): string[] {
+    if (!modelId) return []
+    const cloudAuth = useCloudAuthStore()
+    const pure = stripModelId(modelId)
+    const labels = new Set<string>()
+    for (const m of cloudAuth.models) {
+      if (m.model_id !== pure) continue
+      const displayName = m.name || pure
+      labels.add(m.provider_name ? `${displayName} · ${m.provider_name}` : displayName)
+    }
+    return Array.from(labels).sort((a, b) => a.localeCompare(b))
+  }
+
   /**
    * 把纯 model_id 升级为「首选」复合 key：
    * - 在 cloudAuth.models 找第一个匹配的服务商，拼成 `{modelId}#@{provider_name}`
@@ -116,8 +140,8 @@ export const useModelStore = defineStore('models', () => {
   /**
    * 选择器 option 的显示文本：
    * - 本地 provider：直接返回 modelId
-   * - 云端 provider 复合 key：拆分显示 `{modelId} · {providerName}`
-   * - 云端 provider 纯 model_id（兼容老数据）：用 cloudProvidersOf 合并显示
+   * - 云端 provider 复合 key：拆分显示 `{modelName} · {providerName}`
+   * - 云端 provider 纯 model_id（兼容老数据）：用云端模型名和服务商合并显示
    */
   function optionLabel(providerId: string, key: string): string {
     if (!key) return ''
@@ -126,19 +150,19 @@ export const useModelStore = defineStore('models', () => {
       if (i !== -1) {
         const mid = key.slice(0, i)
         const prov = key.slice(i + CLOUD_KEY_SEP.length)
-        return `${mid} · ${prov}`
+        return `${cloudModelDisplayName(mid, prov)} · ${prov}`
       }
-      const names = cloudProvidersOf(key)
-      return names.length ? `${key} · ${names.join(', ')}` : key
+      const labels = cloudModelLabelsOf(key)
+      return labels.length ? labels.join(', ') : key
     }
     return key
   }
 
   /**
    * 已选模型的单行展示文本（卡片/标题/详情用）：
-   * 统一返回 `{服务商} / {modelId}` 格式。
-   * - 复合 key：拆分用真实 provider_name
-   * - 纯 model_id（DB 数据）：用 cloudProvidersOf 合并所有可能服务商
+   * - 云端 provider：统一显示 `{modelName} · {providerName}`
+   * - 本地 provider：保持 `{providerName} / {modelId}` 格式
+   * - 纯 model_id（DB 数据）：用云端模型名和服务商合并显示
    */
   function formatModelLabel(
     providerId: string | undefined | null,
@@ -151,10 +175,10 @@ export const useModelStore = defineStore('models', () => {
       if (i !== -1) {
         const mid = modelIdOrKey.slice(0, i)
         const prov = modelIdOrKey.slice(i + CLOUD_KEY_SEP.length)
-        return `${prov} / ${mid}`
+        return `${cloudModelDisplayName(mid, prov)} · ${prov}`
       }
-      const names = cloudProvidersOf(modelIdOrKey)
-      return names.length ? `${names.join(', ')} / ${modelIdOrKey}` : modelIdOrKey
+      const labels = cloudModelLabelsOf(modelIdOrKey)
+      return labels.length ? labels.join(', ') : modelIdOrKey
     }
     const p = providers.value.find((pp) => pp.id === providerId)
     return p ? `${p.name} / ${modelIdOrKey}` : modelIdOrKey

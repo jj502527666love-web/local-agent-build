@@ -159,7 +159,7 @@ export const coreToolDefs = [
           prompt: { type: 'string', description: '图片描述提示词（generate 时必填）' },
           model_provider_id: { type: 'string', description: '服务商ID（generate 时必填，从 list_providers 获取）' },
           model_id: { type: 'string', description: '模型ID（generate 时必填，从 list_providers 获取）' },
-          size: { type: 'string', description: '图片尺寸比例：1:1, 3:2, 2:3, 16:9, 9:16（默认 1:1）' },
+          size: { type: 'string', description: '图片尺寸比例：正图 1:1；横图 2:1, 3:1, 3:2, 4:3, 5:4, 16:9, 21:9；竖图 1:2, 1:3, 2:3, 3:4, 4:5, 9:16, 9:21；也可传 1:3 到 3:1 范围内的自定义比例或像素（默认 1:1）' },
           output_dir: { type: 'string', description: '可选，将生成的图片复制到此目录。相对路径相对当前对话工作区;未指定时默认落在 {工作区}/images/' },
           output_filename: { type: 'string', description: '可选，自定义输出文件名（不含扩展名，如 cover_bg）' },
           ref_image_ids: { type: 'array', items: { type: 'string' }, description: '可选，参考图片附件 ID 数组。优先使用系统提示列出的最近图片附件 id，不要传 base64' }
