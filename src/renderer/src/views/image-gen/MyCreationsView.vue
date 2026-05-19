@@ -141,105 +141,27 @@
     <!-- Toast -->
     <div v-if="copyToast" class="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-lg bg-surface-0 shadow-lg border border-surface-3 text-xs text-text-primary">{{ copyToast }}</div>
 
-    <!-- Detail Modal -->
-    <div v-if="detailItem" class="fixed inset-0 z-50 flex items-center justify-center" @click.self="detailItem = null">
-      <div class="bg-surface-0 rounded-2xl shadow-[0_0_30px_rgba(0,0,0,0.12)] w-[640px] max-h-[85vh] flex flex-col overflow-hidden">
-        <!-- Image -->
-        <div class="aspect-square max-h-[50vh] bg-surface-2 flex-shrink-0 overflow-hidden relative group">
-          <img v-if="detailItem.result_path" :src="localFileUrl(detailItem.result_path)" class="w-full h-full object-contain cursor-pointer" @click="openLightbox(detailItem.result_path, detailItem.ref_images)" />
-          <div v-if="detailItem.result_path" class="absolute bottom-3 right-3 flex gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
-            <button @click.stop="copyImage(detailItem.result_path)" class="w-8 h-8 rounded-lg bg-black/50 hover:bg-black/70 text-white flex items-center justify-center" title="复制图片">
-              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.666 3.888A2.25 2.25 0 0 0 13.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 0 1-.75.75H9.75a.75.75 0 0 1-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 0 1-2.25 2.25H6.75A2.25 2.25 0 0 1 4.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 0 1 1.927-.184" /></svg>
-            </button>
-            <button @click.stop="editImage(detailItem.id)" class="w-8 h-8 rounded-lg bg-black/50 hover:bg-black/70 text-white flex items-center justify-center" title="编辑">
-              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Z" /></svg>
-            </button>
-          </div>
-        </div>
-        <div class="p-5 overflow-y-auto flex-1">
-          <div class="flex items-center justify-between mb-4">
-            <h3 class="text-sm font-semibold text-text-primary">创作详情</h3>
-            <button @click="detailItem = null" class="text-text-tertiary hover:text-text-primary">
-              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
-            </button>
-          </div>
-
-          <!-- Prompt -->
-          <div class="mb-4">
-            <div class="flex items-center justify-between mb-1.5">
-              <label class="text-xs font-medium text-text-secondary">提示词</label>
-              <button @click="copyText(detailItem.prompt)" class="p-1 rounded text-text-tertiary hover:text-text-secondary hover:bg-surface-2 transition-colors" title="复制提示词">
-                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.666 3.888A2.25 2.25 0 0 0 13.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 0 1-.75.75H9.75a.75.75 0 0 1-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 0 1-2.25 2.25H6.75A2.25 2.25 0 0 1 4.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 0 1 1.927-.184" /></svg>
-              </button>
-            </div>
-            <div class="text-xs text-text-primary bg-surface-1 rounded-lg p-3 whitespace-pre-wrap leading-relaxed">{{ detailItem.prompt }}</div>
-          </div>
-
-          <!-- Revised prompt -->
-          <div v-if="detailItem.revised_prompt" class="mb-4">
-            <div class="flex items-center justify-between mb-1.5">
-              <label class="text-xs font-medium text-text-secondary">优化后的提示词</label>
-              <button @click="copyText(detailItem.revised_prompt)" class="p-1 rounded text-text-tertiary hover:text-text-secondary hover:bg-surface-2 transition-colors" title="复制优化后的提示词">
-                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.666 3.888A2.25 2.25 0 0 0 13.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 0 1-.75.75H9.75a.75.75 0 0 1-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 0 1-2.25 2.25H6.75A2.25 2.25 0 0 1 4.5 19.5V6.257c0-1.108.806-2.057 1.927-.184" /></svg>
-              </button>
-            </div>
-            <div class="text-xs text-text-primary bg-surface-1 rounded-lg p-3 whitespace-pre-wrap leading-relaxed">{{ detailItem.revised_prompt }}</div>
-          </div>
-
-          <!-- Reference images -->
-          <div v-if="detailItem.ref_images?.length" class="mb-4">
-            <label class="text-xs font-medium text-text-secondary mb-1.5 block">参考图片</label>
-            <div class="flex gap-2 flex-wrap">
-              <img v-for="(img, i) in detailItem.ref_images" :key="i" :src="img" class="w-16 h-16 object-cover rounded-lg border border-surface-3" />
-            </div>
-          </div>
-
-          <!-- Info -->
-          <div class="flex flex-wrap gap-x-6 gap-y-2 text-xs text-text-tertiary mb-4">
-            <span>模型: {{ modelStore.formatModelLabel(detailItem.model_provider_id, detailItem.model_id) }}</span>
-            <span>尺寸: {{ detailItem.size }}</span>
-            <span>时间: {{ formatDate(detailItem.created_at) }}</span>
-          </div>
-
-          <!-- Actions -->
-          <div class="flex gap-2 flex-wrap">
-            <button @click="deleteFromDetail" class="btn-secondary text-xs flex items-center gap-1.5 text-red-500 hover:text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:text-red-300 dark:hover:bg-red-900/20">
-              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165" /></svg>
-              删除
-            </button>
-            <button v-if="detailItem.result_path" @click="openFolder(detailItem.result_path)" class="btn-secondary text-xs flex items-center gap-1.5">
-              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 0 0-1.883 2.542l.857 6a2.25 2.25 0 0 0 2.227 1.932H19.05a2.25 2.25 0 0 0 2.227-1.932l.857-6a2.25 2.25 0 0 0-1.883-2.542m-16.5 0V6A2.25 2.25 0 0 1 6 3.75h3.879a1.5 1.5 0 0 1 1.06.44l2.122 2.12a1.5 1.5 0 0 0 1.06.44H18A2.25 2.25 0 0 1 20.25 9v.776" /></svg>
-              打开所在目录
-            </button>
-            <button @click="useAsInspiration" class="btn-secondary text-xs flex items-center gap-1.5">
-              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.5 6H5.25A2.25 2.25 0 0 0 3 8.25v10.5A2.25 2.25 0 0 0 5.25 21h10.5A2.25 2.25 0 0 0 18 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" /></svg>
-              再次使用此提示词
-            </button>
-            <button v-if="detailItem.revised_prompt" @click="useRevisedPrompt" class="btn-secondary text-xs flex items-center gap-1.5">
-              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 0 0-2.455 2.456Z" /></svg>
-              使用优化后的提示词
-            </button>
-            <!-- 分享到灵感广场（需要「灵感大王」权限且有本地图片） -->
-            <button
-              v-if="cloudAuth.permissions.inspiration_uploader && detailItem.result_path && detailItem.prompt"
-              @click="openUploadDialog('original')"
-              class="btn-secondary text-xs flex items-center gap-1.5"
-            >
-              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 8.25H7.5a2.25 2.25 0 0 0-2.25 2.25v9a2.25 2.25 0 0 0 2.25 2.25h9a2.25 2.25 0 0 0 2.25-2.25v-9a2.25 2.25 0 0 0-2.25-2.25H15M9 12l3-3m0 0 3 3m-3-3v12" /></svg>
-              分享原提示词到灵感广场
-            </button>
-            <button
-              v-if="cloudAuth.permissions.inspiration_uploader && detailItem.result_path && detailItem.revised_prompt"
-              @click="openUploadDialog('revised')"
-              class="btn-secondary text-xs flex items-center gap-1.5"
-            >
-              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 8.25H7.5a2.25 2.25 0 0 0-2.25 2.25v9a2.25 2.25 0 0 0 2.25 2.25h9a2.25 2.25 0 0 0 2.25-2.25v-9a2.25 2.25 0 0 0-2.25-2.25H15M9 12l3-3m0 0 3 3m-3-3v12" /></svg>
-              分享优化后提示词到灵感广场
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
+    <CreationDetailModal
+      v-if="detailItem"
+      :item="detailItem"
+      :image-src="detailItem.result_path ? localFileUrl(detailItem.result_path) : ''"
+      :model-label="modelStore.formatModelLabel(detailItem.model_provider_id, detailItem.model_id)"
+      :created-at-label="formatDate(detailItem.created_at)"
+      :can-share-original="cloudAuth.permissions.inspiration_uploader && !!detailItem.result_path && !!detailItem.prompt"
+      :can-share-revised="cloudAuth.permissions.inspiration_uploader && !!detailItem.result_path && !!detailItem.revised_prompt"
+      @close="detailItem = null"
+      @preview="previewDetailItem"
+      @copy-image="copyDetailImage"
+      @edit="editDetailItem"
+      @open-folder="openDetailFolder"
+      @reuse-prompt="useAsInspiration"
+      @reuse-revised-prompt="useRevisedPrompt"
+      @delete="deleteFromDetail"
+      @share-original="openUploadDialog('original')"
+      @share-revised="openUploadDialog('revised')"
+      @copy-prompt="copyText(detailItem.prompt)"
+      @copy-revised-prompt="copyText(detailItem.revised_prompt)"
+    />
 
     <!-- Upload to inspiration plaza dialog -->
     <UploadInspirationDialog
@@ -270,6 +192,7 @@ import { useCloudAuthStore } from '@/stores/cloud-auth'
 import { useModelStore } from '@/stores/models'
 import UploadInspirationDialog from '@/components/UploadInspirationDialog.vue'
 import ImageLightbox from '@/components/ImageLightbox.vue'
+import CreationDetailModal from '@/components/CreationDetailModal.vue'
 
 const cloudAuth = useCloudAuthStore()
 const modelStore = useModelStore()
@@ -493,6 +416,26 @@ async function deleteFromDetail() {
 
 function openDetail(item: ImageGeneration) {
   detailItem.value = item
+}
+
+function previewDetailItem() {
+  if (!detailItem.value?.result_path) return
+  openLightbox(detailItem.value.result_path, detailItem.value.ref_images)
+}
+
+function copyDetailImage() {
+  if (!detailItem.value?.result_path) return
+  copyImage(detailItem.value.result_path)
+}
+
+function editDetailItem() {
+  if (!detailItem.value) return
+  editImage(detailItem.value.id)
+}
+
+function openDetailFolder() {
+  if (!detailItem.value?.result_path) return
+  openFolder(detailItem.value.result_path)
 }
 
 const copyToast = ref('')

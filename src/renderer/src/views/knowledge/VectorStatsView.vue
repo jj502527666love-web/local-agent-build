@@ -58,16 +58,17 @@
     <div v-if="vectorizeStore.progress" class="mx-6 mt-4 p-4 rounded-lg border"
       :class="{
         'bg-blue-50 border-blue-200 dark:bg-blue-900/20 dark:border-blue-800': vectorizeStore.progress.status === 'embedding' || vectorizeStore.progress.status === 'chunking',
+        'bg-amber-50 border-amber-200 dark:bg-amber-900/20 dark:border-amber-800': vectorizeStore.progress.status === 'skipped',
         'bg-green-50 border-green-200 dark:bg-green-900/20 dark:border-green-800': vectorizeStore.progress.status === 'done',
         'bg-red-50 border-red-200 dark:bg-red-900/20 dark:border-red-800': vectorizeStore.progress.status === 'error'
       }">
       <div class="flex items-center justify-between mb-2">
         <span class="text-sm font-medium">{{ vectorizeStore.progress.message }}</span>
         <span class="text-xs text-text-secondary">
-          {{ vectorizeStore.progress.status === 'done' ? '✓ 完成' : vectorizeStore.progress.status === 'error' ? '✗ 失败' : '' }}
+          {{ vectorizeStore.progress.status === 'done' ? '完成' : vectorizeStore.progress.status === 'skipped' ? '已跳过' : vectorizeStore.progress.status === 'error' ? '失败' : '' }}
         </span>
       </div>
-      <div v-if="vectorizeStore.progress.total > 0 && vectorizeStore.progress.status !== 'done'" class="w-full bg-surface-2 rounded-full h-2">
+      <div v-if="vectorizeStore.progress.total > 0 && vectorizeStore.progress.status !== 'done' && vectorizeStore.progress.status !== 'skipped'" class="w-full bg-surface-2 rounded-full h-2">
         <div class="bg-primary-500 h-2 rounded-full transition-all duration-300"
           :style="{ width: `${Math.round((vectorizeStore.progress.current / vectorizeStore.progress.total) * 100)}%` }">
         </div>
@@ -90,7 +91,7 @@
     <!-- Stats Content -->
     <div class="flex-1 overflow-y-auto p-6">
       <!-- Summary Cards -->
-      <div class="grid grid-cols-4 gap-4 mb-6">
+      <div class="grid grid-cols-5 gap-4 mb-6">
         <div class="card p-4 text-center">
           <div class="text-2xl font-bold text-primary-600">{{ totalDocs }}</div>
           <div class="text-xs text-text-secondary mt-1">总文档数</div>
@@ -102,6 +103,10 @@
         <div class="card p-4 text-center">
           <div class="text-2xl font-bold text-amber-600 dark:text-amber-400">{{ pendingDocs }}</div>
           <div class="text-xs text-text-secondary mt-1">待处理</div>
+        </div>
+        <div class="card p-4 text-center">
+          <div class="text-2xl font-bold text-amber-600 dark:text-amber-400">{{ unvectorizableDocs }}</div>
+          <div class="text-xs text-text-secondary mt-1">无法向量化</div>
         </div>
         <div class="card p-4 text-center">
           <div class="text-2xl font-bold text-red-600 dark:text-red-400">{{ errorDocs }}</div>
@@ -118,6 +123,7 @@
               <th class="text-center px-4 py-3 font-medium text-text-secondary">文档数</th>
               <th class="text-center px-4 py-3 font-medium text-text-secondary">已就绪</th>
               <th class="text-center px-4 py-3 font-medium text-text-secondary">待处理</th>
+              <th class="text-center px-4 py-3 font-medium text-text-secondary">无法向量化</th>
               <th class="text-center px-4 py-3 font-medium text-text-secondary">失败</th>
               <th class="text-center px-4 py-3 font-medium text-text-secondary">分块数</th>
               <th class="text-center px-4 py-3 font-medium text-text-secondary">已向量化</th>
@@ -140,6 +146,10 @@
               </td>
               <td class="text-center px-4 py-3">
                 <span v-if="cat.pending_docs > 0" class="status-badge status-warning">{{ cat.pending_docs }}</span>
+                <span v-else class="text-text-tertiary">0</span>
+              </td>
+              <td class="text-center px-4 py-3">
+                <span v-if="cat.unvectorizable_docs > 0" class="status-badge status-warning">{{ cat.unvectorizable_docs }}</span>
                 <span v-else class="text-text-tertiary">0</span>
               </td>
               <td class="text-center px-4 py-3">
@@ -195,6 +205,7 @@ const cloudAuth = useCloudAuthStore()
 const totalDocs = computed(() => vectorizeStore.stats.reduce((s, c) => s + c.total_docs, 0))
 const readyDocs = computed(() => vectorizeStore.stats.reduce((s, c) => s + c.ready_docs, 0))
 const pendingDocs = computed(() => vectorizeStore.stats.reduce((s, c) => s + c.pending_docs, 0))
+const unvectorizableDocs = computed(() => vectorizeStore.stats.reduce((s, c) => s + (c.unvectorizable_docs || 0), 0))
 const errorDocs = computed(() => vectorizeStore.stats.reduce((s, c) => s + c.error_docs, 0))
 
 // === 状态探测：模型变更 / 云端余额 / 未配置 ===

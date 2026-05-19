@@ -3,12 +3,12 @@ import { ref } from 'vue'
 
 export interface VectorProgress {
   knowledgeBaseId: string
-  status: 'chunking' | 'embedding' | 'done' | 'error'
+  status: 'chunking' | 'embedding' | 'done' | 'error' | 'skipped'
   current: number
   total: number
   message: string
   /** 错误时附带的结构化代码，UI 据此引导用户跳转购买/设置等 */
-  errorCode?: 'NO_CLOUD_MODEL' | 'INSUFFICIENT_BALANCE' | 'NOT_CONFIGURED' | 'UNAUTHORIZED' | 'GENERIC'
+  errorCode?: 'NO_CLOUD_MODEL' | 'INSUFFICIENT_BALANCE' | 'NOT_CONFIGURED' | 'UNAUTHORIZED' | 'NO_EXTRACTABLE_TEXT' | 'GENERIC'
 }
 
 export interface CategoryStats {
@@ -17,6 +17,7 @@ export interface CategoryStats {
   total_docs: number
   pending_docs: number
   ready_docs: number
+  unvectorizable_docs: number
   error_docs: number
   total_chunks: number
   embedded_chunks: number

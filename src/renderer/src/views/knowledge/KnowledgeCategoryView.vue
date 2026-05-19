@@ -127,12 +127,12 @@ const deleteTarget = ref<{ id: string; name: string } | null>(null)
 const categoryId = route.params.categoryId as string
 
 function statusLabel(status: string): string {
-  const map: Record<string, string> = { ready: '已就绪', processing: '处理中', pending: '待向量化', error: '失败' }
+  const map: Record<string, string> = { ready: '已就绪', processing: '处理中', pending: '待向量化', unvectorizable: '无法向量化', error: '失败' }
   return map[status] || status
 }
 
 function statusClass(status: string): string {
-  const map: Record<string, string> = { ready: 'status-active', processing: 'status-warning', pending: 'status-inactive', error: 'status-error' }
+  const map: Record<string, string> = { ready: 'status-active', processing: 'status-warning', pending: 'status-inactive', unvectorizable: 'status-warning', error: 'status-error' }
   return map[status] || 'status-inactive'
 }
 

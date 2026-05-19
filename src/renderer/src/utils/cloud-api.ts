@@ -75,16 +75,24 @@ async function refreshToken(): Promise<string | null> {
           Authorization: `Bearer ${startToken}`,
         },
       })
-      if (!res.ok) return null
+      if (!res.ok) {
+        const currentToken = getCloudToken()
+        return currentToken && currentToken !== startToken ? currentToken : null
+      }
       const data = await res.json().catch(() => null)
-      if (!data?.token) return null
+      if (!data?.token) {
+        const currentToken = getCloudToken()
+        return currentToken && currentToken !== startToken ? currentToken : null
+      }
       // race guard：refresh 期间用户可能主动 logout（getCloudToken 变 null），
       // 不要把已清掉的 token 复活，否则 UI 显示已登出但其实又活了。
-      if (getCloudToken() !== startToken) return null
+      const currentToken = getCloudToken()
+      if (currentToken !== startToken) return currentToken
       setCloudToken(data.token)
       return data.token
     } catch {
-      return null
+      const currentToken = getCloudToken()
+      return currentToken && currentToken !== startToken ? currentToken : null
     }
   })()
 

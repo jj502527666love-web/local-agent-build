@@ -28,6 +28,7 @@ import * as galleryService from '../services/gallery'
 import * as mattingService from '../services/matting'
 import * as mattingProviderService from '../services/matting-providers'
 import { fetchQuota as fetchMattingQuotaFromCloud } from '../services/cloud-matting'
+import { parseDocumentFromBuffer, readFileSmart } from '../services/document-parser'
 import {
   setCloudToken,
   getCloudToken,
@@ -162,7 +163,6 @@ export function registerIpcHandlers(): void {
   // 提取为纯文本；TXT/MD/JSON/CSV 等纯文本格式 utf-8 直读。
   // 解析失败时返回带错误说明的占位字符串，让 LLM 知道发生了什么而非看到乱码。
   ipcMain.handle('chat:readFileText', async (_, filePath: string) => {
-    const { readFileSmart } = require('../services/document-parser')
     const result = await readFileSmart(filePath)
     if (result.ok) return result.text
     // 失败兜底：把错误信息作为可读占位返回，比抛错更友好（聊天附件场景不应整体失败）
@@ -171,7 +171,6 @@ export function registerIpcHandlers(): void {
   // readDocument：新增。返回结构化 ParsedDocument，便于将来 UI 展示截断/解析器/大小等元数据。
   // 当前 ChatView 仍走 readFileText，无破坏性改动。
   ipcMain.handle('chat:readDocument', async (_, filePath: string) => {
-    const { readFileSmart } = require('../services/document-parser')
     return readFileSmart(filePath)
   })
   // parseBuffer：拖拽附件场景专用——渲染端拿到 File 对象后 arrayBuffer() 通过 IPC 上送，
@@ -179,11 +178,14 @@ export function registerIpcHandlers(): void {
   // 解决「拖入 PDF/DOCX 等二进制文档 → file.text() 按 utf-8 读取得到乱码」问题。
   // 返回值与 readFileText 一致：成功返回 text 字符串；失败返回带错误说明的占位字符串。
   ipcMain.handle('chat:parseBuffer', async (_, payload: { buffer: ArrayBuffer; ext: string }) => {
-    const { parseDocumentFromBuffer } = require('../services/document-parser')
     const buffer = Buffer.from(payload.buffer)
     const result = await parseDocumentFromBuffer(buffer, payload.ext)
     if (result.ok) return result.text
     return `[文档解析失败：${result.error || '未知错误'}（解析器=${result.parser}, 扩展名=${result.ext || '未知'}）]`
+  })
+  ipcMain.handle('chat:parseDocumentBuffer', async (_, payload: { buffer: ArrayBuffer; ext: string }) => {
+    const buffer = Buffer.from(payload.buffer)
+    return parseDocumentFromBuffer(buffer, payload.ext)
   })
 
   // === LLM Utility ===

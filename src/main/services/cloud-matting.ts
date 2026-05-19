@@ -1,6 +1,6 @@
 import { readFileSync, statSync, existsSync } from 'fs'
 import { basename, extname } from 'path'
-import { getCloudToken, getCloudApiBase } from './cloud-token'
+import { getCloudToken, getCloudApiBase, fetchWithCloudAuth } from './cloud-token'
 import type { MattingResult } from './aliyun-matting'
 
 /**
@@ -40,13 +40,12 @@ export async function segmentLocalFileViaCloud(
     throw new Error('文件超过 40MB 限制')
   }
 
-  const token = getCloudToken()
-  if (!token) throw new Error('未登录云控端')
+  if (!getCloudToken()) throw new Error('未登录云控端')
   const apiBase = getCloudApiBase()
   if (!apiBase) throw new Error('云控端 apiBase 未配置')
 
   const start = Date.now()
-  const taskId = await submit(apiBase, token, localPath)
+  const taskId = await submit(apiBase, localPath)
   const timeout = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
 
   // 轮询
@@ -57,7 +56,7 @@ export async function segmentLocalFileViaCloud(
 
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS))
 
-    const status = await pollStatus(apiBase, token, taskId)
+    const status = await pollStatus(apiBase, taskId)
     if (status.status === 'completed') {
       const r = status.result || {}
       if (!r.image_url) throw new Error('云控端返回 result.image_url 为空')
@@ -94,9 +93,7 @@ export async function fetchQuota(): Promise<null | {
   try {
     // routes/api.php 由 RouteServiceProvider 加 `prefix('api')`，所以前端 URL 是 /api/gateway/...
     // getCloudApiBase() 已经返回 ${apiDomain}/api，因此这里只用 /gateway/ 即可，不要再加 /v1
-    const resp = await fetch(`${apiBase}/gateway/matting/quota`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
+    const resp = await fetchWithCloudAuth(`${apiBase}/gateway/matting/quota`, {}, '云端抠图配额 401')
     if (!resp.ok) return null
     return (await resp.json()) as any
   } catch {
@@ -106,7 +103,7 @@ export async function fetchQuota(): Promise<null | {
 
 // ===== private =====
 
-async function submit(apiBase: string, token: string, localPath: string): Promise<string> {
+async function submit(apiBase: string, localPath: string): Promise<string> {
   const filename = basename(localPath)
   const ext = extname(localPath).slice(1).toLowerCase()
   const mime = ext === 'png' ? 'image/png'
@@ -122,11 +119,10 @@ async function submit(apiBase: string, token: string, localPath: string): Promis
 
   let resp: Response
   try {
-    resp = await fetch(`${apiBase}/gateway/matting/segment`, {
+    resp = await fetchWithCloudAuth(`${apiBase}/gateway/matting/segment`, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${token}` },
       body: fd,
-    })
+    }, '云端抠图提交 401')
   } catch (e: any) {
     throw new Error(`网络请求失败：${e?.message || '未知错误'}`)
   }
@@ -144,15 +140,16 @@ async function submit(apiBase: string, token: string, localPath: string): Promis
   return j.task_id as string
 }
 
-async function pollStatus(apiBase: string, token: string, taskId: string): Promise<{
+async function pollStatus(apiBase: string, taskId: string): Promise<{
   task_id: string
   status: 'pending' | 'processing' | 'completed' | 'failed'
   result?: { image_url?: string; request_id?: string; elapsed_ms?: number }
   error?: string
 }> {
-  const resp = await fetch(
+  const resp = await fetchWithCloudAuth(
     `${apiBase}/gateway/matting/status/${encodeURIComponent(taskId)}`,
-    { headers: { Authorization: `Bearer ${token}` } },
+    {},
+    '云端抠图轮询 401',
   )
   if (!resp.ok) {
     const j: any = await resp.json().catch(() => ({}))

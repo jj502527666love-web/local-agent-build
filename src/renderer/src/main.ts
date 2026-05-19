@@ -3,7 +3,7 @@ import { createPinia } from 'pinia'
 import { createRouter, createWebHashHistory } from 'vue-router'
 import App from './App.vue'
 import { routes } from './router'
-import { getCloudToken } from './utils/cloud-api'
+import { getCloudToken, setCloudToken } from './utils/cloud-api'
 import { useThemeStore } from './stores/theme'
 import { useCloudAuthStore } from './stores/cloud-auth'
 import { useSiteConfigStore } from './stores/site-config'
@@ -53,6 +53,14 @@ window.addEventListener('cloud-auth-expired', (event) => {
   if (cur.matched.some((r) => r.meta?.requiresAuth)) {
     router.replace({ path: '/login', query: { reason: 'expired' } })
   }
+})
+
+window.api?.cloud?.onTokenUpdated?.(({ token }) => {
+  if (token) setCloudToken(token)
+})
+
+window.api?.cloud?.onAuthExpired?.(({ reason }) => {
+  window.dispatchEvent(new CustomEvent('cloud-auth-expired', { detail: { reason: reason || 'main-process' } }))
 })
 
 // Initialize stores after mount (pinia must be installed first)

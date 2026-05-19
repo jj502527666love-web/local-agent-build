@@ -12,6 +12,29 @@ export interface ChunkOptions {
   separators?: string[]
 }
 
+export class DocumentParseError extends Error {
+  code?: 'NO_EXTRACTABLE_TEXT' | 'TOO_LARGE' | 'READ_ERROR' | 'UNSUPPORTED_FORMAT' | 'PARSE_ERROR'
+  warnings?: string[]
+  features?: {
+    hasImages?: boolean
+    imageCount?: number
+    pageCount?: number
+    textLength?: number
+  }
+
+  constructor(message: string, details?: {
+    code?: DocumentParseError['code']
+    warnings?: string[]
+    features?: DocumentParseError['features']
+  }) {
+    super(message)
+    this.name = 'DocumentParseError'
+    this.code = details?.code
+    this.warnings = details?.warnings
+    this.features = details?.features
+  }
+}
+
 const DEFAULT_CHUNK_SIZE = 512
 const DEFAULT_CHUNK_OVERLAP = 100
 const DEFAULT_SEPARATORS = ['\n\n', '\n', '。', '？', '！', '.', '?', '!', ' ']
@@ -121,7 +144,13 @@ export async function chunkFile(filePath: string, options?: ChunkOptions): Promi
   const { isBinaryDocument, parseDocument } = await import('./document-parser')
   if (isBinaryDocument(filePath)) {
     const parsed = await parseDocument(filePath)
-    if (!parsed.ok) throw new Error(parsed.error || `文档解析失败: ${ext}`)
+    if (!parsed.ok) {
+      throw new DocumentParseError(parsed.error || `文档解析失败: ${ext}`, {
+        code: parsed.errorCode,
+        warnings: parsed.warnings,
+        features: parsed.features
+      })
+    }
     text = parsed.text
   } else {
     switch (ext) {

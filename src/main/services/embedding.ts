@@ -5,6 +5,7 @@ import {
   getCloudGatewayUrl,
   getActiveCloudEmbeddingModelId,
   resolveCloudModelId,
+  fetchWithCloudAuth,
 } from './cloud-token'
 import { normalizeApiBase } from './api-base-normalize'
 
@@ -175,14 +176,13 @@ async function cloudEmbedBatch(texts: string[], model: string): Promise<EmbedBat
   if (cloudModelId !== null) {
     body.cloud_model_id = cloudModelId
   }
-  const response = await fetch(url, {
+  const response = await fetchWithCloudAuth(url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
     },
     body: JSON.stringify(body),
-  })
+  }, '云端向量 401')
 
   // 余额不足专属：402
   if (response.status === 402) {
