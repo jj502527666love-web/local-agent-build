@@ -2,6 +2,8 @@ import { ref, computed } from 'vue'
 import { useCanvasStore } from '@/stores/canvas'
 import { recordUsage } from '@/utils/model-usage-hints'
 import { getNodeTypeDef } from './useNodeTypes'
+import { extractJson } from '@shared/json-extract'
+import { DEFAULT_TIER_ID, isValidSizeValue } from '@shared/image-size'
 import {
   getSystemPrompt as resolveSystemPrompt,
   getUserPrompt,
@@ -16,6 +18,33 @@ export interface WorkflowTask {
   nodeId: string
   status: TaskStatus
   error?: string
+}
+
+interface UpstreamData {
+  texts: string[]
+  demandTexts: string[]
+  recognitionTexts: string[]
+  images: string[]
+}
+
+type QuickOrchestratorMode = 'storyboard' | 'batch_image' | 'product_workflow'
+
+interface QuickPlanItem {
+  title: string
+  prompt: string
+  groupType: 'main' | 'detail' | 'general'
+  useReferenceImages: boolean
+}
+
+interface QuickPlanGroup {
+  name: string
+  type: 'main' | 'detail' | 'general'
+  styleAnchor: string
+  items: QuickPlanItem[]
+}
+
+interface QuickPlan {
+  groups: QuickPlanGroup[]
 }
 
 const api = () => (window as any).api
@@ -127,10 +156,12 @@ export function useWorkflowEngine() {
     return sorted
   }
 
-  function getUpstreamData(nodeId: string, projectId: string): { texts: string[]; images: string[] } {
+  function getUpstreamData(nodeId: string, projectId: string): UpstreamData {
     const canvasStore = useCanvasStore()
     const edges = canvasStore.edges.filter((e) => e.project_id === projectId && e.target_node_id === nodeId)
     const texts: string[] = []
+    const demandTexts: string[] = []
+    const recognitionTexts: string[] = []
     const images: string[] = []
 
     for (const edge of edges) {
@@ -148,15 +179,19 @@ export function useWorkflowEngine() {
       if (!outputDef) continue
 
       if (outputDef.dataType === 'text') {
+        let text = ''
         if (sourceNode.type === 'promptSlice') {
-          // For promptSlice, get text from the specific row matching the handle
           const handleId = edge.source_handle
           const rowId = handleId.replace('output-', '')
           const row = (sourceNode.data.rows || []).find((r: any) => r.id === rowId)
-          if (row?.text) texts.push(row.text)
+          text = row?.text || ''
         } else {
-          const text = sourceNode.data.result || sourceNode.data.text || ''
-          if (text) texts.push(text)
+          text = sourceNode.data.result || sourceNode.data.outputContent || sourceNode.data.text || ''
+        }
+        if (text) {
+          texts.push(text)
+          if (sourceNode.type === 'imageRecognition') recognitionTexts.push(text)
+          else demandTexts.push(text)
         }
       } else if (outputDef.dataType === 'image') {
         // 读取优先级：result_path（生图节点产出，相对路径） > image_path（refImage
@@ -171,7 +206,7 @@ export function useWorkflowEngine() {
       }
     }
 
-    return { texts, images }
+    return { texts, demandTexts, recognitionTexts, images }
   }
 
   function checkRequiredInputs(nodeId: string, projectId: string): { ok: boolean; missing: string[] } {
@@ -205,6 +240,470 @@ export function useWorkflowEngine() {
     return { ok: missing.length === 0, missing }
   }
 
+  function getUpstreamImageSources(nodeId: string, projectId: string): { nodeId: string; handle: string }[] {
+    const canvasStore = useCanvasStore()
+    const edges = canvasStore.edges.filter(
+      (e) => e.project_id === projectId && e.target_node_id === nodeId && e.target_handle === 'image-input'
+    )
+    const result: { nodeId: string; handle: string }[] = []
+    for (const edge of edges) {
+      const sourceNode = canvasStore.nodes.find((n) => n.id === edge.source_node_id)
+      if (!sourceNode) continue
+      const hasImage = Boolean(
+        sourceNode.data?.result_path ||
+        sourceNode.data?.image_path ||
+        sourceNode.data?.image_data
+      )
+      if (!hasImage) continue
+      const def = getNodeTypeDef(sourceNode.type)
+      const output = def?.outputs.find((o) => o.handle === edge.source_handle)
+      if (output?.dataType === 'image') {
+        result.push({ nodeId: sourceNode.id, handle: edge.source_handle })
+      }
+    }
+    return result
+  }
+
+  function clampNumber(value: any, min: number, max: number, fallback: number): number {
+    const n = Number(value)
+    if (!Number.isFinite(n)) return fallback
+    return Math.max(min, Math.min(max, Math.round(n)))
+  }
+
+  function normalizeQuickMode(value: any): QuickOrchestratorMode {
+    return value === 'storyboard' || value === 'batch_image' || value === 'product_workflow'
+      ? value
+      : 'product_workflow'
+  }
+
+  function pickQuickSize(value: any, fallback: string): string {
+    const v = String(value || '').trim()
+    if (v && isValidSizeValue(v)) return v
+    return fallback
+  }
+
+  function hasSpecificProductHint(inputText: string): boolean {
+    let residue = inputText
+      .replace(/[XxＸｘ]{2,}/g, '')
+      .replace(/[0-9０-９一二三四五六七八九十百千万]+/g, '')
+      .replace(/[，。！？、；：:,.!?;()\[\]（）【】"'“”‘’\s]/g, '')
+    const genericWords = [
+      '根据', '参考图', '上游图片', '图片节点', '前置图片', '生成', '制作', '创建', '输出',
+      '用户', '如果', '比如', '例如', '请', '帮我', '帮', '我', '的', '了', '和', '与', '及',
+      '为', '是', '在', '中', '里', '按', '用', '从', '对', '将', '把', '给',
+      '一套', '一组', '系列', '产品', '商品', '主体', '主图', '详情图', '长图', '分镜',
+      '图文', '批量', '方案', '工作流', '画布', '自动', '展开', '参考', '图片', '张',
+      '需要', '要求', '风格', '一致', '统一', '质感', '卖点', '使用场景', '场景', '突出',
+      '保持', '高端', '简洁', '专业', '电商', '商业', '白底', '背景', '比例', '竖图',
+      '横图', '高清', '清晰', '核心', '多张', '不同', '角度', '实景', '分别', '材质', '等'
+    ]
+    for (const word of genericWords) residue = residue.split(word).join('')
+    return residue.length >= 2
+  }
+
+  function compactQuickInput(inputText: string): string {
+    return inputText.replace(/\s+/g, ' ').trim()
+  }
+
+  function cleanRecognitionProductSummaryValue(value: string): string {
+    let text = compactQuickInput(value)
+      .replace(/\*\*/g, '')
+      .replace(/^[-\s]+/, '')
+      .replace(/^这是\s*/, '')
+      .replace(/产品[。.]?$/, '')
+      .replace(/^(疑似|可能是|大概是|看起来像|应该是)\s*/, '')
+      .replace(/^(一款|一台|一部|一个|一种|一组|一件|两部|两台|多个|多部|数个|若干)\s*/, '')
+      .replace(/[XxＸｘ]{2,}/g, '')
+    text = text.split(/[。；;\n，,]/)[0] || ''
+    text = text
+      .replace(/外观(类似|像|接近).*/g, '')
+      .replace(/(并排|并列|排列|展示|陈列|摆放|正面|背面|侧面|左侧|右侧|屏幕|画面|图片|照片|主体)/g, '')
+      .replace(/智能手机.*手机/g, '智能手机')
+      .replace(/[：:，,。；;、]/g, '')
+      .trim()
+    if (!text || /^(不确定|无法确定)$/.test(text) || text.length < 2 || text.length > 12) return ''
+    return text
+  }
+
+  function extractRecognitionProductSummaryField(recognitionText: string): string {
+    const source = String(recognitionText || '').trim()
+    if (!source) return ''
+    const normalized = source.replace(/\r/g, '').replace(/\*\*/g, '')
+    const matched = normalized.match(/(?:^|\n)\s*[-\s]*产品总结\s*[:：]\s*([^\n]+)/)
+    if (!matched?.[1]) return ''
+    const value = matched[1].trim()
+    if (!/^这是.+产品[。.]?$/.test(value)) return ''
+    const product = cleanRecognitionProductSummaryValue(value)
+    return product ? `产品总结：这是${product}产品。` : ''
+  }
+
+  function extractRecognitionProductType(summaryField: string): string {
+    const matched = String(summaryField || '').match(/产品总结\s*[:：]\s*这是(.+?)产品[。.]?$/)
+    return matched?.[1] ? cleanRecognitionProductSummaryValue(matched[1]) : ''
+  }
+
+  function createQuickPrompt(subject: string, styleAnchor: string, focus: string, useReferenceImages: boolean): string {
+    const referenceRule = useReferenceImages
+      ? `保持${subject}外观、结构、颜色、材质、比例和关键细节一致`
+      : `围绕用户需求中的主体进行创作`
+    return [
+      referenceRule,
+      styleAnchor,
+      focus
+    ].filter(Boolean).join('。')
+  }
+
+  function buildQuickFallbackPlan(mode: QuickOrchestratorMode, nodeData: Record<string, any>, useReferenceImages: boolean): QuickPlan {
+    const mainCount = clampNumber(nodeData.main_count, 1, 12, 4)
+    const detailCount = clampNumber(nodeData.detail_count, 0, 12, 3)
+    const count = clampNumber(nodeData.count, 1, 20, 4)
+    const productSubject = useReferenceImages ? '参考图中的产品主体' : '用户需求中的产品主体'
+    const generalSubject = useReferenceImages ? '参考图中的主体' : '用户需求中的主体'
+    const mainStyle = '统一商业摄影风格，背景简洁高级，光影柔和，主体清晰，系列画面保持一致'
+    const detailStyle = '图文结合的电商详情表达，版式干净，信息层级清楚，系列感一致'
+    const generalStyle = mode === 'storyboard'
+      ? '统一图文分镜视觉语言，画面连贯，构图清晰，节奏有层次'
+      : '统一视觉风格、色彩、光影和构图品质，同组图片保持系列感'
+    const mainFocus = [
+      '主视觉首图，主体居中或黄金构图，突出整体质感和清晰轮廓',
+      '不同角度的商业棚拍主图，强化光影层次和材质细节',
+      '生活化使用场景主图，氛围自然，突出产品价值和场景代入感',
+      '核心卖点氛围主图，通过道具、光线和留白突出高级感',
+      '组合陈列主图，主体稳定清晰，画面秩序感强',
+      '细节角度主图，强调局部质感和精致工艺',
+      '包装或配件展示主图，保持干净背景和统一调性',
+      '平台首图风格主图，主体醒目，背景克制，适合电商列表'
+    ]
+    const detailFocus = [
+      '图文结合的核心卖点详情图，围绕一个卖点组织画面与简洁信息层级',
+      '材质质感详情图，以图文结合形式突出局部纹理、边缘、接口或工艺质感',
+      '结构功能详情图，用干净版式展示关键部位和使用价值',
+      '使用流程或场景详情图，画面清晰易懂，适合详情页浏览',
+      '场景价值详情图，突出使用感受和购买理由',
+      '对比优势详情图，版式克制，重点明确',
+      '包装配件详情图，展示包装、配件或关键信息层级',
+      '系列调性延展详情图，强化统一色彩、光影和页面节奏'
+    ]
+    const generalFocus = mode === 'storyboard'
+      ? [
+          '第一张分镜建立主题和氛围，主体清晰，画面有开场感',
+          '第二张分镜展示核心动作、卖点或关键变化，信息更聚焦',
+          '第三张分镜转入使用场景或价值表达，增强代入感',
+          '第四张分镜形成收束画面，适合作为系列结尾或传播主视觉'
+        ]
+      : [
+          '基础主视觉方案，主体清晰，背景简洁，适合作为首图',
+          '场景化方案，强调氛围、使用价值和视觉代入感',
+          '细节质感方案，突出局部特征、光影和材质表现',
+          '差异构图方案，保持同一风格但改变角度、景别和空间关系'
+        ]
+    if (mode === 'product_workflow') {
+      const groups: QuickPlanGroup[] = [{
+        name: '主图',
+        type: 'main',
+        styleAnchor: mainStyle,
+        items: Array.from({ length: mainCount }, (_, index) => ({
+          title: `主图 ${index + 1}`,
+          prompt: createQuickPrompt(productSubject, mainStyle, mainFocus[index % mainFocus.length], useReferenceImages),
+          groupType: 'main',
+          useReferenceImages
+        }))
+      }]
+      if (detailCount > 0) {
+        groups.push({
+          name: '详情图',
+          type: 'detail',
+          styleAnchor: detailStyle,
+          items: Array.from({ length: detailCount }, (_, index) => ({
+            title: `详情图 ${index + 1}`,
+            prompt: createQuickPrompt(productSubject, detailStyle, detailFocus[index % detailFocus.length], useReferenceImages),
+            groupType: 'detail',
+            useReferenceImages
+          }))
+        })
+      }
+      return { groups }
+    }
+    return {
+      groups: [{
+        name: mode === 'storyboard' ? '图文分镜' : '批量生图',
+        type: 'general',
+        styleAnchor: generalStyle,
+        items: Array.from({ length: count }, (_, index) => ({
+          title: `${mode === 'storyboard' ? '分镜' : '图片'} ${index + 1}`,
+          prompt: createQuickPrompt(generalSubject, generalStyle, generalFocus[index % generalFocus.length], useReferenceImages),
+          groupType: 'general',
+          useReferenceImages
+        }))
+      }]
+    }
+  }
+
+  function buildQuickPlanPrompt(mode: QuickOrchestratorMode, inputText: string, nodeData: Record<string, any>, hasReference: boolean, recognitionProductSummaryField = ''): { system: string; user: string } {
+    const count = clampNumber(nodeData.count, 1, 20, 4)
+    const mainCount = clampNumber(nodeData.main_count, 1, 12, 4)
+    const detailCount = clampNumber(nodeData.detail_count, 0, 12, 3)
+    const modeLabel = mode === 'product_workflow' ? '商品图工作流' : mode === 'storyboard' ? '图文分镜' : '批量生图方案'
+    const recognitionProductType = extractRecognitionProductType(recognitionProductSummaryField)
+    const productRules = [
+      '商品图要求：根据用户需求和参考图编排主图与详情图；参考图只用于保持产品主体外观、结构、颜色、材质、比例和关键细节一致，不覆盖用户指定风格。',
+      '主图组默认用于从多种层面展示产品。',
+      '详情图组默认以详细的图文结合的电商详情表达为主。'
+    ].join('\n')
+    const system = [
+      '你是资深电商视觉编排和 AI 图像生成提示词工程师。',
+      '任务：把用户需求拆成可在画布中执行的图片生成方案。',
+      '只输出 JSON 对象，不要 Markdown 代码块、不要解释文字。',
+      '固定结构：{"groups":[{"name":"...","type":"main|detail|general","styleAnchor":"...","items":[{"title":"...","prompt":"...","useReferenceImages":true}]}]}',
+      'prompt 必须是完整中文生图提示词，可以直接给图像生成模型使用。',
+      'styleAnchor 是同组所有图片共用的一致性约束；每条 prompt 都要体现该组 styleAnchor。',
+      '用户需求和内部产品上下文只用于理解如何编排与设计提示词，不要把“产品总结”“用户需求补充”“用户需求与上游文本”“内部产品上下文”等字段名或整段原文复制进 prompt。',
+      hasReference && recognitionProductType ? '已连接参考图，并提供了内部产品类型。必须围绕该产品类型设计所有主图和详情图，避免输出“产品主体”这类通用占位描述；不得引用识图结果中的其他内容。' : '',
+      hasReference
+        ? recognitionProductType ? '' : '已连接参考图，但你不能看到图片内容。不要根据参考图猜测产品名称、品类、颜色、形状或材质；只有用户文本明确写出的产品信息才能写进 prompt。'
+        : '未连接参考图。不要声称已参考图片。',
+      hasReference ? '如果没有内部产品类型，完全忽略识图结果；最终 prompt 不要出现额外的识图说明文案。' : '',
+      mode === 'product_workflow' ? productRules : '同一组图片应保持统一视觉语言，但每张图的主体表达、构图或信息重点必须有差异。',
+      '每条 prompt 不超过 300 字，避免空泛词，不要输出尺寸字段。'
+    ].filter(Boolean).join('\n')
+    const user = [
+      `模式：${modeLabel}`,
+      mode === 'product_workflow'
+        ? `请生成 2 个分组：主图 main 共 ${mainCount} 张；详情图 detail 共 ${detailCount} 张。`
+        : `请生成 1 个 general 分组，共 ${count} 张。`,
+      '',
+      '用户需求与上游文本：',
+      inputText,
+      recognitionProductType ? ['', '内部产品上下文（仅用于提示词设计，不要原样输出字段）：', `参考图产品类型：${recognitionProductType}`].join('\n') : '',
+      '',
+      '只输出符合结构的 JSON。'
+    ].join('\n')
+    return { system, user }
+  }
+
+  function normalizeQuickItem(input: any, groupType: 'main' | 'detail' | 'general', index: number, fallbackPrompt: string, useReferenceImages: boolean): QuickPlanItem {
+    const title = String(input?.title || `${groupType === 'main' ? '主图' : groupType === 'detail' ? '详情图' : '图片'} ${index + 1}`).trim()
+    const prompt = cleanFinalQuickPrompt(String(input?.prompt || fallbackPrompt).trim(), fallbackPrompt)
+    return {
+      title,
+      prompt,
+      groupType,
+      useReferenceImages
+    }
+  }
+
+  function cleanFinalQuickPrompt(value: string, fallback: string): string {
+    const cleaned = String(value || '')
+      .replace(/\r/g, '')
+      .replace(/\n+/g, '。')
+      .replace(/识图节点产品总结字段\s*[:：]?\s*/g, '')
+      .replace(/产品总结\s*[:：]\s*这是[^。.!！？]*产品[。.]?/g, '')
+      .replace(/内部产品上下文\s*[（(][^）)]*[）)]\s*[:：]?\s*/g, '')
+      .replace(/参考图产品类型\s*[:：]\s*/g, '')
+      .replace(/参考图产品信息\s*[:：][^。.!！？]*[。.]?/g, '')
+      .replace(/参考图识别信息\s*[:：][^。.!！？]*[。.]?/g, '')
+      .replace(/用户需求补充\s*[:：][^。.!！？]*[。.]?/g, '')
+      .replace(/用户需求与上游文本\s*[:：]?\s*/g, '')
+      .replace(/根据参考图，产品是[^，。]*，生成一套产品的多张(?:电商)?主图，展现产品的不同角度和不同场景的实景[。.]?/g, '')
+      .replace(/根据参考图，生成一套产品的多张(?:电商)?主图，展现产品的不同角度和不同场景的实景[。.]?/g, '')
+      .replace(/多张(?:电商)?详情图，分别(?:使用图文的形式)?突出(?:产品的)?材质质感、卖点和使用场景等[。.]?/g, '')
+      .split('。')
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .join('。')
+      .replace(/。{2,}/g, '。')
+      .trim()
+    return cleaned || fallback
+  }
+
+  function normalizeQuickPlan(raw: any, mode: QuickOrchestratorMode, nodeData: Record<string, any>, hasReference: boolean): QuickPlan {
+    const parsedGroups = Array.isArray(raw?.groups) ? raw.groups : []
+    const useReferenceImages = (mode === 'product_workflow' || Boolean(nodeData.require_reference)) && hasReference
+    const findGroup = (type: 'main' | 'detail' | 'general') => parsedGroups.find((g: any) => g?.type === type)
+    const makeFallbackPrompt = (type: 'main' | 'detail' | 'general', index: number) => {
+      if (type === 'main') return createQuickPrompt(useReferenceImages ? '参考图中的产品主体' : '用户需求中的产品主体', '统一商业摄影风格，背景简洁高级，光影柔和，主体清晰，系列画面保持一致', `生成第 ${index + 1} 张电商主图，构图与其他主图有明显差异`, useReferenceImages)
+      if (type === 'detail') return createQuickPrompt(useReferenceImages ? '参考图中的产品主体' : '用户需求中的产品主体', '图文结合的电商详情表达，版式简洁清晰，信息层级明确', `生成第 ${index + 1} 张详情图，清晰展示一个核心卖点或功能细节`, useReferenceImages)
+      return createQuickPrompt(useReferenceImages ? '参考图中的主体' : '用户需求中的主体', '统一视觉风格、色彩、光影和构图品质，同组图片保持系列感', `生成第 ${index + 1} 张图片方案，保持同组风格一致，同时在构图、场景或卖点上与其他图片形成差异`, useReferenceImages)
+    }
+    const buildGroup = (type: 'main' | 'detail' | 'general', count: number, name: string): QuickPlanGroup => {
+      const source = findGroup(type) || (type === 'general' ? parsedGroups[0] : null) || {}
+      const rawItems = Array.isArray(source.items) ? source.items : []
+      const styleAnchor = String(source.styleAnchor || (
+        type === 'main'
+          ? '统一商业摄影风格，产品外观与参考图一致，背景简洁高级，光影柔和，质感清晰'
+          : type === 'detail'
+            ? '图文结合的电商详情表达，产品外观与主图一致，版式简洁清晰'
+            : '统一视觉风格、色彩、光影和构图品质，同组图片保持系列感'
+      )).trim()
+      const items: QuickPlanItem[] = []
+      for (let i = 0; i < count; i++) {
+        const fallbackPrompt = `${styleAnchor}。${makeFallbackPrompt(type, i)}`
+        items.push(normalizeQuickItem(rawItems[i], type, i, fallbackPrompt, useReferenceImages))
+      }
+      return { name, type, styleAnchor, items }
+    }
+    if (mode === 'product_workflow') {
+      const mainCount = clampNumber(nodeData.main_count, 1, 12, 4)
+      const detailCount = clampNumber(nodeData.detail_count, 0, 12, 3)
+      const groups = [buildGroup('main', mainCount, '主图')]
+      if (detailCount > 0) groups.push(buildGroup('detail', detailCount, '详情图'))
+      return { groups }
+    }
+    return { groups: [buildGroup('general', clampNumber(nodeData.count, 1, 20, 4), mode === 'storyboard' ? '图文分镜' : '批量生图')] }
+  }
+
+  function formatQuickPlan(plan: QuickPlan): string {
+    return plan.groups.map((group) => [
+      `${group.name}（${group.items.length} 张）`,
+      ...group.items.map((item, index) => `${index + 1}. ${item.title}\n${item.prompt}`)
+    ].join('\n')).join('\n\n')
+  }
+
+  async function generateQuickPlan(node: any, projectId: string, upstream: UpstreamData): Promise<{ plan: QuickPlan; outputContent: string }> {
+    const canvasStore = useCanvasStore()
+    const project = canvasStore.currentProject
+    if (!project?.text_provider_id || !project?.text_model_id) throw new Error('请先在画布设置中配置文本模型')
+    if (!project?.image_provider_id || !project?.image_model_id) throw new Error('请先在画布设置中配置生图模型')
+    const mode = normalizeQuickMode(node.data.mode)
+    const inputText = [node.data.instruction || '', ...upstream.demandTexts].map((v) => String(v || '').trim()).filter(Boolean).join('\n\n')
+    const recognitionText = upstream.recognitionTexts.map((v) => String(v || '').trim()).filter(Boolean).join('\n\n')
+    const recognitionProductSummaryField = extractRecognitionProductSummaryField(recognitionText)
+    const recognitionProductType = extractRecognitionProductType(recognitionProductSummaryField)
+    if (!inputText) throw new Error('快捷编排需要需求文本：请填写需求或连接上游文本节点')
+    const referenceRequired = mode === 'product_workflow' || Boolean(node.data.require_reference)
+    const referenceSources = getUpstreamImageSources(node.id, projectId)
+    if (referenceRequired && referenceSources.length === 0) {
+      throw new Error('当前快捷模式需要可用参考图：请先连接参考图节点或上游图片结果，并确保节点内已有图片')
+    }
+    const willUseReference = referenceRequired && referenceSources.length > 0
+    const quickFallback = buildQuickFallbackPlan(mode, node.data, willUseReference)
+    const hasProductContext = hasSpecificProductHint(inputText) || Boolean(recognitionProductType)
+    if (willUseReference && !hasProductContext) {
+      return { plan: quickFallback, outputContent: formatQuickPlan(quickFallback) }
+    }
+    let plan = quickFallback
+    try {
+      const { system, user } = buildQuickPlanPrompt(mode, inputText, node.data, willUseReference, recognitionProductSummaryField)
+      const raw: string = await api().llm.invoke('call', project.text_provider_id, project.text_model_id, [
+        { role: 'system', content: system },
+        { role: 'user', content: user }
+      ], {
+        stream: true,
+        notifyStream: false,
+        max_tokens: 3000,
+        timeoutMs: 180000
+      })
+      const parsed = extractJson<any>(raw, { expect: 'object' })
+      plan = normalizeQuickPlan(parsed, mode, node.data, willUseReference)
+    } catch (err) {
+      if (hasProductContext) {
+        const reason = err instanceof Error ? err.message : String(err || '')
+        throw new Error(`快捷编排模型生成方案失败，请检查文本模型配置或稍后重试${reason ? `：${reason}` : ''}`)
+      }
+      console.warn('[Canvas] 快捷编排生成方案失败，使用本地快速方案:', err)
+    }
+    return { plan, outputContent: formatQuickPlan(plan) }
+  }
+
+  async function expandQuickPlanToCanvas(node: any, projectId: string, plan: QuickPlan): Promise<{ nodeIds: string[]; edgeIds: string[] }> {
+    const canvasStore = useCanvasStore()
+    const project = canvasStore.currentProject
+    if (!project?.image_provider_id || !project?.image_model_id) throw new Error('请先在画布设置中配置生图模型')
+    const referenceSources = getUpstreamImageSources(node.id, projectId)
+    const createdNodeIds: string[] = []
+    const createdEdgeIds: string[] = []
+    const baseX = (node.position_x || 0) + 360
+    let cursorY = node.position_y || 0
+    const textX = baseX
+    const imageX = baseX + 330
+    const rowGap = 260
+    const groupGap = 120
+    const mode = normalizeQuickMode(node.data.mode)
+    const mainSize = pickQuickSize(node.data.main_size, '1:1')
+    const detailSize = pickQuickSize(node.data.detail_size, '4:5')
+    const commonSize = pickQuickSize(node.data.size, '1:1')
+    const tier = String(node.data.tier_id || DEFAULT_TIER_ID)
+    const quality = ['auto', 'standard', 'hd'].includes(String(node.data.quality || '')) ? String(node.data.quality) : 'auto'
+    const detailConsistencyEnabled = mode === 'product_workflow' && Boolean(node.data.detail_consistency_enabled)
+    try {
+      for (const group of plan.groups) {
+        let previousDetailImageNodeId = ''
+        for (let i = 0; i < group.items.length; i++) {
+          const item = group.items[i]
+          const y = cursorY + i * rowGap
+          const textNode = await canvasStore.addNode(projectId, {
+            type: 'textInput',
+            position_x: textX,
+            position_y: y,
+            data: {
+              text: item.prompt,
+              label: item.title
+            }
+          })
+          createdNodeIds.push(textNode.id)
+          const size = mode === 'product_workflow'
+            ? item.groupType === 'detail' ? detailSize : mainSize
+            : commonSize
+          const imageNode = await canvasStore.addNode(projectId, {
+            type: 'text2img',
+            position_x: imageX,
+            position_y: y,
+            data: {
+              model_provider_id: project.image_provider_id,
+              model_id: project.image_model_id,
+              size,
+              tier_id: tier,
+              quality,
+              style_anchor: group.styleAnchor,
+              quick_group_type: group.type,
+              status: 'idle',
+              generation_id: '',
+              result_path: ''
+            }
+          })
+          createdNodeIds.push(imageNode.id)
+          const textEdge = await canvasStore.addEdge(projectId, {
+            source_node_id: textNode.id,
+            source_handle: 'output',
+            target_node_id: imageNode.id,
+            target_handle: 'text-input'
+          })
+          createdEdgeIds.push(textEdge.id)
+          if (item.useReferenceImages) {
+            for (const ref of referenceSources) {
+              const refEdge = await canvasStore.addEdge(projectId, {
+                source_node_id: ref.nodeId,
+                source_handle: ref.handle,
+                target_node_id: imageNode.id,
+                target_handle: 'image-input'
+              })
+              createdEdgeIds.push(refEdge.id)
+            }
+          }
+          if (detailConsistencyEnabled && item.groupType === 'detail' && previousDetailImageNodeId) {
+            const detailConsistencyEdge = await canvasStore.addEdge(projectId, {
+              source_node_id: previousDetailImageNodeId,
+              source_handle: 'output',
+              target_node_id: imageNode.id,
+              target_handle: 'image-input'
+            })
+            createdEdgeIds.push(detailConsistencyEdge.id)
+          }
+          if (detailConsistencyEnabled && item.groupType === 'detail') {
+            previousDetailImageNodeId = imageNode.id
+          }
+        }
+        cursorY += Math.max(1, group.items.length) * rowGap + groupGap
+      }
+      return { nodeIds: createdNodeIds, edgeIds: createdEdgeIds }
+    } catch (err) {
+      for (const id of [...createdNodeIds].reverse()) {
+        try { await canvasStore.removeNode(id) } catch {}
+      }
+      throw err
+    }
+  }
+
   async function executeNode(nodeId: string, projectId: string): Promise<void> {
     const canvasStore = useCanvasStore()
     const node = canvasStore.nodes.find((n) => n.id === nodeId)
@@ -224,6 +723,32 @@ export function useWorkflowEngine() {
       case 'promptSlice':
         // Prompt slice nodes don't need execution, they already have data
         break
+
+      case 'quickOrchestrator': {
+        const existingCreated = Array.isArray(node.data.created_node_ids) ? node.data.created_node_ids : []
+        if (existingCreated.length > 0 && node.data.status === 'done') break
+        await canvasStore.updateNode(nodeId, {
+          data: { ...node.data, status: 'running', error: '', outputContent: '' }
+        })
+        const { plan, outputContent } = await generateQuickPlan(node, projectId, upstream)
+        const expanded = await expandQuickPlanToCanvas(node, projectId, plan)
+        await canvasStore.updateNode(nodeId, {
+          data: {
+            ...node.data,
+            outputContent,
+            plan_json: plan,
+            created_node_ids: expanded.nodeIds,
+            created_edge_ids: expanded.edgeIds,
+            status: 'done',
+            error: ''
+          }
+        })
+        const project = canvasStore.currentProject
+        if (project?.text_provider_id && project?.text_model_id) {
+          await recordUsage('chat', project.text_provider_id, project.text_model_id)
+        }
+        break
+      }
 
       case 'aiText': {
         const inputText = upstream.texts.join('\n') || node.data.text || ''
@@ -483,6 +1008,82 @@ export function useWorkflowEngine() {
         }
         if (!resultText) {
           throw new Error('反推未返回结果：可能是模型不支持图像输入或上游服务异常')
+        }
+
+        await canvasStore.updateNode(nodeId, {
+          data: { ...node.data, status: 'done', result: resultText }
+        })
+        await recordUsage('vision', visionProviderId, visionModelId)
+        break
+      }
+
+      case 'imageRecognition': {
+        if (!upstream.images.length) {
+          throw new Error('识图节点需要上游图像：请连接参考图、生图节点或图片结果节点')
+        }
+
+        const project = canvasStore.currentProject
+        const visionProviderId = node.data.vision_provider_id || project?.vision_provider_id || ''
+        const visionModelId = node.data.vision_model_id || project?.vision_model_id || ''
+        if (!visionProviderId || !visionModelId) {
+          throw new Error('请在节点上选择视觉模型，或在画布设置中配置默认视觉模型')
+        }
+
+        await canvasStore.updateNode(nodeId, {
+          data: { ...node.data, status: 'running' }
+        })
+
+        const firstImage = upstream.images[0]
+        const refImageData = await resolveRefImages([firstImage])
+        const failedRefRec = (refImageData as any).__failedCount || 0
+        if (refImageData.length === 0) {
+          throw new Error('参考图读取失败：请检查上游节点是否仍保留文件')
+        }
+        if (failedRefRec > 0) {
+          refImageWarnings.value = [
+            ...refImageWarnings.value,
+            { nodeId, failed: failedRefRec, total: 1 }
+          ]
+        }
+
+        let compressedImage: string
+        try {
+          compressedImage = await compressImage(refImageData[0])
+        } catch (e: any) {
+          throw new Error(`参考图压缩失败：${e?.message || e}`)
+        }
+
+        const messages = [
+          {
+            role: 'system',
+            content: '你是图片内容识别助手。请只基于图片可见内容，客观说明图片是什么、有哪些主要对象、可见文字、场景背景、颜色、材质和明显细节。不要反推生图提示词，不要创作，不要补充不可见信息；无法确定的内容标注为“不确定”。最后必须单独输出一行固定字段“产品总结：这是XXX产品。”，XXX 只写最简短的产品品类；如果无法判断产品品类，输出“产品总结：这是不确定产品。”。使用中文，分点简洁输出。'
+          },
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: '请识别这张图片里的内容：主体是什么、有哪些物体或文字、场景或背景、明显颜色和细节。最后单独给出“产品总结：这是XXX产品。”字段。' },
+              { type: 'image_url', image_url: { url: compressedImage } }
+            ]
+          }
+        ]
+
+        const result = await api().llm.invoke(
+          'call',
+          visionProviderId,
+          visionModelId,
+          messages
+        )
+
+        let resultText = ''
+        if (typeof result === 'string') {
+          resultText = result.trim()
+        } else if (result?.content) {
+          resultText = String(result.content).trim()
+        } else {
+          resultText = String(result || '').trim()
+        }
+        if (!resultText) {
+          throw new Error('识图未返回结果：可能是模型不支持图像输入或上游服务异常')
         }
 
         await canvasStore.updateNode(nodeId, {

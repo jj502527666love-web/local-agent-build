@@ -136,7 +136,7 @@ export const coreToolDefs = [
         properties: {
           command: { type: 'string', description: '要执行的命令' },
           cwd: { type: 'string', description: '工作目录（可选，默认当前对话工作区；相对路径相对工作区解析）' },
-          timeout: { type: 'number', description: '超时毫秒数（可选，默认120000）' }
+          timeout: { type: 'number', description: '超时毫秒数（可选，默认180000）' }
         },
         required: ['command']
       }
@@ -249,9 +249,12 @@ const FILE_OPS_IMPL = `try {
     case 'tree': {
       const base = fs.wsResolve(p)
       const result = []
+      const maxEntries = 500
       const walk = (dir, prefix) => {
+        if (result.length >= maxEntries) return
         const items = fs.listDir(dir)
         items.forEach((item, i) => {
+          if (result.length >= maxEntries) return
           const isLast = i === items.length - 1
           const connector = isLast ? '└── ' : '├── '
           const sizeStr = item.isDirectory ? '' : ' (' + item.size + 'B)'
@@ -260,14 +263,14 @@ const FILE_OPS_IMPL = `try {
         })
       }
       walk(p, '')
-      return { tree: result.join('\\n'), count: result.length, path: base }
+      return { tree: result.join('\\n'), count: result.length, truncated: result.length >= maxEntries, path: base }
     }
     default: return { error: '未知操作: ' + args.action }
   }
 } catch (e) { return { error: e.message } }`
 
 const RUN_COMMAND_IMPL = `try {
-  const timeout = args.timeout || 120000
+  const timeout = args.timeout || 180000
   const result = shell.execStructured(args.command, { cwd: args.cwd, timeout })
   return result
 } catch (e) {
@@ -288,6 +291,8 @@ export interface ToolExecContext {
   conversationId?: string
   /** 主窗口引用（用于进度事件转发到 renderer） */
   window?: BrowserWindow | null
+  signal?: AbortSignal
+  timeoutMs?: number
 }
 
 export async function executeCoreToolCall(
@@ -333,12 +338,15 @@ export async function executeCoreToolCall(
       }
     }
     backupBeforeWrite(args, sandboxDir)
-    const result = await executeSkillSandbox(FILE_OPS_IMPL, args, sandboxDir)
+    const result = await executeSkillSandbox(FILE_OPS_IMPL, args, sandboxDir, execContext?.timeoutMs)
     const payload = result.success ? result.result : { error: result.error }
     return { handled: true, result: withWorkspace(payload, sandboxDir) }
   }
   if (functionName === 'run_command') {
-    const result = await executeSkillSandbox(RUN_COMMAND_IMPL, args, sandboxDir)
+    const requestedTimeout = Number(args?.timeout) || 180000
+    const maxTimeout = execContext?.timeoutMs || 180000
+    const commandArgs = { ...args, timeout: Math.max(1, Math.min(requestedTimeout, maxTimeout)) }
+    const result = await executeSkillSandbox(RUN_COMMAND_IMPL, commandArgs, sandboxDir, maxTimeout)
     const payload = result.success ? result.result : { error: result.error }
     return { handled: true, result: withWorkspace(payload, sandboxDir) }
   }
@@ -347,7 +355,7 @@ export async function executeCoreToolCall(
     return { handled: true, result: withWorkspace(result, sandboxDir) }
   }
   if (KB_TOOL_NAMES.includes(functionName)) {
-    const result = await executeKbTool(functionName, args, kbContext)
+    const result = await executeKbTool(functionName, args, kbContext, execContext?.signal)
     return { handled: true, result }
   }
   return { handled: false }
@@ -382,7 +390,8 @@ function describeKnowledgeBase(kb: KnowledgeBase): { name: string; status: strin
 async function executeKbTool(
   functionName: string,
   args: any,
-  kbContext?: KbToolContext
+  kbContext?: KbToolContext,
+  signal?: AbortSignal
 ): Promise<any> {
   const enabledIds = kbContext?.kbCategoryIds || []
   if (enabledIds.length === 0) {
@@ -457,7 +466,7 @@ async function executeKbTool(
 
     let queryEmbed: { embedding: number[] }
     try {
-      queryEmbed = await embedText(query)
+      queryEmbed = await embedText(query, { signal })
     } catch (e: any) {
       if (e instanceof EmbeddingUnavailableError) {
         return { error: `向量服务不可用 (${e.code}): ${e.message}` }

@@ -320,12 +320,14 @@ import { useWorkflowEngine } from './composables/useWorkflowEngine'
 
 import TextInputNode from './nodes/TextInputNode.vue'
 import AiTextNode from './nodes/AiTextNode.vue'
+import QuickOrchestratorNode from './nodes/QuickOrchestratorNode.vue'
 import Text2ImgNode from './nodes/Text2ImgNode.vue'
 import Img2ImgNode from './nodes/Img2ImgNode.vue'
 import RefImageNode from './nodes/RefImageNode.vue'
 import ImageResultNode from './nodes/ImageResultNode.vue'
 import PromptSliceNode from './nodes/PromptSliceNode.vue'
 import ReverseNode from './nodes/ReverseNode.vue'
+import ImageRecognitionNode from './nodes/ImageRecognitionNode.vue'
 import MattingNode from './nodes/MattingNode.vue'
 import DeletableEdge from './edges/DeletableEdge.vue'
 import HandleCreateMenu from './components/HandleCreateMenu.vue'
@@ -378,7 +380,9 @@ const currentLayoutDir = computed<'LR' | 'TB'>(() =>
 const customNodeTypes: Record<string, any> = {
   textInput: markRaw(TextInputNode),
   aiText: markRaw(AiTextNode),
+  quickOrchestrator: markRaw(QuickOrchestratorNode),
   reverse: markRaw(ReverseNode),
+  imageRecognition: markRaw(ImageRecognitionNode),
   matting: markRaw(MattingNode),
   text2img: markRaw(Text2ImgNode),
   img2img: markRaw(Img2ImgNode),
@@ -391,6 +395,7 @@ const customEdgeTypes: Record<string, any> = {
 }
 
 const nodeTypes: NodeTypeDef[] = NODE_TYPE_DEFS
+const QUICK_PRODUCT_DEFAULT_INSTRUCTION = '根据参考图，产品是XXXXXX，生成一套产品的多张电商主图，展现产品的不同角度和不同场景的实景。多张电商详情图，分别使用图文的形式突出产品的材质质感、卖点和使用场景等。'
 
 // Settings — unified model grouping via shared util
 const hintsTick = ref(0)
@@ -803,7 +808,7 @@ async function onHandleMenuCreate(newType: string) {
     position_y: y,
     width: 240,
     height: 0,
-    data: {}
+    data: getDefaultNodeData(newType)
   })
 
   await canvasStore.addEdge(projectId.value, {
@@ -1110,6 +1115,26 @@ function getDefaultNodeData(type: string): Record<string, any> {
   switch (type) {
     case 'textInput': return { text: '' }
     case 'aiText': return { text: '', result: '', status: 'idle' }
+    case 'quickOrchestrator': return {
+      mode: 'product_workflow',
+      instruction: QUICK_PRODUCT_DEFAULT_INSTRUCTION,
+      count: 4,
+      main_count: 4,
+      detail_count: 3,
+      size: '1:1',
+      main_size: '1:1',
+      detail_size: '4:5',
+      tier_id: '2k',
+      quality: 'auto',
+      require_reference: false,
+      detail_consistency_enabled: false,
+      outputContent: '',
+      plan_json: null,
+      created_node_ids: [],
+      created_edge_ids: [],
+      status: 'idle',
+      error: ''
+    }
     // 图片反推：默认 general / cn；vision_* 留空表示走画布设置默认视觉模型
     case 'reverse': return {
       vision_provider_id: '',
@@ -1117,6 +1142,13 @@ function getDefaultNodeData(type: string): Record<string, any> {
       style_preset: 'general',
       output_lang: 'cn',
       custom_prompt: '',
+      result: '',
+      status: 'idle',
+      error: ''
+    }
+    case 'imageRecognition': return {
+      vision_provider_id: '',
+      vision_model_id: '',
       result: '',
       status: 'idle',
       error: ''

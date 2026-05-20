@@ -23,9 +23,9 @@ export const RUNTIME_DATA_FIELDS = new Set<string>([
   // 磁盘路径 / base64
   'image_path', 'image_data', 'result_path', 'result_url',
   // AI 输出
-  'result',
+  'result', 'outputContent', 'plan_json',
   // 运行态
-  'status', 'error', 'ref_image_count', 'locked', 'generation_id',
+  'status', 'error', 'ref_image_count', 'locked', 'generation_id', 'created_node_ids', 'created_edge_ids',
   // 上下文标识（导入时由 main 重新生成）
   'nodeId', 'projectId',
 ])
@@ -98,6 +98,14 @@ export function freshRuntimeFields(
       base.result = ''
       base.status = 'idle'
       break
+    case 'quickOrchestrator':
+      base.outputContent = ''
+      base.plan_json = null
+      base.created_node_ids = []
+      base.created_edge_ids = []
+      base.status = 'idle'
+      base.error = ''
+      break
     case 'text2img':
     case 'img2img':
       base.status = 'idle'
@@ -116,6 +124,11 @@ export function freshRuntimeFields(
     case 'reverse':
       // 反推产物是运行态，导入时重置；用户配置（vision_*、style_preset、output_lang、custom_prompt）
       // 不在 RUNTIME_DATA_FIELDS 黑名单里，会通过 stripRuntimeFields 自动保留
+      base.result = ''
+      base.status = 'idle'
+      base.error = ''
+      break
+    case 'imageRecognition':
       base.result = ''
       base.status = 'idle'
       base.error = ''

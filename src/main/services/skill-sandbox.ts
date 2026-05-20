@@ -9,7 +9,7 @@ export interface SkillExecutionResult {
   duration: number
 }
 
-const TIMEOUT_MS = 30000
+const DEFAULT_TIMEOUT_MS = 180000
 
 const DANGEROUS_PATTERNS = [
   /rm\s+(-rf?|--recursive)\s+[\/\\]/i,
@@ -110,13 +110,21 @@ function resolveShellCwd(cwd: string | undefined, sandboxRoot?: string): string 
   return resolveInWorkspace(cwd, sandboxRoot)
 }
 
-function createShellOps(sandboxRoot?: string) {
+function resolveTimeout(timeoutMs?: number): number {
+  return Number.isFinite(timeoutMs) && Number(timeoutMs) > 0
+    ? Math.max(1, Math.floor(Number(timeoutMs)))
+    : DEFAULT_TIMEOUT_MS
+}
+
+function createShellOps(sandboxRoot?: string, timeoutMs?: number) {
+  const defaultTimeout = resolveTimeout(timeoutMs)
   return {
     exec: (cmd: string, options?: { cwd?: string; timeout?: number }) => {
       validateCommand(cmd)
+      const requestedTimeout = resolveTimeout(options?.timeout)
       const result = execSync(cmd, {
         cwd: resolveShellCwd(options?.cwd, sandboxRoot),
-        timeout: options?.timeout || 120000,
+        timeout: Math.max(1, Math.min(requestedTimeout, defaultTimeout)),
         encoding: 'utf-8',
         maxBuffer: 1024 * 1024
       })
@@ -125,9 +133,10 @@ function createShellOps(sandboxRoot?: string) {
     execStructured: (cmd: string, options?: { cwd?: string; timeout?: number }) => {
       validateCommand(cmd)
       try {
+        const requestedTimeout = resolveTimeout(options?.timeout)
         const stdout = execSync(cmd, {
           cwd: resolveShellCwd(options?.cwd, sandboxRoot),
-          timeout: options?.timeout || 120000,
+          timeout: Math.max(1, Math.min(requestedTimeout, defaultTimeout)),
           encoding: 'utf-8',
           maxBuffer: 2 * 1024 * 1024,
           stdio: ['pipe', 'pipe', 'pipe']
@@ -153,13 +162,16 @@ function createShellOps(sandboxRoot?: string) {
 export async function executeSkillSandbox(
   implementation: string,
   args: Record<string, any>,
-  sandboxRoot?: string
+  sandboxRoot?: string,
+  timeoutMs?: number
 ): Promise<SkillExecutionResult> {
   const t0 = Date.now()
+  let timer: ReturnType<typeof setTimeout> | undefined
 
   try {
     const fileOps = createFileOps(sandboxRoot)
-    const shellOps = createShellOps(sandboxRoot)
+    const executionTimeout = resolveTimeout(timeoutMs)
+    const shellOps = createShellOps(sandboxRoot, executionTimeout)
 
     const wrappedCode = `
       return (async function(args, fetch, AbortSignal, crypto, fs, shell) {
@@ -171,9 +183,9 @@ export async function executeSkillSandbox(
 
     const resultPromise = fn(args, globalThis.fetch, globalThis.AbortSignal, globalThis.crypto, fileOps, shellOps)
 
-    const timeoutPromise = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error(`执行超时 (${TIMEOUT_MS}ms)`)), TIMEOUT_MS)
-    )
+    const timeoutPromise = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`执行超时 (${executionTimeout}ms)`)), executionTimeout)
+    })
 
     const result = await Promise.race([resultPromise, timeoutPromise])
     const duration = Date.now() - t0
@@ -182,5 +194,7 @@ export async function executeSkillSandbox(
   } catch (err: any) {
     const duration = Date.now() - t0
     return { success: false, error: err.message || String(err), duration }
+  } finally {
+    if (timer) clearTimeout(timer)
   }
 }

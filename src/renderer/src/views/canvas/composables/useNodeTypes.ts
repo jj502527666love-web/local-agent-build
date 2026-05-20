@@ -23,6 +23,16 @@ export const NODE_TYPE_DEFS: NodeTypeDef[] = [
     outputs: [{ handle: 'output', dataType: 'text' }]
   },
   {
+    type: 'quickOrchestrator',
+    label: '快捷编排',
+    color: '#7c3aed',
+    inputs: [
+      { handle: 'text-input', dataType: 'text', required: false },
+      { handle: 'image-input', dataType: 'image', required: false }
+    ],
+    outputs: [{ handle: 'output', dataType: 'text' }]
+  },
+  {
     type: 'text2img',
     label: '文生图',
     color: '#f59e0b',
@@ -71,6 +81,13 @@ export const NODE_TYPE_DEFS: NodeTypeDef[] = [
     type: 'reverse',
     label: '图片反推',
     color: '#14b8a6',
+    inputs: [{ handle: 'image-input', dataType: 'image', required: true }],
+    outputs: [{ handle: 'output', dataType: 'text' }]
+  },
+  {
+    type: 'imageRecognition',
+    label: '识图',
+    color: '#0ea5e9',
     inputs: [{ handle: 'image-input', dataType: 'image', required: true }],
     outputs: [{ handle: 'output', dataType: 'text' }]
   },

@@ -65,6 +65,8 @@ const MODEL_CONTEXT_LIMITS: { match: RegExp; total: number }[] = [
 
 const DEFAULT_TOTAL_CONTEXT = 32_000
 const RESPONSE_RESERVE_RATIO = 0.25
+const AGENT_TURN_TIMEOUT_MS = 180_000
+const MAX_TOOL_RESULT_CHARS = 12_000
 
 function getModelPromptBudget(modelId: string): number {
   const id = String(modelId || '')
@@ -82,10 +84,10 @@ export function cancelChat(conversationId: string): boolean {
   ctrl.abort()
   activeControllers.delete(conversationId)
   // Reject any pending approvals for this conversation
-  for (const [reqId, ctx] of pendingApprovals) {
+  for (const [, ctx] of pendingApprovals) {
     if (ctx.conversationId === conversationId) {
+      ctx.cleanup()
       ctx.resolve(false)
-      pendingApprovals.delete(reqId)
     }
   }
   return true
@@ -99,6 +101,7 @@ export function isChatActive(conversationId: string): boolean {
 interface PendingApproval {
   conversationId: string
   resolve: (approved: boolean) => void
+  cleanup: () => void
 }
 const pendingApprovals = new Map<string, PendingApproval>()
 
@@ -107,13 +110,8 @@ const DESTRUCTIVE_FILE_OPS = new Set(['write', 'append', 'mkdir', 'delete', 'cop
 function isDestructiveTool(name: string, args: any): boolean {
   if (name === 'run_command') return true
   if (name === 'file_ops') return DESTRUCTIVE_FILE_OPS.has(args?.action)
-  // user skills run arbitrary JS - treat as destructive
-  // MCP tools - treat as destructive (we cannot know their side effects)
-  if (name && !['use_skill', 'image_gen'].includes(name)) {
-    // Anything except prompt skill loading and image gen is potentially side-effectful;
-    // image_gen only writes to workspace/images which is user-expected.
-    return false // explicit list above; everything else is non-destructive by default
-  }
+  if (name === 'use_skill' || name === 'image_gen' || KB_TOOL_NAMES.includes(name)) return false
+  if (name) return true
   return false
 }
 
@@ -133,14 +131,26 @@ function requestToolApproval(
 ): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
     const requestId = uuid()
-    pendingApprovals.set(requestId, { conversationId, resolve })
+    const cleanup = () => {
+      pendingApprovals.delete(requestId)
+      signal.removeEventListener('abort', onAbort)
+      clearTimeout(timer)
+    }
     const onAbort = () => {
       const ctx = pendingApprovals.get(requestId)
       if (ctx) {
-        pendingApprovals.delete(requestId)
+        cleanup()
         ctx.resolve(false)
       }
     }
+    const timer = setTimeout(() => {
+      const ctx = pendingApprovals.get(requestId)
+      if (ctx) {
+        cleanup()
+        ctx.resolve(false)
+      }
+    }, AGENT_TURN_TIMEOUT_MS)
+    pendingApprovals.set(requestId, { conversationId, resolve, cleanup })
     if (signal.aborted) {
       onAbort()
       return
@@ -156,7 +166,7 @@ function requestToolApproval(
       })
     } else {
       // No window to ask: fail closed
-      pendingApprovals.delete(requestId)
+      cleanup()
       resolve(false)
     }
   })
@@ -165,7 +175,7 @@ function requestToolApproval(
 export function respondToolApproval(requestId: string, approved: boolean): boolean {
   const ctx = pendingApprovals.get(requestId)
   if (!ctx) return false
-  pendingApprovals.delete(requestId)
+  ctx.cleanup()
   ctx.resolve(approved)
   return true
 }
@@ -231,12 +241,12 @@ function splitIntoChunks(text: string, chunkSize: number, overlap: number): stri
   return chunks
 }
 
-async function retrieveRelevantChunks(docText: string, query: string, docName: string): Promise<string> {
+async function retrieveRelevantChunks(docText: string, query: string, docName: string, signal?: AbortSignal): Promise<string> {
   const chunks = splitIntoChunks(docText, DOC_CHUNK_SIZE, DOC_CHUNK_OVERLAP)
   if (chunks.length === 0) return docText
 
-  const queryResult = await embedText(query)
-  const chunkResults = await embedBatch(chunks)
+  const queryResult = await embedText(query, { signal })
+  const chunkResults = await embedBatch(chunks, undefined, { signal })
 
   const scored = chunks.map((chunk, i) => ({
     chunk,
@@ -252,6 +262,11 @@ async function retrieveRelevantChunks(docText: string, query: string, docName: s
     count++
   }
   return `(${docName}: ${chunks.length} chunks, showing top ${count} relevant)\n\n${result}`
+}
+
+function limitToolResult(resultStr: string): string {
+  if (resultStr.length <= MAX_TOOL_RESULT_CHARS) return resultStr
+  return resultStr.slice(0, MAX_TOOL_RESULT_CHARS) + `\n...[tool result truncated, ${resultStr.length} chars total]`
 }
 
 function estimateTokens(text: string): number {
@@ -417,6 +432,27 @@ export async function sendMessage(
     attachments: normalizedAttachments
   })
 
+  const prevCtrl = activeControllers.get(options.conversationId)
+  if (prevCtrl) prevCtrl.abort()
+  const abortController = new AbortController()
+  activeControllers.set(options.conversationId, abortController)
+  const signal = abortController.signal
+  const agentTurnDeadline = Date.now() + AGENT_TURN_TIMEOUT_MS
+  let agentTurnTimedOut = false
+  const agentTurnTimer = setTimeout(() => {
+    agentTurnTimedOut = true
+    abortController.abort()
+  }, AGENT_TURN_TIMEOUT_MS)
+  const emitStream = (payload: Record<string, any>): void => {
+    if (!window) return
+    window.webContents.send('chat:stream', {
+      ...payload,
+      conversationId: options.conversationId
+    })
+  }
+  const getRemainingAgentTurnMs = (): number => Math.max(1, agentTurnDeadline - Date.now())
+
+  try {
   // Build message history
   const history = getMessages(options.conversationId)
   const imageAttachmentRefs = collectImageAttachmentRefs(history)
@@ -557,7 +593,7 @@ export async function sendMessage(
         const enhancedQuery = historyContext
           ? `${historyContext}\nQ: ${options.content}`
           : options.content
-        const queryEmbed = await embedText(enhancedQuery)
+        const queryEmbed = await embedText(enhancedQuery, { signal })
         const results = searchHybrid(queryEmbed.embedding, options.content, kbIds, 5, 0.3)
 
         if (results.length > 0) {
@@ -599,6 +635,7 @@ export async function sendMessage(
         }
       }
     } catch (e: any) {
+      if (signal.aborted) throw new AbortedError()
       // 静默失败会让用户误以为"模型在用知识库实际没用"。把失败原因通过 system 告诉模型，让它能向用户澄清。
       console.log(`[chat] RAG retrieval failed: ${e.message}`)
       messages.push({
@@ -664,8 +701,9 @@ export async function sendMessage(
               // Large doc: try RAG retrieval, fallback to truncation
               let docText: string
               try {
-                docText = await retrieveRelevantChunks(att.data, msg.content, att.name)
-              } catch {
+                docText = await retrieveRelevantChunks(att.data, msg.content, att.name, signal)
+              } catch (e) {
+                if (signal.aborted) throw e
                 docText = att.data.slice(0, MAX_DOC_CHARS) + `\n...(truncated, ${att.data.length} chars total)`
               }
               contentParts.push({ type: 'text', text: `[${att.name}]\n${docText}` })
@@ -728,20 +766,6 @@ export async function sendMessage(
 
   // Call LLM with multi-round tool call loop (agent mode)
   const MAX_TOOL_ROUNDS = 10
-  // Replace any leftover controller (e.g. previous failed cleanup) with a fresh one for this turn.
-  const prevCtrl = activeControllers.get(options.conversationId)
-  if (prevCtrl) prevCtrl.abort()
-  const abortController = new AbortController()
-  activeControllers.set(options.conversationId, abortController)
-  const signal = abortController.signal
-  const emitStream = (payload: Record<string, any>): void => {
-    if (!window) return
-    window.webContents.send('chat:stream', {
-      ...payload,
-      conversationId: options.conversationId
-    })
-  }
-  try {
     let currentMessages: ChatMessage[] = [...messages]
     let round = 0
 
@@ -848,13 +872,23 @@ export async function sendMessage(
       const pendingExecs = plans.map(async (p) => {
         if (p.resultStr !== undefined) return p
         if (signal.aborted) throw new AbortedError()
-        const result = await executeToolCall(p.toolCall, effectiveSkillIds, effectiveMcpIds, options.conversationId, effectiveKbCategoryIds, window)
+        const result = await executeToolCall(
+          p.toolCall,
+          effectiveSkillIds,
+          effectiveMcpIds,
+          options.conversationId,
+          effectiveKbCategoryIds,
+          window,
+          signal,
+          getRemainingAgentTurnMs()
+        )
         // 工具已经返回字符串（如 use_skill 返回的 markdown skill 正文）就直接用；
         // 再 JSON.stringify 会在原文外面再裹一层引号 + 转义全部 \n 和 "，
         // 使 tool message content 变成 "\"# title\\n...\\n...\""，部分 OpenAI 兼容
         // 上游（deepseek/智谱/豆包/Moonshot 等）拿到这种「双重转义字符串」会触发
         // silent 200 + 空 SSE，表现为「调用工具后 AI 不再回复」。
-        const resultStr = typeof result === 'string' ? result : JSON.stringify(result)
+        const rawResultStr = typeof result === 'string' ? result : JSON.stringify(result)
+        const resultStr = limitToolResult(rawResultStr)
         const summary = buildToolSummary(p.fnName, result, resultStr)
         emitStream({ type: 'tool_result', tool: p.fnName, summary })
         return { ...p, result, resultStr }
@@ -930,7 +964,15 @@ export async function sendMessage(
     // Auto-summarize if history exceeds threshold
     maybeGenerateSummary(options.conversationId, effectiveProviderId, effectiveModelId)
   } catch (error: any) {
-    if (isAbortedError(error)) {
+    if (agentTurnTimedOut) {
+      const message = '本轮 Agent 执行超过 180 秒，已自动中断'
+      emitStream({ type: 'error', error: message })
+      addMessage({
+        conversation_id: options.conversationId,
+        role: 'assistant',
+        content: `[Error] ${message}`
+      })
+    } else if (isAbortedError(error)) {
       // User-initiated cancel: surface as a friendly aborted marker, not an error.
       emitStream({ type: 'aborted' })
       addMessage({
@@ -947,6 +989,7 @@ export async function sendMessage(
       })
     }
   } finally {
+    clearTimeout(agentTurnTimer)
     if (activeControllers.get(options.conversationId) === abortController) {
       activeControllers.delete(options.conversationId)
     }
@@ -1211,7 +1254,9 @@ async function executeToolCall(
   mcpIds: string[],
   conversationId?: string,
   kbCategoryIds: string[] = [],
-  window?: BrowserWindow | null
+  window?: BrowserWindow | null,
+  signal?: AbortSignal,
+  timeoutMs?: number
 ): Promise<any> {
   const functionName = toolCall.function?.name
   let args: any = {}
@@ -1237,7 +1282,7 @@ async function executeToolCall(
   // Try core tools first
   const sandboxDir = conversationId ? getWorkspaceDir(conversationId) : undefined
   const kbContext = { kbCategoryIds }
-  const execContext = { conversationId, window: window || null }
+  const execContext = { conversationId, window: window || null, signal, timeoutMs }
   const coreResult = await executeCoreToolCall(functionName, args, sandboxDir, kbContext, execContext)
   if (coreResult.handled) return coreResult.result
 
@@ -1248,7 +1293,7 @@ async function executeToolCall(
   )
 
   if (skill) {
-    const result = await executeSkillSandbox(skill.implementation, args, sandboxDir)
+    const result = await executeSkillSandbox(skill.implementation, args, sandboxDir, timeoutMs)
     return result.success ? result.result : { error: result.error }
   }
 
@@ -1259,7 +1304,7 @@ async function executeToolCall(
       const mcpTool = server.tools.find((t: any) => t.name === functionName)
       if (mcpTool) {
         try {
-          return await callMcpTool(mcpId, functionName, args)
+          return await callMcpTool(mcpId, functionName, args, timeoutMs)
         } catch (err: any) {
           return { error: `MCP tool ${functionName} failed: ${err.message}` }
         }

@@ -252,6 +252,27 @@ export const useCanvasStore = defineStore('canvas', () => {
           return { image_data: '', image_path: '' }
         case 'aiText':
           return { text: data.text || '', result: '', status: 'idle' }
+        case 'quickOrchestrator':
+          return {
+            mode: data.mode || 'product_workflow',
+            instruction: data.instruction || '',
+            count: data.count || 4,
+            main_count: data.main_count || 4,
+            detail_count: data.detail_count ?? 3,
+            size: data.size || '1:1',
+            main_size: data.main_size || '1:1',
+            detail_size: data.detail_size || '4:5',
+            tier_id: data.tier_id || '2k',
+            quality: data.quality || 'auto',
+            require_reference: Boolean(data.require_reference),
+            detail_consistency_enabled: Boolean(data.detail_consistency_enabled),
+            outputContent: '',
+            plan_json: null,
+            created_node_ids: [],
+            created_edge_ids: [],
+            status: 'idle',
+            error: ''
+          }
         case 'text2img':
           return { model_provider_id: data.model_provider_id || '', model_id: data.model_id || '', size: data.size || '1:1', quality: data.quality || 'auto', status: 'idle', generation_id: '', result_path: '' }
         case 'img2img':
@@ -269,6 +290,14 @@ export const useCanvasStore = defineStore('canvas', () => {
             style_preset: data.style_preset || 'general',
             output_lang: data.output_lang || 'cn',
             custom_prompt: data.custom_prompt || '',
+            result: '',
+            status: 'idle',
+            error: ''
+          }
+        case 'imageRecognition':
+          return {
+            vision_provider_id: data.vision_provider_id || '',
+            vision_model_id: data.vision_model_id || '',
             result: '',
             status: 'idle',
             error: ''

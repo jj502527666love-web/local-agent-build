@@ -198,7 +198,8 @@ function sendJsonRpc(
 export async function callMcpTool(
   serverId: string,
   toolName: string,
-  args: Record<string, any>
+  args: Record<string, any>,
+  timeoutMs = 30000
 ): Promise<any> {
   const proc = runningProcesses.get(serverId)
   if (!proc) {
@@ -211,10 +212,10 @@ export async function callMcpTool(
     // Wait briefly for server initialization
     await new Promise((r) => setTimeout(r, 1000))
 
-    return sendJsonRpc(newProc, 'tools/call', { name: toolName, arguments: args })
+    return sendJsonRpc(newProc, 'tools/call', { name: toolName, arguments: args }, timeoutMs)
   }
 
-  return sendJsonRpc(proc, 'tools/call', { name: toolName, arguments: args })
+  return sendJsonRpc(proc, 'tools/call', { name: toolName, arguments: args }, timeoutMs)
 }
 
 export async function listMcpToolsFromServer(serverId: string): Promise<any[]> {

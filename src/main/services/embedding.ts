@@ -29,6 +29,29 @@ export interface ResolvedEmbeddingConfig {
   apiKey?: string
 }
 
+const EMBEDDING_TIMEOUT_MS = 60_000
+
+interface EmbeddingRequestOptions {
+  signal?: AbortSignal
+}
+
+function withTimeoutSignal(parentSignal?: AbortSignal): { signal: AbortSignal; cleanup: () => void } {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), EMBEDDING_TIMEOUT_MS)
+  const onAbort = () => controller.abort()
+  if (parentSignal) {
+    if (parentSignal.aborted) controller.abort()
+    else parentSignal.addEventListener('abort', onAbort, { once: true })
+  }
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      clearTimeout(timer)
+      parentSignal?.removeEventListener('abort', onAbort)
+    },
+  }
+}
+
 /** 自定义错误：当套餐未包含 embedding 模型 / 余额不足 / 未配置时抛出 */
 export class EmbeddingUnavailableError extends Error {
   code: 'NO_CLOUD_MODEL' | 'INSUFFICIENT_BALANCE' | 'NOT_CONFIGURED' | 'UNAUTHORIZED'
@@ -81,9 +104,9 @@ export async function getEmbeddingConfig(): Promise<ResolvedEmbeddingConfig> {
   return { source: 'local', model, apiBase, apiKey }
 }
 
-export async function embedText(text: string): Promise<EmbeddingResult & EmbeddingMeta> {
+export async function embedText(text: string, options?: EmbeddingRequestOptions): Promise<EmbeddingResult & EmbeddingMeta> {
   const config = await getEmbeddingConfig()
-  const results = await embedBatch([text], config)
+  const results = await embedBatch([text], config, options)
   return {
     embedding: results.embeddings[0].embedding,
     tokenCount: results.embeddings[0].tokenCount,
@@ -101,18 +124,20 @@ export interface EmbedBatchResponse {
 export async function embedBatch(
   texts: string[],
   config?: ResolvedEmbeddingConfig,
+  options?: EmbeddingRequestOptions,
 ): Promise<EmbedBatchResponse> {
   if (!config) config = await getEmbeddingConfig()
 
   if (config.source === 'cloud') {
-    return cloudEmbedBatch(texts, config.model)
+    return cloudEmbedBatch(texts, config.model, options)
   }
-  return localEmbedBatch(texts, config)
+  return localEmbedBatch(texts, config, options)
 }
 
 async function localEmbedBatch(
   texts: string[],
   config: ResolvedEmbeddingConfig,
+  options?: EmbeddingRequestOptions,
 ): Promise<EmbedBatchResponse> {
   if (!config.apiBase) {
     throw new EmbeddingUnavailableError('NOT_CONFIGURED', '本地向量服务未配置 API 地址')
@@ -121,11 +146,18 @@ async function localEmbedBatch(
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (config.apiKey) headers['Authorization'] = `Bearer ${config.apiKey}`
 
-  const response = await fetch(url, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ model: config.model, input: texts }),
-  })
+  const timeout = withTimeoutSignal(options?.signal)
+  let response: Response
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ model: config.model, input: texts }),
+      signal: timeout.signal,
+    })
+  } finally {
+    timeout.cleanup()
+  }
 
   if (!response.ok) {
     const errorText = await response.text()
@@ -154,7 +186,7 @@ async function localEmbedBatch(
   }
 }
 
-async function cloudEmbedBatch(texts: string[], model: string): Promise<EmbedBatchResponse> {
+async function cloudEmbedBatch(texts: string[], model: string, options?: EmbeddingRequestOptions): Promise<EmbedBatchResponse> {
   const token = getCloudToken()
   if (!token) {
     throw new EmbeddingUnavailableError('UNAUTHORIZED', '需要登录云端账号才能使用云端向量服务')
@@ -176,13 +208,20 @@ async function cloudEmbedBatch(texts: string[], model: string): Promise<EmbedBat
   if (cloudModelId !== null) {
     body.cloud_model_id = cloudModelId
   }
-  const response = await fetchWithCloudAuth(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
-  }, '云端向量 401')
+  const timeout = withTimeoutSignal(options?.signal)
+  let response: Response
+  try {
+    response = await fetchWithCloudAuth(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+      signal: timeout.signal,
+    }, '云端向量 401')
+  } finally {
+    timeout.cleanup()
+  }
 
   // 余额不足专属：402
   if (response.status === 402) {
