@@ -21,6 +21,13 @@ export interface ReleaseNote {
 
 export const CHANGELOG: ReleaseNote[] = [
   {
+    version: '0.7.4',
+    date: '2026-05-20',
+    notes: [
+      'AI 抠图的计费文案会跟随管理员设置，不再固定显示为积分'
+    ]
+  },
+  {
     version: '0.7.3',
     date: '2026-05-19',
     notes: [

@@ -6,7 +6,7 @@
         <p class="page-desc">
           一键去除背景，输出透明 PNG。
           <span v-if="store.cloudQuota" class="ml-2">
-            按 <strong class="text-text-primary">{{ Number(store.cloudQuota.credit_per_call).toFixed(4) }}</strong> 积分 / 张计费，最多并发 <strong class="text-text-primary">3</strong> 张（一次最多提交 {{ MAX_QUEUE }} 张）。
+            按 <strong class="text-text-primary">{{ Number(store.cloudQuota.credit_per_call).toFixed(4) }}</strong> {{ creditLabel }} / 张计费，最多并发 <strong class="text-text-primary">3</strong> 张（一次最多提交 {{ MAX_QUEUE }} 张）。
           </span>
           <span v-else class="ml-2">最多并发 <strong class="text-text-primary">3</strong> 张（一次最多提交 {{ MAX_QUEUE }} 张）。</span>
         </p>
@@ -270,13 +270,16 @@ import { useRouter } from 'vue-router'
 import { useMattingStore, type MattingTaskRow } from '@/stores/matting'
 import { useCloudAuthStore } from '@/stores/cloud-auth'
 import { useHandoffStore } from '@/stores/handoff'
+import { useSiteConfigStore } from '@/stores/site-config'
 import GalleryPicker from '@/components/GalleryPicker.vue'
 import ImageLightbox from '@/components/ImageLightbox.vue'
 
 const store = useMattingStore()
 const cloudAuth = useCloudAuthStore()
+const siteConfig = useSiteConfigStore()
 const router = useRouter()
 const handoff = useHandoffStore()
+const creditLabel = computed(() => siteConfig.labelOf('credit'))
 
 /**
  * 单次提交上限：60 张 = 单用户并发 3 × 约 20 轮。
@@ -405,7 +408,7 @@ const runDisabledReason = computed<string>(() => {
     return `本月配额已用完（${q.used_this_month} / ${q.image_matting_quota_per_month}）`
   }
   if (q && q.credit_per_call > 0 && q.current_credit_balance < q.credit_per_call) {
-    return `积分余额不足（需 ${Number(q.credit_per_call).toFixed(4)}，当前 ${Number(q.current_credit_balance).toFixed(2)}）`
+    return `${creditLabel.value}余额不足（需 ${Number(q.credit_per_call).toFixed(4)}，当前 ${Number(q.current_credit_balance).toFixed(2)}）`
   }
   // q 为 null 时不阐拦——可能是未登录 / 服务端未配计费规则，让用户试一下看实际报错。
   return ''

@@ -5,8 +5,12 @@ export interface RuntimeConfig {
   buildId: string
   appName: string
   appId: string
+  appVersion: string
   apiDomain: string
   domain: string
+  updateUrl: string
+  buildMode: 'normal' | 'oem'
+  oemProjectKey: string
   builtAt: string
   /** 应用图标 data URL（PNG → base64）。生产由打包流程注入；dev/缺省为空字符串，渲染端可走文字缩写 fallback */
   iconDataUrl: string
@@ -16,8 +20,12 @@ const DEFAULT_CONFIG: RuntimeConfig = {
   buildId: 'dev',
   appName: 'LocalAgent',
   appId: 'com.local-agent.app',
+  appVersion: '',
   apiDomain: 'https://agent-admin.o455.com',
   domain: 'https://agent-admin.o455.com',
+  updateUrl: 'https://agent-admin.o455.com/updates/',
+  buildMode: 'normal',
+  oemProjectKey: '',
   builtAt: '',
   iconDataUrl: ''
 }

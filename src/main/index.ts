@@ -18,6 +18,16 @@ if (is.dev) {
   process.env['NODE_TLS_REJECT_UNAUTHORIZED'] = '0'
 }
 
+function configureStableUserDataPath(): void {
+  const cfg = getRuntimeConfig()
+  if (cfg.buildMode !== 'oem' || !cfg.oemProjectKey) return
+  const safeKey = cfg.oemProjectKey.replace(/[^a-z0-9-]/g, '').slice(0, 64)
+  if (!safeKey) return
+  app.setPath('userData', join(app.getPath('appData'), `local-agent-oem-${safeKey}`))
+}
+
+configureStableUserDataPath()
+
 function createAppIcon(): Electron.NativeImage {
   const paths = [
     join(__dirname, '../../build/icon.png'),

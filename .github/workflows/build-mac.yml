@@ -31,6 +31,30 @@ on:
         description: 'One-time bearer token for callback'
         required: true
         type: string
+      app_id:
+        description: 'Optional explicit Electron appId'
+        required: false
+        type: string
+      update_url:
+        description: 'Optional explicit electron-updater base URL'
+        required: false
+        type: string
+      app_version:
+        description: 'Optional explicit application version'
+        required: false
+        type: string
+      build_mode:
+        description: 'Build mode: normal or oem'
+        required: false
+        type: string
+      oem_project_key:
+        description: 'Optional OEM project key'
+        required: false
+        type: string
+      build_options:
+        description: 'Optional JSON build options'
+        required: false
+        type: string
 
 permissions:
   # 0.5.0：softprops/action-gh-release@v2 创建 release 需要 contents:write；
@@ -90,6 +114,12 @@ jobs:
           API_DOMAIN: ${{ inputs.api_domain }}
           ICON_LOCAL_PATH: ${{ inputs.icon_path }}
           PLATFORM: mac
+          APP_ID: ${{ inputs.app_id }}
+          UPDATE_URL: ${{ inputs.update_url }}
+          APP_VERSION: ${{ inputs.app_version }}
+          BUILD_MODE: ${{ inputs.build_mode }}
+          OEM_PROJECT_KEY: ${{ inputs.oem_project_key }}
+          BUILD_OPTIONS: ${{ inputs.build_options }}
 
       - name: Build & Package
         run: npm run dist

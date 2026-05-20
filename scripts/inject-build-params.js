@@ -48,6 +48,11 @@ function env(name) {
   return v
 }
 
+function optionalEnv(name) {
+  const v = process.env[name]
+  return v && String(v).trim() !== '' ? String(v).trim() : ''
+}
+
 function maskInActions(v) {
   if (process.env.GITHUB_ACTIONS && v) {
     console.log(`::add-mask::${v}`)
@@ -88,6 +93,61 @@ function reversedDomainOf(urlStr) {
 function validatePlatform(p) {
   if (p !== 'win' && p !== 'mac') fail(`invalid PLATFORM: ${p}`)
   return p
+}
+
+function validateAppId(s) {
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{2,150}$/.test(s) || s.includes('..')) {
+    fail(`invalid APP_ID: ${s}`)
+  }
+  return s
+}
+
+function validateAppVersion(s) {
+  if (!/^\d{1,4}\.\d{1,4}\.\d{1,4}(?:[-+][0-9A-Za-z.-]+)?$/.test(s)) {
+    fail(`invalid APP_VERSION: ${s}`)
+  }
+  return s
+}
+
+function validateBuildMode(s) {
+  if (s !== 'normal' && s !== 'oem') fail(`invalid BUILD_MODE: ${s}`)
+  return s
+}
+
+function validateProjectKey(s) {
+  if (s !== '' && !/^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$/.test(s)) {
+    fail(`invalid OEM_PROJECT_KEY: ${s}`)
+  }
+  return s
+}
+
+function normalizeUpdateUrl(urlStr) {
+  let u
+  try {
+    u = new URL(urlStr)
+  } catch (_e) {
+    fail(`invalid UPDATE_URL: ${urlStr}`)
+  }
+  if (u.protocol !== 'https:' && u.protocol !== 'http:') {
+    fail(`invalid UPDATE_URL protocol: ${urlStr}`)
+  }
+  u.hash = ''
+  u.search = ''
+  const normalized = u.toString()
+  return normalized.endsWith('/') ? normalized : `${normalized}/`
+}
+
+function parseBuildOptions(raw) {
+  if (!raw || String(raw).trim() === '') return {}
+  try {
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      fail('BUILD_OPTIONS must be a JSON object')
+    }
+    return parsed
+  } catch (e) {
+    fail(`invalid BUILD_OPTIONS JSON: ${e.message}`)
+  }
 }
 
 function ymlEscape(s) {
@@ -186,18 +246,29 @@ async function main() {
   const API_DOMAIN = env('API_DOMAIN').replace(/\/+$/, '')
   const PLATFORM = validatePlatform(env('PLATFORM'))
   const ICON_URL = process.env.ICON_LOCAL_PATH || env('ICON_URL')
+  const BUILD_OPTIONS = parseBuildOptions(optionalEnv('BUILD_OPTIONS'))
 
   maskInActions(DOMAIN)
   maskInActions(API_DOMAIN)
   maskInActions(ICON_URL)
+  maskInActions(optionalEnv('BUILD_OPTIONS'))
 
   const EXEC_NAME = safeExecutableName(APP_NAME)
-  const APP_ID = `${reversedDomainOf(DOMAIN)}.app`
+  const BUILD_MODE = validateBuildMode(optionalEnv('BUILD_MODE') || BUILD_OPTIONS.build_mode || 'normal')
+  const OEM_PROJECT_KEY = validateProjectKey(optionalEnv('OEM_PROJECT_KEY') || BUILD_OPTIONS.oem_project_key || '')
+  const APP_ID = validateAppId(optionalEnv('APP_ID') || BUILD_OPTIONS.app_id || `${reversedDomainOf(DOMAIN)}.app`)
+  const UPDATE_URL = normalizeUpdateUrl(optionalEnv('UPDATE_URL') || BUILD_OPTIONS.update_url || `${DOMAIN}/updates/`)
+  const APP_VERSION_RAW = optionalEnv('APP_VERSION') || BUILD_OPTIONS.app_version || ''
+  const APP_VERSION = APP_VERSION_RAW ? validateAppVersion(APP_VERSION_RAW) : ''
 
   log(`build_id     = ${BUILD_ID}`)
   log(`app_name     = ${APP_NAME}`)
   log(`exec_name    = ${EXEC_NAME}`)
   log(`app_id       = ${APP_ID}`)
+  log(`build_mode   = ${BUILD_MODE}`)
+  log(`update_url   = ${UPDATE_URL}`)
+  if (APP_VERSION) log(`app_version  = ${APP_VERSION}`)
+  if (OEM_PROJECT_KEY) log(`project_key  = ${OEM_PROJECT_KEY}`)
   log(`platform     = ${PLATFORM}`)
   log(`dry_run      = ${DRY_RUN}`)
 
@@ -238,6 +309,7 @@ async function main() {
   const pkg = readJson(pkgPath)
   pkg.name = EXEC_NAME.toLowerCase()
   pkg.productName = APP_NAME
+  if (APP_VERSION) pkg.version = APP_VERSION
   writeJson(pkgPath, pkg)
   log(`wrote ${pkgPath}`)
 
@@ -249,7 +321,7 @@ async function main() {
   eb = ymlReplace(eb, 'executableName', ymlEscape(EXEC_NAME), { indent: '  ' })
   eb = ymlReplace(eb, 'shortcutName', ymlEscape(APP_NAME), { indent: '  ' })
   eb = ymlReplace(eb, 'uninstallDisplayName', ymlEscape(APP_NAME), { indent: '  ' })
-  eb = ymlReplace(eb, 'url', `${DOMAIN}/updates/`, { indent: '  ' })
+  eb = ymlReplace(eb, 'url', UPDATE_URL, { indent: '  ' })
   if (DRY_RUN) {
     log(`[dry] electron-builder.yml preview:\n${eb}`)
   } else {
@@ -263,8 +335,12 @@ async function main() {
     buildId: BUILD_ID,
     appName: APP_NAME,
     appId: APP_ID,
+    appVersion: APP_VERSION || pkg.version,
     apiDomain: API_DOMAIN,
     domain: DOMAIN,
+    updateUrl: UPDATE_URL,
+    buildMode: BUILD_MODE,
+    oemProjectKey: OEM_PROJECT_KEY,
     builtAt: new Date().toISOString()
   }
   writeJson(configPath, config)
