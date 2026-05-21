@@ -65,7 +65,14 @@ const MODEL_CONTEXT_LIMITS: { match: RegExp; total: number }[] = [
 
 const DEFAULT_TOTAL_CONTEXT = 32_000
 const RESPONSE_RESERVE_RATIO = 0.25
-const AGENT_TURN_TIMEOUT_MS = 180_000
+// Hard deadline as a safety net (30 min) — prevents a runaway agent / LLM loop
+// from burning tokens forever, but is NOT a per-task duration limit. Agent can
+// keep working until completion or user pressing Stop, as long as每一步都在前进。
+// 长时间静默由 llm.ts 的 stream idle timeout 单独识别（见 STREAM_IDLE_TIMEOUT_MS）。
+const AGENT_HARD_DEADLINE_MS = 30 * 60_000
+// Tool approval popup独立超时（30 min）：用户离开喝水/开会不会被强制拒绝；
+// 真正想取消的话用对话面板的「中止」按钮（走 cancelChat → abortController.abort()）。
+const APPROVAL_TIMEOUT_MS = 30 * 60_000
 const MAX_TOOL_RESULT_CHARS = 12_000
 
 function getModelPromptBudget(modelId: string): number {
@@ -149,7 +156,7 @@ function requestToolApproval(
         cleanup()
         ctx.resolve(false)
       }
-    }, AGENT_TURN_TIMEOUT_MS)
+    }, APPROVAL_TIMEOUT_MS)
     pendingApprovals.set(requestId, { conversationId, resolve, cleanup })
     if (signal.aborted) {
       onAbort()
@@ -437,12 +444,13 @@ export async function sendMessage(
   const abortController = new AbortController()
   activeControllers.set(options.conversationId, abortController)
   const signal = abortController.signal
-  const agentTurnDeadline = Date.now() + AGENT_TURN_TIMEOUT_MS
+  // 不再做整轮 180s 硬超时。只保留 30 分钟 hard deadline 兜底防失控循环。
+  // 实际「卡死检测」由 llm.ts 的 stream idle timeout 完成（60s 无 token 即视为静默）。
   let agentTurnTimedOut = false
   const agentTurnTimer = setTimeout(() => {
     agentTurnTimedOut = true
     abortController.abort()
-  }, AGENT_TURN_TIMEOUT_MS)
+  }, AGENT_HARD_DEADLINE_MS)
   const emitStream = (payload: Record<string, any>): void => {
     if (!window) return
     window.webContents.send('chat:stream', {
@@ -450,7 +458,6 @@ export async function sendMessage(
       conversationId: options.conversationId
     })
   }
-  const getRemainingAgentTurnMs = (): number => Math.max(1, agentTurnDeadline - Date.now())
 
   try {
   // Build message history
@@ -765,7 +772,9 @@ export async function sendMessage(
   console.log(`[chat] context: ${systemCount} system + ${included.length} history msgs, ~${estimateMessagesTokens([...messages])} tokens, ${tools.length} tools`)
 
   // Call LLM with multi-round tool call loop (agent mode)
-  const MAX_TOOL_ROUNDS = 10
+  // 25 轮上限对齐主流 AI 编辑器（Cursor agent ~25）。整轮真正卡死由
+  // stream idle timeout（llm.ts）+ 30 分钟 hard deadline 兜底检测。
+  const MAX_TOOL_ROUNDS = 25
     let currentMessages: ChatMessage[] = [...messages]
     let round = 0
 
@@ -880,7 +889,7 @@ export async function sendMessage(
           effectiveKbCategoryIds,
           window,
           signal,
-          getRemainingAgentTurnMs()
+          undefined
         )
         // 工具已经返回字符串（如 use_skill 返回的 markdown skill 正文）就直接用；
         // 再 JSON.stringify 会在原文外面再裹一层引号 + 转义全部 \n 和 "，
@@ -965,7 +974,7 @@ export async function sendMessage(
     maybeGenerateSummary(options.conversationId, effectiveProviderId, effectiveModelId)
   } catch (error: any) {
     if (agentTurnTimedOut) {
-      const message = '本轮 Agent 执行超过 180 秒，已自动中断'
+      const message = '本轮 Agent 执行已超过 30 分钟硬上限，已自动中断'
       emitStream({ type: 'error', error: message })
       addMessage({
         conversation_id: options.conversationId,

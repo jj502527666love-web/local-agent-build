@@ -282,6 +282,11 @@ export async function callLLM(
 // 流式请求最多重试次数（仅在尚未产生任何输出且错误属于连接中断类时生效）。
 const MAX_STREAM_RETRIES = 2
 
+// LLM 流式静默超时：连续 60 秒未收到任何 chunk 就认为连接已悄悄断开。
+// 用 reader.cancel() 主动断流 → 抛错；外层若尚未推送过 token 会自动重试整条请求，
+// 已推送过则降级为友好错误（连接被中断）。
+const STREAM_IDLE_TIMEOUT_MS = 60_000
+
 async function streamLLM(
   url: string,
   headers: Record<string, string>,
@@ -307,7 +312,10 @@ async function streamLLM(
       // 已经向 renderer 推送过 content/tool_call 时，重发整条请求会让 UI 出现重复内容，
       // 此时只能降级为友好错误，由用户手动重试。
       const hadOutput = (err as any).__streamHadOutput === true
-      const retryable = !hadOutput && (isStreamTerminatedError(err) || isTransientFetchError(err))
+      const idleTimeout = (err as any).__streamIdleTimeout === true
+      const retryable =
+        !hadOutput &&
+        (idleTimeout || isStreamTerminatedError(err) || isTransientFetchError(err))
       if (!retryable || attempt >= MAX_STREAM_RETRIES) break
       const delay = 500 * Math.pow(2, attempt)
       console.log(`[llm] stream attempt ${attempt + 1}/${MAX_STREAM_RETRIES + 1} terminated (${describeFetchError(err)}), retry in ${delay}ms`)
@@ -371,10 +379,30 @@ async function streamLLMOnce(
   let buffer = ''
   let usage: any = null
 
+  // Stream idle watchdog：60s 没收到 chunk 就 reader.cancel() 主动断开，
+  // 让下面的 reader.read() 抛错；catch 里识别 idleTimedOut 并贴标签由外层决定重试 / 报错。
+  let idleTimer: ReturnType<typeof setTimeout> | undefined
+  let idleTimedOut = false
+  const armIdle = (): void => {
+    if (idleTimer) clearTimeout(idleTimer)
+    idleTimer = setTimeout(() => {
+      idleTimedOut = true
+      try { reader.cancel(new Error('LLM stream idle timeout')) } catch {}
+    }, STREAM_IDLE_TIMEOUT_MS)
+  }
+  const disarmIdle = (): void => {
+    if (idleTimer) {
+      clearTimeout(idleTimer)
+      idleTimer = undefined
+    }
+  }
+  armIdle()
+
   try {
   while (true) {
     if (signal?.aborted) throw new AbortedError()
     const { done, value } = await reader.read()
+    armIdle()
     if (done) break
 
     buffer += decoder.decode(value, { stream: true })
@@ -426,6 +454,16 @@ async function streamLLMOnce(
     }
   }
   } catch (err: any) {
+    disarmIdle()
+    if (idleTimedOut) {
+      const idleErr: any = new Error('与模型服务连接静默超过 60 秒，已断开')
+      idleErr.cause = err
+      idleErr.__streamIdleTimeout = true
+      if (fullContent.length > 0 || toolCalls.length > 0) {
+        idleErr.__streamHadOutput = true
+      }
+      throw idleErr
+    }
     if (isAbortedError(err)) throw new AbortedError()
     // 给外层重试判定打标记：已经推送过任何 content/tool_call 就不能再重发整条请求，
     // 否则 renderer 会拼出重复内容。
@@ -434,6 +472,7 @@ async function streamLLMOnce(
     }
     throw err
   } finally {
+    disarmIdle()
     if (signal) signal.removeEventListener('abort', onAbort)
   }
 
