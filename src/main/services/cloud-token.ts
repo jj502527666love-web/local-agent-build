@@ -115,6 +115,8 @@ export async function fetchWithCloudAuth(url: string, init: RequestInit = {}, re
   const withToken = (t: string): RequestInit => {
     const headers = new Headers(init.headers)
     headers.set('Authorization', `Bearer ${t}`)
+    const oemProjectKey = getRuntimeConfig().oemProjectKey.trim()
+    if (oemProjectKey) headers.set('X-OEM-Project-Key', oemProjectKey)
     return { ...init, headers }
   }
 

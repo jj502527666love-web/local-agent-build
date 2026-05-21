@@ -4,6 +4,11 @@ function getCloudApiBase(): string {
   return cfg?.apiDomain ? `${cfg.apiDomain}/api` : 'https://agent-admin.o455.com/api'
 }
 
+function getOemProjectKey(): string {
+  const cfg = (window as unknown as { runtimeConfig?: { oemProjectKey?: string } }).runtimeConfig
+  return (cfg?.oemProjectKey || '').trim()
+}
+
 let token: string | null = null
 let deviceIdCache: string | null = null
 
@@ -134,6 +139,8 @@ async function request(
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   const t = getCloudToken()
   if (t) headers['Authorization'] = `Bearer ${t}`
+  const oemProjectKey = getOemProjectKey()
+  if (oemProjectKey) headers['X-OEM-Project-Key'] = oemProjectKey
   if (options.withDeviceId) {
     const deviceId = await getDeviceId()
     if (deviceId) headers['X-Device-Id'] = deviceId
@@ -213,6 +220,7 @@ export const cloudClient = {
   myModels: () => request('GET', '/client/models'),
   myPermissions: () => request('GET', '/client/permissions'),
   myBalance: () => request('GET', '/client/balance'),
+  myQuotas: () => request('GET', '/client/quotas'),
   myBalanceLogs: (params?: Record<string, string>) => {
     const qs = params ? '?' + new URLSearchParams(params).toString() : ''
     return request('GET', `/client/balance-logs${qs}`)
@@ -228,6 +236,7 @@ export const cloudClient = {
   listStorePlans: () => request('GET', '/client/plans'),
   // 订单：创建 / 查询 / 取消（微信支付通道）
   createOrder: (planId: number) => request('POST', '/client/orders', { plan_id: planId }),
+  upgradePlan: (fromUserPlanId: number, planId: number) => request('POST', '/client/orders/upgrade', { from_user_plan_id: fromUserPlanId, plan_id: planId }),
   getOrder: (orderNo: string) => request('GET', `/client/orders/${orderNo}`),
   cancelOrder: (orderNo: string) => request('POST', `/client/orders/${orderNo}/cancel`),
   // 订单：创建 / 同步（天阙聚合支付通道，无异步 notify 需主动轮询同步）
@@ -235,4 +244,17 @@ export const cloudClient = {
   syncTianqueOrder: (orderNo: string) => request('POST', `/client/orders/${orderNo}/tianque-sync`),
   // 公告：当前启用的排序最高的一条公告；无公告时 announcement=null
   currentAnnouncement: () => request('GET', '/client/announcement/current'),
+  oemChannelProfile: () => request('GET', '/client/oem-channel/profile'),
+  oemChannelSummary: (params?: Record<string, string>) => {
+    const qs = params ? '?' + new URLSearchParams(params).toString() : ''
+    return request('GET', `/client/oem-channel/summary${qs}`)
+  },
+  oemChannelOrders: (params?: Record<string, string>) => {
+    const qs = params ? '?' + new URLSearchParams(params).toString() : ''
+    return request('GET', `/client/oem-channel/orders${qs}`)
+  },
+  oemChannelCommissions: (params?: Record<string, string>) => {
+    const qs = params ? '?' + new URLSearchParams(params).toString() : ''
+    return request('GET', `/client/oem-channel/commissions${qs}`)
+  },
 }

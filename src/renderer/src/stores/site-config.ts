@@ -25,6 +25,10 @@ export interface PaymentAvailability {
   tianque: boolean
 }
 
+export interface RegisterAvailability {
+  enabled: boolean
+}
+
 /**
  * 注册页协议（注册协议、隐私协议）。由云控端「系统设置 → 协议管理」维护，
  * 桌面端在注册前弹窗展示。content 是 HTML 富文本，渲染前用 DOMPurify 过滤。
@@ -50,18 +54,29 @@ export interface ChatDefaultModel {
   model_id: string
 }
 
+export interface CustomerServiceInfo {
+  title: string
+  image_url: string
+  source?: string
+  project_key?: string | null
+}
+
 const DEFAULT_LABELS: CurrencyLabels = { token: '金币', credit: '积分' }
 const DEFAULT_PAYMENT: PaymentAvailability = { wechat: true, tianque: true }
+const DEFAULT_REGISTER: RegisterAvailability = { enabled: true }
 const DEFAULT_AGREEMENTS: Agreements = {
   register: { title: '注册协议', content: '' },
   privacy: { title: '隐私协议', content: '' },
 }
 const DEFAULT_CHAT_MODEL: ChatDefaultModel = { provider_id: '', model_id: '' }
+const DEFAULT_CUSTOMER_SERVICE: CustomerServiceInfo | null = null
 
 const STORAGE_KEY = 'site_config_currency'
 const PAYMENT_STORAGE_KEY = 'site_config_payment'
+const REGISTER_STORAGE_KEY = 'site_config_register'
 const AGREEMENTS_STORAGE_KEY = 'site_config_agreements'
 const CHAT_MODEL_STORAGE_KEY = 'site_config_chat_default_model'
+const CUSTOMER_SERVICE_STORAGE_KEY = 'site_config_customer_service'
 
 function readCache(): CurrencyLabels {
   try {
@@ -102,6 +117,27 @@ function readPaymentCache(): PaymentAvailability {
 function writePaymentCache(p: PaymentAvailability) {
   try {
     localStorage.setItem(PAYMENT_STORAGE_KEY, JSON.stringify(p))
+  } catch {
+    // 静默失败
+  }
+}
+
+function readRegisterCache(): RegisterAvailability {
+  try {
+    const raw = localStorage.getItem(REGISTER_STORAGE_KEY)
+    if (!raw) return { ...DEFAULT_REGISTER }
+    const parsed = JSON.parse(raw)
+    return {
+      enabled: typeof parsed?.enabled === 'boolean' ? parsed.enabled : DEFAULT_REGISTER.enabled,
+    }
+  } catch {
+    return { ...DEFAULT_REGISTER }
+  }
+}
+
+function writeRegisterCache(r: RegisterAvailability) {
+  try {
+    localStorage.setItem(REGISTER_STORAGE_KEY, JSON.stringify(r))
   } catch {
     // 静默失败
   }
@@ -157,12 +193,45 @@ function writeChatDefaultModelCache(m: ChatDefaultModel) {
   }
 }
 
+function normalizeCustomerService(raw: unknown): CustomerServiceInfo | null {
+  const data = raw as Partial<CustomerServiceInfo> | null
+  const title = typeof data?.title === 'string' ? data.title.trim() : ''
+  const imageUrl = typeof data?.image_url === 'string' ? data.image_url.trim() : ''
+  if (!title || !imageUrl) return null
+  return {
+    title,
+    image_url: imageUrl,
+    source: typeof data?.source === 'string' ? data.source : undefined,
+    project_key: typeof data?.project_key === 'string' ? data.project_key : null,
+  }
+}
+
+function readCustomerServiceCache(): CustomerServiceInfo | null {
+  try {
+    const raw = localStorage.getItem(CUSTOMER_SERVICE_STORAGE_KEY)
+    if (!raw) return DEFAULT_CUSTOMER_SERVICE
+    return normalizeCustomerService(JSON.parse(raw))
+  } catch {
+    return DEFAULT_CUSTOMER_SERVICE
+  }
+}
+
+function writeCustomerServiceCache(info: CustomerServiceInfo | null) {
+  try {
+    if (info) localStorage.setItem(CUSTOMER_SERVICE_STORAGE_KEY, JSON.stringify(info))
+    else localStorage.removeItem(CUSTOMER_SERVICE_STORAGE_KEY)
+  } catch {
+  }
+}
+
 export const useSiteConfigStore = defineStore('siteConfig', () => {
   // 启动时先用 localStorage 缓存，避免首屏闪烁默认文案
   const labels = ref<CurrencyLabels>(readCache())
   const payment = ref<PaymentAvailability>(readPaymentCache())
+  const register = ref<RegisterAvailability>(readRegisterCache())
   const agreements = ref<Agreements>(readAgreementsCache())
   const chatDefaultModel = ref<ChatDefaultModel>(readChatDefaultModelCache())
+  const customerService = ref<CustomerServiceInfo | null>(readCustomerServiceCache())
   const loading = ref(false)
   const lastFetchedAt = ref<number | null>(null)
 
@@ -198,6 +267,14 @@ export const useSiteConfigStore = defineStore('siteConfig', () => {
         writePaymentCache(nextPayment)
       }
 
+      if (data?.register && typeof data.register === 'object') {
+        const nextRegister: RegisterAvailability = {
+          enabled: typeof data.register.enabled === 'boolean' ? data.register.enabled : DEFAULT_REGISTER.enabled,
+        }
+        register.value = nextRegister
+        writeRegisterCache(nextRegister)
+      }
+
       // agreements 字段为后加，老后端不带时保持当前值（缓存或默认占位）
       if (data?.agreements && typeof data.agreements === 'object') {
         const nextAgreements: Agreements = {
@@ -224,6 +301,12 @@ export const useSiteConfigStore = defineStore('siteConfig', () => {
         writeChatDefaultModelCache(nextChatModel)
       }
 
+      if (data && typeof data === 'object' && 'customer_service' in data) {
+        const nextCustomerService = normalizeCustomerService(data.customer_service)
+        customerService.value = nextCustomerService
+        writeCustomerServiceCache(nextCustomerService)
+      }
+
       lastFetchedAt.value = Date.now()
     } catch {
       // 拉取失败保持当前值（缓存或默认）
@@ -239,5 +322,5 @@ export const useSiteConfigStore = defineStore('siteConfig', () => {
     fetch()
   }
 
-  return { labels, payment, agreements, chatDefaultModel, hasAnyPayment, loading, lastFetchedAt, labelOf, fetch, init }
+  return { labels, payment, register, agreements, chatDefaultModel, customerService, hasAnyPayment, loading, lastFetchedAt, labelOf, fetch, init }
 })

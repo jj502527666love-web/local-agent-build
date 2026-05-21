@@ -9,7 +9,7 @@
       >
         <!-- Header -->
         <div class="flex items-center justify-between px-5 py-3 border-b border-surface-2">
-          <h3 class="text-sm font-semibold text-text-primary">{{ methodTitle }}</h3>
+          <h3 class="text-sm font-semibold text-text-primary">{{ dialogTitle }}</h3>
           <button
             type="button"
             class="text-text-tertiary hover:text-text-primary"
@@ -135,7 +135,7 @@
               </svg>
             </div>
             <p class="text-sm font-semibold text-text-primary mb-1">支付成功</p>
-            <p class="text-xs text-text-tertiary">套餐已开通，即将关闭...</p>
+            <p class="text-xs text-text-tertiary">{{ successHint }}</p>
           </div>
 
           <!-- Expired / Closed / Failed -->
@@ -226,6 +226,7 @@ interface PlanLite {
   code: string
   name: string
   duration_days: number
+  quota_refill_cycle?: string
 }
 
 interface OrderResponse {
@@ -238,6 +239,8 @@ interface OrderResponse {
   closed_at?: string | null
   status: string
   user_plan_id: number | null
+  order_type?: string
+  upgrade_from_user_plan_id?: number | null
   plan: PlanLite
   reused?: boolean
 }
@@ -245,6 +248,7 @@ interface OrderResponse {
 const props = defineProps<{
   visible: boolean
   planId: number | null
+  fromUserPlanId?: number | null
 }>()
 
 const emit = defineEmits<{
@@ -262,6 +266,7 @@ const codeUrl = ref<string | null>(null)
 const amount = ref('0.00')
 const currency = ref('CNY')
 const status = ref<string>('')
+const orderType = ref<string>('')
 const expiresAt = ref<string | null>(null)
 const reused = ref(false)
 const plan = ref<PlanLite | null>(null)
@@ -275,8 +280,10 @@ const qrCanvas = ref<HTMLCanvasElement | null>(null)
 // 实际可选项由 siteConfig.payment.{wechat,tianque} 决定（云控后台开关）。
 const paymentMethod = ref<'wechat' | 'tianque'>('wechat')
 const switching = ref(false)
+const isUpgrade = computed(() => !!props.fromUserPlanId)
 
 const availableMethodCount = computed(() => {
+  if (isUpgrade.value) return siteConfig.payment.wechat ? 1 : 0
   let n = 0
   if (siteConfig.payment.wechat) n++
   if (siteConfig.payment.tianque) n++
@@ -285,14 +292,25 @@ const availableMethodCount = computed(() => {
 
 /** 选首个启用的渠道作为默认值（拉取 publicConfig 后调用） */
 function pickDefaultMethod(): 'wechat' | 'tianque' | null {
+  if (isUpgrade.value) return siteConfig.payment.wechat ? 'wechat' : null
   if (siteConfig.payment.wechat) return 'wechat'
   if (siteConfig.payment.tianque) return 'tianque'
   return null
 }
 
+const dialogTitle = computed(() => {
+  if (orderType.value === 'renew') return '续费套餐'
+  if (isUpgrade.value || orderType.value === 'upgrade') return '升级套餐'
+  return methodTitle.value
+})
 const methodTitle = computed(() =>
   paymentMethod.value === 'wechat' ? '微信支付' : '微信/支付宝'
 )
+const successHint = computed(() => {
+  if (orderType.value === 'renew') return '套餐已续费，即将关闭...'
+  if (isUpgrade.value || orderType.value === 'upgrade') return '套餐已升级，即将关闭...'
+  return '套餐已开通，即将关闭...'
+})
 const scanHint = computed(() =>
   paymentMethod.value === 'wechat'
     ? '请使用微信扫码支付'
@@ -303,7 +321,7 @@ let pollTimer: ReturnType<typeof setInterval> | null = null
 let countdownTimer: ReturnType<typeof setInterval> | null = null
 let consecutiveFails = 0
 let closeTimer: ReturnType<typeof setTimeout> | null = null
-let inflightPlanId: number | null = null  // H5: 防并发创建订单（同一 plan 只允许一个 in-flight）
+let inflightOrderKey: string | null = null
 
 const remainingMs = ref(0)
 
@@ -532,6 +550,7 @@ function resetState() {
   amount.value = '0.00'
   currency.value = 'CNY'
   status.value = ''
+  orderType.value = ''
   expiresAt.value = null
   reused.value = false
   plan.value = null
@@ -551,6 +570,7 @@ async function ensureOrder() {
   }
   // 当前选中渠道若被后台关闭，自动切到可用的那个
   if (
+    (isUpgrade.value && paymentMethod.value !== 'wechat') ||
     (paymentMethod.value === 'wechat' && !siteConfig.payment.wechat) ||
     (paymentMethod.value === 'tianque' && !siteConfig.payment.tianque)
   ) {
@@ -558,22 +578,26 @@ async function ensureOrder() {
   }
 
   // H5: 并发保护——同一 plan 已有请求 in-flight 时不再重复触发，但显示 loading 让 UI 不空白
-  if (inflightPlanId === props.planId) {
+  const orderKey = `${isUpgrade.value ? 'upgrade' : 'purchase'}:${props.fromUserPlanId || 0}:${props.planId}`
+  if (inflightOrderKey === orderKey) {
     creating.value = true
     return
   }
-  inflightPlanId = props.planId
+  inflightOrderKey = orderKey
   resetState()
   creating.value = true
   try {
-    const data = paymentMethod.value === 'wechat'
-      ? (await cloudClient.createOrder(props.planId)) as OrderResponse
-      : (await cloudClient.createTianqueOrder(props.planId)) as OrderResponse
+    const data = isUpgrade.value
+      ? (await cloudClient.upgradePlan(props.fromUserPlanId!, props.planId)) as OrderResponse
+      : paymentMethod.value === 'wechat'
+        ? (await cloudClient.createOrder(props.planId)) as OrderResponse
+        : (await cloudClient.createTianqueOrder(props.planId)) as OrderResponse
     orderNo.value = data.order_no
     codeUrl.value = data.code_url
     amount.value = data.amount
     currency.value = data.currency || 'CNY'
     status.value = data.status || 'pending'
+    orderType.value = data.order_type || (isUpgrade.value ? 'upgrade' : 'purchase')
     expiresAt.value = data.expires_at
     reused.value = !!data.reused
     plan.value = data.plan
@@ -581,7 +605,7 @@ async function ensureOrder() {
     createError.value = e?.message || '创建订单失败'
   } finally {
     creating.value = false
-    inflightPlanId = null
+    inflightOrderKey = null
   }
 
   // 关键：必须等 creating=false 后 canvas DOM 才会从 v-else-if 分支 mount 出来；

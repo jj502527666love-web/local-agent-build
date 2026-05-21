@@ -85,16 +85,17 @@
 
         <div v-if="error" class="text-xs text-red-500 bg-red-50 dark:text-red-300 dark:bg-red-900/20 rounded-lg px-3 py-2">{{ error }}</div>
 
-        <button type="submit" :disabled="submitting"
+        <button type="submit" :disabled="submitting || (isRegister && !siteConfig.register.enabled)"
           class="w-full py-3 text-sm font-semibold bg-primary-600 hover:bg-primary-700 disabled:opacity-50 text-white rounded-xl transition-colors">
           {{ submitting ? '\u8bf7\u7a0d\u5019...' : (isRegister ? '\u6ce8\u518c' : '\u767b\u5f55') }}
         </button>
       </form>
 
       <div class="mt-5 text-center">
-        <button @click="toggleMode" class="text-xs text-primary-600 hover:text-primary-700 transition-colors">
+        <button v-if="isRegister || siteConfig.register.enabled" @click="toggleMode" class="text-xs text-primary-600 hover:text-primary-700 transition-colors">
           {{ isRegister ? '已有账号？去登录' : '没有账号？去注册' }}
         </button>
+        <p v-else class="text-xs text-text-tertiary">当前暂未开放注册，请联系管理员</p>
       </div>
     </div>
 
@@ -143,6 +144,10 @@ function openAgreement(type: 'register' | 'privacy') {
 }
 
 function toggleMode() {
+  if (!isRegister.value && !siteConfig.register.enabled) {
+    error.value = '当前暂未开放注册，请联系管理员'
+    return
+  }
   isRegister.value = !isRegister.value
   // 切换时清理错误提示与协议勾选，避免状态残留
   error.value = ''
@@ -153,6 +158,7 @@ function toggleMode() {
 const NAME_REGEX = /^[a-zA-Z0-9_\u4e00-\u9fa5]+$/
 
 onMounted(() => {
+  void siteConfig.fetch()
   const ru = localStorage.getItem('login_remember_username')
   const rp = localStorage.getItem('login_remember_password')
   if (ru === '1') {
@@ -221,6 +227,10 @@ async function handleSubmit() {
     return
   }
   if (isRegister.value) {
+    if (!siteConfig.register.enabled) {
+      error.value = '当前暂未开放注册，请联系管理员'
+      return
+    }
     const msg = validateRegisterForm()
     if (msg) {
       error.value = msg

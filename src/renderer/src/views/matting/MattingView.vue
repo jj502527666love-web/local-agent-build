@@ -226,6 +226,11 @@
 
         <!-- 底部按钮：禁用时 hover 显示原因 tooltip -->
         <div class="px-3 py-2.5 border-t border-surface-3 space-y-2">
+          <ConsumptionEstimate
+            v-if="mattingEstimate.amount > 0"
+            :balance-type="mattingEstimate.balanceType"
+            :amount="mattingEstimate.amount"
+          />
           <button
             class="btn-primary w-full"
             :disabled="!canRun"
@@ -261,6 +266,12 @@
       :on-locate="lightboxLocate"
       @close="closeLightbox"
     />
+    <LowBalanceModal
+      v-model:visible="lowBalanceOpen"
+      :balance-type="lowBalanceState.balanceType"
+      :required="lowBalanceState.required"
+      :available="lowBalanceState.available"
+    />
   </div>
 </template>
 
@@ -273,6 +284,8 @@ import { useHandoffStore } from '@/stores/handoff'
 import { useSiteConfigStore } from '@/stores/site-config'
 import GalleryPicker from '@/components/GalleryPicker.vue'
 import ImageLightbox from '@/components/ImageLightbox.vue'
+import ConsumptionEstimate from '@/components/ConsumptionEstimate.vue'
+import LowBalanceModal from '@/components/LowBalanceModal.vue'
 
 const store = useMattingStore()
 const cloudAuth = useCloudAuthStore()
@@ -280,6 +293,8 @@ const siteConfig = useSiteConfigStore()
 const router = useRouter()
 const handoff = useHandoffStore()
 const creditLabel = computed(() => siteConfig.labelOf('credit'))
+const lowBalanceOpen = ref(false)
+const lowBalanceState = ref({ balanceType: 'credit', required: 0, available: 0 })
 
 /**
  * 单次提交上限：60 张 = 单用户并发 3 × 约 20 轮。
@@ -384,10 +399,17 @@ function onGalleryPickPaths(paths: string[]) {
 const running = ref(false)
 const runProgress = ref(0)
 const canceled = ref(false)
+const mattingEstimate = computed(() => {
+  if (mode.value !== 'cloud') return { balanceType: 'credit', amount: 0 }
+  return {
+    balanceType: 'credit',
+    amount: Number(store.cloudQuota?.credit_per_call || 0) * pendingFiles.value.length,
+  }
+})
 
 /**
  * 返回不能开始抠图的原因。空字符串 = 可以开始。
- * 优先级：运行中 > 未选图 > 接口不可用 / 抠图未开通 > 月配额超限 > 余额不足
+ * 优先级：运行中 > 未选图 > 接口不可用 / 抠图未开通 > 月配额超限
  * 只在云接口模式下才检查余额 / 配额；自定义接口走阿里账单，与我们的积分无关。
  */
 const runDisabledReason = computed<string>(() => {
@@ -407,9 +429,6 @@ const runDisabledReason = computed<string>(() => {
   if (q && q.image_matting_quota_per_month > 0 && q.used_this_month >= q.image_matting_quota_per_month) {
     return `本月配额已用完（${q.used_this_month} / ${q.image_matting_quota_per_month}）`
   }
-  if (q && q.credit_per_call > 0 && q.current_credit_balance < q.credit_per_call) {
-    return `${creditLabel.value}余额不足（需 ${Number(q.credit_per_call).toFixed(4)}，当前 ${Number(q.current_credit_balance).toFixed(2)}）`
-  }
   // q 为 null 时不阐拦——可能是未登录 / 服务端未配计费规则，让用户试一下看实际报错。
   return ''
 })
@@ -417,6 +436,21 @@ const canRun = computed(() => !runDisabledReason.value)
 
 async function runQueue() {
   if (!canRun.value) return
+  if (mattingEstimate.value.amount > 0) {
+    const available = Number(store.cloudQuota?.current_credit_balance
+      ?? cloudAuth.quotas?.balances?.credit?.total
+      ?? cloudAuth.balances.find((b) => b.type === 'credit')?.amount
+      ?? 0)
+    if (available + 0.000001 < mattingEstimate.value.amount) {
+      lowBalanceState.value = {
+        balanceType: 'credit',
+        required: mattingEstimate.value.amount,
+        available,
+      }
+      lowBalanceOpen.value = true
+      return
+    }
+  }
   running.value = true
   runProgress.value = 0
   canceled.value = false

@@ -209,6 +209,12 @@
                 <svg class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
                 正在处理附件...
               </div>
+              <ConsumptionEstimate
+                v-if="chatEstimate.amount > 0"
+                class="mb-2"
+                :balance-type="chatEstimate.balanceType"
+                :amount="chatEstimate.amount"
+              />
               <div v-if="pendingAttachments.length" class="flex gap-2 flex-wrap mb-2 px-1">
                 <div v-for="(att, i) in pendingAttachments" :key="i" class="flex items-center gap-1.5 px-2.5 py-1.5 bg-surface-2 rounded-lg text-xs text-text-secondary group">
                   <svg v-if="att.type === 'image'" class="w-3.5 h-3.5 text-text-tertiary" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909M3.75 21h16.5A2.25 2.25 0 0 0 22.5 18.75V5.25A2.25 2.25 0 0 0 20.25 3H3.75A2.25 2.25 0 0 0 1.5 5.25v13.5A2.25 2.25 0 0 0 3.75 21Z" /></svg>
@@ -409,6 +415,12 @@
     </div>
   </div>
   <GalleryPicker v-model:visible="showGalleryPicker" :multiple="true" @select="onGallerySelectForChat" />
+  <LowBalanceModal
+    v-model:visible="lowBalanceOpen"
+    :balance-type="lowBalanceState.balanceType"
+    :required="lowBalanceState.required"
+    :available="lowBalanceState.available"
+  />
 </template>
 
 <script setup lang="ts">
@@ -423,13 +435,17 @@ import { useMcpStore } from '@/stores/mcps'
 import { usePromptSkillStore } from '@/stores/prompt-skills'
 import { usePromptPresetStore } from '@/stores/prompt-presets'
 import { useModelStore } from '@/stores/models'
+import { useCloudAuthStore } from '@/stores/cloud-auth'
 import { hasCap } from '@/utils/model-caps'
 import { useSiteConfigStore } from '@/stores/site-config'
 import { renderMarkdown } from '@/utils/markdown'
 import { stripImageMetadata } from '@shared/strip-image-metadata'
+import { CLOUD_KEY_SEP, stripModelId } from '@shared/model-id'
 import GalleryPicker from '@/components/GalleryPicker.vue'
 import ImageLightbox from '@/components/ImageLightbox.vue'
 import ChatModelSwitcher from '@/components/ChatModelSwitcher.vue'
+import ConsumptionEstimate from '@/components/ConsumptionEstimate.vue'
+import LowBalanceModal from '@/components/LowBalanceModal.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -437,6 +453,7 @@ const handoff = useHandoffStore()
 const chatStore = useChatStore()
 const botStore = useBotStore()
 const modelStore = useModelStore()
+const cloudAuth = useCloudAuthStore()
 const siteConfigStore = useSiteConfigStore()
 const kbStore = useKnowledgeStore()
 const skillStore = useSkillStore()
@@ -453,6 +470,8 @@ const selectedBotId = ref('')
 const restoringState = ref(false)
 const showBotSelector = ref(false)
 const inputText = ref('')
+const lowBalanceOpen = ref(false)
+const lowBalanceState = ref({ balanceType: 'token', required: 0, available: 0 })
 const messagesContainer = ref<HTMLElement | null>(null)
 const inputEl = ref<HTMLTextAreaElement | null>(null)
 const botSelectorRef = ref<HTMLElement | null>(null)
@@ -626,6 +645,23 @@ const selectedBotName = computed(() => {
 // 当前选中智能体的完整对象：以 selectedBotId 索引。
 // 请不要考虑「生图：」切换器是否渲染（如果 bot.enable_image_gen=0 则隐藏）；chat-engine 同样会跳过生图工作流。
 const currentBot = computed(() => bots.value.find((b) => b.id === selectedBotId.value))
+
+const chatEstimate = computed(() => {
+  const conv = chatStore.currentConversation
+  const rule = effectiveBillingRule(conv?.active_model_provider_id || '', conv?.active_model_id || '')
+  if (!rule) return { balanceType: 'token', amount: 0 }
+  if (rule.billing_type === 'credit') {
+    return { balanceType: 'credit', amount: Number(rule.credit_per_call || 0) }
+  }
+  if (rule.billing_type === 'token') {
+    const inputTokens = Math.ceil((inputText.value.trim().length + pendingAttachments.value.length * 300) / 3)
+    const outputTokens = 800
+    const amount = (inputTokens / 1000000) * Number(rule.input_price || 0)
+      + (outputTokens / 1000000) * Number(rule.output_price || 0)
+    return { balanceType: 'token', amount }
+  }
+  return { balanceType: 'token', amount: 0 }
+})
 
 const botInitial = computed(() => {
   const name = selectedBotName.value
@@ -1170,9 +1206,45 @@ function dispatchTo(target: 'imageGen' | 'batchGen' | 'canvasOrchestrate', msg: 
   dispatchMenuId.value = null
 }
 
+function cloudProviderName(modelKey: string): string {
+  const i = modelKey.indexOf(CLOUD_KEY_SEP)
+  return i >= 0 ? modelKey.slice(i + CLOUD_KEY_SEP.length) : ''
+}
+
+function effectiveBillingRule(providerId: string, modelKey: string): any | null {
+  if (providerId !== 'cloud:default' || !modelKey) return null
+  const pure = stripModelId(modelKey)
+  const providerName = cloudProviderName(modelKey)
+  const cloudModel = cloudAuth.models.find((m) => {
+    if (m.model_id !== pure) return false
+    return providerName ? m.provider_name === providerName : true
+  })
+  return cloudAuth.billingRules.find((r: any) => Number(r.cloud_model_id) === Number(cloudModel?.id))
+    || cloudAuth.billingRules.find((r: any) => r.model_id === pure)
+    || null
+}
+
+function availableBalance(type: string): number {
+  return Number(cloudAuth.quotas?.balances?.[type]?.total
+    ?? cloudAuth.balances.find((b) => b.type === type)?.amount
+    ?? 0)
+}
+
 async function send() {
   const text = inputText.value.trim()
   if ((!text && !pendingAttachments.value.length) || chatStore.streaming) return
+  if (chatEstimate.value.amount > 0) {
+    const available = availableBalance(chatEstimate.value.balanceType)
+    if (available + 0.000001 < chatEstimate.value.amount) {
+      lowBalanceState.value = {
+        balanceType: chatEstimate.value.balanceType,
+        required: chatEstimate.value.amount,
+        available,
+      }
+      lowBalanceOpen.value = true
+      return
+    }
+  }
   inputText.value = ''
   const attachments = pendingAttachments.value.length ? JSON.parse(JSON.stringify(pendingAttachments.value)) : undefined
   pendingAttachments.value = []

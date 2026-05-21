@@ -72,6 +72,7 @@
           <IconSettings class="w-[18px] h-[18px] flex-shrink-0" />
           <span class="font-medium">设置</span>
         </router-link>
+        <SidebarBalanceBadge v-if="cloudAuth.isLoggedIn" class="mt-2" />
       </div>
     </aside>
     <main class="flex-1 overflow-hidden flex flex-col relative">
@@ -81,6 +82,7 @@
              放在 pageTitle 右侧 + 画布徽标左侧，画布运行时仍可点击（徽标 ml-auto 抢占右侧）。
              根元素是 button，main.css 的 `.app-drag button` 规则会自动 no-drag，无需额外 class -->
         <AnnouncementBar />
+        <ExpiryGlobalBanner />
         <!-- 全局画布任务徽标：anyRunning 时显示，跨页面可见，让用户知道任务仍在后台执行 -->
         <div
           v-if="canvasAnyRunning && !isCanvasRoute"
@@ -141,6 +143,8 @@ import IconVideoCreation from '@/components/icons/IconVideoCreation.vue'
 import IconCanvasSquare from '@/components/icons/IconCanvasSquare.vue'
 import IconImageToolkit from '@/components/icons/IconImageToolkit.vue'
 import AnnouncementBar from '@/components/AnnouncementBar.vue'
+import ExpiryGlobalBanner from '@/components/ExpiryGlobalBanner.vue'
+import SidebarBalanceBadge from '@/components/SidebarBalanceBadge.vue'
 import { useCloudAuthStore } from '@/stores/cloud-auth'
 import { appName, appAbbr, appIconUrl } from '@/utils/branding'
 

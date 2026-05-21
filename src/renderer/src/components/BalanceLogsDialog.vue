@@ -8,7 +8,7 @@
       >
         <div class="w-full max-w-xl bg-surface-0 rounded-2xl shadow-2xl flex flex-col max-h-[80vh]">
           <div class="flex items-center justify-between px-5 py-3 border-b border-surface-2">
-            <h3 class="text-sm font-semibold text-text-primary">{{ siteConfig.labels.token }}明细</h3>
+            <h3 class="text-sm font-semibold text-text-primary">账单明细</h3>
             <button @click="close" class="text-text-tertiary hover:text-text-primary">
               <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
@@ -60,7 +60,7 @@
                       </span>
                       <span class="text-[11px] text-text-secondary">{{ changeTypeLabel(log.change_type) }}</span>
                     </div>
-                    <p v-if="log.remark" class="text-[10px] text-text-tertiary mt-1 truncate">{{ log.remark }}</p>
+                    <p v-if="displayRemark(log)" class="text-[10px] text-text-tertiary mt-1 truncate">{{ displayRemark(log) }}</p>
                     <p class="text-[10px] text-text-tertiary mt-0.5">{{ formatTime(log.created_at) }}</p>
                   </div>
                   <div class="text-right whitespace-nowrap">
@@ -162,6 +162,21 @@ function changeTypeLabel(t: string): string {
     case 'usage':          return '用量扣费'
     case 'admin_adjust':   return '管理员调整'
     default: return t
+  }
+}
+
+function displayRemark(log: BalanceLog): string {
+  const raw = String(log.remark || '').trim()
+  if (!raw) return ''
+  if (log.change_type !== 'usage') return raw
+
+  const type = raw.split(/\s+/)[0]
+  switch (type) {
+    case 'chat':      return '对话扣费'
+    case 'image':     return '图片生成扣费'
+    case 'embedding': return '向量处理扣费'
+    case 'matting':   return '智能抠图扣费'
+    default:          return '用量扣费'
   }
 }
 

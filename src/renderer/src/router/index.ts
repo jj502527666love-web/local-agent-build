@@ -210,6 +210,12 @@ export const routes: RouteRecordRaw[] = [
         name: 'plansStore',
         component: () => import('@/views/plans-store/PlansStoreView.vue'),
         meta: { title: '套餐商城' }
+      },
+      {
+        path: 'oem-channel',
+        name: 'oemChannel',
+        component: () => import('@/views/user-center/OemChannelCenterView.vue'),
+        meta: { title: '渠道中心' }
       }
     ]
   }

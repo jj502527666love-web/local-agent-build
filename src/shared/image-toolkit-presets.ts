@@ -18,7 +18,7 @@ export type CardCategory = 'hero' | 'recommend' | 'tool' | 'ai-enhance' | 'ecomm
 export type CardAction =
   | { type: 'direct-route'; path: string }
   | { type: 'pick-then-tool'; toolRoute: string; multiple?: boolean; minImages?: number; maxImages?: number }
-  | { type: 'pick-then-edit'; tool: 'inpaint' | 'crop' | 'sticker'; template?: 'replace' | 'remove' | 'fix' | 'enhance'; presetPrompt?: string }
+  | { type: 'pick-then-edit'; tool?: 'inpaint' | 'crop' | 'corner' | 'sticker'; template?: 'replace' | 'remove' | 'fix' | 'enhance'; presetPrompt?: string }
   | { type: 'pick-then-gen'; presetPrompt: string; presetSize?: string; needRef: boolean; autoSize?: boolean }
 
 export interface ToolCard {
@@ -65,7 +65,7 @@ export const HERO_CARDS: ToolCard[] = [
     cta: '去编辑图片',
     iconPath: 'm16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897L16.863 4.487Zm0 0L19.5 7.125 M3 21h18',
     category: 'hero',
-    action: { type: 'pick-then-edit', tool: 'crop' }
+    action: { type: 'pick-then-edit' }
   }
 ]
 
@@ -204,6 +204,13 @@ export const TOOL_CARDS: ToolCard[] = [
     iconPath: 'M3.375 19.5h17.25m-17.25 0a1.125 1.125 0 0 1-1.125-1.125V14.25m18.375 5.25c.621 0 1.125-.504 1.125-1.125V14.25m-17.25 4.5v-1.5a1.125 1.125 0 0 1 1.125-1.125h13.5c.621 0 1.125.504 1.125 1.125v1.5m-15.75 0V8.25m0 0V6.375A1.125 1.125 0 0 1 4.5 5.25h7.5a1.125 1.125 0 0 1 1.125 1.125V8.25m-12 0h12m0 0h6.375a1.125 1.125 0 0 1 1.125 1.125v6m-7.5-7.125v3.75',
     category: 'tool',
     action: { type: 'pick-then-edit', tool: 'crop' }
+  },
+  {
+    id: 'image-corner',
+    label: '图片边角',
+    iconPath: 'M4.5 9.75V6.75A2.25 2.25 0 0 1 6.75 4.5h3m3.75 0h3A2.25 2.25 0 0 1 18.75 6.75v3m0 3.75v3A2.25 2.25 0 0 1 16.5 18.75h-3m-3.75 0h-3A2.25 2.25 0 0 1 4.5 16.5v-3',
+    category: 'tool',
+    action: { type: 'pick-then-edit', tool: 'corner' }
   },
   {
     id: 'change-bg',

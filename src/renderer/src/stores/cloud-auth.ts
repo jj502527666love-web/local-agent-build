@@ -40,6 +40,46 @@ export interface CloudPermissions {
   allow_image_matting: boolean
   allow_custom_matting_provider: boolean
   image_matting_quota_per_month: number
+  [key: string]: any
+}
+
+export interface CloudBalanceBreakdown {
+  wallet: number
+  plan: number
+  total: number
+}
+
+export interface CloudPlanQuota {
+  id: number
+  user_plan_id: number
+  plan_id: number
+  plan_code: string
+  plan_name: string
+  balance_type: string
+  granted: number
+  consumed: number
+  remaining: number
+  expires_at: string | null
+  status: string
+}
+
+export interface CloudUsageCounter {
+  counter_key: string
+  limit: number
+  used: number
+  remaining: number | null
+  period: string
+  reset_at: string
+  allowed: boolean
+  unlimited: boolean
+}
+
+export interface CloudQuotas {
+  balances: Record<string, CloudBalanceBreakdown>
+  plan_quotas: CloudPlanQuota[]
+  usage_counters: Record<string, CloudUsageCounter>
+  rate_limits: Record<string, { rpm: number; tpm: number; concurrency: number }>
+  policies: Record<string, any>
 }
 
 export interface RegisterBonus {
@@ -60,9 +100,17 @@ export interface MyPlan {
   source: string
   activated_at: string | null
   expires_at: string | null
+  quota_refill_cycle?: 'none' | 'monthly' | string
+  last_quota_refilled_at?: string | null
+  next_quota_refill_at?: string | null
+  upgraded_from_user_plan_id?: number | null
   status: 'active' | 'expired' | 'revoked'
   token_granted: number
   credit_granted: number
+  policies?: Record<string, any>
+  rate_limit?: Record<string, any>
+  quota_buckets?: CloudPlanQuota[]
+  quota_summary?: Record<string, { granted: number; consumed: number; remaining: number }>
   models: { id: number; model_id: string; name: string; type: string }[]
 }
 
@@ -90,6 +138,7 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
     image_matting_quota_per_month: 100,
   })
   const balances = ref<{ type: string; amount: number }[]>([])
+  const quotas = ref<CloudQuotas | null>(null)
   const billingRules = ref<any[]>([])
   const plans = ref<MyPlan[]>([])
   // 云端当前启用的最新一条公告，未登录 / 未拉取 / 无公告时为 null
@@ -148,6 +197,7 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
     user.value = null
     models.value = []
     balances.value = []
+    quotas.value = null
     plans.value = []
     announcement.value = null
     permissions.value = {
@@ -188,13 +238,15 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
 
   async function fetchCloudData() {
     try {
-      const [modelsRes, permRes, balRes] = await Promise.all([
+      const [modelsRes, permRes, balRes, quotaRes] = await Promise.all([
         cloudClient.myModels(),
         cloudClient.myPermissions(),
         cloudClient.myBalance(),
+        cloudClient.myQuotas().catch(() => null),
       ])
       models.value = modelsRes.models || []
-      permissions.value = { ...permissions.value, ...(permRes.permissions || {}) }
+      quotas.value = quotaRes as CloudQuotas | null
+      permissions.value = { ...permissions.value, ...(quotaRes?.policies || {}), ...(permRes.permissions || {}) }
       balances.value = balRes.balances || []
       try {
         const billRes = await cloudClient.myBillingRules()
@@ -277,7 +329,7 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
   }
 
   return {
-    user, models, permissions, balances, billingRules, plans, announcement,
+    user, models, permissions, balances, quotas, billingRules, plans, announcement,
     isLoggedIn, loading, pendingBonus,
     login, register, logout, fetchMe, fetchCloudData,
     changePassword, refreshToken, init, consumeBonus,

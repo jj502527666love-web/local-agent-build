@@ -112,6 +112,14 @@
               </div>
             </div>
 
+            <div v-if="currentUserPlan(p)" class="text-[11px] text-text-tertiary mb-3">
+              当前套餐
+              <span v-if="currentUserPlan(p)?.expires_at" class="text-text-secondary ml-1">
+                到期 {{ formatDate(currentUserPlan(p)?.expires_at) }}
+              </span>
+              <span v-else class="text-text-secondary ml-1">永久有效</span>
+            </div>
+
             <div class="flex-1"></div>
 
             <button
@@ -125,6 +133,34 @@
           </div>
         </div>
 
+        <div v-if="plans.length" class="card p-5 mt-5 overflow-x-auto">
+          <h3 class="text-sm font-semibold text-text-primary mb-3">套餐对比</h3>
+          <table class="w-full text-xs">
+            <thead>
+              <tr class="text-left text-text-tertiary border-b border-surface-3">
+                <th class="py-2 pr-4 font-medium">套餐</th>
+                <th class="py-2 pr-4 font-medium">有效期</th>
+                <th class="py-2 pr-4 font-medium">{{ siteConfig.labels.token }}</th>
+                <th class="py-2 pr-4 font-medium">{{ siteConfig.labels.credit }}</th>
+                <th class="py-2 pr-4 font-medium">续充</th>
+                <th class="py-2 pr-4 font-medium">模型</th>
+                <th class="py-2 font-medium">价格</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="p in plans" :key="`compare-${p.id}`" class="border-b border-surface-2 text-text-secondary">
+                <td class="py-2 pr-4 text-text-primary font-medium">{{ p.name }}</td>
+                <td class="py-2 pr-4">{{ p.duration_days === 0 ? '永久' : `${p.duration_days} 天` }}</td>
+                <td class="py-2 pr-4">{{ formatNum(p.token_quota) }}</td>
+                <td class="py-2 pr-4">{{ formatNum(p.credit_quota) }}</td>
+                <td class="py-2 pr-4">{{ refillLabel(p.quota_refill_cycle) }}</td>
+                <td class="py-2 pr-4">{{ p.models?.length || 0 }}</td>
+                <td class="py-2">{{ formatPrice(p.price) }} {{ p.currency || 'CNY' }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
         <p class="text-[11px] text-text-tertiary mt-6 text-center">
           支付完成后套餐将自动开通，可在用户中心「我的套餐」查看
         </p>
@@ -135,19 +171,22 @@
     <PaymentDialog
       v-model:visible="payOpen"
       :plan-id="selectedPlanId"
+      :from-user-plan-id="selectedFromUserPlanId"
       @paid="onPaid"
     />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { cloudClient } from '@/utils/cloud-api'
+import { useCloudAuthStore } from '@/stores/cloud-auth'
 import { useSiteConfigStore } from '@/stores/site-config'
 import PaymentDialog from '@/components/PaymentDialog.vue'
 
 const siteConfig = useSiteConfigStore()
+const cloudAuth = useCloudAuthStore()
 
 interface StoreModel {
   id: number
@@ -166,6 +205,9 @@ interface StorePlan {
   duration_days: number
   token_quota: number
   credit_quota: number
+  quota_refill_cycle?: string
+  policies?: Record<string, any>
+  rate_limit?: Record<string, any>
   sort: number
   models: StoreModel[]
 }
@@ -178,6 +220,9 @@ const loadError = ref('')
 
 const payOpen = ref(false)
 const selectedPlanId = ref<number | null>(null)
+const selectedFromUserPlanId = ref<number | null>(null)
+
+const primaryActivePlan = computed(() => (cloudAuth.plans || []).find(p => p.status === 'active') || null)
 
 function goBack() {
   router.push('/user-center')
@@ -196,22 +241,32 @@ async function loadPlans() {
 }
 
 function canPurchase(p: StorePlan): boolean {
-  return Number(p.price) > 0
+  if (Number(p.price) <= 0) return false
+  const current = currentUserPlan(p)
+  if (current && !current.expires_at) return false
+  return true
 }
 
 function purchaseLabel(p: StorePlan): string {
   if (Number(p.price) <= 0) return '不可在线购买'
+  const current = currentUserPlan(p)
+  if (current && !current.expires_at) return '已拥有'
+  if (current) return '续费'
+  if (primaryActivePlan.value) return '升级套餐'
   return '立即购买'
 }
 
 function handleBuy(p: StorePlan) {
   if (!canPurchase(p)) return
   selectedPlanId.value = p.id
+  selectedFromUserPlanId.value = currentUserPlan(p) ? null : (primaryActivePlan.value?.id || null)
   payOpen.value = true
 }
 
 function onPaid() {
-  // PaymentDialog 内部已刷新 store；此处可补充提示或跳转
+  selectedFromUserPlanId.value = null
+  cloudAuth.fetchCloudData().catch(() => {})
+  loadPlans()
 }
 
 function formatPrice(v: string | number): string {
@@ -226,7 +281,29 @@ function formatNum(v: number): string {
   return Number(v).toFixed(2)
 }
 
+function currentUserPlan(p: StorePlan): any | null {
+  return (cloudAuth.plans || []).find(up => up.status === 'active' && Number(up.plan_id) === Number(p.id)) || null
+}
+
+function formatDate(value?: string | null): string {
+  if (!value) return ''
+  try {
+    const d = new Date(value)
+    const y = d.getFullYear()
+    const m = String(d.getMonth() + 1).padStart(2, '0')
+    const day = String(d.getDate()).padStart(2, '0')
+    return `${y}-${m}-${day}`
+  } catch {
+    return value
+  }
+}
+
+function refillLabel(value?: string): string {
+  return value === 'monthly' ? '月度续充' : '一次性'
+}
+
 onMounted(() => {
+  cloudAuth.fetchCloudData().catch(() => {})
   loadPlans()
 })
 </script>

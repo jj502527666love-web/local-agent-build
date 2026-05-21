@@ -164,6 +164,12 @@
             </div>
             <!-- Generate Button (sticky bottom) -->
             <div class="flex-shrink-0 p-4 border-t border-surface-3">
+              <ConsumptionEstimate
+                v-if="imageEstimate.amount > 0"
+                class="mb-3"
+                :balance-type="imageEstimate.balanceType"
+                :amount="imageEstimate.amount"
+              />
               <button
                 @click="doGenerate"
                 :disabled="!canGenerate"
@@ -469,6 +475,12 @@
     @cancel="cancelRegenerate"
   />
   <GalleryPicker v-model:visible="showGalleryPicker" :multiple="true" @select="onGalleryRefSelect" />
+  <LowBalanceModal
+    v-model:visible="lowBalanceOpen"
+    :balance-type="lowBalanceState.balanceType"
+    :required="lowBalanceState.required"
+    :available="lowBalanceState.available"
+  />
 </template>
 
 <script setup lang="ts">
@@ -478,7 +490,8 @@ import { useRoute, useRouter } from 'vue-router'
 import { useImageGenStore } from '@/stores/image-gen'
 import { useImageGenFormStore } from '@/stores/image-gen-form'
 import { useModelStore } from '@/stores/models'
-import { stripModelId } from '@shared/model-id'
+import { useCloudAuthStore } from '@/stores/cloud-auth'
+import { CLOUD_KEY_SEP, stripModelId } from '@shared/model-id'
 import { usePromptPresetStore } from '@/stores/prompt-presets'
 import { useHandoffStore } from '@/stores/handoff'
 import { translateError } from '@/utils/error-message'
@@ -494,6 +507,8 @@ import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import GalleryPicker from '@/components/GalleryPicker.vue'
 import ImageLightbox from '@/components/ImageLightbox.vue'
 import CreationDetailModal from '@/components/CreationDetailModal.vue'
+import ConsumptionEstimate from '@/components/ConsumptionEstimate.vue'
+import LowBalanceModal from '@/components/LowBalanceModal.vue'
 import type { ImageGeneration } from '@/stores/image-gen'
 
 const route = useRoute()
@@ -501,6 +516,7 @@ const router = useRouter()
 const store = useImageGenStore()
 const handoff = useHandoffStore()
 const modelStore = useModelStore()
+const cloudAuth = useCloudAuthStore()
 const presetStore = usePromptPresetStore()
 
 // 会话级表单草稿：路由切换不丢，重启 app 后重置
@@ -554,6 +570,7 @@ function cancelRegenerate() {
 
 // 重新生成：以原记录的参数再生成一条新的生成记录，原记录保留供对比
 function regenerate(gen: ImageGeneration) {
+  if (!ensureEnoughBalance(gen.model_provider_id, gen.model_id, 1)) return
   store.enqueue({
     prompt: gen.prompt,
     refImages: gen.ref_images || [],
@@ -586,6 +603,8 @@ const optimizeError = ref('')
 const showPresetPopup = ref(false)
 const selectMode = ref(false)
 const selectedIds = ref<Set<string>>(new Set())
+const lowBalanceOpen = ref(false)
+const lowBalanceState = ref({ balanceType: 'credit', required: 0, available: 0 })
 
 function toggleSelectMode() {
   selectMode.value = !selectMode.value
@@ -739,6 +758,8 @@ const canGenerate = computed(() =>
   prompt.value.trim() && selectedProviderId.value && selectedModelId.value
 )
 
+const imageEstimate = computed(() => estimateImageCost(selectedProviderId.value, selectedModelId.value, batchCount.value))
+
 const OPTIMIZE_CN_PROMPT = `你是一个专业的 AI 图片生成提示词工程师。请将以下描述优化为高质量的中文生图提示词。
 
 优化要求：
@@ -848,6 +869,7 @@ async function onGalleryRefSelect(paths: string[]) {
 
 function doGenerate() {
   if (!canGenerate.value) return
+  if (!ensureEnoughBalance(selectedProviderId.value, selectedModelId.value, batchCount.value)) return
   store.enqueue({
     prompt: prompt.value,
     refImages: refImages.value.length ? refImages.value : undefined,
@@ -860,6 +882,53 @@ function doGenerate() {
   })
   recordUsage('image', selectedProviderId.value, selectedModelId.value)
   hintsTick.value++
+}
+
+function cloudProviderName(modelKey: string): string {
+  const i = modelKey.indexOf(CLOUD_KEY_SEP)
+  return i >= 0 ? modelKey.slice(i + CLOUD_KEY_SEP.length) : ''
+}
+
+function effectiveBillingRule(providerId: string, modelKey: string): any | null {
+  if (providerId !== 'cloud:default' || !modelKey) return null
+  const pure = stripModelId(modelKey)
+  const providerName = cloudProviderName(modelKey)
+  const cloudModel = cloudAuth.models.find((m) => {
+    if (m.model_id !== pure) return false
+    return providerName ? m.provider_name === providerName : true
+  })
+  return cloudAuth.billingRules.find((r: any) => Number(r.cloud_model_id) === Number(cloudModel?.id))
+    || cloudAuth.billingRules.find((r: any) => r.model_id === pure)
+    || null
+}
+
+function estimateImageCost(providerId: string, modelKey: string, count: number): { balanceType: string; amount: number } {
+  const rule = effectiveBillingRule(providerId, modelKey)
+  if (!rule) return { balanceType: 'credit', amount: 0 }
+  return {
+    balanceType: 'credit',
+    amount: Number(rule.credit_per_call || 0) * Math.max(1, Number(count || 1)),
+  }
+}
+
+function availableBalance(type: string): number {
+  return Number(cloudAuth.quotas?.balances?.[type]?.total
+    ?? cloudAuth.balances.find((b) => b.type === type)?.amount
+    ?? 0)
+}
+
+function ensureEnoughBalance(providerId: string, modelKey: string, count: number): boolean {
+  const estimate = estimateImageCost(providerId, modelKey, count)
+  if (estimate.amount <= 0) return true
+  const available = availableBalance(estimate.balanceType)
+  if (available + 0.000001 >= estimate.amount) return true
+  lowBalanceState.value = {
+    balanceType: estimate.balanceType,
+    required: estimate.amount,
+    available,
+  }
+  lowBalanceOpen.value = true
+  return false
 }
 
 const copyToast = ref('')

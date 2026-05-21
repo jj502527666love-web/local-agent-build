@@ -79,6 +79,78 @@
           </div>
         </div>
 
+        <div v-if="activeTool === 'corner'" class="space-y-3">
+          <h4 class="text-xs font-medium text-text-secondary">边角</h4>
+          <p class="text-[11px] text-text-tertiary">调整圆角、透明或颜色背景和四周边距</p>
+
+          <div class="space-y-2">
+            <div class="flex items-center justify-between">
+              <span class="text-[11px] text-text-secondary">关联圆角</span>
+              <span class="text-[10px] text-text-tertiary">{{ cornerLinkedRadius }}px</span>
+            </div>
+            <input type="range" min="0" :max="cornerMaxRadius" v-model.number="cornerLinkedRadius" @input="applyLinkedCornerRadius" class="w-full h-1 accent-primary-600" />
+            <div class="grid grid-cols-2 gap-1">
+              <label v-for="c in cornerOptions" :key="c.id" class="flex items-center gap-1.5 text-[10px] text-text-tertiary">
+                <input type="checkbox" v-model="cornerRadiusLinked[c.id]" class="w-3 h-3 accent-primary-600" />
+                <span>{{ c.label }}</span>
+              </label>
+            </div>
+          </div>
+
+          <div class="space-y-2 border-t border-surface-3 pt-3">
+            <div v-for="c in cornerOptions" :key="c.id" class="space-y-1">
+              <div class="flex items-center justify-between">
+                <span class="text-[11px] text-text-secondary">{{ c.label }}</span>
+                <input type="number" min="0" :max="cornerMaxRadius" v-model.number="cornerRadius[c.id]" @change="normalizeCornerRadius(c.id)" class="w-16 px-1.5 py-1 text-[10px] border border-surface-3 rounded bg-surface-0 text-right outline-none" />
+              </div>
+              <input type="range" min="0" :max="cornerMaxRadius" v-model.number="cornerRadius[c.id]" @input="normalizeCornerRadius(c.id)" class="w-full h-1 accent-primary-600" />
+            </div>
+          </div>
+
+          <div class="space-y-2 border-t border-surface-3 pt-3">
+            <div class="flex items-center justify-between">
+              <span class="text-[11px] text-text-secondary">关联边距</span>
+              <span class="text-[10px] text-text-tertiary">{{ cornerLinkedPadding }}%</span>
+            </div>
+            <input type="range" min="0" :max="cornerMaxPadding" v-model.number="cornerLinkedPadding" @input="applyLinkedCornerPadding" class="w-full h-1 accent-primary-600" />
+            <div class="grid grid-cols-2 gap-1">
+              <label v-for="e in edgeOptions" :key="e.id" class="flex items-center gap-1.5 text-[10px] text-text-tertiary">
+                <input type="checkbox" v-model="cornerPaddingLinked[e.id]" class="w-3 h-3 accent-primary-600" />
+                <span>{{ e.label }}</span>
+              </label>
+            </div>
+          </div>
+
+          <div class="space-y-2 border-t border-surface-3 pt-3">
+            <div v-for="e in edgeOptions" :key="e.id" class="flex items-center justify-between gap-2">
+              <span class="text-[11px] text-text-secondary">{{ e.label }}</span>
+              <div class="flex items-center gap-1">
+                <input type="number" min="0" :max="cornerMaxPadding" v-model.number="cornerPadding[e.id]" @change="normalizeCornerPadding(e.id)" class="w-16 px-1.5 py-1 text-[10px] border border-surface-3 rounded bg-surface-0 text-right outline-none" />
+                <span class="text-[10px] text-text-tertiary">%</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="space-y-2 border-t border-surface-3 pt-3">
+            <span class="text-[11px] text-text-secondary">背景</span>
+            <label class="flex items-center gap-1.5 text-[11px] text-text-tertiary">
+              <input type="radio" value="transparent" v-model="cornerBackgroundMode" class="w-3 h-3 accent-primary-600" />
+              <span>透明背景</span>
+            </label>
+            <label class="flex items-center gap-1.5 text-[11px] text-text-tertiary">
+              <input type="radio" value="color" v-model="cornerBackgroundMode" class="w-3 h-3 accent-primary-600" />
+              <span>颜色填充</span>
+              <input type="color" v-model="cornerBackgroundColor" :disabled="cornerBackgroundMode !== 'color'" class="w-6 h-6 rounded border border-surface-3 cursor-pointer disabled:opacity-40" />
+            </label>
+          </div>
+
+          <div class="flex gap-2 pt-1">
+            <button @click="applyCornerSettings" class="flex-1 px-2 py-1.5 text-[11px] bg-primary-600 text-white rounded-lg hover:bg-primary-700">应用边角</button>
+            <button @click="resetCornerSettings" class="flex-1 px-2 py-1.5 text-[11px] border border-surface-3 rounded-lg hover:bg-surface-2">重置</button>
+          </div>
+          <p class="text-[10px] text-text-tertiary">未应用时直接保存，也会按当前设置输出。</p>
+        </div>
+
         <!-- Rotate/Flip controls -->
         <div v-if="activeTool === 'rotate'" class="space-y-3">
           <h4 class="text-xs font-medium text-text-secondary">旋转 / 翻转</h4>
@@ -283,7 +355,7 @@
 
       <!-- Canvas Area -->
       <div class="flex-1 flex flex-col overflow-hidden bg-[#f0f0f0] relative" ref="canvasContainerRef">
-        <div class="flex-1 flex items-center justify-center overflow-hidden p-6">
+        <div class="flex-1 flex items-center justify-center overflow-hidden p-3">
           <canvas ref="canvasRef"></canvas>
         </div>
         <div v-if="loading" class="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#f0f0f0] z-10">
@@ -366,10 +438,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, onBeforeUnmount, nextTick, shallowRef } from 'vue'
+import { ref, reactive, computed, onMounted, onBeforeUnmount, nextTick, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Canvas, FabricImage, Rect, Ellipse, IText, PencilBrush, filters, Path, Point, Control, util } from 'fabric'
-import type { FabricObject, TPointerEvent, Transform } from 'fabric'
+import type { FabricObject, TMat2D, TPointerEvent, Transform } from 'fabric'
 import { recordUsage, warmHintsCache } from '@/utils/model-usage-hints'
 import { translateError } from '@/utils/error-message'
 import { useSiteConfigStore } from '@/stores/site-config'
@@ -395,6 +467,12 @@ let baseImage: FabricImage | null = null
 let displayScale = 1
 let originalW = 0
 let originalH = 0
+const imageSizeVersion = ref(0)
+
+type CanvasRegion = { left: number; top: number; width: number; height: number }
+type CornerKey = 'topLeft' | 'topRight' | 'bottomRight' | 'bottomLeft'
+type EdgeKey = 'top' | 'right' | 'bottom' | 'left'
+type CornerBackgroundMode = 'transparent' | 'color'
 
 // ---- Reactive state ----
 const loading = ref(true)
@@ -423,6 +501,59 @@ const textColor = ref('#ffffff')
 // Draw tool
 const drawBrushSize = ref(5)
 const drawColor = ref('#ff0000')
+
+const cornerRadius = reactive<Record<CornerKey, number>>({
+  topLeft: 0,
+  topRight: 0,
+  bottomRight: 0,
+  bottomLeft: 0,
+})
+const cornerRadiusLinked = reactive<Record<CornerKey, boolean>>({
+  topLeft: true,
+  topRight: true,
+  bottomRight: true,
+  bottomLeft: true,
+})
+const cornerPadding = reactive<Record<EdgeKey, number>>({
+  top: 0,
+  right: 0,
+  bottom: 0,
+  left: 0,
+})
+const cornerPaddingLinked = reactive<Record<EdgeKey, boolean>>({
+  top: true,
+  right: true,
+  bottom: true,
+  left: true,
+})
+const cornerLinkedRadius = ref(0)
+const cornerLinkedPadding = ref(0)
+const cornerBackgroundMode = ref<CornerBackgroundMode>('transparent')
+const cornerBackgroundColor = ref('#ffffff')
+let cornerPreviewTimer: ReturnType<typeof setTimeout> | null = null
+let cornerPreviewSeq = 0
+let cornerPreviewBackground: Rect | null = null
+let cornerPreviewCanvasSize: { width: number; height: number } | null = null
+const cornerPreviewObjectStates = new Map<FabricObject, { left: number; top: number; scaleX: number; scaleY: number; visible: boolean; clipPath: any }>()
+const cornerOptions: Array<{ id: CornerKey; label: string }> = [
+  { id: 'topLeft', label: '左上角' },
+  { id: 'topRight', label: '右上角' },
+  { id: 'bottomRight', label: '右下角' },
+  { id: 'bottomLeft', label: '左下角' },
+]
+const edgeOptions: Array<{ id: EdgeKey; label: string }> = [
+  { id: 'top', label: '上边距' },
+  { id: 'right', label: '右边距' },
+  { id: 'bottom', label: '下边距' },
+  { id: 'left', label: '左边距' },
+]
+const cornerMaxRadius = computed(() => {
+  imageSizeVersion.value
+  return Math.max(0, Math.floor(Math.min(originalW, originalH) / 2))
+})
+const cornerMaxPadding = computed(() => {
+  return 99
+})
 
 // Sticker tool: 选中贴图时面板控件回显这些响应式值（由 selection 事件同步）
 const stickerSelected = ref(false)
@@ -531,6 +662,7 @@ const canRedo = computed(() => historyIndex.value < history.value.length - 1)
 const tools = [
   { id: 'select', label: '选择', icon: 'M15.042 21.672 13.684 16.6m0 0-2.51 2.225.569-9.47 5.227 7.917-3.286-.672ZM12 2.25V4.5m5.834.166-1.591 1.591M20.25 10.5H18M7.757 14.743l-1.59 1.59M6 10.5H3.75m4.007-4.243-1.59-1.59' },
   { id: 'crop', label: '裁剪', icon: 'M7.848 8.25l1.536.887M7.848 8.25a3 3 0 1 1-5.196-3 3 3 0 0 1 5.196 3Zm1.536.887a2.165 2.165 0 0 1 1.083 1.839c.005.19.005.383 0 .575m0 0-1.647 1.647M15 3v18m6-6H3' },
+  { id: 'corner', label: '边角', icon: 'M4.5 9.75V6.75A2.25 2.25 0 0 1 6.75 4.5h3m3.75 0h3A2.25 2.25 0 0 1 18.75 6.75v3m0 3.75v3A2.25 2.25 0 0 1 16.5 18.75h-3m-3.75 0h-3A2.25 2.25 0 0 1 4.5 16.5v-3' },
   { id: 'rotate', label: '旋转/翻转', icon: 'M19.5 12c0-1.232-.046-2.453-.138-3.662a4.006 4.006 0 0 0-3.7-3.7 48.678 48.678 0 0 0-7.324 0 4.006 4.006 0 0 0-3.7 3.7c-.017.22-.032.441-.046.662M19.5 12l3-3m-3 3-3-3m-12 3c0 1.232.046 2.453.138 3.662a4.006 4.006 0 0 0 3.7 3.7 48.656 48.656 0 0 0 7.324 0 4.006 4.006 0 0 0 3.7-3.7c.017-.22.032-.441.046-.662M4.5 12l3 3m-3-3-3 3' },
   { id: 'filter', label: '滤镜', icon: 'M10.5 6h9.75M10.5 6a1.5 1.5 0 1 1-3 0m3 0a1.5 1.5 0 1 0-3 0M3.75 6H7.5m3 12h9.75m-9.75 0a1.5 1.5 0 0 1-3 0m3 0a1.5 1.5 0 0 0-3 0m-3.75 0H7.5m9-6h3.75m-3.75 0a1.5 1.5 0 0 1-3 0m3 0a1.5 1.5 0 0 0-3 0m-9.75 0h9.75' },
   { id: 'text', label: '文字', icon: 'M7.5 8.25h9m-9 3H12m-9.75 1.51c0 1.6 1.123 2.994 2.707 3.227 1.087.16 2.185.283 3.293.369V21l4.076-4.076a1.526 1.526 0 0 1 1.037-.443 48.282 48.282 0 0 0 5.68-.494c1.584-.233 2.707-1.626 2.707-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0 0 12 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018Z' },
@@ -538,7 +670,206 @@ const tools = [
   { id: 'draw', label: '画笔', icon: 'm16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897L16.863 4.487Zm0 0L19.5 7.125' },
 ]
 
-const showRightPanel = computed(() => ['crop', 'rotate', 'filter', 'text', 'draw', 'inpaint', 'sticker'].includes(activeTool.value))
+const showRightPanel = computed(() => ['crop', 'corner', 'rotate', 'filter', 'text', 'draw', 'inpaint', 'sticker'].includes(activeTool.value))
+
+function scheduleCornerPreview() {
+  if (cornerPreviewTimer) {
+    clearTimeout(cornerPreviewTimer)
+    cornerPreviewTimer = null
+  }
+  if (activeTool.value !== 'corner') return
+  cornerPreviewTimer = setTimeout(() => {
+    refreshCornerPreview()
+  }, 32)
+}
+
+async function refreshCornerPreview() {
+  if (!fabricCanvas || !baseImage || activeTool.value !== 'corner') {
+    removeCornerCanvasPreview()
+    return
+  }
+  const seq = ++cornerPreviewSeq
+  try {
+    removeCornerCanvasPreview()
+    if (!hasCornerSettings()) {
+      removeCornerCanvasPreview()
+      return
+    }
+    if (seq !== cornerPreviewSeq || activeTool.value !== 'corner' || !fabricCanvas || !baseImage) return
+    normalizeAllCornerSettings()
+    const baseRegion = getBaseImageRegion()
+    if (!baseRegion) return
+    const outputW = baseRegion.width
+    const outputH = baseRegion.height
+    const padTop = outputH * cornerPadding.top / 100
+    const padRight = outputW * cornerPadding.right / 100
+    const padBottom = outputH * cornerPadding.bottom / 100
+    const padLeft = outputW * cornerPadding.left / 100
+    const imageW = Math.max(1, outputW - padLeft - padRight)
+    const imageH = Math.max(1, outputH - padTop - padBottom)
+    const canvasW = Math.max(fabricCanvas.width || 0, Math.ceil(outputW + 64))
+    const canvasH = Math.max(fabricCanvas.height || 0, Math.ceil(outputH + 64))
+    if (canvasW !== fabricCanvas.width || canvasH !== fabricCanvas.height) {
+      cornerPreviewCanvasSize = {
+        width: fabricCanvas.width || canvasW,
+        height: fabricCanvas.height || canvasH,
+      }
+      fabricCanvas.setDimensions({ width: canvasW, height: canvasH })
+      fabricCanvas.calcOffset()
+    }
+    const outputLeft = Math.round((canvasW - outputW) / 2)
+    const outputTop = Math.round((canvasH - outputH) / 2)
+    const imageLeft = outputLeft + padLeft
+    const imageTop = outputTop + padTop
+    const scaleX = imageW / baseRegion.width
+    const scaleY = imageH / baseRegion.height
+    const bg = new Rect({
+      left: outputLeft,
+      top: outputTop,
+      originX: 'left',
+      originY: 'top',
+      width: outputW,
+      height: outputH,
+      fill: cornerBackgroundMode.value === 'color' ? cornerBackgroundColor.value : 'rgba(0,0,0,0)',
+      stroke: 'rgba(59,130,246,0.35)',
+      strokeWidth: 1,
+      selectable: false,
+      evented: false,
+      hasControls: false,
+      hasBorders: false,
+    })
+    ;(bg as any).data = { role: 'corner-preview-bg' }
+    cornerPreviewBackground = bg
+    fabricCanvas.add(bg)
+    fabricCanvas.sendObjectToBack(bg)
+    cornerPreviewObjectStates.clear()
+    fabricCanvas.getObjects().forEach(o => {
+      if (o === bg) return
+      const role = (o as any).data?.role
+      if (role === 'corner-preview-bg') return
+      cornerPreviewObjectStates.set(o as FabricObject, {
+        left: o.left || 0,
+        top: o.top || 0,
+        scaleX: o.scaleX || 1,
+        scaleY: o.scaleY || 1,
+        visible: o.visible !== false,
+        clipPath: (o as any).clipPath,
+      })
+      if (isTemporaryExportObject(o as FabricObject)) {
+        o.visible = false
+        return
+      }
+      o.set({
+        left: imageLeft + ((o.left || 0) - baseRegion.left) * scaleX,
+        top: imageTop + ((o.top || 0) - baseRegion.top) * scaleY,
+        scaleX: (o.scaleX || 1) * scaleX,
+        scaleY: (o.scaleY || 1) * scaleY,
+      })
+      ;(o as any).clipPath = createCornerClipPath(imageLeft, imageTop, imageW, imageH)
+      o.setCoords()
+    })
+    fabricCanvas.requestRenderAll()
+  } catch {
+    if (seq === cornerPreviewSeq) removeCornerCanvasPreview()
+  }
+}
+
+function removeCornerCanvasPreview() {
+  if (!fabricCanvas) {
+    cornerPreviewBackground = null
+    cornerPreviewCanvasSize = null
+    cornerPreviewObjectStates.clear()
+    return
+  }
+  if (cornerPreviewBackground) {
+    fabricCanvas.remove(cornerPreviewBackground)
+    cornerPreviewBackground = null
+  }
+  fabricCanvas.getObjects().forEach(o => {
+    if ((o as any).data?.role === 'corner-preview-bg') fabricCanvas!.remove(o)
+  })
+  cornerPreviewObjectStates.forEach((state, obj) => {
+    obj.set({
+      left: state.left,
+      top: state.top,
+      scaleX: state.scaleX,
+      scaleY: state.scaleY,
+      visible: state.visible,
+    })
+    ;(obj as any).clipPath = state.clipPath
+    obj.setCoords()
+  })
+  cornerPreviewObjectStates.clear()
+  if (cornerPreviewCanvasSize) {
+    fabricCanvas.setDimensions(cornerPreviewCanvasSize)
+    cornerPreviewCanvasSize = null
+    fabricCanvas.calcOffset()
+  }
+  fabricCanvas.requestRenderAll()
+}
+
+async function withoutCornerCanvasPreview<T>(action: () => Promise<T>, restorePreview = true): Promise<T> {
+  const wasCornerTool = activeTool.value === 'corner'
+  if (cornerPreviewTimer) {
+    clearTimeout(cornerPreviewTimer)
+    cornerPreviewTimer = null
+  }
+  cornerPreviewSeq++
+  removeCornerCanvasPreview()
+  try {
+    return await action()
+  } finally {
+    if (restorePreview && wasCornerTool && activeTool.value === 'corner') scheduleCornerPreview()
+  }
+}
+
+function createCornerClipPath(left: number, top: number, width: number, height: number): Path {
+  const max = Math.max(0, Math.min(width, height) / 2)
+  const tl = Math.min(max, Math.max(0, cornerRadius.topLeft * displayScale))
+  const tr = Math.min(max, Math.max(0, cornerRadius.topRight * displayScale))
+  const br = Math.min(max, Math.max(0, cornerRadius.bottomRight * displayScale))
+  const bl = Math.min(max, Math.max(0, cornerRadius.bottomLeft * displayScale))
+  const path = new Path([
+    `M ${tl} 0`,
+    `L ${width - tr} 0`,
+    `Q ${width} 0 ${width} ${tr}`,
+    `L ${width} ${height - br}`,
+    `Q ${width} ${height} ${width - br} ${height}`,
+    `L ${bl} ${height}`,
+    `Q 0 ${height} 0 ${height - bl}`,
+    `L 0 ${tl}`,
+    `Q 0 0 ${tl} 0`,
+    'Z',
+  ].join(' '), {
+    left,
+    top,
+    originX: 'left',
+    originY: 'top',
+    selectable: false,
+    evented: false,
+  } as any)
+  ;(path as any).absolutePositioned = true
+  return path
+}
+
+watch(
+  () => [
+    activeTool.value,
+    imageSizeVersion.value,
+    cornerRadius.topLeft,
+    cornerRadius.topRight,
+    cornerRadius.bottomRight,
+    cornerRadius.bottomLeft,
+    cornerPadding.top,
+    cornerPadding.right,
+    cornerPadding.bottom,
+    cornerPadding.left,
+    cornerBackgroundMode.value,
+    cornerBackgroundColor.value,
+  ],
+  () => scheduleCornerPreview(),
+  { flush: 'post' }
+)
 
 // ---- Lifecycle ----
 // Bug #6: 用 unsubscribe 模式，避免 offProgress() removeAllListeners 误清其他视图监听
@@ -635,7 +966,7 @@ function applyEditPresetsFromQuery() {
   const presetTpl = typeof q.template === 'string' ? q.template : ''
   const presetPrompt = typeof q.presetPrompt === 'string' ? q.presetPrompt : ''
 
-  if (presetTool && ['select', 'crop', 'rotate', 'filter', 'text', 'draw', 'inpaint', 'sticker'].includes(presetTool)) {
+  if (presetTool && ['select', 'crop', 'corner', 'rotate', 'filter', 'text', 'draw', 'inpaint', 'sticker'].includes(presetTool)) {
     selectTool(presetTool)
   }
   if (presetTpl && ['replace', 'remove', 'fix', 'enhance'].includes(presetTpl)) {
@@ -649,6 +980,12 @@ function applyEditPresetsFromQuery() {
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleKeyDown)
+  if (cornerPreviewTimer) {
+    clearTimeout(cornerPreviewTimer)
+    cornerPreviewTimer = null
+  }
+  cornerPreviewSeq++
+  removeCornerCanvasPreview()
   if (unsubscribeImageProgress) {
     try { unsubscribeImageProgress() } catch {}
     unsubscribeImageProgress = null
@@ -740,6 +1077,7 @@ async function initCanvas(imagePath: string) {
 
   originalW = imgEl.naturalWidth
   originalH = imgEl.naturalHeight
+  imageSizeVersion.value++
 
   // Convert to dataURL for serializable FabricImage
   const dataUrl = imageToDataURL(imgEl)
@@ -752,13 +1090,13 @@ async function initCanvas(imagePath: string) {
   fabricCanvas = new Canvas(canvasRef.value, {
     width: canvasW,
     height: canvasH,
-    backgroundColor: '#ffffff',
+    backgroundColor: 'rgba(255,255,255,0)',
   })
 
   // Load base image
   await setBaseImage(dataUrl, canvasW, canvasH)
 
-  // O7：滚轮缩放（以画布中心为锚点）；min 0.2x ~ max 5x，缩放同时刷新画笔圆圈光标尺寸
+  // O7：滚轮缩放（以鼠标位置为锚点）；min 0.2x ~ max 5x，缩放同时刷新画笔圆圈光标尺寸
   fabricCanvas.on('mouse:wheel', (opt: any) => {
     if (!fabricCanvas) return
     const delta = opt.e.deltaY
@@ -766,9 +1104,7 @@ async function initCanvas(imagePath: string) {
     zoom *= 0.999 ** delta
     if (zoom > 5) zoom = 5
     if (zoom < 0.2) zoom = 0.2
-    const cx = fabricCanvas.getWidth() / 2
-    const cy = fabricCanvas.getHeight() / 2
-    fabricCanvas.zoomToPoint(new Point(cx, cy), zoom)
+    fabricCanvas.zoomToPoint(new Point(opt.e.offsetX, opt.e.offsetY), zoom)
     opt.e.preventDefault()
     opt.e.stopPropagation()
     refreshBrushCursor()
@@ -825,12 +1161,14 @@ function imageToDataURL(img: HTMLImageElement): string {
 function computeFitSize(origW: number, origH: number): { canvasW: number; canvasH: number; scale: number } {
   const container = canvasContainerRef.value!
   const rect = container.getBoundingClientRect()
-  const containerW = Math.max(rect.width - 48, 200)
-  const containerH = Math.max(rect.height - 48, 200)
-  const scale = Math.min(containerW / origW, containerH / origH, 1)
+  const canvasW = Math.max(Math.round(rect.width - 24), 240)
+  const canvasH = Math.max(Math.round(rect.height - 24), 240)
+  const imageMaxW = Math.max(canvasW - 64, canvasW * 0.9)
+  const imageMaxH = Math.max(canvasH - 64, canvasH * 0.9)
+  const scale = Math.min(imageMaxW / origW, imageMaxH / origH, 1)
   return {
-    canvasW: Math.round(origW * scale),
-    canvasH: Math.round(origH * scale),
+    canvasW,
+    canvasH,
     scale,
   }
 }
@@ -845,13 +1183,15 @@ async function setBaseImage(dataUrl: string, canvasW: number, canvasH: number) {
   }
 
   const img = await FabricImage.fromURL(dataUrl)
+  const imageW = img.width! * displayScale
+  const imageH = img.height! * displayScale
   img.set({
-    left: 0,
-    top: 0,
+    left: Math.round((canvasW - imageW) / 2),
+    top: Math.round((canvasH - imageH) / 2),
     originX: 'left',
     originY: 'top',
-    scaleX: canvasW / img.width!,
-    scaleY: canvasH / img.height!,
+    scaleX: displayScale,
+    scaleY: displayScale,
     selectable: false,
     evented: false,
     hasControls: false,
@@ -870,15 +1210,95 @@ async function setBaseImage(dataUrl: string, canvasW: number, canvasH: number) {
   fabricCanvas.renderAll()
 }
 
+function getBaseImageRegion(): CanvasRegion | null {
+  if (!baseImage) return null
+  return {
+    left: baseImage.left || 0,
+    top: baseImage.top || 0,
+    width: (baseImage.width || 0) * (baseImage.scaleX || 1),
+    height: (baseImage.height || 0) * (baseImage.scaleY || 1),
+  }
+}
+
+function getObjectRegion(obj: FabricObject): CanvasRegion {
+  return {
+    left: obj.left || 0,
+    top: obj.top || 0,
+    width: (obj.width || 0) * (obj.scaleX || 1),
+    height: (obj.height || 0) * (obj.scaleY || 1),
+  }
+}
+
+function exportPixelSize(region: CanvasRegion): { width: number; height: number } {
+  return {
+    width: Math.max(1, Math.round(region.width / displayScale)),
+    height: Math.max(1, Math.round(region.height / displayScale)),
+  }
+}
+
+function isTemporaryExportObject(o: FabricObject): boolean {
+  const role = (o as any).data?.role
+  return role === 'mask' || role === 'mask-erase' || role === 'mask-shape' || role === 'mask-shape-erase' || role === 'crop-rect' || role === 'corner-preview' || role === 'corner-preview-bg'
+}
+
+async function withHiddenObjects<T>(predicate: (o: FabricObject) => boolean, action: () => Promise<T>): Promise<T> {
+  if (!fabricCanvas) return action()
+  const hidden: FabricObject[] = []
+  fabricCanvas.getObjects().forEach(o => {
+    if (predicate(o as FabricObject) && o.visible !== false) {
+      hidden.push(o as FabricObject)
+      o.visible = false
+    }
+  })
+  fabricCanvas.discardActiveObject()
+  fabricCanvas.requestRenderAll()
+  try {
+    return await action()
+  } finally {
+    hidden.forEach(o => { o.visible = true })
+    fabricCanvas.requestRenderAll()
+  }
+}
+
+async function exportSceneRegion(region: CanvasRegion, outputWidth: number, outputHeight: number): Promise<string | null> {
+  if (!fabricCanvas) return null
+  const width = Math.max(1, region.width)
+  const height = Math.max(1, region.height)
+  const viewport = (fabricCanvas.viewportTransform ? [...fabricCanvas.viewportTransform] : [1, 0, 0, 1, 0, 0]) as TMat2D
+  const active = fabricCanvas.getActiveObject() as FabricObject | null
+  const multiplier = Math.max(outputWidth / width, outputHeight / height)
+  fabricCanvas.discardActiveObject()
+  try {
+    fabricCanvas.setViewportTransform([1, 0, 0, 1, 0, 0])
+    fabricCanvas.requestRenderAll()
+    return fabricCanvas.toDataURL({
+      format: 'png',
+      left: region.left,
+      top: region.top,
+      width,
+      height,
+      multiplier,
+    } as any)
+  } finally {
+    fabricCanvas.setViewportTransform(viewport)
+    if (active && !isTemporaryExportObject(active)) fabricCanvas.setActiveObject(active)
+    fabricCanvas.requestRenderAll()
+    refreshBrushCursor()
+  }
+}
+
 // ---- History ----
 function saveHistory() {
   if (!fabricCanvas) return
+  const shouldRestoreCornerPreview = activeTool.value === 'corner' && (!!cornerPreviewBackground || cornerPreviewObjectStates.size > 0)
+  if (shouldRestoreCornerPreview) removeCornerCanvasPreview()
   const snapshot = serializeCanvas()
   const trimmed = history.value.slice(0, historyIndex.value + 1)
   trimmed.push(snapshot)
   if (trimmed.length > MAX_HISTORY) trimmed.shift()
   history.value = trimmed
   historyIndex.value = trimmed.length - 1
+  if (shouldRestoreCornerPreview) scheduleCornerPreview()
 }
 
 function serializeCanvas(): string {
@@ -903,12 +1323,19 @@ function serializeCanvas(): string {
 
 async function restoreSnapshot(snapshot: string) {
   if (!fabricCanvas) return
+  if (cornerPreviewTimer) {
+    clearTimeout(cornerPreviewTimer)
+    cornerPreviewTimer = null
+  }
+  cornerPreviewSeq++
+  removeCornerCanvasPreview()
   const parsed = JSON.parse(snapshot)
   const meta = parsed.meta
 
   displayScale = meta.displayScale
   originalW = meta.originalW
   originalH = meta.originalH
+  imageSizeVersion.value++
 
   filterControls[0].value = meta.filters.brightness
   filterControls[1].value = meta.filters.contrast
@@ -936,6 +1363,7 @@ async function restoreSnapshot(snapshot: string) {
   }
 
   fabricCanvas.renderAll()
+  if (activeTool.value === 'corner') scheduleCornerPreview()
 }
 
 async function undo() {
@@ -959,6 +1387,14 @@ function selectTool(toolId: string) {
   fabricCanvas.defaultCursor = 'default'
   fabricCanvas.freeDrawingCursor = 'crosshair'
   removeCropRect()
+  if (toolId !== 'corner') {
+    if (cornerPreviewTimer) {
+      clearTimeout(cornerPreviewTimer)
+      cornerPreviewTimer = null
+    }
+    cornerPreviewSeq++
+    removeCornerCanvasPreview()
+  }
 
   activeTool.value = toolId
 
@@ -989,6 +1425,7 @@ function selectTool(toolId: string) {
     removeShapeListeners()
   }
 
+  if (toolId === 'corner') scheduleCornerPreview()
   fabricCanvas.requestRenderAll()
 }
 
@@ -1169,15 +1606,14 @@ let cropRect: Rect | null = null
 
 function initCrop() {
   if (!fabricCanvas) return
-  const w = fabricCanvas.width!
-  const h = fabricCanvas.height!
+  const region = getBaseImageRegion() || { left: 0, top: 0, width: fabricCanvas.width!, height: fabricCanvas.height! }
   cropRect = new Rect({
-    left: w * 0.1,
-    top: h * 0.1,
+    left: region.left + region.width * 0.1,
+    top: region.top + region.height * 0.1,
     originX: 'left',
     originY: 'top',
-    width: w * 0.8,
-    height: h * 0.8,
+    width: region.width * 0.8,
+    height: region.height * 0.8,
     fill: 'rgba(0,0,0,0)',
     stroke: '#3b82f6',
     strokeWidth: 2,
@@ -1204,29 +1640,147 @@ function removeCropRect() {
 async function applyCrop() {
   if (!fabricCanvas || !cropRect || !baseImage) return
 
-  // Compute crop in original image coordinates
-  const left = ((cropRect.left || 0) - (baseImage.left || 0)) / displayScale
-  const top = ((cropRect.top || 0) - (baseImage.top || 0)) / displayScale
-  const width = ((cropRect.width || 0) * (cropRect.scaleX || 1)) / displayScale
-  const height = ((cropRect.height || 0) * (cropRect.scaleY || 1)) / displayScale
+  const cropRegion = getObjectRegion(cropRect as unknown as FabricObject)
+  const size = exportPixelSize(cropRegion)
+  const newDataUrl = await withHiddenObjects(isTemporaryExportObject, () => exportSceneRegion(cropRegion, size.width, size.height))
+  if (!newDataUrl) return
 
-  // Flatten the entire canvas (including text, brush, filters) into a single image
-  const flat = await flattenToImage()
-  if (!flat) return
-
-  const tmp = document.createElement('canvas')
-  tmp.width = Math.round(width)
-  tmp.height = Math.round(height)
-  const ctx = tmp.getContext('2d')!
-  ctx.drawImage(flat, left, top, width, height, 0, 0, tmp.width, tmp.height)
-
-  const newDataUrl = tmp.toDataURL('image/png')
   resetFilterValues()
-  await replaceBaseImage(newDataUrl, tmp.width, tmp.height)
+  await replaceBaseImage(newDataUrl, size.width, size.height)
 
   removeCropRect()
   activeTool.value = 'select'
   showToast('裁剪已应用')
+  saveHistory()
+}
+
+function clampNumber(value: unknown, min: number, max: number): number {
+  const n = typeof value === 'number' && Number.isFinite(value) ? value : Number(value)
+  if (!Number.isFinite(n)) return min
+  return Math.min(max, Math.max(min, Math.round(n)))
+}
+
+function normalizeCornerRadius(key: CornerKey) {
+  cornerRadius[key] = clampNumber(cornerRadius[key], 0, cornerMaxRadius.value)
+}
+
+function normalizeCornerPadding(key: EdgeKey) {
+  cornerPadding[key] = clampNumber(cornerPadding[key], 0, cornerMaxPadding.value)
+  if (key === 'left' || key === 'right') {
+    const maxTotal = 99
+    const other = key === 'left' ? 'right' : 'left'
+    if (cornerPadding.left + cornerPadding.right > maxTotal) {
+      cornerPadding[key] = Math.max(0, maxTotal - cornerPadding[other])
+    }
+  } else {
+    const maxTotal = 99
+    const other = key === 'top' ? 'bottom' : 'top'
+    if (cornerPadding.top + cornerPadding.bottom > maxTotal) {
+      cornerPadding[key] = Math.max(0, maxTotal - cornerPadding[other])
+    }
+  }
+}
+
+function normalizeAllCornerSettings() {
+  cornerOptions.forEach(c => normalizeCornerRadius(c.id))
+  edgeOptions.forEach(e => normalizeCornerPadding(e.id))
+  cornerLinkedRadius.value = clampNumber(cornerLinkedRadius.value, 0, cornerMaxRadius.value)
+  cornerLinkedPadding.value = clampNumber(cornerLinkedPadding.value, 0, cornerMaxPadding.value)
+}
+
+function applyLinkedCornerRadius() {
+  cornerLinkedRadius.value = clampNumber(cornerLinkedRadius.value, 0, cornerMaxRadius.value)
+  cornerOptions.forEach(c => {
+    if (cornerRadiusLinked[c.id]) cornerRadius[c.id] = cornerLinkedRadius.value
+  })
+}
+
+function applyLinkedCornerPadding() {
+  cornerLinkedPadding.value = clampNumber(cornerLinkedPadding.value, 0, cornerMaxPadding.value)
+  edgeOptions.forEach(e => {
+    if (cornerPaddingLinked[e.id]) cornerPadding[e.id] = cornerLinkedPadding.value
+  })
+  normalizeAllCornerSettings()
+}
+
+function resetCornerSettings() {
+  removeCornerCanvasPreview()
+  cornerOptions.forEach(c => {
+    cornerRadius[c.id] = 0
+    cornerRadiusLinked[c.id] = true
+  })
+  edgeOptions.forEach(e => {
+    cornerPadding[e.id] = 0
+    cornerPaddingLinked[e.id] = true
+  })
+  cornerLinkedRadius.value = 0
+  cornerLinkedPadding.value = 0
+  cornerBackgroundMode.value = 'transparent'
+  cornerBackgroundColor.value = '#ffffff'
+}
+
+function hasCornerSettings(): boolean {
+  return cornerOptions.some(c => cornerRadius[c.id] > 0)
+    || edgeOptions.some(e => cornerPadding[e.id] > 0)
+    || cornerBackgroundMode.value === 'color'
+}
+
+function roundedRectPath(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, radius: Record<CornerKey, number>) {
+  const max = Math.max(0, Math.min(w, h) / 2)
+  const tl = Math.min(max, Math.max(0, radius.topLeft))
+  const tr = Math.min(max, Math.max(0, radius.topRight))
+  const br = Math.min(max, Math.max(0, radius.bottomRight))
+  const bl = Math.min(max, Math.max(0, radius.bottomLeft))
+  ctx.beginPath()
+  ctx.moveTo(x + tl, y)
+  ctx.lineTo(x + w - tr, y)
+  ctx.quadraticCurveTo(x + w, y, x + w, y + tr)
+  ctx.lineTo(x + w, y + h - br)
+  ctx.quadraticCurveTo(x + w, y + h, x + w - br, y + h)
+  ctx.lineTo(x + bl, y + h)
+  ctx.quadraticCurveTo(x, y + h, x, y + h - bl)
+  ctx.lineTo(x, y + tl)
+  ctx.quadraticCurveTo(x, y, x + tl, y)
+  ctx.closePath()
+}
+
+async function renderCornerDataUrl(sourceDataUrl: string): Promise<{ dataUrl: string; width: number; height: number }> {
+  normalizeAllCornerSettings()
+  const img = await loadImageEl(sourceDataUrl)
+  const width = img.naturalWidth
+  const height = img.naturalHeight
+  const left = width * cornerPadding.left / 100
+  const top = height * cornerPadding.top / 100
+  const right = width * cornerPadding.right / 100
+  const bottom = height * cornerPadding.bottom / 100
+  const imageW = Math.max(1, width - left - right)
+  const imageH = Math.max(1, height - top - bottom)
+  const tmp = document.createElement('canvas')
+  tmp.width = Math.max(1, width)
+  tmp.height = Math.max(1, height)
+  const ctx = tmp.getContext('2d')!
+  if (cornerBackgroundMode.value === 'color') {
+    ctx.fillStyle = cornerBackgroundColor.value || '#ffffff'
+    ctx.fillRect(0, 0, tmp.width, tmp.height)
+  }
+  ctx.save()
+  roundedRectPath(ctx, left, top, imageW, imageH, cornerRadius)
+  ctx.clip()
+  ctx.drawImage(img, left, top, imageW, imageH)
+  ctx.restore()
+  return { dataUrl: tmp.toDataURL('image/png'), width: tmp.width, height: tmp.height }
+}
+
+async function applyCornerSettings() {
+  if (!fabricCanvas || !baseImage) return
+  const sourceDataUrl = await withoutCornerCanvasPreview(() => getCanvasDataUrl(), false)
+  if (!sourceDataUrl) return
+  const result = await renderCornerDataUrl(sourceDataUrl)
+  resetFilterValues()
+  await replaceBaseImage(result.dataUrl, result.width, result.height)
+  resetCornerSettings()
+  activeTool.value = 'select'
+  showToast('边角已应用')
   saveHistory()
 }
 
@@ -1270,6 +1824,7 @@ async function replaceBaseImage(dataUrl: string, newOrigW: number, newOrigH: num
   if (!fabricCanvas) return
   originalW = newOrigW
   originalH = newOrigH
+  imageSizeVersion.value++
 
   const { canvasW, canvasH, scale } = computeFitSize(newOrigW, newOrigH)
   displayScale = scale
@@ -1279,6 +1834,7 @@ async function replaceBaseImage(dataUrl: string, newOrigW: number, newOrigH: num
   nonBase.forEach(o => fabricCanvas!.remove(o))
 
   fabricCanvas.setDimensions({ width: canvasW, height: canvasH })
+  fabricCanvas.setViewportTransform([1, 0, 0, 1, 0, 0])
 
   await setBaseImage(dataUrl, canvasW, canvasH)
   // Re-apply filters to the new base image
@@ -1784,9 +2340,12 @@ function generateMaskDataURL(): string | null {
   ctx.fillStyle = '#000000'
   ctx.fillRect(0, 0, originalW, originalH)
 
-  const scaleRatio = originalW / fabricCanvas.width!
+  const baseRegion = getBaseImageRegion()
+  if (!baseRegion) return null
+  const scaleRatio = 1 / displayScale
   ctx.save()
   ctx.scale(scaleRatio, scaleRatio)
+  ctx.translate(-baseRegion.left, -baseRegion.top)
 
   maskObjects.forEach((obj: any) => {
     const role = obj.data?.role
@@ -2188,8 +2747,10 @@ function cancelCompare() {
 
 async function swapBaseImageKeepLayers(dataUrl: string, newOrigW: number, newOrigH: number) {
   if (!fabricCanvas) return
+  removeCornerCanvasPreview()
   originalW = newOrigW
   originalH = newOrigH
+  imageSizeVersion.value++
 
   const { canvasW, canvasH, scale } = computeFitSize(newOrigW, newOrigH)
   const oldCanvasW = fabricCanvas.width!
@@ -2218,6 +2779,7 @@ async function swapBaseImageKeepLayers(dataUrl: string, newOrigW: number, newOri
   })
 
   fabricCanvas.setDimensions({ width: canvasW, height: canvasH })
+  fabricCanvas.setViewportTransform([1, 0, 0, 1, 0, 0])
   await setBaseImage(dataUrl, canvasW, canvasH)
   reapplyFilters(false)
 
@@ -2247,17 +2809,27 @@ function formatTime(ts: number): string {
 }
 
 // ---- Save / Export ----
-async function getCanvasDataUrl(): Promise<string | null> {
-  if (!fabricCanvas) return null
-  const multiplier = originalW / fabricCanvas.width!
-  return fabricCanvas.toDataURL({ format: 'png', multiplier })
+async function getCanvasDataUrl(region: CanvasRegion | null = getBaseImageRegion()): Promise<string | null> {
+  if (!fabricCanvas || !region) return null
+  const size = exportPixelSize(region)
+  return await withHiddenObjects(isTemporaryExportObject, () => exportSceneRegion(region, size.width, size.height))
+}
+
+async function getFinalExportDataUrl(): Promise<string | null> {
+  return await withoutCornerCanvasPreview(async () => {
+    const dataUrl = await getCanvasDataUrl()
+    if (!dataUrl) return null
+    if (!hasCornerSettings()) return dataUrl
+    const result = await renderCornerDataUrl(dataUrl)
+    return result.dataUrl
+  })
 }
 
 async function saveImage() {
   if (!generation.value) return
   saving.value = true
   try {
-    const dataUrl = await getCanvasDataUrl()
+    const dataUrl = await getFinalExportDataUrl()
     if (!dataUrl) throw new Error('Failed to export canvas')
     if (generation.value.id === '_local') {
       // 本地图库编辑模式：创建独立的新 image_generation 记录
@@ -2284,7 +2856,7 @@ async function saveImage() {
 async function prepareSaveToGallery() {
   if (!generation.value) return
   try {
-    const dataUrl = await getCanvasDataUrl()
+    const dataUrl = await getFinalExportDataUrl()
     if (!dataUrl) throw new Error('Failed to export canvas')
     gallerySaveDataUri.value = dataUrl
     gallerySaveDefaultName.value = generation.value.id === '_local'
@@ -2317,6 +2889,7 @@ async function resetCanvas() {
   if (!generation.value) return
   loading.value = true
   try {
+    removeCornerCanvasPreview()
     const absPath = await api().imageGen.invoke('getAbsolutePath', generation.value.result_path)
     const imgEl = new Image()
     await new Promise<void>((resolve, reject) => {
@@ -2326,6 +2899,7 @@ async function resetCanvas() {
     })
     const newDataUrl = imageToDataURL(imgEl)
     resetFilterValues()
+    resetCornerSettings()
     await replaceBaseImage(newDataUrl, imgEl.naturalWidth, imgEl.naturalHeight)
     history.value = []
     historyIndex.value = -1
@@ -2360,7 +2934,7 @@ async function regenerateWithRef() {
   fabricCanvas.discardActiveObject()
   fabricCanvas.requestRenderAll()
   try {
-    const dataUrl = await getCanvasDataUrl()
+    const dataUrl = await getFinalExportDataUrl()
     if (!dataUrl) return
     sessionStorage.setItem('imageGen:refImages', JSON.stringify([dataUrl]))
     router.push({ path: '/image-gen', query: { prompt: generation.value.prompt, hasRefImages: '1' } })

@@ -54,6 +54,29 @@
             <span class="text-text-tertiary">{{ siteConfig.labels.credit }}额度</span>
             <span class="text-text-primary ml-1">{{ formatAmount(p.credit_granted) }}</span>
           </div>
+          <div>
+            <span class="text-text-tertiary">续充</span>
+            <span class="text-text-primary ml-1">{{ refillLabel(p.quota_refill_cycle) }}</span>
+          </div>
+          <div v-if="p.next_quota_refill_at">
+            <span class="text-text-tertiary">下次续充</span>
+            <span class="text-text-primary ml-1">{{ formatDate(p.next_quota_refill_at) }}</span>
+          </div>
+        </div>
+
+        <div v-if="p.quota_summary" class="mt-3 space-y-2">
+          <QuotaProgressBar
+            v-for="item in quotaItems(p)"
+            :key="item.type"
+            :label="item.label"
+            :used="item.consumed"
+            :total="item.granted"
+            :remaining="item.remaining"
+          />
+        </div>
+
+        <div v-if="p.policies" class="mt-3">
+          <PolicyBadgeList :policies="p.policies" :limit="6" />
         </div>
 
         <!-- 时长进度条：仅有限期 + 生效中套餐显示；已过期 / 已撤销 / 永久套餐隐藏 -->
@@ -87,6 +110,8 @@
 import { computed } from 'vue'
 import { useCloudAuthStore } from '@/stores/cloud-auth'
 import { useSiteConfigStore } from '@/stores/site-config'
+import QuotaProgressBar from '@/components/QuotaProgressBar.vue'
+import PolicyBadgeList from '@/components/PolicyBadgeList.vue'
 import type { MyPlan } from '@/stores/cloud-auth'
 
 const store = useCloudAuthStore()
@@ -119,8 +144,25 @@ function sourceLabel(src: string): string {
     case 'redeem':   return '兑换码'
     case 'admin':    return '后台发放'
     case 'register': return '注册赠送'
+    case 'upgrade':  return '升级'
     default:         return src
   }
+}
+
+function refillLabel(value?: string): string {
+  return value === 'monthly' ? '月度续充' : '一次性'
+}
+
+function quotaItems(plan: MyPlan) {
+  return Object.entries(plan.quota_summary || {})
+    .filter(([, value]) => Number(value.granted || 0) > 0)
+    .map(([type, value]) => ({
+      type,
+      label: `${siteConfig.labelOf(type)}使用`,
+      granted: Number(value.granted || 0),
+      consumed: Number(value.consumed || 0),
+      remaining: Number(value.remaining || 0),
+    }))
 }
 
 function formatDate(iso: string): string {
