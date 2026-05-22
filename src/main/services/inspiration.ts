@@ -13,6 +13,8 @@ export interface Inspiration {
   category: string
   tags: string[]
   ref_image?: string
+  ref_images?: string[]
+  generation_size?: string
   cover_image?: string
   // 自定义数据源中由用户上传的灵感会带上传者昵称（百度文心默认数据为空）
   uploader_nickname?: string
@@ -109,6 +111,11 @@ function mapErnieItem(item: any): Inspiration {
   }
 }
 
+function resolveImageUrl(value: string, origin: string): string {
+  if (!value) return ''
+  return value.startsWith('/') ? origin + value : value
+}
+
 function fetchJson(url: string, timeoutMs = 8000): Promise<any> {
   return new Promise((resolve, reject) => {
     const mod = url.startsWith('https') ? https : http
@@ -133,6 +140,8 @@ function fetchJson(url: string, timeoutMs = 8000): Promise<any> {
 export async function fetchOnlineInspirations(options?: {
   page?: number
   pageSize?: number
+  category?: string
+  search?: string
 }): Promise<{ items: Inspiration[]; total: number; categories?: string[] }> {
   // Check cloud admin config to determine data source
   const apiBase = getCloudApiBase()
@@ -151,6 +160,8 @@ export async function fetchOnlineInspirations(options?: {
 async function fetchErnieInspirations(options?: {
   page?: number
   pageSize?: number
+  category?: string
+  search?: string
 }): Promise<{ items: Inspiration[]; total: number }> {
   const pageSize = options?.pageSize || 40
   const page = options?.page || (Math.floor(Math.random() * totalPages) + 1)
@@ -166,10 +177,22 @@ async function fetchErnieInspirations(options?: {
     totalPages = Math.ceil(json.result.totalCount / pageSize)
   }
 
-  const items = (json.result.data || []).map(mapErnieItem)
+  let items = (json.result.data || []).map(mapErnieItem)
+  if (options?.category) {
+    items = items.filter((item: Inspiration) => item.category === options.category)
+  }
+  if (options?.search) {
+    const q = options.search.toLowerCase()
+    items = items.filter((item: Inspiration) =>
+      item.title.toLowerCase().includes(q) ||
+      item.prompt_cn.toLowerCase().includes(q) ||
+      item.prompt_en.toLowerCase().includes(q) ||
+      item.tags.some((tag) => tag.toLowerCase().includes(q))
+    )
+  }
 
   // If empty (page out of range), retry with page 1
-  if (!items.length) {
+  if (!items.length && !options?.category && !options?.search) {
     const retryUrl = `${ERNIE_API}?page=1&pageSize=${pageSize}`
     const retryJson = await fetchJson(retryUrl)
     if (retryJson.errorCode === 0 && retryJson.result.data?.length) {
@@ -183,6 +206,8 @@ async function fetchErnieInspirations(options?: {
 async function fetchCustomInspirations(options?: {
   page?: number
   pageSize?: number
+  category?: string
+  search?: string
 }): Promise<{ items: Inspiration[]; total: number; categories?: string[] }> {
   const apiBase = getCloudApiBase()
   // Derive the origin (scheme + host) from apiBase for resolving relative image paths
@@ -190,16 +215,25 @@ async function fetchCustomInspirations(options?: {
   const origin = originMatch ? originMatch[1] : ''
   const pageSize = options?.pageSize || 40
   const page = options?.page || 1
-  const url = `${apiBase}/public/inspiration/list?page=${page}&per_page=${pageSize}`
+  const categories = await fetchCustomCategoryOptions(apiBase)
+  const params = new URLSearchParams({
+    page: String(page),
+    per_page: String(pageSize),
+  })
+  if (options?.category) {
+    const matched = categories.find((cat) => cat.name === options.category)
+    if (matched) params.set('category_id', String(matched.id))
+  }
+  if (options?.search) params.set('search', options.search)
+  const url = `${apiBase}/public/inspiration/list?${params.toString()}`
 
   const json = await fetchJson(url)
   const rawItems: any[] = json.items || []
   const items: Inspiration[] = rawItems.map((item) => {
-    let coverImage = item.cover_image || ''
-    // Resolve relative image paths to absolute URLs
-    if (coverImage && coverImage.startsWith('/')) {
-      coverImage = origin + coverImage
-    }
+    const coverImage = resolveImageUrl(item.cover_image || '', origin)
+    const refImages = Array.isArray(item.ref_images)
+      ? item.ref_images.map((url: string) => resolveImageUrl(url, origin)).filter(Boolean).slice(0, 8)
+      : []
     return {
       id: `custom-${item.id}`,
       title: item.title || '',
@@ -207,19 +241,15 @@ async function fetchCustomInspirations(options?: {
       prompt_en: item.prompt_en || '',
       category: item.category?.name || '',
       tags: [],
+      ref_image: refImages[0],
+      ref_images: refImages,
+      generation_size: item.generation_size || '',
       cover_image: coverImage || undefined,
       uploader_nickname: item.uploader_nickname || ''
     }
   })
 
-  // Also fetch categories
-  let categories: string[] = []
-  try {
-    const catJson = await fetchJson(`${apiBase}/public/inspiration/categories`)
-    categories = (catJson.data || []).map((c: any) => c.name)
-  } catch { /* ignore */ }
-
-  return { items, total: json.total || items.length, categories }
+  return { items, total: json.total || items.length, categories: categories.map((cat) => cat.name) }
 }
 
 export async function getInspirationConfig(): Promise<{ source: string }> {
@@ -237,6 +267,17 @@ export async function getInspirationCategories(): Promise<string[]> {
   try {
     const json = await fetchJson(`${apiBase}/public/inspiration/categories`)
     return (json.data || []).map((c: any) => c.name)
+  } catch {
+    return []
+  }
+}
+
+async function fetchCustomCategoryOptions(apiBase: string): Promise<Array<{ id: number; name: string }>> {
+  try {
+    const json = await fetchJson(`${apiBase}/public/inspiration/categories`)
+    return (json.data || [])
+      .map((c: any) => ({ id: Number(c.id), name: String(c.name || '') }))
+      .filter((c: { id: number; name: string }) => c.id && c.name)
   } catch {
     return []
   }

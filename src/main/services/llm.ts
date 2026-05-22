@@ -8,6 +8,7 @@ import {
   resolveCloudModelId,
   refreshCloudToken,
   notifyCloudAuthExpired,
+  wasLastCloudTokenRefreshAuthFailure,
 } from './cloud-token'
 import { normalizeApiBase } from './api-base-normalize'
 
@@ -34,6 +35,7 @@ export interface LLMRequestOptions {
   notifyStream?: boolean
   streamContext?: {
     conversationId?: string
+    requestId?: string
   }
 }
 
@@ -57,8 +59,9 @@ export function isAbortedError(err: any): boolean {
   if (!err) return false
   if (err instanceof AbortedError) return true
   if (err.name === 'AbortError') return true
+  if (err.cause?.name === 'AbortError') return true
   const code = err.cause?.code || err.code
-  return code === 'ABORT_ERR' || String(err.message || '').toLowerCase().includes('aborted')
+  return code === 'ABORT_ERR'
 }
 
 export interface LLMResponse {
@@ -117,6 +120,7 @@ function describeFetchError(err: any): string {
 
 async function fetchWithRetry(url: string, init: RequestInit, retries = 2): Promise<Response> {
   let lastErr: any
+  const signal = init.signal as AbortSignal | undefined
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       const resp = await fetch(url, init)
@@ -124,17 +128,20 @@ async function fetchWithRetry(url: string, init: RequestInit, retries = 2): Prom
         const delay = 500 * Math.pow(2, attempt)
         console.log(`[llm] fetch ${resp.status} attempt ${attempt + 1}/${retries + 1}, retry in ${delay}ms`)
         await new Promise(r => setTimeout(r, delay))
+        if (signal?.aborted) throw new AbortedError()
         continue
       }
       return resp
     } catch (err: any) {
       lastErr = err
+      if (signal?.aborted) throw new AbortedError()
       // Never retry user-initiated abort
       if (isAbortedError(err)) throw new AbortedError()
       if (attempt < retries && isTransientFetchError(err)) {
         const delay = 500 * Math.pow(2, attempt)
         console.log(`[llm] fetch attempt ${attempt + 1}/${retries + 1} failed (${describeFetchError(err)}), retry in ${delay}ms`)
         await new Promise(r => setTimeout(r, delay))
+        if (signal?.aborted) throw new AbortedError()
         continue
       }
       break
@@ -216,7 +223,7 @@ export async function callLLM(
     if (!isCloud) return false
     const token = await refreshCloudToken()
     if (!token) {
-      notifyCloudAuthExpired(reason)
+      if (wasLastCloudTokenRefreshAuthFailure()) notifyCloudAuthExpired(reason)
       return false
     }
     headers['Authorization'] = `Bearer ${token}`
@@ -432,7 +439,8 @@ async function streamLLMOnce(
             window.webContents.send('chat:stream', {
               type: 'content',
               content: delta.content,
-              conversationId: streamContext?.conversationId
+              conversationId: streamContext?.conversationId,
+              requestId: streamContext?.requestId
             })
           }
         }
@@ -464,7 +472,7 @@ async function streamLLMOnce(
       }
       throw idleErr
     }
-    if (isAbortedError(err)) throw new AbortedError()
+    if (signal?.aborted || isAbortedError(err)) throw new AbortedError()
     // 给外层重试判定打标记：已经推送过任何 content/tool_call 就不能再重发整条请求，
     // 否则 renderer 会拼出重复内容。
     if (fullContent.length > 0 || toolCalls.length > 0) {
@@ -477,7 +485,7 @@ async function streamLLMOnce(
   }
 
   if (window && notifyStream) {
-    window.webContents.send('chat:stream', { type: 'done', conversationId: streamContext?.conversationId })
+    window.webContents.send('chat:stream', { type: 'done', conversationId: streamContext?.conversationId, requestId: streamContext?.requestId })
   }
 
   if (usage) {

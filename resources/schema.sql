@@ -203,6 +203,7 @@ CREATE TABLE IF NOT EXISTS image_generations (
 );
 
 CREATE INDEX IF NOT EXISTS idx_image_generations_session ON image_generations(session_id);
+CREATE INDEX IF NOT EXISTS idx_image_generations_status_created ON image_generations(status, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS prompt_categories (
   id TEXT PRIMARY KEY,
@@ -351,3 +352,53 @@ CREATE TABLE IF NOT EXISTS matting_tasks (
 CREATE INDEX IF NOT EXISTS idx_matting_tasks_status ON matting_tasks(status);
 CREATE INDEX IF NOT EXISTS idx_matting_tasks_created ON matting_tasks(created_at);
 CREATE INDEX IF NOT EXISTS idx_matting_tasks_canvas ON matting_tasks(canvas_project_id);
+
+-- 创意模板（v0.7.7+）：本地用户私有的创意模板系统
+-- 数据完全本地，与云端模板独立；云端模板由云控端提供，不写入此表。
+-- 用 TEXT/UUID 主键以便与 ipc 调用 stringly 兼容。
+CREATE TABLE IF NOT EXISTS creative_template_categories (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  is_visible INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- 模板表
+-- - variables: JSON 数组，每项 {key,label,type,required,placeholder,default,options}
+-- - example_ref_images: JSON 字符串数组，单条最长不限（path/data uri/http url 都可能存）
+-- - source_type: manual / image / inspiration
+-- - source_image: 图片反推创建时记录用户原图（绝对路径或 data uri）
+-- - source_inspiration_id: 灵感转换创建时记录关联灵感来源 id（字符串，桌面端 inspiration id 是 'custom-N' / 'ernie-N'）
+CREATE TABLE IF NOT EXISTS creative_templates (
+  id TEXT PRIMARY KEY,
+  category_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  cover_image TEXT NOT NULL DEFAULT '',
+  example_ref_images TEXT NOT NULL DEFAULT '[]',
+  requires_ref_image INTEGER NOT NULL DEFAULT 0,
+  default_size TEXT NOT NULL DEFAULT '',
+  prompt_template TEXT NOT NULL,
+  variables TEXT NOT NULL DEFAULT '[]',
+  source_type TEXT NOT NULL DEFAULT 'manual',
+  source_image TEXT NOT NULL DEFAULT '',
+  source_inspiration_id TEXT NOT NULL DEFAULT '',
+  cloud_template_id INTEGER NOT NULL DEFAULT 0,
+  submission_status TEXT NOT NULL DEFAULT '',
+  submission_reject_reason TEXT NOT NULL DEFAULT '',
+  submission_reviewed_at TEXT NOT NULL DEFAULT '',
+  submission_published_at TEXT NOT NULL DEFAULT '',
+  submission_synced_at TEXT NOT NULL DEFAULT '',
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  is_visible INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (category_id) REFERENCES creative_template_categories(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_creative_templates_category ON creative_templates(category_id);
+CREATE INDEX IF NOT EXISTS idx_creative_templates_source ON creative_templates(source_type);
+CREATE INDEX IF NOT EXISTS idx_creative_templates_created ON creative_templates(created_at);

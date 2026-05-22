@@ -2,6 +2,10 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { cloudAuth, cloudClient, setCloudToken, getCloudToken, clearCloudAuth } from '@/utils/cloud-api'
 
+const BALANCE_REFRESH_THROTTLE_MS = 5000
+const BALANCE_FOCUS_STALE_MS = 30000
+const BALANCE_VISIBLE_POLL_MS = 60000
+
 export interface CloudUser {
   id: number
   username: string
@@ -143,9 +147,15 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
   const plans = ref<MyPlan[]>([])
   // 云端当前启用的最新一条公告，未登录 / 未拉取 / 无公告时为 null
   const announcement = ref<Announcement | null>(null)
-  const isLoggedIn = computed(() => !!user.value && !!getCloudToken())
+  const tokenPresent = ref(false)
+  const isLoggedIn = computed(() => tokenPresent.value)
   const loading = ref(false)
   const pendingBonus = ref<RegisterBonus | null>(null)
+  let balanceRefreshPromise: Promise<void> | null = null
+  let lastBalanceRefreshAt = 0
+  let balancePollTimer: ReturnType<typeof setInterval> | null = null
+  let balanceRefreshTimer: ReturnType<typeof setTimeout> | null = null
+  let balanceAutoRefreshStarted = false
 
   function loadCachedUser() {
     const raw = localStorage.getItem('cloud_user')
@@ -154,11 +164,16 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
     }
   }
 
+  function syncTokenState() {
+    tokenPresent.value = !!getCloudToken()
+  }
+
   async function login(username: string, password: string) {
     loading.value = true
     try {
       const data = await cloudAuth.login(username, password)
       setCloudToken(data.token)
+      syncTokenState()
       user.value = data.user
       localStorage.setItem('cloud_user', JSON.stringify(data.user))
       await fetchCloudData()
@@ -173,6 +188,7 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
     try {
       const data = await cloudAuth.register({ username, password, nickname, phone })
       setCloudToken(data.token)
+      syncTokenState()
       user.value = data.user
       localStorage.setItem('cloud_user', JSON.stringify(data.user))
       // Capture register bonus for UI to display on next page
@@ -194,6 +210,7 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
 
   function logout() {
     clearCloudAuth()
+    syncTokenState()
     user.value = null
     models.value = []
     balances.value = []
@@ -221,6 +238,7 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
     window.api?.cloud?.setPreferredEmbeddingModel('')
     // 清空主进程缓存的全量云端模型，避免登出后旧账号的 cloud_model_id 被复用
     window.api?.cloud?.setModels([])
+    stopBalanceAutoRefresh()
   }
 
   async function fetchMe() {
@@ -248,6 +266,7 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
       quotas.value = quotaRes as CloudQuotas | null
       permissions.value = { ...permissions.value, ...(quotaRes?.policies || {}), ...(permRes.permissions || {}) }
       balances.value = balRes.balances || []
+      lastBalanceRefreshAt = Date.now()
       try {
         const billRes = await cloudClient.myBillingRules()
         billingRules.value = billRes.billing_rules || []
@@ -292,11 +311,97 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
       } catch {
         window.api?.cloud?.setPreferredEmbeddingModel('')
       }
+      startBalanceAutoRefresh()
     } catch (e: any) {
       console.error('[CloudAuth] fetchCloudData error:', e.message, e)
       // AUTH_EXPIRED 同步兜底，参见 fetchMe 注释
       if (e.message === 'AUTH_EXPIRED') logout()
     }
+  }
+
+  async function refreshBalances() {
+    if (!getCloudToken()) return
+    try {
+      const [balRes, quotaRes] = await Promise.all([
+        cloudClient.myBalance(),
+        cloudClient.myQuotas().catch(() => null),
+      ])
+      balances.value = balRes.balances || []
+      quotas.value = quotaRes as CloudQuotas | null
+      if (quotaRes?.policies) {
+        permissions.value = { ...permissions.value, ...(quotaRes.policies || {}) }
+      }
+      lastBalanceRefreshAt = Date.now()
+    } catch (e: any) {
+      if (e.message === 'AUTH_EXPIRED') logout()
+      throw e
+    }
+  }
+
+  function refreshBalancesThrottled(force = false): Promise<void> {
+    if (!getCloudToken()) return Promise.resolve()
+    const now = Date.now()
+    if (!force && now - lastBalanceRefreshAt < BALANCE_REFRESH_THROTTLE_MS) {
+      if (!balanceRefreshTimer) {
+        balanceRefreshTimer = setTimeout(() => {
+          balanceRefreshTimer = null
+          refreshBalancesThrottled(true).catch(() => {})
+        }, BALANCE_REFRESH_THROTTLE_MS - (now - lastBalanceRefreshAt))
+      }
+      return balanceRefreshPromise || Promise.resolve()
+    }
+    if (balanceRefreshPromise) return balanceRefreshPromise
+    balanceRefreshPromise = refreshBalances().finally(() => {
+      balanceRefreshPromise = null
+    })
+    return balanceRefreshPromise
+  }
+
+  function shouldRefreshBalanceOnFocus(): boolean {
+    return !!getCloudToken() && Date.now() - lastBalanceRefreshAt >= BALANCE_FOCUS_STALE_MS
+  }
+
+  function handleBalanceFocusRefresh() {
+    if (shouldRefreshBalanceOnFocus()) refreshBalancesThrottled(true).catch(() => {})
+  }
+
+  function handleBalanceVisibilityRefresh() {
+    if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+      handleBalanceFocusRefresh()
+    }
+  }
+
+  function startBalanceAutoRefresh() {
+    if (balanceAutoRefreshStarted || typeof window === 'undefined') return
+    balanceAutoRefreshStarted = true
+    window.addEventListener('focus', handleBalanceFocusRefresh)
+    window.addEventListener('online', handleBalanceFocusRefresh)
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', handleBalanceVisibilityRefresh)
+    }
+    balancePollTimer = setInterval(() => {
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return
+      refreshBalancesThrottled().catch(() => {})
+    }, BALANCE_VISIBLE_POLL_MS)
+  }
+
+  function stopBalanceAutoRefresh() {
+    if (!balanceAutoRefreshStarted || typeof window === 'undefined') return
+    window.removeEventListener('focus', handleBalanceFocusRefresh)
+    window.removeEventListener('online', handleBalanceFocusRefresh)
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', handleBalanceVisibilityRefresh)
+    }
+    if (balancePollTimer) {
+      clearInterval(balancePollTimer)
+      balancePollTimer = null
+    }
+    if (balanceRefreshTimer) {
+      clearTimeout(balanceRefreshTimer)
+      balanceRefreshTimer = null
+    }
+    balanceAutoRefreshStarted = false
+    balanceRefreshPromise = null
   }
 
   async function changePassword(oldPwd: string, newPwd: string) {
@@ -307,13 +412,19 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
     try {
       const data = await cloudAuth.refresh()
       setCloudToken(data.token)
-    } catch {
-      logout()
+      syncTokenState()
+    } catch (e: any) {
+      const msg = String(e?.message || '')
+      if (['Token expired', 'Token invalid', 'Token not provided', 'User not found', 'AUTH_EXPIRED'].includes(msg)) {
+        logout()
+      }
+      throw e
     }
   }
 
   async function init() {
     loadCachedUser()
+    syncTokenState()
     const token = getCloudToken()
     if (token) {
       // Sync token to main process for cloud LLM routing
@@ -331,7 +442,7 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
   return {
     user, models, permissions, balances, quotas, billingRules, plans, announcement,
     isLoggedIn, loading, pendingBonus,
-    login, register, logout, fetchMe, fetchCloudData,
+    login, register, logout, fetchMe, fetchCloudData, refreshBalances, refreshBalancesThrottled, syncTokenState,
     changePassword, refreshToken, init, consumeBonus,
   }
 })

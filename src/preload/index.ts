@@ -107,6 +107,10 @@ const api = {
     invoke: (channel: string, ...args: unknown[]) =>
       ipcRenderer.invoke(`gallery:${channel}`, ...args)
   },
+  creativeTemplate: {
+    invoke: (channel: string, ...args: unknown[]) =>
+      ipcRenderer.invoke(`creativeTemplate:${channel}`, ...args)
+  },
   matting: {
     invoke: (channel: string, ...args: unknown[]) =>
       ipcRenderer.invoke(`matting:${channel}`, ...args),
@@ -164,6 +168,8 @@ const api = {
       categoryId: number
       promptLang: 'cn' | 'en'
       promptText: string
+      refImages?: string[]
+      generationSize?: string
     }) => ipcRenderer.invoke('cloudInspiration:upload', params) as Promise<{
       ok: boolean
       error?: string

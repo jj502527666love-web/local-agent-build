@@ -16,7 +16,9 @@
       ]"
       :title="selectTitle"
     >
+      <option v-if="placeholder" value="" disabled>{{ placeholder }}</option>
       <option v-if="allowInherit" value="">{{ inheritLabel }}</option>
+      <option v-if="allowNone" :value="noneValue">{{ noneLabel }}</option>
       <option
         v-for="p in presets"
         :key="p.value"
@@ -87,7 +89,7 @@
     </div>
 
     <!-- Hint：形状预览 + 当前值对应像素，同一行避免增加纵向占位 -->
-    <div v-if="showHint && modelValue" class="mt-1 text-[10px] text-text-tertiary flex items-center gap-1.5">
+    <div v-if="showHint && modelValue && !isNone" class="mt-1 text-[10px] text-text-tertiary flex items-center gap-1.5">
       <span
         v-if="shapeStyle"
         class="inline-block border border-current rounded-sm flex-shrink-0"
@@ -232,6 +234,10 @@ interface Props {
   allowInherit?: boolean
   /** "继承"项展示文本 */
   inheritLabel?: string
+  allowNone?: boolean
+  noneLabel?: string
+  noneValue?: string
+  placeholder?: string
   /** 底部显示当前 value 对应的像素 */
   showHint?: boolean
   /** 按钮选中态主题色 */
@@ -250,6 +256,10 @@ const props = withDefaults(defineProps<Props>(), {
   columns: 6,
   allowInherit: false,
   inheritLabel: '继承',
+  allowNone: false,
+  noneLabel: '不指定尺寸',
+  noneValue: '__none__',
+  placeholder: '',
   showHint: false,
   accent: 'primary',
   size: 'md'
@@ -304,8 +314,9 @@ const visiblePresets = computed(() =>
 )
 const presetColumns = computed(() => Math.min(props.columns, visiblePresets.value.length + 1))
 
+const isNone = computed(() => props.allowNone && props.modelValue === props.noneValue)
 const isCustom = computed(
-  () => !!props.modelValue && !isPresetValue(props.modelValue)
+  () => !!props.modelValue && !isNone.value && !isPresetValue(props.modelValue)
 )
 const isActiveCustom = computed(() => isCustom.value && directionForValue(props.modelValue) === activeDirection.value)
 const displayValue = computed(() => formatSizeForDisplay(props.modelValue))
@@ -320,12 +331,13 @@ const customButtonTitle = computed(() => {
 /** 绑定给 select 元素的 value：自定义时取 modelValue 本身（需要有对应 option），否则取 modelValue */
 const selectValue = computed(() => props.modelValue)
 const selectTitle = computed(() => {
-  if (!props.modelValue) return props.inheritLabel
+  if (isNone.value) return props.noneLabel
+  if (!props.modelValue) return props.placeholder || props.inheritLabel
   const px = resolveSizeToPixels(props.modelValue, resolveOpts.value)
   return px ? `${displayValue.value} (${px})` : displayValue.value
 })
 
-const pixelHint = computed(() => resolveSizeToPixels(props.modelValue, resolveOpts.value) || '—')
+const pixelHint = computed(() => isNone.value ? '—' : resolveSizeToPixels(props.modelValue, resolveOpts.value) || '—')
 
 /** 形状预览样式：最长边固定 22px，短边按比例缩放，最小 6px 兜底（21:9/9:21 仍可辨） */
 const shapeStyle = computed<Record<string, string> | null>(() => {

@@ -117,19 +117,22 @@
           <div class="mb-4 pr-12">
             <h3 class="text-sm font-semibold text-text-primary">{{ detailItem.title }}</h3>
             <p v-if="detailItem.uploader_nickname" class="text-[11px] text-text-tertiary mt-1">by @{{ detailItem.uploader_nickname }}</p>
+            <p v-if="detailItem.generation_size" class="text-[11px] text-text-tertiary mt-1">尺寸：{{ detailItem.generation_size }}</p>
           </div>
 
-          <!-- Reference image -->
-          <div v-if="detailItem.ref_image" class="mb-4">
-            <label class="text-xs font-medium text-text-secondary mb-1.5 block">参考图片</label>
-            <img :src="detailItem.ref_image" class="w-32 h-32 object-cover rounded-lg border border-surface-3" />
+          <!-- Reference images -->
+          <div v-if="detailRefImages.length" class="mb-4">
+            <label class="text-xs font-medium text-text-secondary mb-1.5 block">参考图片（{{ detailRefImages.length }}）</label>
+            <div class="flex gap-2 flex-wrap">
+              <img v-for="(url, index) in detailRefImages" :key="`${url}-${index}`" :src="url" class="w-20 h-20 object-cover rounded-lg border border-surface-3" />
+            </div>
           </div>
 
           <!-- Chinese prompt -->
           <div v-if="detailItem.prompt_cn" class="mb-4">
             <div class="flex items-center justify-between mb-1.5">
               <label class="text-xs font-medium text-text-secondary">中文提示词</label>
-              <button @click="useInspiration(detailItem!.prompt_cn, detailItem!.ref_image)" class="text-xs text-primary-600 hover:text-primary-700 font-medium flex items-center gap-1">
+              <button @click="useInspiration(detailItem!.prompt_cn, detailItem!)" class="text-xs text-primary-600 hover:text-primary-700 font-medium flex items-center gap-1">
                 <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.5 6H5.25A2.25 2.25 0 0 0 3 8.25v10.5A2.25 2.25 0 0 0 5.25 21h10.5A2.25 2.25 0 0 0 18 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" /></svg>
                 使用灵感
               </button>
@@ -141,7 +144,7 @@
           <div v-if="detailItem.prompt_en" class="mb-4">
             <div class="flex items-center justify-between mb-1.5">
               <label class="text-xs font-medium text-text-secondary">English Prompt</label>
-              <button @click="useInspiration(detailItem!.prompt_en, detailItem!.ref_image)" class="text-xs text-primary-600 hover:text-primary-700 font-medium flex items-center gap-1">
+              <button @click="useInspiration(detailItem!.prompt_en, detailItem!)" class="text-xs text-primary-600 hover:text-primary-700 font-medium flex items-center gap-1">
                 <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.5 6H5.25A2.25 2.25 0 0 0 3 8.25v10.5A2.25 2.25 0 0 0 5.25 21h10.5A2.25 2.25 0 0 0 18 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" /></svg>
                 Use Prompt
               </button>
@@ -150,9 +153,10 @@
           </div>
 
           <!-- Tags -->
-          <div v-if="detailItem.tags?.length" class="flex flex-wrap gap-1.5">
+          <div v-if="detailItem.tags?.length" class="flex flex-wrap gap-1.5 mb-4">
             <span v-for="tag in detailItem.tags" :key="tag" class="text-[10px] px-2 py-0.5 bg-surface-2 text-text-tertiary rounded-md">{{ tag }}</span>
           </div>
+
         </div>
       </div>
     </div>
@@ -168,6 +172,8 @@ interface Inspiration {
   category: string
   tags: string[]
   ref_image?: string
+  ref_images?: string[]
+  generation_size?: string
   cover_image?: string
   // 用户上传的创作在自定义灵感广场中显示上传者昵称（百度文心默认数据为空）
   uploader_nickname?: string
@@ -180,8 +186,10 @@ let _hasLoaded = false
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
+import { useHandoffStore } from '@/stores/handoff'
 
 const router = useRouter()
+const handoff = useHandoffStore()
 const api = () => (window as any).api
 
 const allItems = ref<Inspiration[]>(_cachedItems)
@@ -189,6 +197,11 @@ const selectedCategory = ref('')
 const search = ref('')
 const loading = ref(false)
 const detailItem = ref<Inspiration | null>(null)
+const detailRefImages = computed(() => {
+  const item = detailItem.value
+  if (!item) return []
+  return (item.ref_images?.length ? item.ref_images : (item.ref_image ? [item.ref_image] : [])).slice(0, 8)
+})
 
 const DEFAULT_CATEGORIES = ['人物', '风景', '动漫', '设计', '创意']
 const dynamicCategories = ref<string[]>([])
@@ -271,14 +284,15 @@ function openDetail(item: Inspiration) {
   detailItem.value = item
 }
 
-function useInspiration(promptText: string, refImage?: string) {
+function useInspiration(promptText: string, item: Inspiration) {
   detailItem.value = null
-  const query: Record<string, string> = { prompt: promptText }
-  if (refImage) {
-    sessionStorage.setItem('imageGen:refImages', JSON.stringify([refImage]))
-    query.hasRefImages = '1'
-  }
-  router.push({ path: '/image-gen', query })
+  const refs = (item.ref_images?.length ? item.ref_images : (item.ref_image ? [item.ref_image] : [])).slice(0, 8)
+  handoff.set('imageGen', {
+    prompt: promptText,
+    presetSize: item.generation_size || undefined,
+    refImages: refs.length ? refs : undefined
+  })
+  router.push('/image-gen')
 }
 
 onMounted(() => {

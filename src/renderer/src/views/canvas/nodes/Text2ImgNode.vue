@@ -27,6 +27,7 @@
           v-model="tier"
           size="sm"
           :model-id="projectImageModelId"
+          :size-value="size"
           :disabled="data.locked"
         />
       </div>

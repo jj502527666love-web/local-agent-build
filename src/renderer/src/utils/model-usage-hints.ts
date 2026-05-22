@@ -3,6 +3,7 @@
 // No user-facing labeling — usage is recorded silently on successful actions.
 
 import type { ModelCap } from './model-caps'
+import { useCloudAuthStore } from '@/stores/cloud-auth'
 
 const SETTINGS_KEY = 'model_usage_hints'
 const MAX_PER_CAP = 20
@@ -59,6 +60,9 @@ export async function recordUsage(cap: ModelCap, providerId: string, modelId: st
   map[cap] = list
   cache = map
   await save()
+  if (providerId === 'cloud:default') {
+    useCloudAuthStore().refreshBalancesThrottled().catch(() => {})
+  }
 }
 
 /**

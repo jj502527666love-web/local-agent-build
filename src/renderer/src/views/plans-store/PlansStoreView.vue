@@ -122,14 +122,24 @@
 
             <div class="flex-1"></div>
 
-            <button
-              type="button"
-              class="btn-primary text-xs w-full"
-              :disabled="!canPurchase(p)"
-              @click="handleBuy(p)"
-            >
-              {{ purchaseLabel(p) }}
-            </button>
+            <div class="space-y-2">
+              <button
+                type="button"
+                class="btn-primary text-xs w-full"
+                :disabled="!canPurchase(p)"
+                @click="handleBuy(p)"
+              >
+                {{ purchaseLabel(p) }}
+              </button>
+              <button
+                v-if="canUpgradeTo(p)"
+                type="button"
+                class="btn-secondary text-xs w-full"
+                @click="handleUpgrade(p)"
+              >
+                升级套餐
+              </button>
+            </div>
           </div>
         </div>
 
@@ -252,14 +262,25 @@ function purchaseLabel(p: StorePlan): string {
   const current = currentUserPlan(p)
   if (current && !current.expires_at) return '已拥有'
   if (current) return '续费'
-  if (primaryActivePlan.value) return '升级套餐'
+  if (primaryActivePlan.value) return '新购此套餐'
   return '立即购买'
+}
+
+function canUpgradeTo(p: StorePlan): boolean {
+  return Number(p.price) > 0 && !!primaryActivePlan.value && !currentUserPlan(p)
 }
 
 function handleBuy(p: StorePlan) {
   if (!canPurchase(p)) return
   selectedPlanId.value = p.id
-  selectedFromUserPlanId.value = currentUserPlan(p) ? null : (primaryActivePlan.value?.id || null)
+  selectedFromUserPlanId.value = null
+  payOpen.value = true
+}
+
+function handleUpgrade(p: StorePlan) {
+  if (!canUpgradeTo(p) || !primaryActivePlan.value) return
+  selectedPlanId.value = p.id
+  selectedFromUserPlanId.value = primaryActivePlan.value.id
   payOpen.value = true
 }
 

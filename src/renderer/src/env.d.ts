@@ -12,6 +12,7 @@ interface Window {
     db: { query: (channel: string, ...args: unknown[]) => Promise<unknown> }
     canvas: { invoke: (channel: string, ...args: unknown[]) => Promise<unknown> }
     gallery: { invoke: (channel: string, ...args: unknown[]) => Promise<unknown> }
+    creativeTemplate: { invoke: (channel: string, ...args: unknown[]) => Promise<unknown> }
     matting: {
       invoke: (channel: string, ...args: unknown[]) => Promise<unknown>
       /**
@@ -89,6 +90,20 @@ interface Window {
         preferred: string
         active: string
         allowCustomEmbedding: boolean
+      }>
+      uploadInspiration: (params: {
+        resultPath: string
+        title: string
+        categoryId: number
+        promptLang: 'cn' | 'en'
+        promptText: string
+        refImages?: string[]
+        generationSize?: string
+      }) => Promise<{
+        ok: boolean
+        error?: string
+        data?: any
+        compressed?: boolean
       }>
     }
     clipboard: {

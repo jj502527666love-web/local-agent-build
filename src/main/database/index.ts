@@ -6,6 +6,7 @@ import { getDataDir } from '../services/data-path'
 import { seedPresetPersonas } from '../services/persona'
 import { seedBuiltinPresets } from '../services/prompt-preset'
 import { seedBuiltinSkillPresets } from '../services/skill'
+import { seedCreativeTemplatePresets } from '../services/creative-template'
 
 let db: Database.Database | null = null
 
@@ -35,6 +36,7 @@ function initSchema(): void {
   seedPresetPersonas()
   seedBuiltinPresets()
   seedBuiltinSkillPresets()
+  seedCreativeTemplatePresets()
 }
 
 function runMigrations(): void {
@@ -132,6 +134,9 @@ function runMigrations(): void {
   if (igCols.length > 0 && !igColNames.includes('raw_request')) {
     db.exec("ALTER TABLE image_generations ADD COLUMN raw_request TEXT NOT NULL DEFAULT ''")
   }
+  if (igCols.length > 0) {
+    db.exec('CREATE INDEX IF NOT EXISTS idx_image_generations_status_created ON image_generations(status, created_at DESC)')
+  }
 
   // conversations: 「智能体不再绑定模型」改造（v0.6.5+）
   // 每个会话独立记忆模型：新建会话从云控端默认拉取，用户输入框切换持久写回
@@ -195,6 +200,72 @@ function runMigrations(): void {
       -999,
       new Date().toISOString()
     )
+  }
+
+  // v0.7.7+ creative_templates / creative_template_categories 表幂等建表（旧库升级路径）
+  // 完整字段语义见 resources/schema.sql 顶部注释
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS creative_template_categories (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      is_visible INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS creative_templates (
+      id TEXT PRIMARY KEY,
+      category_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      cover_image TEXT NOT NULL DEFAULT '',
+      example_ref_images TEXT NOT NULL DEFAULT '[]',
+      requires_ref_image INTEGER NOT NULL DEFAULT 0,
+      default_size TEXT NOT NULL DEFAULT '',
+      prompt_template TEXT NOT NULL,
+      variables TEXT NOT NULL DEFAULT '[]',
+      source_type TEXT NOT NULL DEFAULT 'manual',
+      source_image TEXT NOT NULL DEFAULT '',
+      source_inspiration_id TEXT NOT NULL DEFAULT '',
+      cloud_template_id INTEGER NOT NULL DEFAULT 0,
+      submission_status TEXT NOT NULL DEFAULT '',
+      submission_reject_reason TEXT NOT NULL DEFAULT '',
+      submission_reviewed_at TEXT NOT NULL DEFAULT '',
+      submission_published_at TEXT NOT NULL DEFAULT '',
+      submission_synced_at TEXT NOT NULL DEFAULT '',
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      is_visible INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (category_id) REFERENCES creative_template_categories(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_creative_templates_category ON creative_templates(category_id);
+    CREATE INDEX IF NOT EXISTS idx_creative_templates_source ON creative_templates(source_type);
+    CREATE INDEX IF NOT EXISTS idx_creative_templates_created ON creative_templates(created_at);
+  `)
+  const creativeTemplateCols = db.prepare("PRAGMA table_info(creative_templates)").all() as any[]
+  const creativeTemplateColNames = creativeTemplateCols.map((c: any) => c.name)
+  if (creativeTemplateCols.length > 0 && !creativeTemplateColNames.includes('requires_ref_image')) {
+    db.exec("ALTER TABLE creative_templates ADD COLUMN requires_ref_image INTEGER NOT NULL DEFAULT 0")
+  }
+  if (creativeTemplateCols.length > 0 && !creativeTemplateColNames.includes('cloud_template_id')) {
+    db.exec("ALTER TABLE creative_templates ADD COLUMN cloud_template_id INTEGER NOT NULL DEFAULT 0")
+  }
+  if (creativeTemplateCols.length > 0 && !creativeTemplateColNames.includes('submission_status')) {
+    db.exec("ALTER TABLE creative_templates ADD COLUMN submission_status TEXT NOT NULL DEFAULT ''")
+  }
+  if (creativeTemplateCols.length > 0 && !creativeTemplateColNames.includes('submission_reject_reason')) {
+    db.exec("ALTER TABLE creative_templates ADD COLUMN submission_reject_reason TEXT NOT NULL DEFAULT ''")
+  }
+  if (creativeTemplateCols.length > 0 && !creativeTemplateColNames.includes('submission_reviewed_at')) {
+    db.exec("ALTER TABLE creative_templates ADD COLUMN submission_reviewed_at TEXT NOT NULL DEFAULT ''")
+  }
+  if (creativeTemplateCols.length > 0 && !creativeTemplateColNames.includes('submission_published_at')) {
+    db.exec("ALTER TABLE creative_templates ADD COLUMN submission_published_at TEXT NOT NULL DEFAULT ''")
+  }
+  if (creativeTemplateCols.length > 0 && !creativeTemplateColNames.includes('submission_synced_at')) {
+    db.exec("ALTER TABLE creative_templates ADD COLUMN submission_synced_at TEXT NOT NULL DEFAULT ''")
   }
 
   // v0.6.9+ matting_providers / matting_tasks 表幂等建表（旧库升级路径）

@@ -56,7 +56,10 @@ window.addEventListener('cloud-auth-expired', (event) => {
 })
 
 window.api?.cloud?.onTokenUpdated?.(({ token }) => {
-  if (token) setCloudToken(token)
+  if (token) {
+    setCloudToken(token)
+    useCloudAuthStore().syncTokenState()
+  }
 })
 
 window.api?.cloud?.onAuthExpired?.(({ reason }) => {

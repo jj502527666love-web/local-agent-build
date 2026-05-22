@@ -1,5 +1,6 @@
 import { ref, computed } from 'vue'
 import { useCanvasStore } from '@/stores/canvas'
+import { useCloudAuthStore } from '@/stores/cloud-auth'
 import { recordUsage } from '@/utils/model-usage-hints'
 import { getNodeTypeDef } from './useNodeTypes'
 import { extractJson } from '@shared/json-extract'
@@ -112,6 +113,10 @@ const refImageWarnings = ref<Array<{ nodeId: string; failed: number; total: numb
 
 // Legacy alias kept for existing bindings (`workflowRunning` in view)
 const running = workflowRunning
+
+function refreshCloudBalances() {
+  useCloudAuthStore().refreshBalancesThrottled().catch(() => {})
+}
 
 // Derived flag: any execution in flight (workflow or any single node)
 const anyRunning = computed(() => workflowRunning.value || activeSingleRuns.value.size > 0)
@@ -1171,6 +1176,7 @@ export function useWorkflowEngine() {
             matting_task_id: result.taskId,
           }
         })
+        if (source === 'cloud') refreshCloudBalances()
         break
       }
     }

@@ -94,6 +94,7 @@
           <ResolutionTierPicker
             v-model="defaultTier"
             :model-id="pureSelectedModelId"
+            :size-value="defaultSize"
           />
         </div>
 

@@ -54,6 +54,9 @@ export const RATIO_MAX = 64
 export const PIXEL_SNAP = 16
 export const CUSTOM_ASPECT_RATIO_MIN = 1 / 3
 export const CUSTOM_ASPECT_RATIO_MAX = 3
+export const FOUR_K_TIER_ID = '4k'
+export const EXTREME_RESOLUTION_RATIO_MIN = 9 / 21
+export const EXTREME_RESOLUTION_RATIO_MAX = 21 / 9
 
 /**
  * 上游模型的"通用能力档位"边界。
@@ -229,6 +232,40 @@ export function ensureValidTierId(modelId: string | undefined, tierId: string | 
   if (tierId && cap.tiers.find((t) => t.id === tierId)) return tierId
   if (cap.tiers.find((t) => t.id === DEFAULT_TIER_ID)) return DEFAULT_TIER_ID
   return cap.tiers[0]?.id ?? DEFAULT_TIER_ID
+}
+
+export function getSizeAspectRatio(size?: string): number | null {
+  if (!size) return null
+  const preset = PRESET_BY_VALUE[size] ?? PRESET_BY_VALUE[normalizeSizeInput(size)]
+  if (preset) return preset.ratio[0] / preset.ratio[1]
+  const px = parsePixels(size)
+  if (px) return px.w / px.h
+  const ratio = parseRatio(size)
+  if (ratio) return ratio.w / ratio.h
+  return null
+}
+
+export function isExtremeResolutionAspectRatio(size?: string): boolean {
+  const ratio = getSizeAspectRatio(size)
+  return ratio !== null && (ratio < EXTREME_RESOLUTION_RATIO_MIN || ratio > EXTREME_RESOLUTION_RATIO_MAX)
+}
+
+export function getAvailableResolutionTiers(modelId?: string, size?: string): ImageResolutionTier[] {
+  const tiers = getModelCapability(modelId).tiers
+  if (!isExtremeResolutionAspectRatio(size)) return tiers
+  const fourK = tiers.find((t) => t.id === FOUR_K_TIER_ID)
+  return fourK ? [fourK] : tiers
+}
+
+export function ensureValidTierIdForSize(
+  modelId: string | undefined,
+  tierId: string | undefined,
+  size?: string
+): string {
+  const tiers = getAvailableResolutionTiers(modelId, size)
+  if (tierId && tiers.find((t) => t.id === tierId)) return tierId
+  if (tiers.find((t) => t.id === DEFAULT_TIER_ID)) return DEFAULT_TIER_ID
+  return tiers[0]?.id ?? DEFAULT_TIER_ID
 }
 
 /**
@@ -446,7 +483,8 @@ export function resolveSizeToPixelsDetailed(size: string, opts?: ResolveOptions)
   // 档位 + 能力域：优先级 modelId+tierId > longSide > 默认 1792
   const hasCapability = opts?.modelId != null
   const cap = hasCapability ? getModelCapability(opts!.modelId) : null
-  const tierLongSide = hasCapability ? getTierLongSide(opts!.modelId, opts?.tierId) : null
+  const effectiveTierId = hasCapability ? ensureValidTierIdForSize(opts!.modelId, opts?.tierId, size) : opts?.tierId
+  const tierLongSide = hasCapability ? getTierLongSide(opts!.modelId, effectiveTierId) : null
   const longSide = tierLongSide ?? opts?.longSide ?? 1792
   const clampOpts: ClampOptions | undefined = cap
     ? {

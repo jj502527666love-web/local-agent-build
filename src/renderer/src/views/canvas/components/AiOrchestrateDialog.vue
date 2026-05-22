@@ -144,6 +144,7 @@
                     size="sm"
                     :disabled="running"
                     :model-id="projectImageModelId"
+                    :size-value="group.size"
                   />
                   <label class="text-xs font-medium text-text-secondary">质量</label>
                   <select

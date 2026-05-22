@@ -289,10 +289,12 @@ function withWorkspace(result: any, sandboxDir?: string): any {
 export interface ToolExecContext {
   /** 当前会话 id（用于 image_gen 进度事件 scope 到对应会话浮窗） */
   conversationId?: string
+  requestId?: string
   /** 主窗口引用（用于进度事件转发到 renderer） */
   window?: BrowserWindow | null
   signal?: AbortSignal
   timeoutMs?: number
+  isCanceled?: (requestId?: string) => boolean
 }
 
 export async function executeCoreToolCall(
@@ -534,10 +536,11 @@ async function executeImageGen(args: any, sandboxDir?: string, execContext?: Too
       // generateImages 在后台异步跑，完成后追加 assistant 消息到对话流。
       // 这样 LLM 不会阻塞 30-90 秒等图片，用户能立即继续对话。
       const conversationId = execContext?.conversationId
+      const requestId = execContext?.requestId
       const window = execContext?.window || null
       if (conversationId) {
         // 后台执行（不 await）—— 任何异常都在 helper 内自我消化，避免吞掉
-        runImageGenInBackground(args, sandboxDir, conversationId, window).catch((e) => {
+        runImageGenInBackground(args, sandboxDir, conversationId, requestId, window, execContext?.isCanceled).catch((e) => {
           console.error('[image_gen] background task threw:', e)
         })
         return {
@@ -617,10 +620,14 @@ async function runImageGenInBackground(
   args: any,
   sandboxDir: string | undefined,
   conversationId: string,
-  window: BrowserWindow | null
+  requestId: string | undefined,
+  window: BrowserWindow | null,
+  isCanceled?: (requestId?: string) => boolean
 ): Promise<void> {
   let assistantContent = ''
+  const canceled = () => !!requestId && !!isCanceled?.(requestId)
   try {
+    if (canceled()) return
     const generations = await generateImages(
       {
         prompt: args.prompt,
@@ -632,11 +639,13 @@ async function runImageGenInBackground(
         refImages: args.ref_images || undefined,
         progressContext: {
           conversationId,
+          requestId,
           source: 'chat'
         }
       },
       window
     )
+    if (canceled()) return
     const gen = generations[0]
     if (!gen) {
       assistantContent = '[生图失败] 服务商未返回结果'
@@ -675,6 +684,7 @@ async function runImageGenInBackground(
 
   // 校验 conversation 仍存在（用户可能已删除会话）
   try {
+    if (canceled()) return
     if (!getConversation(conversationId)) return
     const message = addMessage({
       conversation_id: conversationId,
@@ -682,7 +692,7 @@ async function runImageGenInBackground(
       content: assistantContent
     })
     if (window) {
-      window.webContents.send('chat:appendMessage', { conversationId, message })
+      window.webContents.send('chat:appendMessage', { conversationId, requestId, message })
     }
   } catch (e: any) {
     console.error('[image_gen bg] failed to append message:', e)

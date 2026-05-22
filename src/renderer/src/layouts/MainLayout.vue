@@ -210,7 +210,7 @@ const allNavItems = [
   },
   { path: '/image-toolkit', label: '图像处理', icon: IconImageToolkit },
   { path: '/inspiration', label: '灵感广场', icon: IconInspiration },
-  { path: '/canvas-square', label: '画布广场', icon: IconCanvasSquare },
+  { path: '/canvas-square', label: '创意模板', icon: IconCanvasSquare },
   {
     label: '我的创作',
     icon: IconCreation,

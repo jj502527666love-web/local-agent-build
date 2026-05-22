@@ -65,6 +65,13 @@ interface RequestOptions {
 // JWTAuth::refresh() 会把旧 token 加入 blacklist，旧 token 重复 refresh 会失败。
 let refreshing: Promise<string | null> | null = null
 
+class AuthRefreshTransientError extends Error {
+  constructor(message = 'AUTH_REFRESH_TRANSIENT') {
+    super(message)
+    this.name = 'AuthRefreshTransientError'
+  }
+}
+
 async function refreshToken(): Promise<string | null> {
   if (refreshing) return refreshing
 
@@ -81,6 +88,9 @@ async function refreshToken(): Promise<string | null> {
         },
       })
       if (!res.ok) {
+        if (res.status !== 401 && res.status !== 403) {
+          throw new AuthRefreshTransientError(`AUTH_REFRESH_HTTP_${res.status}`)
+        }
         const currentToken = getCloudToken()
         return currentToken && currentToken !== startToken ? currentToken : null
       }
@@ -95,9 +105,12 @@ async function refreshToken(): Promise<string | null> {
       if (currentToken !== startToken) return currentToken
       setCloudToken(data.token)
       return data.token
-    } catch {
+    } catch (e: any) {
+      if (e instanceof AuthRefreshTransientError) throw e
       const currentToken = getCloudToken()
-      return currentToken && currentToken !== startToken ? currentToken : null
+      if (currentToken && currentToken !== startToken) return currentToken
+      if (currentToken === startToken) throw new AuthRefreshTransientError(e?.message || 'AUTH_REFRESH_NETWORK')
+      return null
     }
   })()
 
@@ -169,7 +182,12 @@ async function request(
 
     // 业务端点 + 可 refresh 的标签 + 第一次尝试 → 走 refresh + retry
     if (!isAuthEndpoint && attempt === 0 && isRefreshableErrorMessage(errMsg)) {
-      const newToken = await refreshToken()
+      let newToken: string | null
+      try {
+        newToken = await refreshToken()
+      } catch (e: any) {
+        throw new Error(e?.message || 'AUTH_REFRESH_TRANSIENT')
+      }
       if (newToken) {
         // 重试一次（attempt=1 防止再次进入此分支造成循环）
         return request(method, path, body, options, 1)
@@ -241,6 +259,7 @@ export const cloudClient = {
   cancelOrder: (orderNo: string) => request('POST', `/client/orders/${orderNo}/cancel`),
   // 订单：创建 / 同步（天阙聚合支付通道，无异步 notify 需主动轮询同步）
   createTianqueOrder: (planId: number) => request('POST', '/client/orders/tianque', { plan_id: planId }),
+  upgradePlanTianque: (fromUserPlanId: number, planId: number) => request('POST', '/client/orders/tianque/upgrade', { from_user_plan_id: fromUserPlanId, plan_id: planId }),
   syncTianqueOrder: (orderNo: string) => request('POST', `/client/orders/${orderNo}/tianque-sync`),
   // 公告：当前启用的排序最高的一条公告；无公告时 announcement=null
   currentAnnouncement: () => request('GET', '/client/announcement/current'),

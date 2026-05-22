@@ -57,8 +57,8 @@
                 <h3 class="text-sm font-semibold text-text-primary">计费标准</h3>
                 <span v-if="store.billingRules.length" class="text-[10px] text-text-tertiary">{{ store.billingRules.length }} 条规则</span>
               </div>
-              <div v-if="store.billingRules.length" class="space-y-1.5">
-                <div v-for="r in store.billingRules.slice(0, 6)" :key="r.cloud_model_id"
+              <div v-if="store.billingRules.length" class="space-y-1.5 max-h-64 overflow-y-auto pr-1">
+                <div v-for="r in store.billingRules" :key="r.cloud_model_id"
                   class="flex items-center justify-between gap-3 px-3 py-2 bg-surface-1 rounded-lg text-xs">
                   <span class="text-text-primary font-medium truncate">{{ r.model_name }}</span>
                   <span v-if="r.billing_type === 'token'" class="text-text-secondary whitespace-nowrap">
@@ -67,9 +67,6 @@
                   <span v-else class="text-text-secondary whitespace-nowrap">
                     {{ r.credit_per_call }} {{ siteConfig.labels.credit }}/次
                   </span>
-                </div>
-                <div v-if="store.billingRules.length > 6" class="text-[10px] text-text-tertiary px-1 pt-1">
-                  还有 {{ store.billingRules.length - 6 }} 条规则未展示
                 </div>
               </div>
               <div v-else class="text-xs text-text-tertiary">暂无计费标准</div>
@@ -81,17 +78,13 @@
                 <h3 class="text-sm font-semibold text-text-primary">云端模型</h3>
                 <span class="text-[10px] text-text-tertiary">{{ store.models.length }} 个模型</span>
               </div>
-              <div v-if="store.models.length" class="space-y-1.5">
-                <div v-for="m in store.models.slice(0, 6)" :key="m.id"
+              <div v-if="store.models.length" class="space-y-1.5 max-h-64 overflow-y-auto pr-1">
+                <div v-for="m in store.models" :key="m.id"
                   class="flex items-center justify-between gap-3 px-3 py-2 bg-surface-1 rounded-lg">
                   <div class="min-w-0">
-                    <span class="text-xs font-medium text-text-primary truncate block">{{ m.name }}</span>
-                    <span class="text-[10px] text-text-tertiary truncate block">{{ m.model_id }}</span>
+                    <span class="text-xs font-medium text-text-primary truncate block">{{ m.name || '未命名模型' }}</span>
                   </div>
                   <span class="text-[10px] px-2 py-0.5 bg-surface-2 rounded text-text-secondary whitespace-nowrap">{{ m.type }}</span>
-                </div>
-                <div v-if="store.models.length > 6" class="text-[10px] text-text-tertiary px-1 pt-1">
-                  还有 {{ store.models.length - 6 }} 个模型未展示
                 </div>
               </div>
               <div v-else class="text-xs text-text-tertiary">暂无分配模型</div>

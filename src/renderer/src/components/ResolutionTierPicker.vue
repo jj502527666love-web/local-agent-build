@@ -18,13 +18,14 @@
 
 <script setup lang="ts">
 import { computed, watch } from 'vue'
-import { getModelCapability, ensureValidTierId } from '@shared/image-size'
+import { getAvailableResolutionTiers, ensureValidTierIdForSize } from '@shared/image-size'
 
 interface Props {
   /** 当前选中的档位 id（1k/2k/4k） */
   modelValue: string
   /** 模型 id，决定可选档位列表 */
   modelId?: string
+  sizeValue?: string
   disabled?: boolean
   /** 按钮尺寸：sm = 节点内紧凑，md = 生图页标准 */
   size?: 'sm' | 'md'
@@ -39,16 +40,16 @@ const emit = defineEmits<{
   (e: 'update:modelValue', v: string): void
 }>()
 
-const tiers = computed(() => getModelCapability(props.modelId).tiers)
+const tiers = computed(() => getAvailableResolutionTiers(props.modelId, props.sizeValue))
 
 /**
  * 模型切换后当前选中档位可能不再合法（如从 gpt-image-2 的 4K 切到只支持 1K/2K 的模型），
  * 自动降级到 DEFAULT_TIER_ID（2K）或首档。
  */
 watch(
-  () => [props.modelId, props.modelValue] as const,
-  ([modelId, current]) => {
-    const valid = ensureValidTierId(modelId, current)
+  () => [props.modelId, props.modelValue, props.sizeValue] as const,
+  ([modelId, current, sizeValue]) => {
+    const valid = ensureValidTierIdForSize(modelId, current, sizeValue)
     if (valid !== current) emit('update:modelValue', valid)
   },
   { immediate: true }

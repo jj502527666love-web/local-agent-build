@@ -476,7 +476,10 @@ async function runQueue() {
   pendingFiles.value = []
   running.value = false
   // 拉一下配额（云接口模式才有变化）
-  if (mode.value === 'cloud') store.fetchCloudQuota()
+  if (mode.value === 'cloud') {
+    store.fetchCloudQuota()
+    cloudAuth.refreshBalancesThrottled().catch(() => {})
+  }
 }
 
 function cancelRun() { canceled.value = true }

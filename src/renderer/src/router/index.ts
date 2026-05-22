@@ -158,10 +158,12 @@ export const routes: RouteRecordRaw[] = [
         meta: { title: 'AI 视频' }
       },
       {
+        // v0.7.7+ 创意模板：本地模板分类管理 + 云端模板浏览
+        // 旧路径 /canvas-square 保留为「创意模板」入口（侧栏菜单已挂在此路径），无需迁移外链
         path: 'canvas-square',
         name: 'canvasSquare',
-        component: () => import('@/views/common/DevelopingView.vue'),
-        meta: { title: '画布广场' }
+        component: () => import('@/views/creative-templates/CreativeTemplatesView.vue'),
+        meta: { title: '创意模板' }
       },
       {
         path: 'image-edit/:id',

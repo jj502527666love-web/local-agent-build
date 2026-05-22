@@ -82,13 +82,39 @@ function getModelPromptBudget(modelId: string): number {
   return Math.max(2000, Math.floor(total * (1 - RESPONSE_RESERVE_RATIO)))
 }
 
-// Per-conversation AbortController so the renderer can cancel a running send.
-const activeControllers = new Map<string, AbortController>()
+type ActiveChatController = {
+  controller: AbortController
+  requestId: string
+}
 
-export function cancelChat(conversationId: string): boolean {
-  const ctrl = activeControllers.get(conversationId)
-  if (!ctrl) return false
-  ctrl.abort()
+const activeControllers = new Map<string, ActiveChatController>()
+const canceledRequestIds = new Set<string>()
+const canceledRequestReasons = new Map<string, 'user' | 'replaced'>()
+// 取消标记自动清理：避免长时间运行累积无界 Set/Map。
+// 后台生图任务最长 ~90s（按 image_gen 注释），给 10 分钟兜底足够覆盖任何
+// 异步追加路径；之后即便有迟到事件也会落地为新消息（不会再有同 requestId 流）。
+const CANCELED_REQUEST_TTL_MS = 10 * 60_000
+
+function markChatRequestCanceled(requestId?: string, reason: 'user' | 'replaced' = 'user') {
+  if (!requestId) return
+  canceledRequestIds.add(requestId)
+  canceledRequestReasons.set(requestId, reason)
+  setTimeout(() => {
+    canceledRequestIds.delete(requestId)
+    canceledRequestReasons.delete(requestId)
+  }, CANCELED_REQUEST_TTL_MS).unref?.()
+}
+
+export function isChatRequestCanceled(requestId?: string): boolean {
+  return !!requestId && canceledRequestIds.has(requestId)
+}
+
+export function cancelChat(conversationId: string, requestId?: string): boolean {
+  const active = activeControllers.get(conversationId)
+  if (!active) return false
+  if (requestId && active.requestId !== requestId) return false
+  markChatRequestCanceled(active.requestId, 'user')
+  active.controller.abort()
   activeControllers.delete(conversationId)
   // Reject any pending approvals for this conversation
   for (const [, ctx] of pendingApprovals) {
@@ -339,6 +365,7 @@ export interface SendMessageOptions {
   conversationId: string
   botId: string
   content: string
+  requestId?: string
   attachments?: any[]
   overrideKbCategoryIds?: string[]
   overrideSkillIds?: string[]
@@ -416,6 +443,9 @@ export async function sendMessage(
 ): Promise<void> {
   const bot = getBot(options.botId)
   if (!bot) throw new Error('Bot not found')
+  const requestId = options.requestId || `chat_${uuid()}`
+  canceledRequestIds.delete(requestId)
+  canceledRequestReasons.delete(requestId)
 
   // 「智能体不再绑定模型」改造（v0.6.5+）：模型从 conversation.active_model_* 读取
   // - 优先用 conv.active_model_*（用户在输入框左下角切换过的在这里）
@@ -440,9 +470,12 @@ export async function sendMessage(
   })
 
   const prevCtrl = activeControllers.get(options.conversationId)
-  if (prevCtrl) prevCtrl.abort()
+  if (prevCtrl) {
+    markChatRequestCanceled(prevCtrl.requestId, 'replaced')
+    prevCtrl.controller.abort()
+  }
   const abortController = new AbortController()
-  activeControllers.set(options.conversationId, abortController)
+  activeControllers.set(options.conversationId, { controller: abortController, requestId })
   const signal = abortController.signal
   // 不再做整轮 180s 硬超时。只保留 30 分钟 hard deadline 兜底防失控循环。
   // 实际「卡死检测」由 llm.ts 的 stream idle timeout 完成（60s 无 token 即视为静默）。
@@ -453,9 +486,11 @@ export async function sendMessage(
   }, AGENT_HARD_DEADLINE_MS)
   const emitStream = (payload: Record<string, any>): void => {
     if (!window) return
+    if (isChatRequestCanceled(requestId) && payload.type !== 'aborted') return
     window.webContents.send('chat:stream', {
       ...payload,
-      conversationId: options.conversationId
+      conversationId: options.conversationId,
+      requestId
     })
   }
 
@@ -789,7 +824,7 @@ export async function sendMessage(
           tools: tools.length > 0 ? tools : undefined,
           stream: true,
           signal,
-          streamContext: { conversationId: options.conversationId }
+          streamContext: { conversationId: options.conversationId, requestId }
         },
         window
       )
@@ -889,6 +924,7 @@ export async function sendMessage(
           effectiveKbCategoryIds,
           window,
           signal,
+          requestId,
           undefined
         )
         // 工具已经返回字符串（如 use_skill 返回的 markdown skill 正文）就直接用；
@@ -953,7 +989,7 @@ export async function sendMessage(
             messages: currentMessages,
             stream: true,
             signal,
-            streamContext: { conversationId: options.conversationId }
+            streamContext: { conversationId: options.conversationId, requestId }
           },
           window
         )
@@ -982,12 +1018,13 @@ export async function sendMessage(
         content: `[Error] ${message}`
       })
     } else if (isAbortedError(error)) {
-      // User-initiated cancel: surface as a friendly aborted marker, not an error.
-      emitStream({ type: 'aborted' })
+      const reason = canceledRequestReasons.get(requestId)
+      const content = reason === 'replaced' ? '[上一轮已被新消息中断]' : '[已中断]'
+      emitStream({ type: 'aborted', content })
       addMessage({
         conversation_id: options.conversationId,
         role: 'assistant',
-        content: '[已中断]'
+        content
       })
     } else {
       emitStream({ type: 'error', error: error.message })
@@ -999,7 +1036,8 @@ export async function sendMessage(
     }
   } finally {
     clearTimeout(agentTurnTimer)
-    if (activeControllers.get(options.conversationId) === abortController) {
+    const active = activeControllers.get(options.conversationId)
+    if (active?.controller === abortController) {
       activeControllers.delete(options.conversationId)
     }
   }
@@ -1265,6 +1303,7 @@ async function executeToolCall(
   kbCategoryIds: string[] = [],
   window?: BrowserWindow | null,
   signal?: AbortSignal,
+  requestId?: string,
   timeoutMs?: number
 ): Promise<any> {
   const functionName = toolCall.function?.name
@@ -1291,7 +1330,7 @@ async function executeToolCall(
   // Try core tools first
   const sandboxDir = conversationId ? getWorkspaceDir(conversationId) : undefined
   const kbContext = { kbCategoryIds }
-  const execContext = { conversationId, window: window || null, signal, timeoutMs }
+  const execContext = { conversationId, requestId, window: window || null, signal, timeoutMs, isCanceled: isChatRequestCanceled }
   const coreResult = await executeCoreToolCall(functionName, args, sandboxDir, kbContext, execContext)
   if (coreResult.handled) return coreResult.result
 

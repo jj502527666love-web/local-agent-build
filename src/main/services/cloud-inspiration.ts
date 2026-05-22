@@ -25,6 +25,8 @@ export interface UploadInspirationParams {
   categoryId: number
   promptLang: 'cn' | 'en'
   promptText: string
+  refImages?: string[]
+  generationSize?: string
 }
 
 export interface UploadInspirationResult {
@@ -91,8 +93,82 @@ function resolveAbsolutePath(p: string): string {
   return isAbsolute ? p : join(getDataDir(), p)
 }
 
+function decodeDataUri(dataUri: string): { buf: Buffer; ext: string; mime: string } | null {
+  const m = dataUri.match(/^data:(image\/(?:png|jpe?g|webp));base64,(.+)$/i)
+  if (!m) return null
+  const mime = m[1].toLowerCase().replace('image/jpg', 'image/jpeg')
+  const ext = mime === 'image/jpeg' ? 'jpg' : mime.replace('image/', '')
+  try {
+    return { buf: Buffer.from(m[2], 'base64'), ext, mime }
+  } catch {
+    return null
+  }
+}
+
+function normalizeImageMime(mime: string): { ext: string; mime: string } | null {
+  const value = (mime || '').split(';')[0].trim().toLowerCase().replace('image/jpg', 'image/jpeg')
+  if (value === 'image/png') return { ext: 'png', mime: value }
+  if (value === 'image/jpeg') return { ext: 'jpg', mime: value }
+  if (value === 'image/webp') return { ext: 'webp', mime: value }
+  return null
+}
+
+async function fetchImageForUpload(url: string): Promise<{ buf: Buffer; ext: string; mime: string } | null> {
+  const resp = await fetch(url, { method: 'GET' })
+  if (!resp.ok) return null
+  const info = normalizeImageMime(resp.headers.get('content-type') || '')
+  if (!info) return null
+  const buf = Buffer.from(await resp.arrayBuffer())
+  return { buf, ext: info.ext, mime: info.mime }
+}
+
+async function loadImageForUpload(input: string): Promise<{
+  buf: Buffer
+  ext: string
+  mime: string
+  compressed: boolean
+  error?: string
+}> {
+  if (input.startsWith('data:')) {
+    const decoded = decodeDataUri(input)
+    if (!decoded) return { buf: Buffer.alloc(0), ext: 'png', mime: 'image/png', compressed: false, error: '参考图格式无法解析' }
+    const cmp = maybeCompress(decoded.buf, decoded.ext)
+    if (cmp.error === 'cannot_decode') return { buf: Buffer.alloc(0), ext: decoded.ext, mime: decoded.mime, compressed: false, error: '参考图格式无法解析' }
+    if (cmp.error === 'still_too_large') return { buf: Buffer.alloc(0), ext: decoded.ext, mime: decoded.mime, compressed: false, error: `参考图过大，自动压缩后仍超过 ${Math.floor(MAX_BYTES / 1024 / 1024)}MB` }
+    return { buf: cmp.buf, ext: cmp.ext, mime: cmp.mime, compressed: cmp.compressed }
+  }
+
+  if (/^https?:\/\//i.test(input)) {
+    let downloaded: { buf: Buffer; ext: string; mime: string } | null = null
+    try {
+      downloaded = await fetchImageForUpload(input)
+    } catch (e: any) {
+      return { buf: Buffer.alloc(0), ext: 'png', mime: 'image/png', compressed: false, error: '下载参考图失败：' + (e?.message || e) }
+    }
+    if (!downloaded) return { buf: Buffer.alloc(0), ext: 'png', mime: 'image/png', compressed: false, error: '下载参考图失败或格式不支持' }
+    const cmp = maybeCompress(downloaded.buf, downloaded.ext)
+    if (cmp.error === 'cannot_decode') return { buf: Buffer.alloc(0), ext: downloaded.ext, mime: downloaded.mime, compressed: false, error: '参考图格式无法解析' }
+    if (cmp.error === 'still_too_large') return { buf: Buffer.alloc(0), ext: downloaded.ext, mime: downloaded.mime, compressed: false, error: `参考图过大，自动压缩后仍超过 ${Math.floor(MAX_BYTES / 1024 / 1024)}MB` }
+    return { buf: cmp.buf, ext: cmp.ext, mime: cmp.mime, compressed: cmp.compressed }
+  }
+
+  const absPath = resolveAbsolutePath(input)
+  if (!existsSync(absPath)) return { buf: Buffer.alloc(0), ext: 'png', mime: 'image/png', compressed: false, error: '参考图文件不存在或已被删除' }
+  let stat: ReturnType<typeof statSync>
+  try { stat = statSync(absPath) } catch (e: any) { return { buf: Buffer.alloc(0), ext: 'png', mime: 'image/png', compressed: false, error: '读取参考图失败：' + (e?.message || e) } }
+  if (!stat.isFile()) return { buf: Buffer.alloc(0), ext: 'png', mime: 'image/png', compressed: false, error: '参考图路径不是一个文件' }
+  const ext = extname(absPath).slice(1).toLowerCase()
+  if (!ALLOWED_EXTS.has(ext)) return { buf: Buffer.alloc(0), ext: 'png', mime: 'image/png', compressed: false, error: '参考图仅支持 PNG / JPEG / WEBP 格式' }
+  let buf: Buffer
+  try { buf = readFileSync(absPath) } catch (e: any) { return { buf: Buffer.alloc(0), ext, mime: mimeOfExt(ext), compressed: false, error: '读取参考图失败：' + (e?.message || e) } }
+  const cmp = maybeCompress(buf, ext)
+  if (cmp.error === 'cannot_decode') return { buf: Buffer.alloc(0), ext, mime: mimeOfExt(ext), compressed: false, error: '参考图格式无法解析，请检查文件是否损坏' }
+  if (cmp.error === 'still_too_large') return { buf: Buffer.alloc(0), ext, mime: mimeOfExt(ext), compressed: false, error: `参考图过大，自动压缩后仍超过 ${Math.floor(MAX_BYTES / 1024 / 1024)}MB` }
+  return { buf: cmp.buf, ext: cmp.ext, mime: cmp.mime, compressed: cmp.compressed }
+}
+
 export async function uploadInspiration(params: UploadInspirationParams): Promise<UploadInspirationResult> {
-  const { resultPath, title, categoryId, promptLang, promptText } = params
+  const { resultPath, title, categoryId, promptLang, promptText, refImages = [], generationSize } = params
 
   // ---- 入参基础校验（前端已校验过，这里兜底防御）----
   if (!resultPath) return { ok: false, error: '创作图片路径为空' }
@@ -138,7 +214,20 @@ export async function uploadInspiration(params: UploadInspirationParams): Promis
   fd.append('title', title.trim())
   fd.append('prompt_lang', promptLang)
   fd.append('prompt_text', promptText)
+  if (generationSize?.trim()) {
+    fd.append('generation_size', generationSize.trim())
+  }
   fd.append('cover_image', blob, filename)
+
+  let refCompressed = false
+  for (const [index, refImage] of refImages.slice(0, 8).entries()) {
+    if (!refImage) continue
+    const loaded = await loadImageForUpload(refImage)
+    if (loaded.error) return { ok: false, error: loaded.error }
+    refCompressed = refCompressed || loaded.compressed
+    const refBlob = new Blob([new Uint8Array(loaded.buf)], { type: loaded.mime })
+    fd.append('ref_images[]', refBlob, `ref-${index + 1}.${loaded.ext === 'jpg' ? 'jpg' : loaded.ext}`)
+  }
 
   // ---- POST 到云控端 ----
   const url = `${getCloudApiBase()}/client/inspirations`
@@ -175,5 +264,5 @@ export async function uploadInspiration(params: UploadInspirationParams): Promis
     return { ok: false, error: json?.error || `HTTP ${resp.status}` }
   }
 
-  return { ok: true, data: json, compressed: cmp.compressed }
+  return { ok: true, data: json, compressed: cmp.compressed || refCompressed }
 }

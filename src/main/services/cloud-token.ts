@@ -4,6 +4,7 @@ import { BrowserWindow } from 'electron'
 
 let cloudToken: string | null = null
 let refreshing: Promise<string | null> | null = null
+let lastRefreshFailureWasAuth = false
 
 interface CloudPermissions {
   allow_custom_provider: boolean
@@ -67,12 +68,24 @@ export function notifyCloudAuthExpired(reason: string): void {
   }
 }
 
+class CloudTokenRefreshTransientError extends Error {
+  constructor(message = 'CLOUD_TOKEN_REFRESH_TRANSIENT') {
+    super(message)
+    this.name = 'CloudTokenRefreshTransientError'
+  }
+}
+
+export function wasLastCloudTokenRefreshAuthFailure(): boolean {
+  return lastRefreshFailureWasAuth
+}
+
 export async function refreshCloudToken(): Promise<string | null> {
   if (refreshing) return refreshing
 
   refreshing = (async () => {
     const startToken = getCloudToken()
     if (!startToken) return null
+    lastRefreshFailureWasAuth = false
 
     try {
       const res = await fetch(`${getCloudApiBase()}/auth/refresh`, {
@@ -83,6 +96,10 @@ export async function refreshCloudToken(): Promise<string | null> {
         },
       })
       if (!res.ok) {
+        if (res.status !== 401 && res.status !== 403) {
+          throw new CloudTokenRefreshTransientError(`CLOUD_TOKEN_REFRESH_HTTP_${res.status}`)
+        }
+        lastRefreshFailureWasAuth = true
         const currentToken = getCloudToken()
         return currentToken && currentToken !== startToken ? currentToken : null
       }
@@ -96,9 +113,12 @@ export async function refreshCloudToken(): Promise<string | null> {
       setCloudToken(data.token)
       notifyCloudTokenUpdated(data.token)
       return data.token
-    } catch {
+    } catch (e: any) {
+      if (e instanceof CloudTokenRefreshTransientError) throw e
       const currentToken = getCloudToken()
-      return currentToken && currentToken !== startToken ? currentToken : null
+      if (currentToken && currentToken !== startToken) return currentToken
+      if (currentToken === startToken) throw new CloudTokenRefreshTransientError(e?.message || 'CLOUD_TOKEN_REFRESH_NETWORK')
+      return null
     }
   })()
 
@@ -125,7 +145,7 @@ export async function fetchWithCloudAuth(url: string, init: RequestInit = {}, re
 
   const nextToken = await refreshCloudToken()
   if (!nextToken) {
-    notifyCloudAuthExpired(reason)
+    if (wasLastCloudTokenRefreshAuthFailure()) notifyCloudAuthExpired(reason)
     return res
   }
   res = await fetch(url, withToken(nextToken))

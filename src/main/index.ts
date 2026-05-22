@@ -7,7 +7,7 @@ import { getDatabase, closeDatabase } from './database'
 import { registerIpcHandlers } from './ipc'
 import { backfillCreationGallery } from './services/gallery'
 import { cleanupStaleGenerations } from './services/image-generation'
-import { getThumbnailBytes } from './services/thumbnail'
+import { getThumbnailBytes, getThumbnailPlaceholderBytes, queueThumbnail } from './services/thumbnail'
 import { stopAllMcpServers } from './services/mcp-server'
 import { getDataDir } from './services/data-path'
 import { runStartupTasks as runBackupStartupTasks } from './services/backup'
@@ -136,12 +136,14 @@ app.whenReady().then(async () => {
       // 缩略图模式：?thumb=1 → 返回 360px JPEG 缩略图（首次生成后磁盘缓存）
       // 用于图库等多图列表，避免按原图分辨率解码导致的卡顿
       if (url.searchParams.get('thumb') === '1') {
-        const thumb = getThumbnailBytes(filePath)
+        const thumb = getThumbnailBytes(filePath, false)
         if (thumb) {
           // 转 Uint8Array 让 Response 类型签名通过；底层零拷贝
           return new Response(new Uint8Array(thumb.data), { headers: { 'Content-Type': thumb.mime, 'Access-Control-Allow-Origin': '*' } })
         }
-        // 缩略图生成失败 → 回退到原图
+        queueThumbnail(filePath).catch(() => {})
+        const placeholder = getThumbnailPlaceholderBytes()
+        return new Response(new Uint8Array(placeholder.data), { headers: { 'Content-Type': placeholder.mime, 'Access-Control-Allow-Origin': '*' } })
       }
       const data = readFileSync(filePath)
       const ext = filePath.split('.').pop()?.toLowerCase() || 'png'

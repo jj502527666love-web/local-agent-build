@@ -86,10 +86,30 @@
           <div class="text-xs text-text-primary bg-surface-1 rounded-lg p-3 whitespace-pre-wrap leading-relaxed max-h-32 overflow-y-auto">{{ promptText }}</div>
         </div>
 
-        <!-- 参考图提示 -->
-        <div v-if="refImagesCount > 0" class="flex items-start gap-2 px-3 py-2 bg-amber-50 border border-amber-200 dark:bg-amber-900/20 dark:border-amber-800 rounded-lg">
-          <svg class="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 mt-0.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" /></svg>
-          <span class="text-[11px] text-amber-700 dark:text-amber-300 leading-relaxed">该创作包含 {{ refImagesCount }} 张参考图，参考图不会上传到灵感广场</span>
+        <div v-if="generationSize" class="text-[11px] text-text-secondary bg-surface-1 border border-surface-3 rounded-lg px-3 py-2">
+          生成尺寸：<span class="font-medium text-text-primary">{{ generationSize }}</span>
+        </div>
+
+        <!-- 参考图 -->
+        <div v-if="refImages.length > 0" class="space-y-2">
+          <label class="flex items-center justify-between text-xs font-medium text-text-secondary">
+            <span>参考图（{{ refImages.length }} 张）</span>
+            <span class="flex items-center gap-1.5 text-[11px] font-normal text-text-secondary">
+              <input v-model="includeRefImages" type="checkbox" :disabled="submitting" class="w-3 h-3 accent-primary-600" />
+              上传参考图
+            </span>
+          </label>
+          <div class="flex flex-wrap gap-2">
+            <img
+              v-for="(url, index) in refImages"
+              :key="`${url}-${index}`"
+              :src="toPreviewUrl(url)"
+              class="w-14 h-14 rounded-lg object-cover border border-surface-3"
+            />
+          </div>
+          <div class="text-[11px] text-text-tertiary leading-relaxed">
+            勾选后会随灵感一起上传，其他用户复用该灵感时可自动带入参考图。
+          </div>
         </div>
 
         <!-- 错误提示 -->
@@ -135,6 +155,8 @@ const props = defineProps<{
   resultPath: string
   promptText: string
   refImagesCount: number
+  refImages?: string[]
+  generationSize?: string
   defaultTitle?: string
   defaultLang?: 'cn' | 'en'
 }>()
@@ -153,6 +175,18 @@ const categories = ref<Category[]>([])
 const categoriesLoading = ref(false)
 const submitting = ref(false)
 const errorMsg = ref('')
+const includeRefImages = ref(true)
+
+const refImages = computed(() => Array.isArray(props.refImages) ? props.refImages.slice(0, 8) : [])
+const generationSize = computed(() => (props.generationSize || '').trim())
+
+function toPreviewUrl(value: string): string {
+  if (!value) return ''
+  if (/^(data:|https?:|file:|local-file:)/i.test(value)) return value
+  const isAbsolute = /^[A-Za-z]:|^\//.test(value)
+  const param = isAbsolute ? 'p' : 'rel'
+  return 'local-file://img?' + param + '=' + encodeURIComponent(value) + '&thumb=1'
+}
 
 // 简单启发式：如果提示词中 ASCII 字母占比高于 50%，默认选英文
 function guessLang(text: string): 'cn' | 'en' {
@@ -184,6 +218,7 @@ watch(() => props.open, (v) => {
     localLang.value = props.defaultLang || guessLang(props.promptText)
     errorMsg.value = ''
     submitting.value = false
+    includeRefImages.value = true
     loadCategories()
   }
 }, { immediate: true })
@@ -212,7 +247,9 @@ async function handleSubmit() {
       title: localTitle.value.trim(),
       categoryId: localCategoryId.value!,
       promptLang: localLang.value,
-      promptText: props.promptText
+      promptText: props.promptText,
+      refImages: includeRefImages.value ? refImages.value : [],
+      generationSize: generationSize.value
     })
     if (res?.ok) {
       emit('uploaded')

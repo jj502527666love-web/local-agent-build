@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import { useCloudAuthStore } from '@/stores/cloud-auth'
 
 /**
  * AI 抠图状态（v0.6.9+，阿里 viapi SegmentHDCommonImage）。
@@ -189,6 +190,9 @@ export const useMattingStore = defineStore('matting', () => {
         elapsedMs:  out.elapsedMs,
         error:      out.error,
       })
+      if (input.source === 'cloud') {
+        useCloudAuthStore().refreshBalancesThrottled().catch(() => {})
+      }
       return tasks.value.find((t) => t.id === out.taskId) || row
     } catch (e: any) {
       updateTask(placeholderId, { status: 'failed', error: e?.message || String(e) })

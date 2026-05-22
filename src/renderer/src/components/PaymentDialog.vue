@@ -283,7 +283,6 @@ const switching = ref(false)
 const isUpgrade = computed(() => !!props.fromUserPlanId)
 
 const availableMethodCount = computed(() => {
-  if (isUpgrade.value) return siteConfig.payment.wechat ? 1 : 0
   let n = 0
   if (siteConfig.payment.wechat) n++
   if (siteConfig.payment.tianque) n++
@@ -292,7 +291,6 @@ const availableMethodCount = computed(() => {
 
 /** 选首个启用的渠道作为默认值（拉取 publicConfig 后调用） */
 function pickDefaultMethod(): 'wechat' | 'tianque' | null {
-  if (isUpgrade.value) return siteConfig.payment.wechat ? 'wechat' : null
   if (siteConfig.payment.wechat) return 'wechat'
   if (siteConfig.payment.tianque) return 'tianque'
   return null
@@ -570,7 +568,6 @@ async function ensureOrder() {
   }
   // 当前选中渠道若被后台关闭，自动切到可用的那个
   if (
-    (isUpgrade.value && paymentMethod.value !== 'wechat') ||
     (paymentMethod.value === 'wechat' && !siteConfig.payment.wechat) ||
     (paymentMethod.value === 'tianque' && !siteConfig.payment.tianque)
   ) {
@@ -588,7 +585,9 @@ async function ensureOrder() {
   creating.value = true
   try {
     const data = isUpgrade.value
-      ? (await cloudClient.upgradePlan(props.fromUserPlanId!, props.planId)) as OrderResponse
+      ? paymentMethod.value === 'wechat'
+        ? (await cloudClient.upgradePlan(props.fromUserPlanId!, props.planId)) as OrderResponse
+        : (await cloudClient.upgradePlanTianque(props.fromUserPlanId!, props.planId)) as OrderResponse
       : paymentMethod.value === 'wechat'
         ? (await cloudClient.createOrder(props.planId)) as OrderResponse
         : (await cloudClient.createTianqueOrder(props.planId)) as OrderResponse

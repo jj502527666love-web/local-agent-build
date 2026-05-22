@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { translateError } from '@/utils/error-message'
+import { useCloudAuthStore } from '@/stores/cloud-auth'
 
 // 说明：gen.error 始终保留后端返回的原文，友好翻译由展示层现场调用 translateError，
 // 这样详情弹窗总是能拿到英文原文，不会出现 HMR / 新旧数据结构不一致导致原文丢失的问题。
@@ -82,6 +83,11 @@ export const useImageGenStore = defineStore('imageGen', () => {
   /** 兼容旧消费者：等价于 displayList，供仍在读 store.generations 的代码使用 */
   const generations = computed<ImageGeneration[]>(() => displayList.value)
 
+  function refreshCloudBalances(providerId?: string) {
+    if (providerId !== 'cloud:default') return
+    useCloudAuthStore().refreshBalancesThrottled().catch(() => {})
+  }
+
   async function fetchPage(page = 1, size = pageSize.value) {
     loading.value = true
     try {
@@ -149,6 +155,7 @@ export const useImageGenStore = defineStore('imageGen', () => {
     progress.value = { total: options.batchCount || 1, completed: 0, type: 'start' }
     try {
       await api().imageGen.invoke('generate', JSON.parse(JSON.stringify(options))) as ImageGeneration[]
+      refreshCloudBalances(options.modelProviderId)
     } catch (e: any) {
       lastError.value = translateError(e.message || '')
     } finally {
@@ -172,6 +179,7 @@ export const useImageGenStore = defineStore('imageGen', () => {
     lastError.value = ''
     try {
       const results = await api().imageGen.invoke('generate', JSON.parse(JSON.stringify(options))) as ImageGeneration[]
+      refreshCloudBalances(options.modelProviderId)
       return results || []
     } catch (e: any) {
       lastError.value = translateError(e.message || '')
@@ -273,6 +281,7 @@ export const useImageGenStore = defineStore('imageGen', () => {
       }
       if (data.type === 'completed' && data.generation) {
         mergeCompleted(data.generation)
+        refreshCloudBalances(data.generation.model_provider_id)
       }
       if (data.type === 'error' && data.genId) {
         // 失败项保留在 inFlight 中（状态标为 error），置顶提醒用户；

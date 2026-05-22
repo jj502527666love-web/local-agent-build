@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
+import { useCloudAuthStore } from '@/stores/cloud-auth'
 
 export interface VectorProgress {
   knowledgeBaseId: string
@@ -50,6 +51,7 @@ export const useVectorizeStore = defineStore('vectorize', () => {
     try {
       const result = await window.api.vectorize.invoke('document', knowledgeBaseId)
       await fetchStats()
+      useCloudAuthStore().refreshBalancesThrottled().catch(() => {})
       return result
     } finally {
       vectorizing.value = false
@@ -68,6 +70,7 @@ export const useVectorizeStore = defineStore('vectorize', () => {
     try {
       const result = await window.api.vectorize.invoke('category', categoryId)
       await fetchStats()
+      useCloudAuthStore().refreshBalancesThrottled().catch(() => {})
       return result
     } finally {
       vectorizing.value = false
@@ -86,6 +89,7 @@ export const useVectorizeStore = defineStore('vectorize', () => {
     try {
       const result = await window.api.vectorize.invoke('all')
       await fetchStats()
+      useCloudAuthStore().refreshBalancesThrottled().catch(() => {})
       return result
     } finally {
       vectorizing.value = false
@@ -125,6 +129,7 @@ export const useVectorizeStore = defineStore('vectorize', () => {
     try {
       const result = await window.api.vectorize.reembedAll()
       await fetchStats()
+      useCloudAuthStore().refreshBalancesThrottled().catch(() => {})
       return result
     } finally {
       vectorizing.value = false

@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { translateError } from '@/utils/error-message'
+import { useCloudAuthStore } from '@/stores/cloud-auth'
 
 export interface Conversation {
   id: string
@@ -61,6 +62,8 @@ export const useChatStore = defineStore('chat', () => {
   const currentConversationId = ref<string | null>(null)
   const currentBotId = ref<string | null>(null)
   const streamingConvIds = ref<Set<string>>(new Set())
+  const activeRequestIds = ref<Record<string, string>>({})
+  const canceledRequestIds = ref<Set<string>>(new Set())
   const streamContent = ref('')
   /** 会话级草稿 Map：切走页面 / 切换对话不丢。重启 app 后重置。 */
   const drafts = ref<Record<string, ChatDraft>>({})
@@ -72,6 +75,14 @@ export const useChatStore = defineStore('chat', () => {
   const currentConversation = computed(() =>
     conversations.value.find((c) => c.id === currentConversationId.value) || null
   )
+
+  function refreshCloudBalances() {
+    useCloudAuthStore().refreshBalancesThrottled().catch(() => {})
+  }
+
+  function createRequestId(convId: string): string {
+    return `chat-${convId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  }
 
   async function fetchConversations(botId: string) {
     currentBotId.value = botId
@@ -203,6 +214,7 @@ export const useChatStore = defineStore('chat', () => {
   function listenAppendMessage() {
     window.api.chat.onAppendMessage((data: any) => {
       if (!data?.conversationId || !data?.message) return
+      if (data.requestId && canceledRequestIds.value.has(data.requestId)) return
       // 当前正在显示这个 conversation → 立刻追加；否则 DB 已写入，切回时 fetch 即可
       if (currentConversationId.value === data.conversationId) {
         const messageId = data.message.id
@@ -210,6 +222,7 @@ export const useChatStore = defineStore('chat', () => {
           messages.value.push(data.message)
         }
       }
+      refreshCloudBalances()
     })
   }
 
@@ -227,6 +240,14 @@ export const useChatStore = defineStore('chat', () => {
 
     const convId = currentConversationId.value!
     const botId = currentBotId.value!
+    const requestId = createRequestId(convId)
+    const previousRequestId = activeRequestIds.value[convId]
+    if (previousRequestId && previousRequestId !== requestId) {
+      canceledRequestIds.value.add(previousRequestId)
+      canceledRequestIds.value = new Set(canceledRequestIds.value)
+    }
+    activeRequestIds.value = { ...activeRequestIds.value, [convId]: requestId }
+    canceledRequestIds.value.delete(requestId)
     streamingConvIds.value.add(convId)
     streamingConvIds.value = new Set(streamingConvIds.value)
     streamContent.value = ''
@@ -257,8 +278,11 @@ export const useChatStore = defineStore('chat', () => {
     // Listen for stream events
     const toolLogs: string[] = []
     let localStreamContent = ''
+    let shouldRefreshMessages = false
     const unsubscribeStream = window.api.chat.onStream((data: any) => {
       if (data?.conversationId !== convId) return
+      if (data?.requestId && data.requestId !== requestId) return
+      if (canceledRequestIds.value.has(requestId) && data?.type !== 'aborted') return
       if (data.type === 'content') {
         localStreamContent += data.content
         if (currentConversationId.value === convId) streamContent.value = localStreamContent
@@ -296,7 +320,7 @@ export const useChatStore = defineStore('chat', () => {
         if (msg) msg.content = ''
       } else if (data.type === 'aborted') {
         const msg = messages.value.find((m) => m.id === tempId)
-        if (msg && !msg.content) msg.content = '[\u5df2\u4e2d\u65ad]'
+        if (msg && !msg.content) msg.content = data.content || '[\u5df2\u4e2d\u65ad]'
       } else if (data.type === 'error') {
         const msg = messages.value.find((m) => m.id === tempId)
         if (msg) msg.content = `[Error] ${translateError(data.error)}`
@@ -307,6 +331,7 @@ export const useChatStore = defineStore('chat', () => {
     try {
       await window.api.chat.invoke('sendMessage', {
         conversationId: convId,
+        requestId,
         botId,
         content,
         attachments,
@@ -319,21 +344,29 @@ export const useChatStore = defineStore('chat', () => {
       const msg = messages.value.find((m) => m.id === tempId)
       if (msg && !msg.content) msg.content = `[Error] ${translateError(err.message || '')}`
     } finally {
+      const isLatestRequest = activeRequestIds.value[convId] === requestId
       // Collapse tool logs after response completes
       const msg = messages.value.find((m) => m.id === tempId)
       if (msg) {
         msg._toolActive = false
         msg._collapsed = true
       }
-      streamingConvIds.value.delete(convId)
-      streamingConvIds.value = new Set(streamingConvIds.value)
+      if (isLatestRequest) {
+        const next = { ...activeRequestIds.value }
+        delete next[convId]
+        activeRequestIds.value = next
+        streamingConvIds.value.delete(convId)
+        streamingConvIds.value = new Set(streamingConvIds.value)
+        shouldRefreshMessages = true
+      }
       const unsubscribe = unsubscribeStream as unknown as (() => void) | undefined
       if (typeof unsubscribe === 'function') unsubscribe()
       else window.api.chat.offStream()
+      if (isLatestRequest) refreshCloudBalances()
     }
 
     // Refresh messages from DB - preserve streamed content to avoid flash
-    if (currentConversationId.value === convId) {
+    if (shouldRefreshMessages && currentConversationId.value === convId) {
       const lastContent = localStreamContent
       const dbMessages = (await window.api.chat.invoke('getMessages', convId)) as Message[]
       // If the last DB assistant message matches streamed content, swap seamlessly
@@ -357,6 +390,8 @@ export const useChatStore = defineStore('chat', () => {
     currentConversationId.value = null
     currentBotId.value = null
     streamingConvIds.value = new Set()
+    activeRequestIds.value = {}
+    canceledRequestIds.value = new Set()
     streamContent.value = ''
     drafts.value = {}
   }
@@ -365,10 +400,19 @@ export const useChatStore = defineStore('chat', () => {
     return streamingConvIds.value.has(convId)
   }
 
+  function isRequestCanceled(requestId?: string): boolean {
+    return !!requestId && canceledRequestIds.value.has(requestId)
+  }
+
   async function cancel(convId?: string) {
     const id = convId || currentConversationId.value
     if (!id) return false
-    return (await window.api.chat.invoke('cancel', id)) as boolean
+    const requestId = activeRequestIds.value[id]
+    if (requestId) {
+      canceledRequestIds.value.add(requestId)
+      canceledRequestIds.value = new Set(canceledRequestIds.value)
+    }
+    return (await window.api.chat.invoke('cancel', id, requestId)) as boolean
   }
 
   return {
@@ -379,6 +423,7 @@ export const useChatStore = defineStore('chat', () => {
     streaming,
     streamContent,
     isConversationStreaming,
+    isRequestCanceled,
     currentConversation,
     drafts,
     fetchConversations,

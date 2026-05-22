@@ -20,7 +20,11 @@ import * as vectorStoreService from '../services/vector-store'
 import * as promptSkillService from '../services/prompt-skill'
 import * as imageSessionService from '../services/image-session'
 import * as imageGenService from '../services/image-generation'
+import * as thumbnailService from '../services/thumbnail'
 import * as inspirationService from '../services/inspiration'
+import * as creativeTemplateService from '../services/creative-template'
+import * as cloudCreativeTemplateService from '../services/cloud-creative-template'
+import * as cloudCreativeTemplateSubmitService from '../services/cloud-creative-template-submit'
 import * as promptPresetService from '../services/prompt-preset'
 import * as backupService from '../services/backup'
 import * as canvasService from '../services/canvas'
@@ -148,7 +152,7 @@ export function registerIpcHandlers(): void {
     const window = BrowserWindow.fromWebContents(event.sender)
     return sendMessage(data, window)
   })
-  ipcMain.handle('chat:cancel', (_, conversationId: string) => cancelChat(conversationId))
+  ipcMain.handle('chat:cancel', (_, conversationId: string, requestId?: string) => cancelChat(conversationId, requestId))
   ipcMain.handle('chat:isActive', (_, conversationId: string) => isChatActive(conversationId))
   ipcMain.handle('chat:respondToolApproval', (_, requestId: string, approved: boolean) =>
     respondToolApproval(requestId, approved)
@@ -594,6 +598,9 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('imageGen:clearFailedGenerations', () =>
     imageGenService.clearFailedGenerations()
   )
+  ipcMain.handle('imageGen:preloadThumbnails', (_, paths: string[]) =>
+    thumbnailService.preloadThumbnails((paths || []).map((p) => imageGenService.getAbsolutePath(p)))
+  )
 
   ipcMain.handle('imageGen:getGeneration', (_, id: string) =>
     imageGenService.getGeneration(id)
@@ -606,6 +613,65 @@ export function registerIpcHandlers(): void {
   )
   ipcMain.handle('imageGen:getAbsolutePath', (_, relPath: string) =>
     imageGenService.getAbsolutePath(relPath)
+  )
+
+  // === Creative Templates（v0.7.7+：本地分类/模板 CRUD + 云端模板拉取） ===
+  // 本地模板存在 dataDir 的 sqlite；云端模板走云控端 /public/creative-templates/*
+  ipcMain.handle('creativeTemplate:listCategories', () =>
+    creativeTemplateService.listCategories()
+  )
+  ipcMain.handle('creativeTemplate:createCategory', (_, data) =>
+    creativeTemplateService.createCategory(data)
+  )
+  ipcMain.handle('creativeTemplate:updateCategory', (_, id: string, data) =>
+    creativeTemplateService.updateCategory(id, data)
+  )
+  ipcMain.handle('creativeTemplate:deleteCategory', (_, id: string) =>
+    creativeTemplateService.deleteCategory(id)
+  )
+  ipcMain.handle('creativeTemplate:list', (_, options?) =>
+    creativeTemplateService.listTemplates(options)
+  )
+  ipcMain.handle('creativeTemplate:get', (_, id: string) =>
+    creativeTemplateService.getTemplate(id)
+  )
+  ipcMain.handle('creativeTemplate:create', (_, data) =>
+    creativeTemplateService.createTemplate(data)
+  )
+  ipcMain.handle('creativeTemplate:update', (_, id: string, data) =>
+    creativeTemplateService.updateTemplate(id, data)
+  )
+  ipcMain.handle('creativeTemplate:delete', (_, id: string) =>
+    creativeTemplateService.deleteTemplate(id)
+  )
+  ipcMain.handle('creativeTemplate:importLocal', (_, source, targetCategoryId: string) =>
+    creativeTemplateService.importTemplateAsLocal(source, targetCategoryId)
+  )
+  ipcMain.handle('creativeTemplate:render', (_, id: string, values: Record<string, unknown>) => {
+    const t = creativeTemplateService.getTemplate(id)
+    if (!t) return { ok: false, error: 'not_found' as const }
+    const missing = creativeTemplateService.findMissingRequired(t, values || {})
+    const prompt = creativeTemplateService.renderTemplatePrompt(t, values || {})
+    return { ok: true as const, prompt, missing, default_size: t.default_size, example_ref_images: t.example_ref_images, requires_ref_image: t.requires_ref_image }
+  })
+  // 云端模板（公开接口）
+  ipcMain.handle('creativeTemplate:cloudCategories', () =>
+    cloudCreativeTemplateService.fetchCloudCategories()
+  )
+  ipcMain.handle('creativeTemplate:cloudList', (_, options?) =>
+    cloudCreativeTemplateService.fetchCloudTemplates(options)
+  )
+  ipcMain.handle('creativeTemplate:cloudGet', (_, id: number) =>
+    cloudCreativeTemplateService.fetchCloudTemplate(id)
+  )
+  ipcMain.handle('creativeTemplate:submitToCloud', (_, params: { templateId: string; cloudCategoryId: number }) =>
+    cloudCreativeTemplateSubmitService.submitCreativeTemplate(params)
+  )
+  ipcMain.handle('creativeTemplate:syncSubmissionStatus', (_, templateIds: string[]) =>
+    cloudCreativeTemplateSubmitService.syncCreativeTemplateSubmissionStatus(templateIds)
+  )
+  ipcMain.handle('creativeTemplate:withdrawSubmission', (_, templateId: string) =>
+    cloudCreativeTemplateSubmitService.withdrawCreativeTemplateSubmission(templateId)
   )
 
   // === Inspirations ===
@@ -1006,6 +1072,8 @@ export function registerIpcHandlers(): void {
     categoryId: number
     promptLang: 'cn' | 'en'
     promptText: string
+    refImages?: string[]
+    generationSize?: string
   }) => uploadInspirationToCloud(params))
 
   // === AI 抠图（v0.6.9+，阿里 viapi SegmentHDCommonImage）===

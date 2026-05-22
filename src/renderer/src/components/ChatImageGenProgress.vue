@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
+import { useChatStore } from '@/stores/chat'
 
 /**
  * 聊天对话内的生图进度浮窗。
@@ -18,6 +19,8 @@ import { ref, onMounted, onBeforeUnmount } from 'vue'
 
 interface ProgressTask {
   genId: string
+  /** 所属聊天轮次：用于在用户中断/被新消息覆盖时把仍在 generating 的卡片清掉 */
+  requestId?: string
   status: 'generating' | 'completed' | 'error'
   prompt: string
   resultPath?: string
@@ -27,6 +30,7 @@ interface ProgressTask {
 
 const tasks = ref<ProgressTask[]>([])
 const autoCloseTimers = new Map<string, number>()
+const chatStore = useChatStore()
 
 let unsubscribe: (() => void) | null = null
 
@@ -61,6 +65,13 @@ function dismiss(genId: string): void {
 
 function handleProgress(data: any): void {
   if (!data || data.source !== 'chat') return
+  if (data.requestId && chatStore.isRequestCanceled(data.requestId)) {
+    if (data.genId) {
+      clearAutoClose(data.genId)
+      tasks.value = tasks.value.filter((x) => x.genId !== data.genId)
+    }
+    return
+  }
 
   const genId = data.genId as string | undefined
 
@@ -71,6 +82,7 @@ function handleProgress(data: any): void {
         ...tasks.value,
         {
           genId,
+          requestId: data.requestId,
           status: 'generating',
           prompt: String(data.prompt || ''),
           createdAt: Date.now()
@@ -133,6 +145,18 @@ onMounted(() => {
   if (api?.imageGen?.onProgress) {
     unsubscribe = api.imageGen.onProgress(handleProgress)
   }
+})
+
+// cancel 后没有后续 imageGen:progress 事件能触发清理时兜底：
+// 监听 chat store 的取消集合变化，把仍在 generating 的同轮次卡片移除。
+watchEffect(() => {
+  const stale = tasks.value.filter(
+    (t) => t.status === 'generating' && t.requestId && chatStore.isRequestCanceled(t.requestId)
+  )
+  if (!stale.length) return
+  const staleIds = new Set(stale.map((t) => t.genId))
+  for (const id of staleIds) clearAutoClose(id)
+  tasks.value = tasks.value.filter((t) => !staleIds.has(t.genId))
 })
 
 onBeforeUnmount(() => {

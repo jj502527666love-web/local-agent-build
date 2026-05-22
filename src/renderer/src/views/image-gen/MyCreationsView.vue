@@ -76,7 +76,7 @@
             <button v-if="!selectMode" @click.stop="deleteSingle(item.id)" class="absolute top-1.5 right-1.5 z-10 opacity-0 group-hover:opacity-100 w-6 h-6 rounded-full bg-black/40 hover:bg-red-500 text-white flex items-center justify-center transition-all" title="删除">
               <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18 18 6M6 6l12 12" /></svg>
             </button>
-            <img v-if="item.result_path" :src="localFileUrl(item.result_path, true)" class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
+            <img v-if="item.result_path" :src="localFileUrl(item.result_path, true)" loading="lazy" decoding="async" class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
             <div v-else class="w-full h-full flex items-center justify-center">
               <svg class="w-10 h-10 text-text-disabled" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909M3.75 21h16.5A2.25 2.25 0 0 0 22.5 18.75V5.25A2.25 2.25 0 0 0 20.25 3H3.75A2.25 2.25 0 0 0 1.5 5.25v13.5A2.25 2.25 0 0 0 3.75 21Z" /></svg>
             </div>
@@ -169,6 +169,8 @@
       :result-path="uploadPayload.resultPath"
       :prompt-text="uploadPayload.promptText"
       :ref-images-count="uploadPayload.refImagesCount"
+      :ref-images="uploadPayload.refImages"
+      :generation-size="uploadPayload.generationSize"
       :default-title="uploadPayload.defaultTitle"
       @success="showToast"
       @error="showToast"
@@ -190,12 +192,14 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useCloudAuthStore } from '@/stores/cloud-auth'
 import { useModelStore } from '@/stores/models'
+import { useHandoffStore } from '@/stores/handoff'
 import UploadInspirationDialog from '@/components/UploadInspirationDialog.vue'
 import ImageLightbox from '@/components/ImageLightbox.vue'
 import CreationDetailModal from '@/components/CreationDetailModal.vue'
 
 const cloudAuth = useCloudAuthStore()
 const modelStore = useModelStore()
+const handoff = useHandoffStore()
 
 interface ImageGeneration {
   id: string
@@ -220,7 +224,7 @@ function localFileUrl(path: string, thumb = false): string {
   // 兼容旧绝对路径数据：以盘符或 / 开头视为绝对路径
   const isAbsolute = /^[A-Za-z]:|^\//.test(path)
   const param = isAbsolute ? 'p' : 'rel'
-  return 'local-file://img?' + param + '=' + encodeURIComponent(path) + (thumb ? '&thumb=1' : '')
+  return 'local-file://img?' + param + '=' + encodeURIComponent(path) + (thumb ? `&thumb=1&v=${thumbnailVersion.value}` : '')
 }
 
 const router = useRouter()
@@ -237,6 +241,20 @@ const lightboxSrc = ref<string | null>(null)
 const lightboxPath = ref<string>('')
 const lightboxRefImages = ref<string[]>([])
 const failedCount = ref(0)
+const thumbnailVersion = ref(0)
+
+async function preloadThumbnailsForGenerations(generations: ImageGeneration[]) {
+  const paths = generations
+    .filter((gen) => gen.status === 'done' && !!gen.result_path)
+    .map((gen) => gen.result_path)
+  if (!paths.length) return
+  try {
+    await api().imageGen.invoke('preloadThumbnails', JSON.parse(JSON.stringify(paths)))
+    thumbnailVersion.value++
+  } catch (e) {
+    console.error('Failed to preload thumbnails:', e)
+  }
+}
 
 function openLightbox(path: string, refImages?: string[]) {
   lightboxPath.value = path
@@ -318,6 +336,7 @@ async function fetchData() {
     const result = await api().imageGen.invoke('listAllGenerations', page.value, pageSize, search.value || undefined, startDate, endDate)
     items.value = result.items
     total.value = result.total
+    preloadThumbnailsForGenerations(items.value)
   } catch (e) {
     console.error('Failed to fetch creations:', e)
   } finally {
@@ -479,33 +498,35 @@ function openFolder(path: string) {
 
 function useAsInspiration() {
   if (!detailItem.value) return
-  const query: Record<string, string> = { prompt: detailItem.value.prompt }
-  if (detailItem.value.ref_images?.length) {
-    sessionStorage.setItem('imageGen:refImages', JSON.stringify(detailItem.value.ref_images))
-    query.hasRefImages = '1'
-  }
+  handoff.set('imageGen', {
+    prompt: detailItem.value.prompt,
+    presetSize: detailItem.value.size || undefined,
+    refImages: detailItem.value.ref_images?.length ? detailItem.value.ref_images : undefined
+  })
   detailItem.value = null
-  router.push({ path: '/image-gen', query })
+  router.push('/image-gen')
 }
 
 function useRevisedPrompt() {
   if (!detailItem.value || !detailItem.value.revised_prompt) return
-  const query: Record<string, string> = { prompt: detailItem.value.revised_prompt }
-  if (detailItem.value.ref_images?.length) {
-    sessionStorage.setItem('imageGen:refImages', JSON.stringify(detailItem.value.ref_images))
-    query.hasRefImages = '1'
-  }
+  handoff.set('imageGen', {
+    prompt: detailItem.value.revised_prompt,
+    presetSize: detailItem.value.size || undefined,
+    refImages: detailItem.value.ref_images?.length ? detailItem.value.ref_images : undefined
+  })
   detailItem.value = null
-  router.push({ path: '/image-gen', query })
+  router.push('/image-gen')
 }
 
 // 分享到灵感广场弹窗：按按下的按钮切换提示词来源。
 // 弹窗基于 props 通信，关闭 / 上传成功后状态自动重置。
 const uploadDialogOpen = ref(false)
-const uploadPayload = ref<{ resultPath: string; promptText: string; refImagesCount: number; defaultTitle: string }>({
+const uploadPayload = ref<{ resultPath: string; promptText: string; refImagesCount: number; refImages: string[]; generationSize: string; defaultTitle: string }>({
   resultPath: '',
   promptText: '',
   refImagesCount: 0,
+  refImages: [],
+  generationSize: '',
   defaultTitle: ''
 })
 
@@ -520,6 +541,8 @@ function openUploadDialog(source: 'original' | 'revised') {
     resultPath: item.result_path,
     promptText: text,
     refImagesCount: item.ref_images?.length || 0,
+    refImages: item.ref_images || [],
+    generationSize: item.size || '',
     defaultTitle
   }
   uploadDialogOpen.value = true

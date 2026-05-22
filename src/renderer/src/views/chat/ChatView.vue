@@ -76,7 +76,7 @@
               <div v-for="msg in visibleMessages" :key="msg.id" :class="['flex gap-3 group/msg', msg.role === 'user' ? 'flex-row-reverse' : '']">
                 <div v-if="msg.role === 'user'" class="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 text-xs font-bold bg-primary-600 text-white">你</div>
                 <div v-else class="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 text-xs font-bold bg-primary-100 text-primary-700">{{ botInitial }}</div>
-                <div :class="['max-w-[75%] relative', msg.role === 'user' ? 'text-right' : 'min-w-0']">
+                <div :class="['max-w-[75%] relative', msg.role === 'user' ? 'flex flex-col items-end' : 'min-w-0']">
                   <div v-if="msg.role === 'user'" class="text-sm px-4 py-3 rounded-2xl rounded-br-md bg-primary-600 text-white whitespace-pre-wrap leading-relaxed select-text">
                     {{ msg.content }}
                   </div>
@@ -209,12 +209,6 @@
                 <svg class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
                 正在处理附件...
               </div>
-              <ConsumptionEstimate
-                v-if="chatEstimate.amount > 0"
-                class="mb-2"
-                :balance-type="chatEstimate.balanceType"
-                :amount="chatEstimate.amount"
-              />
               <div v-if="pendingAttachments.length" class="flex gap-2 flex-wrap mb-2 px-1">
                 <div v-for="(att, i) in pendingAttachments" :key="i" class="flex items-center gap-1.5 px-2.5 py-1.5 bg-surface-2 rounded-lg text-xs text-text-secondary group">
                   <svg v-if="att.type === 'image'" class="w-3.5 h-3.5 text-text-tertiary" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909M3.75 21h16.5A2.25 2.25 0 0 0 22.5 18.75V5.25A2.25 2.25 0 0 0 20.25 3H3.75A2.25 2.25 0 0 0 1.5 5.25v13.5A2.25 2.25 0 0 0 3.75 21Z" /></svg>
@@ -444,7 +438,6 @@ import { CLOUD_KEY_SEP, stripModelId } from '@shared/model-id'
 import GalleryPicker from '@/components/GalleryPicker.vue'
 import ImageLightbox from '@/components/ImageLightbox.vue'
 import ChatModelSwitcher from '@/components/ChatModelSwitcher.vue'
-import ConsumptionEstimate from '@/components/ConsumptionEstimate.vue'
 import LowBalanceModal from '@/components/LowBalanceModal.vue'
 
 const route = useRoute()

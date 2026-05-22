@@ -64,7 +64,7 @@
 
       <div class="mb-2">
         <label class="node-label">分辨率</label>
-        <ResolutionTierPicker v-model="tier" size="sm" :model-id="projectImageModelId" :disabled="data.locked || data.status === 'running'" />
+        <ResolutionTierPicker v-model="tier" size="sm" :model-id="projectImageModelId" :size-value="resolutionSizeValue" :disabled="data.locked || data.status === 'running'" />
       </div>
 
       <label v-if="mode !== 'product_workflow'" class="flex items-center gap-1.5 text-[10px] text-text-tertiary mb-2">
@@ -114,7 +114,7 @@
 <script setup lang="ts">
 import { computed, inject, ref, watch } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
-import { DEFAULT_TIER_ID } from '@shared/image-size'
+import { DEFAULT_TIER_ID, isExtremeResolutionAspectRatio } from '@shared/image-size'
 import { useCanvasStore } from '@/stores/canvas'
 import { useWorkflowEngine } from '../composables/useWorkflowEngine'
 import ImageSizePicker from '@/components/ImageSizePicker.vue'
@@ -142,6 +142,11 @@ const detailConsistencyEnabled = ref(Boolean(props.data.detail_consistency_enabl
 let saveTimer: ReturnType<typeof setTimeout> | null = null
 
 const projectImageModelId = computed(() => canvasStore.currentProject?.image_model_id || '')
+const resolutionSizeValue = computed(() => {
+  if (mode.value !== 'product_workflow') return size.value
+  if (isExtremeResolutionAspectRatio(mainSize.value)) return mainSize.value
+  return detailSize.value
+})
 
 const upstreamImageNodes = computed(() => {
   if (!props.data.nodeId || !props.data.projectId) return []

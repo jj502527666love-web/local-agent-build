@@ -3,12 +3,12 @@ import { v4 as uuid } from 'uuid'
 import { getModelProvider, type ModelProvider } from './model-provider'
 import { createImageSession } from './image-session'
 import { getDataDir } from './data-path'
-import { getCloudToken, getCloudGatewayUrl, resolveCloudModelId, refreshCloudToken, notifyCloudAuthExpired } from './cloud-token'
+import { getCloudToken, getCloudGatewayUrl, resolveCloudModelId, refreshCloudToken, notifyCloudAuthExpired, wasLastCloudTokenRefreshAuthFailure } from './cloud-token'
 import { join } from 'path'
 import { mkdirSync, writeFileSync, unlinkSync, existsSync } from 'fs'
 import { BrowserWindow, nativeImage } from 'electron'
 import { recordUsage } from './usage-stats'
-import { resolveSizeToPixels, getModelMode } from '@shared/image-size'
+import { ensureValidTierIdForSize, resolveSizeToPixels, getModelMode } from '@shared/image-size'
 import { stripModelId } from '@shared/model-id'
 import { normalizeApiBase } from './api-base-normalize'
 import { addToCreation, removeByRelativePath } from './gallery'
@@ -243,6 +243,7 @@ export interface GenerateImageOptions {
    */
   progressContext?: {
     conversationId?: string
+    requestId?: string
     source?: 'chat' | 'image-gen' | 'batch' | 'edit' | 'canvas'
   }
   /**
@@ -286,7 +287,8 @@ function buildOutputFilename(ctx: OutputContext, genId: string, ext: string): st
 /** 解析 UI 传入的 size（预设 / 比例 / 像素）为上游 API 接受的 "WxH" 像素串。
  * 传入 modelId+tierId 时按对应能力域 clamp；非法值直接抛错。 */
 function resolvePixels(size: string, modelId?: string, tierId?: string): string {
-  const px = resolveSizeToPixels(size, { modelId, tierId })
+  const effectiveTierId = modelId ? ensureValidTierIdForSize(modelId, tierId, size) : tierId
+  const px = resolveSizeToPixels(size, { modelId, tierId: effectiveTierId })
   if (!px) throw new Error(`尺寸格式非法：${size}`)
   return px
 }
@@ -739,13 +741,7 @@ async function callImageAPI(
         // Chromium Canvas 重编码场景设计的（注释见 strip-image-metadata.ts），
         // 而 multipart 直传链路不经过 Canvas，原始字节透传更稳。
         // 体积兜底由 shrinkRefImageIfTooLarge 接管，仅在 > 2MB 时用 nativeImage 重编码。
-        const match = img.match(/^data:([^;]+);base64,/)
-        const sourceMime = match ? match[1] : 'image/png'
-        const raw = match ? img.slice(match[0].length) : img
-        const { buffer, mimeType } = shrinkRefImageIfTooLarge(
-          Buffer.from(raw, 'base64'),
-          sourceMime
-        )
+        const { buffer, mimeType } = await prepareRefImageForUpload(img, 'image/png')
         // Node 22+ / Electron 31+ 严格 TS 类型下，Buffer.buffer 是 ArrayBufferLike 而
         // BlobPart 要求 ArrayBuffer，类型可赋值严格不互通；运行时 Buffer 作为 Uint8Array
         // 子类 100% 可作为 BlobPart（Node undici / Blob 实现支持），只是编译期报错。
@@ -889,15 +885,12 @@ async function callCloudImageAPI(
   }
 
   if (hasRefImages) {
-    body.images = refImages.map((img) => {
+    body.images = await Promise.all(refImages.map(async (img) => {
       // 不再 stripBase64：理由同 multipart 路径（裸 JPEG 被苍 api / sub2api 拒收）。
       // 体积兜底由 shrinkRefImageIfTooLarge 接管，仅在 > 2MB 时用 nativeImage 重编码。
-      const match = img.match(/^data:([^;]+);base64,/)
-      const sourceMime = match?.[1] || 'image/jpeg'
-      const raw = match ? img.slice(match[0].length) : img
-      const { buffer } = shrinkRefImageIfTooLarge(Buffer.from(raw, 'base64'), sourceMime)
+      const { buffer } = await prepareRefImageForUpload(img, 'image/jpeg')
       return buffer.toString('base64')
-    })
+    }))
   }
 
   if (mask) {
@@ -930,7 +923,7 @@ async function callCloudImageAPI(
       if (!String(e?.message || '').startsWith('Image API error 401:')) throw e
       const nextToken = await refreshCloudToken()
       if (!nextToken) {
-        notifyCloudAuthExpired(e.message)
+        if (wasLastCloudTokenRefreshAuthFailure()) notifyCloudAuthExpired(e.message)
         throw e
       }
       headers['Authorization'] = `Bearer ${nextToken}`
@@ -967,7 +960,7 @@ async function callCloudImageAPI(
       refreshHeaders: async (reason) => {
         const nextToken = await refreshCloudToken()
         if (!nextToken) {
-          notifyCloudAuthExpired(reason)
+          if (wasLastCloudTokenRefreshAuthFailure()) notifyCloudAuthExpired(reason)
           return null
         }
         return { 'Authorization': `Bearer ${nextToken}` }
@@ -1075,6 +1068,46 @@ function shrinkRefImageIfTooLarge(
   return { buffer: finalOut, mimeType: 'image/jpeg' }
 }
 
+function normalizeImageMime(mimeType: string, fallback: string): string {
+  const mime = (mimeType || '').split(';')[0].trim().toLowerCase()
+  if (!mime.startsWith('image/')) return fallback
+  return mime === 'image/jpg' ? 'image/jpeg' : mime
+}
+
+async function readRefImageBytes(input: string, fallbackMime: string): Promise<{ buffer: Buffer; mimeType: string }> {
+  const value = (input || '').trim()
+  if (!value) {
+    return { buffer: Buffer.alloc(0), mimeType: fallbackMime }
+  }
+
+  const match = value.match(/^data:([^;]+);base64,/)
+  if (match) {
+    return {
+      buffer: Buffer.from(value.slice(match[0].length), 'base64'),
+      mimeType: normalizeImageMime(match[1], fallbackMime)
+    }
+  }
+
+  if (/^https?:\/\//i.test(value)) {
+    const res = await fetchWithTimeout(value, { method: 'GET' }, 30_000)
+    if (!res.ok) {
+      throw new Error(`参考图下载失败 HTTP ${res.status}: ${value}`)
+    }
+    const mimeType = normalizeImageMime(res.headers.get('content-type') || '', fallbackMime)
+    return {
+      buffer: Buffer.from(await res.arrayBuffer()),
+      mimeType
+    }
+  }
+
+  return { buffer: Buffer.from(value, 'base64'), mimeType: fallbackMime }
+}
+
+async function prepareRefImageForUpload(input: string, fallbackMime: string): Promise<{ buffer: Buffer; mimeType: string }> {
+  const { buffer, mimeType } = await readRefImageBytes(input, fallbackMime)
+  return shrinkRefImageIfTooLarge(buffer, mimeType)
+}
+
 /**
  * 多米 API（duomiapi.com）图片生成 — 官方文档 https://duomiapi.com/doc/55。
  *
@@ -1132,17 +1165,12 @@ async function callDuoMiImageAPI(
   //         （3）不再 50K chars 阈值：之前阈值是对 fail_to_submit_task 的错判，
   //             多米实际能接受更大字节；体积兜底统一用 shrinkRefImageIfTooLarge（2MB）。
   if (refImages && refImages.length > 0) {
-    submitBody.image = refImages.map((img) => {
+    submitBody.image = await Promise.all(refImages.map(async (img) => {
       const match = img.match(/^data:([^;]+);base64,/)
-      const sourceMime = match?.[1] || 'image/png'
-      const raw = match ? img.slice(match[0].length) : img
-      const { buffer, mimeType } = shrinkRefImageIfTooLarge(
-        Buffer.from(raw, 'base64'),
-        sourceMime
-      )
+      const { buffer, mimeType } = await prepareRefImageForUpload(img, match?.[1] || 'image/png')
       // 多米 image 字段接受 dataUri 数组（上游实测格式），拼回完整 dataUri。
       return `data:${mimeType};base64,${buffer.toString('base64')}`
-    })
+    }))
   }
 
   // 用户 customParams + requestOverridePatch 叠加（最后写入，可覆盖系统默认字段）
@@ -1402,6 +1430,7 @@ export async function generateImages(
         ...payload,
         sessionId,
         conversationId: progressCtx.conversationId,
+        requestId: progressCtx.requestId,
         source: progressCtx.source || 'image-gen'
       })
     } catch (e) {

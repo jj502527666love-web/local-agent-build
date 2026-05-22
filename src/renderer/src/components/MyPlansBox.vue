@@ -9,105 +9,116 @@
       暂无套餐
     </div>
 
-    <ul v-else class="space-y-3">
-      <li
-        v-for="p in plans"
-        :key="p.id"
-        class="bg-surface-1 rounded-xl p-4 border border-surface-3"
-      >
-        <div class="flex items-start justify-between gap-3 mb-2">
-          <div class="min-w-0">
-            <div class="flex items-center gap-2 mb-1">
-              <span class="text-sm font-semibold text-text-primary truncate">{{ p.plan_name }}</span>
-              <span class="text-[10px] text-text-tertiary font-mono">{{ p.plan_code }}</span>
+    <div v-else class="space-y-3">
+      <ul v-if="visiblePlans.length" class="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <li
+          v-for="p in visiblePlans"
+          :key="p.id"
+          class="bg-surface-1 rounded-xl p-3 border border-surface-3"
+        >
+          <div class="flex items-start justify-between gap-3 mb-2">
+            <div class="min-w-0">
+              <div class="flex items-center gap-2 mb-1">
+                <span class="text-sm font-semibold text-text-primary truncate">{{ p.plan_name }}</span>
+              </div>
+              <p v-if="p.description" class="text-xs text-text-secondary line-clamp-1">{{ p.description }}</p>
             </div>
-            <p v-if="p.description" class="text-xs text-text-secondary line-clamp-2">{{ p.description }}</p>
-          </div>
-          <span :class="['text-[10px] px-2 py-0.5 rounded-full whitespace-nowrap', statusClass(p.status)]">
-            {{ statusLabel(p.status) }}
-          </span>
-        </div>
-
-        <div class="grid grid-cols-2 gap-2 mt-3 text-[11px]">
-          <div>
-            <span class="text-text-tertiary">来源</span>
-            <span class="text-text-primary ml-1">{{ sourceLabel(p.source) }}</span>
-          </div>
-          <div>
-            <span class="text-text-tertiary">{{ p.expires_at ? '剩余' : '有效期' }}</span>
-            <span
-              v-if="!p.expires_at"
-              class="text-text-primary ml-1"
-              :title="p.activated_at ? `开通于 ${formatDate(p.activated_at)}` : ''"
-            >永久有效</span>
-            <span
-              v-else
-              :class="['ml-1 font-medium', remainingClass(p.expires_at, p.status)]"
-              :title="`到期：${formatDate(p.expires_at)}`"
-            >{{ remainingText(p.expires_at, p.status) }}</span>
-          </div>
-          <div v-if="p.token_granted > 0">
-            <span class="text-text-tertiary">{{ siteConfig.labels.token }}额度</span>
-            <span class="text-text-primary ml-1">{{ formatAmount(p.token_granted) }}</span>
-          </div>
-          <div v-if="p.credit_granted > 0">
-            <span class="text-text-tertiary">{{ siteConfig.labels.credit }}额度</span>
-            <span class="text-text-primary ml-1">{{ formatAmount(p.credit_granted) }}</span>
-          </div>
-          <div>
-            <span class="text-text-tertiary">续充</span>
-            <span class="text-text-primary ml-1">{{ refillLabel(p.quota_refill_cycle) }}</span>
-          </div>
-          <div v-if="p.next_quota_refill_at">
-            <span class="text-text-tertiary">下次续充</span>
-            <span class="text-text-primary ml-1">{{ formatDate(p.next_quota_refill_at) }}</span>
-          </div>
-        </div>
-
-        <div v-if="p.quota_summary" class="mt-3 space-y-2">
-          <QuotaProgressBar
-            v-for="item in quotaItems(p)"
-            :key="item.type"
-            :label="item.label"
-            :used="item.consumed"
-            :total="item.granted"
-            :remaining="item.remaining"
-          />
-        </div>
-
-        <div v-if="p.policies" class="mt-3">
-          <PolicyBadgeList :policies="p.policies" :limit="6" />
-        </div>
-
-        <!-- 时长进度条：仅有限期 + 生效中套餐显示；已过期 / 已撤销 / 永久套餐隐藏 -->
-        <div v-if="showProgress(p)" class="mt-3">
-          <div class="h-1.5 bg-surface-2 rounded-full overflow-hidden">
-            <div
-              :class="['h-full transition-all duration-300', progressBarClass(p.expires_at!)]"
-              :style="{ width: progressPercent(p.activated_at, p.expires_at!) + '%' }"
-            ></div>
-          </div>
-        </div>
-
-        <div v-if="p.models?.length" class="mt-3">
-          <div class="text-[10px] text-text-tertiary mb-1">包含模型</div>
-          <div class="flex flex-wrap gap-1">
-            <span
-              v-for="m in p.models"
-              :key="m.id"
-              class="text-[10px] bg-surface-2 text-text-secondary px-2 py-0.5 rounded"
-            >
-              {{ m.name || m.model_id }}
+            <span :class="['text-[10px] px-2 py-0.5 rounded-full whitespace-nowrap', statusClass(p.status)]">
+              {{ statusLabel(p.status) }}
             </span>
           </div>
-        </div>
-      </li>
-    </ul>
+
+          <div class="grid grid-cols-2 gap-2 mt-2 text-[11px]">
+            <div>
+              <span class="text-text-tertiary">来源</span>
+              <span class="text-text-primary ml-1">{{ sourceLabel(p.source) }}</span>
+            </div>
+            <div>
+              <span class="text-text-tertiary">{{ p.expires_at ? '剩余' : '有效期' }}</span>
+              <span
+                v-if="!p.expires_at"
+                class="text-text-primary ml-1"
+                :title="p.activated_at ? `开通于 ${formatDate(p.activated_at)}` : ''"
+              >永久有效</span>
+              <span
+                v-else
+                :class="['ml-1 font-medium', remainingClass(p.expires_at, p.status)]"
+                :title="`到期：${formatDate(p.expires_at)}`"
+              >{{ remainingText(p.expires_at, p.status) }}</span>
+            </div>
+            <div v-if="p.token_granted > 0">
+              <span class="text-text-tertiary">{{ siteConfig.labels.token }}额度</span>
+              <span class="text-text-primary ml-1">{{ formatAmount(p.token_granted) }}</span>
+            </div>
+            <div v-if="p.credit_granted > 0">
+              <span class="text-text-tertiary">{{ siteConfig.labels.credit }}额度</span>
+              <span class="text-text-primary ml-1">{{ formatAmount(p.credit_granted) }}</span>
+            </div>
+            <div>
+              <span class="text-text-tertiary">续充</span>
+              <span class="text-text-primary ml-1">{{ refillLabel(p.quota_refill_cycle) }}</span>
+            </div>
+            <div v-if="p.next_quota_refill_at">
+              <span class="text-text-tertiary">下次续充</span>
+              <span class="text-text-primary ml-1">{{ formatDate(p.next_quota_refill_at) }}</span>
+            </div>
+          </div>
+
+          <div v-if="p.quota_summary" class="mt-2 space-y-2">
+            <QuotaProgressBar
+              v-for="item in quotaItems(p)"
+              :key="item.type"
+              :label="item.label"
+              :used="item.consumed"
+              :total="item.granted"
+              :remaining="item.remaining"
+            />
+          </div>
+
+          <div v-if="p.policies" class="mt-2">
+            <PolicyBadgeList :policies="p.policies" :limit="6" />
+          </div>
+
+          <!-- 时长进度条：仅有限期 + 生效中套餐显示；已过期 / 已撤销 / 永久套餐隐藏 -->
+          <div v-if="showProgress(p)" class="mt-2">
+            <div class="h-1.5 bg-surface-2 rounded-full overflow-hidden">
+              <div
+                :class="['h-full transition-all duration-300', progressBarClass(p.expires_at!)]"
+                :style="{ width: progressPercent(p.activated_at, p.expires_at!) + '%' }"
+              ></div>
+            </div>
+          </div>
+
+          <div v-if="p.models?.length" class="mt-2">
+            <div class="text-[10px] text-text-tertiary mb-1">包含模型</div>
+            <div class="flex flex-wrap gap-1">
+              <span
+                v-for="m in p.models"
+                :key="m.id"
+                class="text-[10px] bg-surface-2 text-text-secondary px-2 py-0.5 rounded"
+              >
+                {{ m.name || m.model_id }}
+              </span>
+            </div>
+          </div>
+        </li>
+      </ul>
+
+      <button
+        v-if="inactivePlans.length"
+        type="button"
+        class="w-full flex items-center justify-between gap-3 px-3 py-2 rounded-lg border border-surface-3 bg-surface-1 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-2 transition-colors"
+        @click="showInactivePlans = !showInactivePlans"
+      >
+        <span>{{ showInactivePlans ? '收起失效套餐' : `已折叠 ${inactivePlans.length} 个失效套餐` }}</span>
+        <span class="text-[10px] text-text-tertiary">{{ showInactivePlans ? '收起' : '展开' }}</span>
+      </button>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useCloudAuthStore } from '@/stores/cloud-auth'
 import { useSiteConfigStore } from '@/stores/site-config'
 import QuotaProgressBar from '@/components/QuotaProgressBar.vue'
@@ -116,9 +127,18 @@ import type { MyPlan } from '@/stores/cloud-auth'
 
 const store = useCloudAuthStore()
 const siteConfig = useSiteConfigStore()
+const showInactivePlans = ref(false)
 
 const plans = computed<MyPlan[]>(() => store.plans || [])
-const activePlans = computed(() => plans.value.filter(p => p.status === 'active'))
+const activePlans = computed(() => plans.value.filter(isActivePlan))
+const inactivePlans = computed(() => plans.value.filter(p => !isActivePlan(p)))
+const visiblePlans = computed(() => showInactivePlans.value ? [...activePlans.value, ...inactivePlans.value] : activePlans.value)
+
+function isActivePlan(plan: MyPlan): boolean {
+  if (plan.status !== 'active') return false
+  if (!plan.expires_at) return true
+  return new Date(plan.expires_at).getTime() > Date.now()
+}
 
 function statusClass(status: string): string {
   switch (status) {
@@ -134,6 +154,9 @@ function statusLabel(status: string): string {
     case 'active':  return '生效中'
     case 'expired': return '已过期'
     case 'revoked': return '已撤销'
+    case 'invalid':
+    case 'inactive':
+    case 'disabled': return '已失效'
     default:        return status
   }
 }
