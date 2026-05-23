@@ -1,6 +1,6 @@
 <template>
   <div class="h-full flex flex-col">
-    <header class="page-header">
+    <header class="page-header justify-between">
       <div class="flex items-center gap-2">
         <button
           type="button"
@@ -19,6 +19,11 @@
           @click="goPlansStore"
         >去套餐商城</button>
       </div>
+      <button
+        type="button"
+        class="btn-secondary text-xs text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300 focus:ring-red-500"
+        @click="handleLogout"
+      >退出登录</button>
     </header>
     <div class="page-body max-w-6xl">
       <div class="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_320px] gap-5 items-start">
@@ -172,10 +177,6 @@
             </form>
           </div>
 
-          <!-- Logout -->
-          <div class="pb-6">
-            <button @click="handleLogout" class="btn-danger text-xs w-full">退出登录</button>
-          </div>
         </aside>
       </div>
     </div>

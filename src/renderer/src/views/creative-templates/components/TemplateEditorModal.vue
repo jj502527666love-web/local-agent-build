@@ -69,7 +69,7 @@
             <span class="text-text-secondary">变量字段（{{ form.variables.length }}/10）</span>
             <button class="text-primary-600 hover:text-primary-700" :disabled="form.variables.length >= 10" @click="addVariable">+ 添加变量</button>
           </div>
-          <div v-if="!form.variables.length" class="p-3 text-center text-text-tertiary bg-surface-2 rounded-lg">至少添加 1 个变量</div>
+          <div v-if="!form.variables.length" class="p-3 text-center text-text-tertiary bg-surface-2 rounded-lg">未添加变量；提示词将作为固定模板使用</div>
           <div v-for="(v, idx) in form.variables" :key="idx" class="p-3 border border-surface-3 rounded-lg mb-2 space-y-2">
             <div class="flex flex-wrap gap-2">
               <label class="flex-1 min-w-[140px]">
@@ -309,10 +309,6 @@ function addVariable(): void {
 }
 
 function removeVariable(idx: number): void {
-  if (form.value.variables.length <= 1) {
-    alert('至少保留 1 个变量')
-    return
-  }
   form.value.variables.splice(idx, 1)
 }
 
@@ -432,15 +428,30 @@ function validate(): string[] {
   if (!form.value.category_id) errors.push('请选择分类')
   if (!sizeChoice.value) errors.push('请选择默认生成尺寸或不指定尺寸')
   if (!form.value.prompt_template.trim()) errors.push('请填写提示词模板')
-  if (!form.value.variables.length) errors.push('至少添加 1 个变量')
   const keys = new Set<string>()
   for (const v of form.value.variables) {
     const k = (v.key || '').trim()
     if (!k) { errors.push('变量 key 不能为空'); continue }
+    if (!/^[a-z][a-z0-9_]*$/.test(k)) { errors.push(`变量 key 只能使用小写英文、数字、下划线，且必须以英文字母开头：${k}`); continue }
     if (keys.has(k)) { errors.push(`变量 key 重复：${k}`); continue }
     keys.add(k)
   }
+  const placeholders = extractPlaceholders(form.value.prompt_template)
+  const placeholderSet = new Set(placeholders)
+  for (const key of placeholders) {
+    if (!/^[a-z][a-z0-9_]*$/.test(key)) errors.push(`提示词模板中的占位符不合法：{{${key}}}`)
+    if (!keys.has(key)) errors.push(`提示词模板中的占位符没有对应变量：{{${key}}}`)
+  }
+  for (const key of keys) {
+    if (!placeholderSet.has(key)) errors.push(`变量未在提示词模板中使用：${key}`)
+  }
   return errors
+}
+
+function extractPlaceholders(text: string): string[] {
+  return Array.from(text.matchAll(/\{\{\s*([^{}\r\n]+?)\s*\}\}/g))
+    .map((match) => String(match[1] || '').trim())
+    .filter(Boolean)
 }
 
 function normalizeDefaultSizeForSave(): string {
@@ -486,7 +497,7 @@ watch(
         default_size: '',
         requires_ref_image: !!draft?.requiresRefImage,
         prompt_template: draft?.presetPrompt || '',
-        variables: draft?.presetVariables?.length ? draft.presetVariables.map((v) => ({ ...v, options: v.options || [] })) : defaultVariables(),
+        variables: draft ? (draft.presetVariables || []).map((v) => ({ ...v, options: v.options || [] })) : defaultVariables(),
         is_visible: true,
         sort_order: 0,
         source_type: draft?.source_type || 'manual',

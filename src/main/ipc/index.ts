@@ -684,9 +684,6 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('imageGen:fetchOnlineInspirations', (_, options?) =>
     inspirationService.fetchOnlineInspirations(options)
   )
-  ipcMain.handle('imageGen:getInspirationConfig', () =>
-    inspirationService.getInspirationConfig()
-  )
   ipcMain.handle('imageGen:getInspirationCategories', () =>
     inspirationService.getInspirationCategories()
   )

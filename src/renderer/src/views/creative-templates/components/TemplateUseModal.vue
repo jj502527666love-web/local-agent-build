@@ -103,6 +103,7 @@
         <p class="text-text-secondary mt-5 mb-2">最终提示词预览</p>
         <pre class="p-3 bg-surface-2 rounded-lg text-text-primary whitespace-pre-wrap break-words text-[12px] leading-relaxed max-h-40 overflow-auto">{{ renderedPrompt }}</pre>
         <p v-if="missingRequired.length" class="mt-2 text-error text-[11px]">还有必填项未填写：{{ missingRequired.join(', ') }}</p>
+        <p v-if="unresolvedPlaceholders.length" class="mt-2 text-error text-[11px]">提示词仍有未替换变量：{{ unresolvedPlaceholders.join(', ') }}</p>
 
         <div class="mt-5">
           <div class="flex items-center justify-between mb-2">
@@ -134,7 +135,7 @@
         >另存到本地</button>
         <button
           class="px-3 py-1.5 text-xs text-white bg-primary-600 hover:bg-primary-700 rounded-lg disabled:opacity-50"
-          :disabled="missingRequired.length > 0 || missingRefImage"
+          :disabled="missingRequired.length > 0 || missingRefImage || unresolvedPlaceholders.length > 0"
           @click="useInImageGen"
         >填入生图</button>
       </div>
@@ -174,6 +175,7 @@ const values = reactive<Record<string, string | string[]>>({})
 const customMultiInputs = reactive<Record<string, string>>({})
 const userRefImages = ref<string[]>([])
 const imagePickerVisible = ref(false)
+const OPTIONAL_EMPTY_MARKER = '\uE000'
 
 watch(
   () => props.template,
@@ -211,13 +213,38 @@ const missingRefImage = computed(() => !!props.template.requires_ref_image && us
 
 const renderedPrompt = computed(() => {
   const raw = props.template.prompt_template || ''
-  return raw.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (match, key) => {
+  const variableMap = new Map((props.template.variables || []).map((v) => [v.key, v]))
+  const rendered = raw.replace(/\{\{\s*([^{}\r\n]+?)\s*\}\}/g, (match, rawKey) => {
+    const key = String(rawKey || '').trim()
+    const variable = variableMap.get(key)
     const v = values[key]
-    if (Array.isArray(v)) return v.length ? v.join(', ') : match
+    if (Array.isArray(v)) {
+      const joined = v.map((item) => String(item).trim()).filter(Boolean).join(', ')
+      return joined || (variable && !variable.required ? OPTIONAL_EMPTY_MARKER : match)
+    }
     const s = String(v ?? '').trim()
-    return s ? s : match
+    return s || (variable && !variable.required ? OPTIONAL_EMPTY_MARKER : match)
   })
+  return cleanupRenderedPrompt(rendered)
 })
+
+const unresolvedPlaceholders = computed<string[]>(() => Array.from(new Set(extractPlaceholders(renderedPrompt.value))))
+
+function cleanupRenderedPrompt(text: string): string {
+  const markerPattern = new RegExp(`(^|[，,；;、])[^，,；;、\\n]*${OPTIONAL_EMPTY_MARKER}[^，,；;、\\n]*`, 'g')
+  const markerOnlyPattern = new RegExp(OPTIONAL_EMPTY_MARKER, 'g')
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.replace(markerPattern, '').replace(markerOnlyPattern, '').replace(/^[\s，,；;、]+|[\s，,；;、]+$/g, '').trim())
+    .filter(Boolean)
+    .join('\n')
+}
+
+function extractPlaceholders(text: string): string[] {
+  return Array.from(text.matchAll(/\{\{\s*([^{}\r\n]+?)\s*\}\}/g))
+    .map((match) => String(match[1] || '').trim())
+    .filter(Boolean)
+}
 
 const missingRequired = computed<string[]>(() => {
   const out: string[] = []
@@ -321,7 +348,7 @@ async function copyPrompt(): Promise<void> {
 // 把渲染好的提示词 + 参考图 + 默认尺寸 handoff 到 imageGen 页面
 // 与 InspirationView 行为一致；ImageGenView 在 onMounted 消费 handoff 写入输入框
 function useInImageGen(): void {
-  if (missingRequired.value.length || missingRefImage.value) return
+  if (missingRequired.value.length || missingRefImage.value || unresolvedPlaceholders.value.length) return
   const refs = mergedRefImages.value.slice(0, 8)
   handoff.set('imageGen', {
     prompt: renderedPrompt.value,

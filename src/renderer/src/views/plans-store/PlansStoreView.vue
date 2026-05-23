@@ -42,138 +42,169 @@
           >重试</button>
         </div>
 
-        <!-- Empty -->
-        <div
-          v-else-if="!plans.length"
-          class="text-center py-16 text-xs text-text-tertiary"
-        >
-          暂无可购买的套餐
-        </div>
+        <template v-else>
+          <div v-if="planCategories.length" class="flex flex-wrap gap-2 mb-5">
+            <button
+              type="button"
+              :class="[
+                'px-3 py-1.5 text-xs rounded-lg border transition-colors',
+                selectedCategoryId === null
+                  ? 'bg-primary-600 border-primary-600 text-white'
+                  : 'bg-surface-0 border-surface-3 text-text-secondary hover:bg-surface-2 hover:text-text-primary'
+              ]"
+              @click="selectedCategoryId = null"
+            >全部</button>
+            <button
+              v-for="cat in planCategories"
+              :key="cat.id"
+              type="button"
+              :class="[
+                'px-3 py-1.5 text-xs rounded-lg border transition-colors',
+                selectedCategoryId === cat.id
+                  ? 'bg-primary-600 border-primary-600 text-white'
+                  : 'bg-surface-0 border-surface-3 text-text-secondary hover:bg-surface-2 hover:text-text-primary'
+              ]"
+              @click="selectedCategoryId = cat.id"
+            >{{ cat.name }}</button>
+          </div>
 
-        <!-- Plans grid -->
-        <div v-else class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          <!-- Empty -->
           <div
-            v-for="p in plans"
-            :key="p.id"
-            class="card p-5 flex flex-col"
+            v-if="!plans.length"
+            class="text-center py-16 text-xs text-text-tertiary"
           >
-            <div class="flex items-start justify-between gap-2 mb-2">
-              <div class="min-w-0">
-                <h3 class="text-sm font-semibold text-text-primary truncate">{{ p.name }}</h3>
-                <p class="text-[10px] text-text-tertiary font-mono mt-0.5">{{ p.code }}</p>
-              </div>
-              <span
-                v-if="p.duration_days === 0"
-                class="text-[10px] px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
-              >永久</span>
-              <span
-                v-else
-                class="text-[10px] px-2 py-0.5 rounded-full bg-primary-50 text-primary-700"
-              >{{ p.duration_days }} 天</span>
-            </div>
+            暂无可购买的套餐
+          </div>
 
-            <p
-              v-if="p.description"
-              class="text-xs text-text-secondary line-clamp-2 mb-3"
-            >{{ p.description }}</p>
-
-            <div class="flex items-baseline gap-1 mb-3">
-              <span class="text-2xl font-bold text-primary-600">{{ formatPrice(p.price) }}</span>
-              <span class="text-[10px] text-text-tertiary">{{ p.currency || 'CNY' }}</span>
-            </div>
-
-            <div class="grid grid-cols-2 gap-2 text-[11px] mb-3">
-              <div v-if="p.token_quota > 0">
-                <span class="text-text-tertiary">{{ siteConfig.labels.token }}额度</span>
-                <span class="text-text-primary ml-1 font-medium">{{ formatNum(p.token_quota) }}</span>
-              </div>
-              <div v-if="p.credit_quota > 0">
-                <span class="text-text-tertiary">{{ siteConfig.labels.credit }}额度</span>
-                <span class="text-text-primary ml-1 font-medium">{{ formatNum(p.credit_quota) }}</span>
-              </div>
-              <div>
-                <span class="text-text-tertiary">含模型</span>
-                <span class="text-text-primary ml-1 font-medium">{{ p.models?.length || 0 }} 个</span>
-              </div>
-            </div>
-
-            <div v-if="p.models?.length" class="mb-4">
-              <div class="text-[10px] text-text-tertiary mb-1">包含模型</div>
-              <div class="flex flex-wrap gap-1">
+          <!-- Plans grid -->
+          <div v-else-if="filteredPlans.length" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            <div
+              v-for="p in filteredPlans"
+              :key="p.id"
+              class="card p-5 flex flex-col"
+            >
+              <div class="flex items-start justify-between gap-2 mb-2">
+                <div class="min-w-0">
+                  <h3 class="text-sm font-semibold text-text-primary truncate">{{ p.name }}</h3>
+                  <p v-if="p.category?.name" class="text-[10px] text-text-tertiary mt-0.5">{{ p.category.name }}</p>
+                </div>
                 <span
-                  v-for="m in p.models.slice(0, 6)"
-                  :key="m.id"
-                  class="text-[10px] bg-surface-2 text-text-secondary px-2 py-0.5 rounded"
-                >{{ m.name || m.model_id }}</span>
+                  v-if="p.duration_days === 0"
+                  class="text-[10px] px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
+                >永久</span>
                 <span
-                  v-if="p.models.length > 6"
-                  class="text-[10px] text-text-tertiary"
-                >+{{ p.models.length - 6 }}</span>
+                  v-else
+                  class="text-[10px] px-2 py-0.5 rounded-full bg-primary-50 text-primary-700"
+                >{{ p.duration_days }} 天</span>
               </div>
-            </div>
 
-            <div v-if="currentUserPlan(p)" class="text-[11px] text-text-tertiary mb-3">
-              当前套餐
-              <span v-if="currentUserPlan(p)?.expires_at" class="text-text-secondary ml-1">
-                到期 {{ formatDate(currentUserPlan(p)?.expires_at) }}
-              </span>
-              <span v-else class="text-text-secondary ml-1">永久有效</span>
-            </div>
+              <p
+                v-if="p.description"
+                class="text-xs text-text-secondary line-clamp-2 mb-3"
+              >{{ p.description }}</p>
 
-            <div class="flex-1"></div>
+              <div class="flex items-baseline gap-1 mb-3">
+                <span class="text-2xl font-bold text-primary-600">{{ formatPrice(p.price) }}</span>
+                <span class="text-[10px] text-text-tertiary">{{ p.currency || 'CNY' }}</span>
+              </div>
 
-            <div class="space-y-2">
-              <button
-                type="button"
-                class="btn-primary text-xs w-full"
-                :disabled="!canPurchase(p)"
-                @click="handleBuy(p)"
-              >
-                {{ purchaseLabel(p) }}
-              </button>
-              <button
-                v-if="canUpgradeTo(p)"
-                type="button"
-                class="btn-secondary text-xs w-full"
-                @click="handleUpgrade(p)"
-              >
-                升级套餐
-              </button>
+              <div class="grid grid-cols-2 gap-2 text-[11px] mb-3">
+                <div v-if="p.token_quota > 0">
+                  <span class="text-text-tertiary">{{ siteConfig.labels.token }}额度</span>
+                  <span class="text-text-primary ml-1 font-medium">{{ formatNum(p.token_quota) }}</span>
+                </div>
+                <div v-if="p.credit_quota > 0">
+                  <span class="text-text-tertiary">{{ siteConfig.labels.credit }}额度</span>
+                  <span class="text-text-primary ml-1 font-medium">{{ formatNum(p.credit_quota) }}</span>
+                </div>
+                <div>
+                  <span class="text-text-tertiary">含模型</span>
+                  <span class="text-text-primary ml-1 font-medium">{{ p.models?.length || 0 }} 个</span>
+                </div>
+              </div>
+
+              <div v-if="p.models?.length" class="mb-4">
+                <div class="text-[10px] text-text-tertiary mb-1">包含模型</div>
+                <div class="flex flex-wrap gap-1">
+                  <span
+                    v-for="m in p.models.slice(0, 6)"
+                    :key="m.id"
+                    class="text-[10px] bg-surface-2 text-text-secondary px-2 py-0.5 rounded"
+                  >{{ m.name || m.model_id }}</span>
+                  <span
+                    v-if="p.models.length > 6"
+                    class="text-[10px] text-text-tertiary"
+                  >+{{ p.models.length - 6 }}</span>
+                </div>
+              </div>
+
+              <div v-if="currentUserPlan(p)" class="text-[11px] text-text-tertiary mb-3">
+                当前套餐
+                <span v-if="currentUserPlan(p)?.expires_at" class="text-text-secondary ml-1">
+                  到期 {{ formatDate(currentUserPlan(p)?.expires_at) }}
+                </span>
+                <span v-else class="text-text-secondary ml-1">永久有效</span>
+              </div>
+
+              <div class="flex-1"></div>
+
+              <div class="space-y-2">
+                <button
+                  type="button"
+                  class="btn-primary text-xs w-full"
+                  :disabled="!canPurchase(p)"
+                  @click="handleBuy(p)"
+                >
+                  {{ purchaseLabel(p) }}
+                </button>
+                <button
+                  v-if="canUpgradeTo(p)"
+                  type="button"
+                  class="btn-secondary text-xs w-full"
+                  @click="handleUpgrade(p)"
+                >
+                  升级套餐
+                </button>
+              </div>
             </div>
           </div>
-        </div>
 
-        <div v-if="plans.length" class="card p-5 mt-5 overflow-x-auto">
-          <h3 class="text-sm font-semibold text-text-primary mb-3">套餐对比</h3>
-          <table class="w-full text-xs">
-            <thead>
-              <tr class="text-left text-text-tertiary border-b border-surface-3">
-                <th class="py-2 pr-4 font-medium">套餐</th>
-                <th class="py-2 pr-4 font-medium">有效期</th>
-                <th class="py-2 pr-4 font-medium">{{ siteConfig.labels.token }}</th>
-                <th class="py-2 pr-4 font-medium">{{ siteConfig.labels.credit }}</th>
-                <th class="py-2 pr-4 font-medium">续充</th>
-                <th class="py-2 pr-4 font-medium">模型</th>
-                <th class="py-2 font-medium">价格</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="p in plans" :key="`compare-${p.id}`" class="border-b border-surface-2 text-text-secondary">
-                <td class="py-2 pr-4 text-text-primary font-medium">{{ p.name }}</td>
-                <td class="py-2 pr-4">{{ p.duration_days === 0 ? '永久' : `${p.duration_days} 天` }}</td>
-                <td class="py-2 pr-4">{{ formatNum(p.token_quota) }}</td>
-                <td class="py-2 pr-4">{{ formatNum(p.credit_quota) }}</td>
-                <td class="py-2 pr-4">{{ refillLabel(p.quota_refill_cycle) }}</td>
-                <td class="py-2 pr-4">{{ p.models?.length || 0 }}</td>
-                <td class="py-2">{{ formatPrice(p.price) }} {{ p.currency || 'CNY' }}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+          <div v-else class="text-center py-16 text-xs text-text-tertiary">
+            当前分类暂无可购买的套餐
+          </div>
 
-        <p class="text-[11px] text-text-tertiary mt-6 text-center">
-          支付完成后套餐将自动开通，可在用户中心「我的套餐」查看
-        </p>
+          <div v-if="filteredPlans.length" class="card p-5 mt-5 overflow-x-auto">
+            <h3 class="text-sm font-semibold text-text-primary mb-3">套餐对比</h3>
+            <table class="w-full text-xs">
+              <thead>
+                <tr class="text-left text-text-tertiary border-b border-surface-3">
+                  <th class="py-2 pr-4 font-medium">套餐</th>
+                  <th class="py-2 pr-4 font-medium">有效期</th>
+                  <th class="py-2 pr-4 font-medium">{{ siteConfig.labels.token }}</th>
+                  <th class="py-2 pr-4 font-medium">{{ siteConfig.labels.credit }}</th>
+                  <th class="py-2 pr-4 font-medium">续充</th>
+                  <th class="py-2 pr-4 font-medium">模型</th>
+                  <th class="py-2 font-medium">价格</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="p in filteredPlans" :key="`compare-${p.id}`" class="border-b border-surface-2 text-text-secondary">
+                  <td class="py-2 pr-4 text-text-primary font-medium">{{ p.name }}</td>
+                  <td class="py-2 pr-4">{{ p.duration_days === 0 ? '永久' : `${p.duration_days} 天` }}</td>
+                  <td class="py-2 pr-4">{{ formatNum(p.token_quota) }}</td>
+                  <td class="py-2 pr-4">{{ formatNum(p.credit_quota) }}</td>
+                  <td class="py-2 pr-4">{{ refillLabel(p.quota_refill_cycle) }}</td>
+                  <td class="py-2 pr-4">{{ p.models?.length || 0 }}</td>
+                  <td class="py-2">{{ formatPrice(p.price) }} {{ p.currency || 'CNY' }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p v-if="plans.length" class="text-[11px] text-text-tertiary mt-6 text-center">
+            支付完成后套餐将自动开通，可在用户中心「我的套餐」查看
+          </p>
+        </template>
       </div>
     </div>
 
@@ -205,8 +236,16 @@ interface StoreModel {
   type: string
 }
 
+interface PlanCategory {
+  id: number
+  name: string
+  sort_order?: number
+}
+
 interface StorePlan {
   id: number
+  category_id?: number | null
+  category?: PlanCategory | null
   code: string
   name: string
   description: string
@@ -227,12 +266,33 @@ const router = useRouter()
 const plans = ref<StorePlan[]>([])
 const loading = ref(false)
 const loadError = ref('')
+const selectedCategoryId = ref<number | null>(null)
 
 const payOpen = ref(false)
 const selectedPlanId = ref<number | null>(null)
 const selectedFromUserPlanId = ref<number | null>(null)
 
 const primaryActivePlan = computed(() => (cloudAuth.plans || []).find(p => p.status === 'active') || null)
+const planCategories = computed<PlanCategory[]>(() => {
+  const map = new Map<number, PlanCategory>()
+  for (const plan of plans.value) {
+    const category = plan.category
+    if (!category?.id || !category.name) continue
+    map.set(category.id, {
+      id: category.id,
+      name: category.name,
+      sort_order: category.sort_order,
+    })
+  }
+  return Array.from(map.values()).sort((a, b) => {
+    const bySort = Number(a.sort_order || 0) - Number(b.sort_order || 0)
+    return bySort || a.id - b.id
+  })
+})
+const filteredPlans = computed(() => {
+  if (selectedCategoryId.value === null) return plans.value
+  return plans.value.filter(plan => Number(plan.category_id || 0) === selectedCategoryId.value)
+})
 
 function goBack() {
   router.push('/user-center')

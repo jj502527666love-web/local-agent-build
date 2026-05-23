@@ -133,6 +133,12 @@ interface InspirationItem {
   cover_image?: string
 }
 
+interface NormalizedVariableResult {
+  variables: CreativeTemplateVariable[]
+  keyMap: Map<string, string>
+  usedKeys: Set<string>
+}
+
 const props = defineProps<{ modelValue: boolean }>()
 const emit = defineEmits<{
   (e: 'update:modelValue', value: boolean): void
@@ -176,6 +182,8 @@ const TEMPLATE_ANALYSIS_SYSTEM_PROMPT = [
   '如果原提示词里包含图片尺寸、图片比例、宽高比、分辨率、像素尺寸等内容，不要拆成变量或选项，也不要保留在 prompt_template 中。',
   '如果原提示词里包含是否需要上传参考图、参考图要求等内容，只用于判断 requires_ref_image；不要拆成变量或选项，也不要保留在 prompt_template 中。',
   'variables 每项字段：key, label, type, required, placeholder, default, options。type 只能是 text、textarea、select、multi_select。',
+  'variables[].key 必须使用小写英文、数字、下划线，只能以英文字母开头，例如 subject、style、scene、product_name；禁止使用中文 key。',
+  'prompt_template 中出现的每一个 {{key}} 必须能在 variables 中找到完全一致的 key；variables 中的每一个 key 必须至少在 prompt_template 中出现一次。',
   'prompt_template 用 {{key}} 作为变量占位符，并保留原提示词的主体、风格、构图、材质、光影、质量要求等真正用于生图的描述。',
 ].join('\n')
 
@@ -354,7 +362,9 @@ async function analyzePrompt(prompt: string): Promise<any> {
       if (attempt === 0) continue
     }
   }
-  if (isDraftParseError(lastError)) return normalizeDraft({}, prompt)
+  if (isDraftParseError(lastError)) {
+    throw new Error('AI 拆解失败：返回内容不是有效 JSON，请换用更强的拆解模型或手动创建')
+  }
   throw lastError instanceof Error ? lastError : new Error(String(lastError || 'AI 拆解失败'))
 }
 
@@ -416,34 +426,36 @@ function isDraftParseError(error: unknown): boolean {
 }
 
 function normalizeDraft(raw: any, fallbackPrompt: string): any {
-  const variables = normalizeVariables(Array.isArray(raw?.variables) ? raw.variables : [])
-  const promptTemplate = stripBuiltInTemplateOptionText(String(raw?.prompt_template || fallbackPrompt || '主体：{{subject}}，风格：{{style}}，场景：{{scene}}'))
+  const normalized = normalizeVariables(Array.isArray(raw?.variables) ? raw.variables : [])
+  const sourcePrompt = String(raw?.prompt_template || fallbackPrompt || '')
+  const promptTemplate = normalizePromptPlaceholders(stripBuiltInTemplateOptionText(sourcePrompt), normalized)
+  const usedKeys = new Set(extractPlaceholders(promptTemplate).filter((key) => /^[a-z][a-z0-9_]*$/.test(key)))
   return {
     title: limitText(raw?.title || guessTitle(fallbackPrompt), 100),
     description: limitText(raw?.description || '由提示词拆解生成的创意模板', 500),
-    prompt_template: promptTemplate || '主体：{{subject}}，风格：{{style}}，场景：{{scene}}',
+    prompt_template: promptTemplate || fallbackPrompt.trim(),
     default_size: '',
     requires_ref_image: raw?.requires_ref_image === undefined ? detectRequiresRefImage(fallbackPrompt) : !!raw.requires_ref_image,
-    variables: variables.length ? variables : defaultVariables(),
+    variables: normalized.variables.filter((v) => usedKeys.has(v.key)),
   }
 }
 
-function normalizeVariables(raw: any[]): CreativeTemplateVariable[] {
-  const out: CreativeTemplateVariable[] = []
+function normalizeVariables(raw: any[]): NormalizedVariableResult {
+  const variables: CreativeTemplateVariable[] = []
+  const keyMap = new Map<string, string>()
   const used = new Set<string>()
   for (const [index, item] of raw.entries()) {
     if (!item || typeof item !== 'object') continue
     if (isBuiltInTemplateOptionVariable(item)) continue
-    let key = String(item.key || `field_${index + 1}`).toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '')
-    if (!key) key = `field_${index + 1}`
-    if (/^[0-9]/.test(key)) key = `field_${key}`
-    while (used.has(key)) key = `${key}_${used.size + 1}`
-    used.add(key)
+    const rawKey = String(item.key || '').trim()
+    const key = normalizeVariableKey(rawKey, `field_${index + 1}`, used)
+    if (rawKey) keyMap.set(rawKey, key)
+    keyMap.set(key, key)
     let type = String(item.type || 'text') as CreativeTemplateVariable['type']
     if (!['text', 'textarea', 'select', 'multi_select'].includes(type)) type = 'text'
     const options = Array.isArray(item.options) ? item.options.map((v: unknown) => limitText(String(v || '').trim(), 50)).filter(Boolean).slice(0, 20) : []
     if ((type === 'select' || type === 'multi_select') && !options.length) type = 'text'
-    out.push({
+    variables.push({
       key,
       label: limitText(item.label || key, 30),
       type,
@@ -452,9 +464,52 @@ function normalizeVariables(raw: any[]): CreativeTemplateVariable[] {
       default: limitText(item.default || '', 500),
       options,
     })
-    if (out.length >= 10) break
+    if (variables.length >= 10) break
   }
-  return out
+  return { variables, keyMap, usedKeys: used }
+}
+
+function normalizePromptPlaceholders(text: string, normalized: NormalizedVariableResult): string {
+  return text.replace(/\{\{\s*([^{}\r\n]+?)\s*\}\}/g, (_match, rawName) => {
+    const rawKey = String(rawName || '').trim()
+    let key = normalized.keyMap.get(rawKey)
+    if (!key && normalized.variables.length < 10) {
+      key = normalizeVariableKey(rawKey, `field_${normalized.variables.length + 1}`, normalized.usedKeys)
+      normalized.keyMap.set(rawKey, key)
+      normalized.keyMap.set(key, key)
+      normalized.variables.push({
+        key,
+        label: limitText(rawKey || key, 30),
+        type: 'text',
+        required: true,
+        placeholder: '',
+        default: '',
+        options: [],
+      })
+    }
+    return key ? `{{${key}}}` : ''
+  })
+}
+
+function normalizeVariableKey(value: string, fallback: string, used: Set<string>): string {
+  let key = value.toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '').replace(/_+/g, '_')
+  if (!key) key = fallback
+  if (!/^[a-z]/.test(key)) key = `field_${key}`
+  if (!/^[a-z][a-z0-9_]*$/.test(key)) key = fallback
+  const base = key
+  let suffix = 2
+  while (used.has(key)) {
+    key = `${base}_${suffix}`
+    suffix++
+  }
+  used.add(key)
+  return key
+}
+
+function extractPlaceholders(text: string): string[] {
+  return Array.from(text.matchAll(/\{\{\s*([^{}\r\n]+?)\s*\}\}/g))
+    .map((match) => String(match[1] || '').trim())
+    .filter(Boolean)
 }
 
 function isBuiltInTemplateOptionVariable(item: Record<string, unknown>): boolean {
@@ -480,14 +535,6 @@ function isBuiltInTemplateOptionSegment(segment: string): boolean {
 
 function detectRequiresRefImage(text: string): boolean {
   return /(需要|必须|请|上传|提供|使用|基于|参考).{0,12}(参考图|参考图片|图片参考|reference image|ref image|image reference)/iu.test(text)
-}
-
-function defaultVariables(): CreativeTemplateVariable[] {
-  return [
-    { key: 'subject', label: '主体', type: 'text', required: true, placeholder: '例如：白色运动鞋', default: '', options: [] },
-    { key: 'style', label: '风格', type: 'text', required: true, placeholder: '例如：极简风格', default: '', options: [] },
-    { key: 'scene', label: '场景', type: 'text', required: true, placeholder: '例如：纯白背景', default: '', options: [] },
-  ]
 }
 
 function draftToPayload(draft: any): DraftPayload {

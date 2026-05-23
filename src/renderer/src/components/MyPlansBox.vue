@@ -79,16 +79,6 @@
             <PolicyBadgeList :policies="p.policies" :limit="6" />
           </div>
 
-          <!-- 时长进度条：仅有限期 + 生效中套餐显示；已过期 / 已撤销 / 永久套餐隐藏 -->
-          <div v-if="showProgress(p)" class="mt-2">
-            <div class="h-1.5 bg-surface-2 rounded-full overflow-hidden">
-              <div
-                :class="['h-full transition-all duration-300', progressBarClass(p.expires_at!)]"
-                :style="{ width: progressPercent(p.activated_at, p.expires_at!) + '%' }"
-              ></div>
-            </div>
-          </div>
-
           <div v-if="p.models?.length" class="mt-2">
             <div class="text-[10px] text-text-tertiary mb-1">包含模型</div>
             <div class="flex flex-wrap gap-1">
@@ -229,30 +219,6 @@ function remainingClass(iso: string, status: string): string {
   if (days >= 7) return 'text-text-primary'
   if (days >= 3) return 'text-amber-600 dark:text-amber-400'
   return 'text-red-500 dark:text-red-400'
-}
-
-function showProgress(p: MyPlan): boolean {
-  return p.status === 'active' && !!p.activated_at && !!p.expires_at
-}
-
-function progressPercent(activatedIso: string | null, expiresIso: string): number {
-  if (!activatedIso) return 0
-  const start = new Date(activatedIso).getTime()
-  const end = new Date(expiresIso).getTime()
-  if (Number.isNaN(start) || Number.isNaN(end) || end <= start) return 100
-  const now = Date.now()
-  if (now <= start) return 0
-  if (now >= end) return 100
-  return Math.min(100, Math.max(0, Math.round(((now - start) / (end - start)) * 100)))
-}
-
-function progressBarClass(iso: string): string {
-  const diff = new Date(iso).getTime() - Date.now()
-  if (diff <= 0) return 'bg-surface-3'
-  const days = diff / 86400000
-  if (days >= 7) return 'bg-emerald-500'
-  if (days >= 3) return 'bg-amber-500'
-  return 'bg-red-500'
 }
 
 function formatAmount(value: number | string): string {

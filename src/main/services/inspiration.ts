@@ -16,7 +16,7 @@ export interface Inspiration {
   ref_images?: string[]
   generation_size?: string
   cover_image?: string
-  // 自定义数据源中由用户上传的灵感会带上传者昵称（百度文心默认数据为空）
+  // 云控端自定义灵感中，用户上传的会带上传者昵称；后台手动录入的为空
   uploader_nickname?: string
 }
 
@@ -90,27 +90,6 @@ export function reloadInspirations(): void {
   cachedInspirations = null
 }
 
-const ERNIE_API = 'https://aistudio.baidu.com/llm/lmapp/ernie-image/search'
-let totalPages = 33 // ~1335 items / 40 per page
-
-function mapErnieItem(item: any): Inspiration {
-  const tags: string[] = Array.isArray(item.tag) ? item.tag : []
-  let category = '创意'
-  if (tags.some((t: string) => /人物|角色|少女|女性|男/.test(t))) category = '人物'
-  else if (tags.some((t: string) => /风景|建筑|城市|自然/.test(t))) category = '风景'
-  else if (tags.some((t: string) => /动漫|卡通|Q版|漫画/.test(t))) category = '动漫'
-  else if (tags.some((t: string) => /设计|海报|字体|排版|信息图/.test(t))) category = '设计'
-  return {
-    id: `ernie-${item.conversationId}`,
-    title: tags[0] || 'AI 创作',
-    prompt_cn: item.prompt,
-    prompt_en: item.prompt,
-    category,
-    tags: tags.slice(0, 5),
-    cover_image: item.images?.[0]?.url
-  }
-}
-
 function resolveImageUrl(value: string, origin: string): string {
   if (!value) return ''
   return value.startsWith('/') ? origin + value : value
@@ -137,70 +116,17 @@ function fetchJson(url: string, timeoutMs = 8000): Promise<any> {
   })
 }
 
+/**
+ * 拉云控端自定义灵感。原「百度文心 ERNIE」默认源已下线，
+ * 如果云控端未配分类或请求失败，返回空列表 + 空分类。
+ */
 export async function fetchOnlineInspirations(options?: {
   page?: number
   pageSize?: number
   category?: string
   search?: string
-}): Promise<{ items: Inspiration[]; total: number; categories?: string[] }> {
-  // Check cloud admin config to determine data source
-  const apiBase = getCloudApiBase()
-  try {
-    const configJson = await fetchJson(`${apiBase}/public/inspiration/config`)
-    if (configJson.source === 'custom') {
-      return fetchCustomInspirations(options)
-    }
-  } catch {
-    // Config fetch failed, fall back to ERNIE
-  }
-
-  return fetchErnieInspirations(options)
-}
-
-async function fetchErnieInspirations(options?: {
-  page?: number
-  pageSize?: number
-  category?: string
-  search?: string
-}): Promise<{ items: Inspiration[]; total: number }> {
-  const pageSize = options?.pageSize || 40
-  const page = options?.page || (Math.floor(Math.random() * totalPages) + 1)
-  const url = `${ERNIE_API}?page=${page}&pageSize=${pageSize}`
-
-  const json = await fetchJson(url)
-  if (json.errorCode !== 0) throw new Error(json.errorMsg || 'API error')
-
-  // Update totalPages dynamically
-  if (json.result.totalPage) {
-    totalPages = json.result.totalPage
-  } else if (json.result.totalCount) {
-    totalPages = Math.ceil(json.result.totalCount / pageSize)
-  }
-
-  let items = (json.result.data || []).map(mapErnieItem)
-  if (options?.category) {
-    items = items.filter((item: Inspiration) => item.category === options.category)
-  }
-  if (options?.search) {
-    const q = options.search.toLowerCase()
-    items = items.filter((item: Inspiration) =>
-      item.title.toLowerCase().includes(q) ||
-      item.prompt_cn.toLowerCase().includes(q) ||
-      item.prompt_en.toLowerCase().includes(q) ||
-      item.tags.some((tag) => tag.toLowerCase().includes(q))
-    )
-  }
-
-  // If empty (page out of range), retry with page 1
-  if (!items.length && !options?.category && !options?.search) {
-    const retryUrl = `${ERNIE_API}?page=1&pageSize=${pageSize}`
-    const retryJson = await fetchJson(retryUrl)
-    if (retryJson.errorCode === 0 && retryJson.result.data?.length) {
-      return { items: retryJson.result.data.map(mapErnieItem), total: retryJson.result.totalCount || 0 }
-    }
-  }
-
-  return { items, total: json.result.totalCount || items.length }
+}): Promise<{ items: Inspiration[]; total: number; categories: string[] }> {
+  return fetchCustomInspirations(options)
 }
 
 async function fetchCustomInspirations(options?: {
@@ -208,7 +134,7 @@ async function fetchCustomInspirations(options?: {
   pageSize?: number
   category?: string
   search?: string
-}): Promise<{ items: Inspiration[]; total: number; categories?: string[] }> {
+}): Promise<{ items: Inspiration[]; total: number; categories: string[] }> {
   const apiBase = getCloudApiBase()
   // Derive the origin (scheme + host) from apiBase for resolving relative image paths
   const originMatch = apiBase.match(/^(https?:\/\/[^/]+)/)
@@ -250,16 +176,6 @@ async function fetchCustomInspirations(options?: {
   })
 
   return { items, total: json.total || items.length, categories: categories.map((cat) => cat.name) }
-}
-
-export async function getInspirationConfig(): Promise<{ source: string }> {
-  const apiBase = getCloudApiBase()
-  try {
-    const json = await fetchJson(`${apiBase}/public/inspiration/config`)
-    return { source: json.source || 'default' }
-  } catch {
-    return { source: 'default' }
-  }
 }
 
 export async function getInspirationCategories(): Promise<string[]> {

@@ -72,9 +72,16 @@ interface RawTemplate extends Omit<CreativeTemplate, 'example_ref_images' | 'var
   variables: string
 }
 
+interface NormalizedVariableResult {
+  variables: CreativeTemplateVariable[]
+  keyMap: Map<string, string>
+  usedKeys: Set<string>
+}
+
 const FIELD_TYPES: CreativeTemplateFieldType[] = ['text', 'textarea', 'select', 'multi_select']
 
 const UPLOAD_DIR_NAME = 'creative-template-uploads'
+const OPTIONAL_EMPTY_MARKER = '\uE000'
 
 // ────── 工具 ──────
 
@@ -88,18 +95,18 @@ function safeParseArray<T>(value: string | null | undefined, fallback: T[]): T[]
   }
 }
 
-function normalizeVariables(input: unknown): CreativeTemplateVariable[] {
-  if (!Array.isArray(input)) return []
+function normalizeVariableEntries(input: unknown): NormalizedVariableResult {
+  if (!Array.isArray(input)) return { variables: [], keyMap: new Map(), usedKeys: new Set() }
   const result: CreativeTemplateVariable[] = []
+  const keyMap = new Map<string, string>()
   const usedKeys = new Set<string>()
   for (let i = 0; i < input.length && result.length < 10; i++) {
     const raw = input[i] as Record<string, unknown>
     if (!raw || typeof raw !== 'object') continue
-    let key = String(raw.key || '').trim().toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '')
-    if (!key) key = `field_${i + 1}`
-    if (/^[0-9]/.test(key)) key = `field_${key}`
-    while (usedKeys.has(key)) key += '_' + (usedKeys.size + 1)
-    usedKeys.add(key)
+    const rawKey = String(raw.key || '').trim()
+    const key = normalizeVariableKey(rawKey, `field_${i + 1}`, usedKeys)
+    if (rawKey) keyMap.set(rawKey, key)
+    keyMap.set(key, key)
     let type = String(raw.type || 'text') as CreativeTemplateFieldType
     if (!FIELD_TYPES.includes(type)) type = 'text'
     const options = Array.isArray(raw.options)
@@ -123,7 +130,56 @@ function normalizeVariables(input: unknown): CreativeTemplateVariable[] {
       options,
     })
   }
-  return result
+  return { variables: result, keyMap, usedKeys }
+}
+
+function normalizeVariableKey(value: string, fallback: string, usedKeys: Set<string>): string {
+  let key = value.toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '').replace(/_+/g, '_')
+  if (!key) key = fallback
+  if (!/^[a-z]/.test(key)) key = `field_${key}`
+  if (!/^[a-z][a-z0-9_]*$/.test(key)) key = fallback
+  const base = key
+  let suffix = 2
+  while (usedKeys.has(key)) {
+    key = `${base}_${suffix}`
+    suffix++
+  }
+  usedKeys.add(key)
+  return key
+}
+
+function normalizeTemplateContent(promptTemplate: unknown, inputVariables: unknown): { prompt_template: string; variables: CreativeTemplateVariable[] } {
+  const normalized = normalizeVariableEntries(inputVariables)
+  const prompt = String(promptTemplate || '').replace(/\{\{\s*([^{}\r\n]+?)\s*\}\}/g, (_match, rawName) => {
+    const rawKey = String(rawName || '').trim()
+    let key = normalized.keyMap.get(rawKey)
+    if (!key && normalized.variables.length < 10) {
+      key = normalizeVariableKey(rawKey, `field_${normalized.variables.length + 1}`, normalized.usedKeys)
+      normalized.keyMap.set(rawKey, key)
+      normalized.keyMap.set(key, key)
+      normalized.variables.push({
+        key,
+        label: String(rawKey || key).slice(0, 30) || key,
+        type: 'text',
+        required: true,
+        placeholder: '',
+        default: '',
+        options: [],
+      })
+    }
+    return key ? `{{${key}}}` : ''
+  })
+  const usedKeys = new Set(extractPlaceholders(prompt).filter((key) => /^[a-z][a-z0-9_]*$/.test(key)))
+  return {
+    prompt_template: prompt,
+    variables: normalized.variables.filter((v) => usedKeys.has(v.key)),
+  }
+}
+
+function extractPlaceholders(text: string): string[] {
+  return Array.from(text.matchAll(/\{\{\s*([^{}\r\n]+?)\s*\}\}/g))
+    .map((match) => String(match[1] || '').trim())
+    .filter(Boolean)
 }
 
 function normalizeRefImages(input: unknown): string[] {
@@ -151,6 +207,7 @@ function rowToCategory(row: RawCategory): CreativeTemplateCategory {
 }
 
 function rowToTemplate(row: RawTemplate): CreativeTemplate {
+  const content = normalizeTemplateContent(row.prompt_template, safeParseArray<CreativeTemplateVariable>(row.variables, []))
   return {
     id: row.id,
     category_id: row.category_id,
@@ -160,8 +217,8 @@ function rowToTemplate(row: RawTemplate): CreativeTemplate {
     example_ref_images: safeParseArray<string>(row.example_ref_images, []),
     requires_ref_image: row.requires_ref_image ? 1 : 0,
     default_size: row.default_size || '',
-    prompt_template: row.prompt_template,
-    variables: normalizeVariables(JSON.parse(row.variables || '[]')),
+    prompt_template: content.prompt_template,
+    variables: content.variables,
     source_type: (row.source_type as CreativeTemplateSource) || 'manual',
     source_image: row.source_image || '',
     source_inspiration_id: row.source_inspiration_id || '',
@@ -380,7 +437,7 @@ export async function createTemplate(data: TemplateInput): Promise<CreativeTempl
   const cover = await persistImageInput(String(data.cover_image || ''))
   const sourceImage = await persistImageInput(String(data.source_image || ''))
   const refs = await persistManyImageInputs(normalizeRefImages(data.example_ref_images))
-  const variables = normalizeVariables(data.variables)
+  const content = normalizeTemplateContent(data.prompt_template, data.variables)
   const db = getDatabase()
   db.prepare(
     `INSERT INTO creative_templates (
@@ -397,8 +454,8 @@ export async function createTemplate(data: TemplateInput): Promise<CreativeTempl
     JSON.stringify(refs),
     String(data.default_size || '').slice(0, 50),
     data.requires_ref_image === true || data.requires_ref_image === 1 ? 1 : 0,
-    String(data.prompt_template || ''),
-    JSON.stringify(variables),
+    content.prompt_template,
+    JSON.stringify(content.variables),
     (data.source_type as CreativeTemplateSource) || 'manual',
     sourceImage,
     String(data.source_inspiration_id || '').slice(0, 100),
@@ -438,8 +495,16 @@ export async function updateTemplate(id: string, data: Partial<TemplateInput>): 
   }
   if (data.requires_ref_image !== undefined) { sets.push('requires_ref_image = ?'); params.push(data.requires_ref_image === true || data.requires_ref_image === 1 ? 1 : 0) }
   if (data.default_size !== undefined) { sets.push('default_size = ?'); params.push(String(data.default_size).slice(0, 50)) }
-  if (data.prompt_template !== undefined) { sets.push('prompt_template = ?'); params.push(String(data.prompt_template)) }
-  if (data.variables !== undefined) { sets.push('variables = ?'); params.push(JSON.stringify(normalizeVariables(data.variables))) }
+  if (data.prompt_template !== undefined || data.variables !== undefined) {
+    const content = normalizeTemplateContent(
+      data.prompt_template !== undefined ? data.prompt_template : existing.prompt_template,
+      data.variables !== undefined ? data.variables : existing.variables
+    )
+    sets.push('prompt_template = ?')
+    params.push(content.prompt_template)
+    sets.push('variables = ?')
+    params.push(JSON.stringify(content.variables))
+  }
   if (data.source_type !== undefined) { sets.push('source_type = ?'); params.push(data.source_type) }
   let newSourceImage = existing.source_image
   if (data.source_image !== undefined) {
@@ -544,17 +609,30 @@ function cleanupTemplateFiles(template: CreativeTemplate): void {
  */
 export function renderTemplatePrompt(template: CreativeTemplate, values: Record<string, unknown>): string {
   const raw = template.prompt_template || ''
-  return raw.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (match: string, key: string) => {
+  const variableMap = new Map(template.variables.map((v) => [v.key, v]))
+  const rendered = raw.replace(/\{\{\s*([^{}\r\n]+?)\s*\}\}/g, (match: string, rawKey: string) => {
+    const key = String(rawKey || '').trim()
+    const variable = variableMap.get(key)
     const v = values[key]
-    if (v === undefined || v === null) return match
+    if (v === undefined || v === null) return variable && !variable.required ? OPTIONAL_EMPTY_MARKER : match
     if (Array.isArray(v)) {
-      // 空数组 / 全空元素：保留占位符让用户感知缺失，与 renderer 端 TemplateUseModal 行为一致
       const joined = v.map((x) => String(x).trim()).filter(Boolean).join(', ')
-      return joined === '' ? match : joined
+      return joined || (variable && !variable.required ? OPTIONAL_EMPTY_MARKER : match)
     }
     const s = String(v).trim()
-    return s === '' ? match : s
+    return s || (variable && !variable.required ? OPTIONAL_EMPTY_MARKER : match)
   })
+  return cleanupRenderedPrompt(rendered)
+}
+
+function cleanupRenderedPrompt(text: string): string {
+  const markerPattern = new RegExp(`(^|[，,；;、])[^，,；;、\\n]*${OPTIONAL_EMPTY_MARKER}[^，,；;、\\n]*`, 'g')
+  const markerOnlyPattern = new RegExp(OPTIONAL_EMPTY_MARKER, 'g')
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.replace(markerPattern, '').replace(markerOnlyPattern, '').replace(/^[\s，,；;、]+|[\s，,；;、]+$/g, '').trim())
+    .filter(Boolean)
+    .join('\n')
 }
 
 /**
