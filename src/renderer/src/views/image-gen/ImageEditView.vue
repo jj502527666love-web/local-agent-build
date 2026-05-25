@@ -293,12 +293,14 @@
               </div>
             </div>
 
-            <textarea
+            <PromptTextarea
               v-model="inpaintPrompt"
-              rows="3"
+              title="编辑重绘提示词"
+              :height="88"
+              :max-length="inpaintPromptMaxLength"
               :placeholder="usePromptTemplate ? currentTemplate().placeholder : '描述你想要重绘的内容...'"
-              class="w-full px-2 py-1.5 text-xs border border-surface-3 rounded-lg bg-surface-0 outline-none focus:ring-1 focus:ring-primary-500 resize-none"
-            ></textarea>
+              input-class="text-xs"
+            />
 
             <!-- 候选数 -->
             <div>
@@ -450,6 +452,8 @@ import ImageEditModelDialog from '@/components/ImageEditModelDialog.vue'
 import GallerySaveDialog from '@/components/GallerySaveDialog.vue'
 import StickerLibraryPanel from '@/components/StickerLibraryPanel.vue'
 import { useGalleryStore } from '@/stores/gallery'
+import PromptTextarea from '@/components/PromptTextarea.vue'
+import { IMAGE_PROMPT_MAX_LENGTH, assertImagePromptLength } from '@shared/prompt-limits'
 
 const route = useRoute()
 const router = useRouter()
@@ -642,6 +646,12 @@ function buildFinalPrompt(): string {
   if (!usePromptTemplate.value) return p
   return currentTemplate().wrap(p)
 }
+
+const inpaintPromptMaxLength = computed(() => {
+  if (!usePromptTemplate.value) return IMAGE_PROMPT_MAX_LENGTH
+  const overhead = currentTemplate().wrap('').length
+  return Math.max(1, IMAGE_PROMPT_MAX_LENGTH - overhead)
+})
 
 // Filter state (Fabric filter values, non-destructive)
 const filterControls = reactive([
@@ -2616,6 +2626,7 @@ async function runInpaint() {
     const maskBase64 = maskDataUrl.split(',')[1]
 
     const finalPrompt = buildFinalPrompt()
+    assertImagePromptLength(finalPrompt, '重绘提示词')
     const finalSize = inferSizeKey(originalW, originalH, generation.value.size || '1:1')
 
     // O8: 优先使用用户在工具栏「生图模型」按钮设置的模型；未设置回退到 generation

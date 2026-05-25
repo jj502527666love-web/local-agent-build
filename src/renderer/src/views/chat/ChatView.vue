@@ -260,15 +260,20 @@
                   @dragleave.prevent="dragging = false"
                   @drop.prevent="handleDrop"
                 >
-                  <textarea
+                  <PromptTextarea
                     ref="inputEl"
                     v-model="inputText"
-                    @keydown.enter.exact.prevent="send"
                     @paste="handlePaste"
-                    rows="2"
+                    @submit="send"
+                    title="编辑消息"
+                    :height="64"
+                    submit-on-enter
+                    inline-edit
+                    :show-count="false"
                     :placeholder="dragging ? '松开以添加附件' : '输入消息，按 Enter 发送...'"
-                    class="px-3 pt-2.5 pb-1 text-sm bg-transparent resize-none focus:outline-none placeholder:text-text-disabled"
-                  ></textarea>
+                    container-class="m-2 mb-1"
+                    input-class="text-sm"
+                  />
                   <!-- 底部条：左侧 「对话：」+ 「生图：」两个模型切换器并排（IDE 风格）、右侧 发送/中断按钮。
                        生图切换器控制 image_gen tool 默认 provider/model，LLM args 未传时作为兑底 -->
                   <div class="flex items-center justify-between gap-2 px-2 pb-2">
@@ -439,6 +444,7 @@ import GalleryPicker from '@/components/GalleryPicker.vue'
 import ImageLightbox from '@/components/ImageLightbox.vue'
 import ChatModelSwitcher from '@/components/ChatModelSwitcher.vue'
 import LowBalanceModal from '@/components/LowBalanceModal.vue'
+import PromptTextarea from '@/components/PromptTextarea.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -466,7 +472,7 @@ const inputText = ref('')
 const lowBalanceOpen = ref(false)
 const lowBalanceState = ref({ balanceType: 'token', required: 0, available: 0 })
 const messagesContainer = ref<HTMLElement | null>(null)
-const inputEl = ref<HTMLTextAreaElement | null>(null)
+const inputEl = ref<InstanceType<typeof PromptTextarea> | null>(null)
 const botSelectorRef = ref<HTMLElement | null>(null)
 const toolbarRef = ref<HTMLElement | null>(null)
 const attachRef = ref<HTMLElement | null>(null)

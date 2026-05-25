@@ -122,7 +122,14 @@
           </div>
           <div>
             <label class="text-xs font-medium text-text-secondary mb-1 block">内容</label>
-            <textarea v-model="presetForm.content" rows="6" class="w-full px-3 py-2 text-xs border border-surface-3 rounded-lg bg-surface-1 resize-none outline-none focus:ring-2 focus:ring-primary-500" placeholder="提示词内容..."></textarea>
+            <PromptTextarea
+              v-model="presetForm.content"
+              title="编辑提示词内容"
+              :height="148"
+              :max-length="activeTab === 'image_gen' ? IMAGE_PROMPT_MAX_LENGTH : undefined"
+              placeholder="提示词内容..."
+              input-class="text-xs"
+            />
           </div>
         </div>
         <div class="flex items-center justify-between mt-4">
@@ -175,6 +182,8 @@ import { usePromptPresetStore, type PromptCategory, type PromptPreset } from '@/
 import { useModelStore } from '@/stores/models'
 import { groupAndSort } from '@/utils/model-caps'
 import { warmHintsCache, getHintsSync, recordUsage } from '@/utils/model-usage-hints'
+import PromptTextarea from '@/components/PromptTextarea.vue'
+import { IMAGE_PROMPT_MAX_LENGTH } from '@shared/prompt-limits'
 
 const route = useRoute()
 const router = useRouter()

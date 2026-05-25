@@ -110,14 +110,16 @@
           <span class="text-[9px] opacity-70">{{ customStatusLabel }}</span>
         </button>
         <div v-if="showCustom" class="mt-1.5">
-          <textarea
+          <PromptTextarea
             v-model="customPromptModel"
             @change="saveCustomPrompt"
+            title="编辑反推自定义提示词"
+            :height="88"
             placeholder="留空使用上方风格预设的内置提示词"
-            rows="3"
-            class="node-textarea nodrag nopan w-full"
+            container-class="nodrag nopan"
+            input-class="text-[11px]"
             :disabled="data.locked"
-          ></textarea>
+          />
           <div class="flex justify-end mt-1" v-if="customPromptModel">
             <button
               @click.stop="resetCustomPrompt"
@@ -170,6 +172,7 @@ import {
   type StylePreset,
   type OutputLang,
 } from '@/utils/image2prompt-presets'
+import PromptTextarea from '@/components/PromptTextarea.vue'
 
 type HandleClickHandler = (e: MouseEvent, nodeId: string, handleId: string, dataType: 'text' | 'image') => void
 

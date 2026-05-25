@@ -47,13 +47,14 @@
               </div>
               <span class="text-xs text-text-tertiary flex-shrink-0">AI 以此为基础生成提示词</span>
             </div>
-            <textarea
+            <PromptTextarea
               v-model="projectDescription"
               :disabled="running"
-              rows="3"
+              title="编辑项目整体描述"
+              :height="96"
               placeholder="例如：XX 商品电商图，整体风格简约现代，主色调明亮，强调商品质感..."
-              class="w-full text-sm text-text-primary bg-surface-1 border border-surface-3 rounded-lg px-3 py-2 resize-none outline-none focus:border-primary-400 transition-colors"
-            ></textarea>
+              input-class="text-sm"
+            />
           </div>
 
           <!-- Groups -->
@@ -162,13 +163,14 @@
                 <!-- Group description -->
                 <div>
                   <label class="text-xs font-medium text-text-secondary mb-1.5 block">组内细节描述（可选）</label>
-                  <textarea
+                  <PromptTextarea
                     v-model="group.description"
                     :disabled="running"
-                    rows="2"
+                    title="编辑组内细节描述"
+                    :height="72"
                     placeholder="这一组图的主题、风格要求、差异化方向...当提示词留空时用于引导 AI 撰写"
-                    class="w-full text-sm text-text-primary bg-surface-0 border border-surface-3 rounded-lg px-3 py-2 resize-none outline-none focus:border-primary-400 transition-colors"
-                  ></textarea>
+                    input-class="text-sm"
+                  />
                 </div>
 
                 <!-- Reference text (only for textgen) -->
@@ -178,14 +180,17 @@
                     <span class="text-[10px] text-text-tertiary">{{ group.referenceText?.trim() ? '用户原文·跳过 AI' : '留空 → AI 自动生成' }}</span>
                   </div>
                   <div class="flex items-start gap-2">
-                    <textarea
-                      v-model="group.referenceText"
+                    <PromptTextarea
+                      :model-value="group.referenceText || ''"
+                      @update:model-value="group.referenceText = $event"
                       :disabled="running"
-                      rows="3"
+                      title="编辑参考页提示词"
+                      :height="88"
+                      :max-length="IMAGE_PROMPT_MAX_LENGTH"
                       placeholder="填入原文将作为参考图的提示词，不调 AI；留空则由 AI 根据组内细节描述自动撰写"
-                      class="flex-1 text-sm text-text-primary bg-surface-0 rounded-lg px-3 py-2 resize-none outline-none focus:border-primary-400 transition-colors border"
-                      :class="group.referenceText?.trim() ? 'border-primary-300 bg-primary-50/40' : 'border-surface-3'"
-                    ></textarea>
+                      container-class="flex-1"
+                      input-class="text-sm"
+                    />
                     <div class="flex flex-col gap-1.5 flex-shrink-0 w-28">
                       <ImageSizePicker
                         :model-value="group.referenceSize ?? ''"
@@ -224,15 +229,17 @@
                       class="flex items-start gap-2"
                     >
                       <span class="text-[11px] font-medium text-text-tertiary flex-shrink-0 w-6 mt-2 text-right">{{ i }}.</span>
-                      <textarea
-                        :value="getBizText(group, i - 1)"
-                        @input="setBizText(group, i - 1, (($event.target as HTMLTextAreaElement).value))"
+                      <PromptTextarea
+                        :model-value="getBizText(group, i - 1)"
+                        @update:model-value="setBizText(group, i - 1, $event)"
                         :disabled="running"
-                        rows="2"
+                        :title="`编辑第 ${i} 张业务图提示词`"
+                        :height="72"
+                        :max-length="IMAGE_PROMPT_MAX_LENGTH"
                         :placeholder="`第 ${i} 张图：填入原文将直用，留空由 AI 撰写`"
-                        class="flex-1 text-sm text-text-primary bg-surface-0 rounded-lg px-3 py-2 resize-none outline-none focus:border-primary-400 transition-colors border"
-                        :class="getBizText(group, i - 1).trim() ? 'border-primary-300 bg-primary-50/40' : 'border-surface-3'"
-                      ></textarea>
+                        container-class="flex-1"
+                        input-class="text-sm"
+                      />
                       <div class="flex flex-col gap-1.5 flex-shrink-0 w-28">
                         <ImageSizePicker
                           :model-value="getBizSize(group, i - 1)"
@@ -344,8 +351,10 @@ import {
 } from '../composables/useAiOrchestrator'
 import ImageSizePicker from '@/components/ImageSizePicker.vue'
 import ResolutionTierPicker from '@/components/ResolutionTierPicker.vue'
+import PromptTextarea from '@/components/PromptTextarea.vue'
 import { useCanvasStore } from '@/stores/canvas'
 import { DEFAULT_TIER_ID } from '@shared/image-size'
+import { IMAGE_PROMPT_MAX_LENGTH } from '@shared/prompt-limits'
 
 const canvasStore = useCanvasStore()
 /** 从当前项目拿生图模型 id，用于所有能力域相关的渲染 */

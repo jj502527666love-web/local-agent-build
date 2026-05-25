@@ -133,6 +133,18 @@ export const TOOL_CARDS: ToolCard[] = [
     }
   },
   {
+    id: 'style-transfer',
+    label: '风格迁移',
+    iconPath: 'M4.5 5.25h6.75v6.75H4.5V5.25Zm8.25 0h6.75v6.75h-6.75V5.25ZM4.5 14.25h6.75v4.5H4.5v-4.5Zm8.25 0h6.75v4.5h-6.75v-4.5Z',
+    category: 'recommend',
+    action: {
+      type: 'pick-then-gen',
+      needRef: true,
+      autoSize: true,
+      presetPrompt: '将第一张参考图的视觉风格迁移到第二张参考图上，保留第二张图的主体、构图和结构。'
+    }
+  },
+  {
     id: 'product-shot',
     label: '电商白底图',
     iconPath: 'm21 7.5-9-5.25L3 7.5m18 0-9 5.25m9-5.25v9l-9 5.25M3 7.5l9 5.25M3 7.5v9l9 5.25m0-9v9',

@@ -58,11 +58,13 @@
         <!-- 文字描述 -->
         <div v-else-if="source === 'text'">
           <h4 class="text-xs font-medium text-text-secondary mb-2">描述姿势</h4>
-          <textarea
+          <PromptTextarea
             v-model="customText"
-            rows="3"
+            title="编辑姿势描述"
+            :height="88"
+            :max-length="IMAGE_PROMPT_MAX_LENGTH"
             placeholder="例如：右手叉腰，左手自然下垂；或者：侧身回眸，身体微微前倾"
-            class="w-full px-3 py-2 text-xs bg-surface-1 border border-surface-3 rounded-lg outline-none focus:ring-1 focus:ring-primary-500 text-text-primary placeholder:text-text-disabled resize-none"
+            input-class="text-xs"
           />
           <p class="text-[10px] text-text-tertiary mt-1.5">中英文均可。越具体（手脚位置 / 重心 / 视线方向）效果越好。</p>
         </div>
@@ -217,6 +219,8 @@ import {
 } from '@shared/pose-change-presets'
 import ImageSourcePickerDialog from './ImageSourcePickerDialog.vue'
 import { loadAsDataUri } from '@/utils/image-source'
+import PromptTextarea from './PromptTextarea.vue'
+import { IMAGE_PROMPT_MAX_LENGTH } from '@shared/prompt-limits'
 
 defineProps<{ visible: boolean }>()
 const emit = defineEmits<{

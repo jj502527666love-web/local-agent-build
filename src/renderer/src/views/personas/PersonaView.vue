@@ -17,7 +17,12 @@
         </div>
         <div>
           <label class="form-label">系统提示词</label>
-          <textarea v-model="form.system_prompt" rows="8" class="textarea-field" placeholder="描述这个人格的行为方式和规则..."></textarea>
+          <PromptTextarea
+            v-model="form.system_prompt"
+            title="编辑系统提示词"
+            :height="176"
+            placeholder="描述这个人格的行为方式和规则..."
+          />
         </div>
 
         <!-- Preset Modal -->
@@ -140,6 +145,7 @@ import { usePromptPresetStore } from '@/stores/prompt-presets'
 import { groupAndSort } from '@/utils/model-caps'
 import { warmHintsCache, getHintsSync, recordUsage } from '@/utils/model-usage-hints'
 import builtinPresets from '@/data/persona-presets.json'
+import PromptTextarea from '@/components/PromptTextarea.vue'
 
 const store = usePersonaStore()
 const modelStore = useModelStore()

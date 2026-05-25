@@ -25,14 +25,16 @@
           <span class="text-[9px] opacity-70">{{ systemPromptStatusLabel }}</span>
         </button>
         <div v-if="showSystemPrompt" class="mt-1.5">
-          <textarea
+          <PromptTextarea
             v-model="systemPromptModel"
             @change="saveSystemPrompt"
+            title="编辑 AI 文本系统提示词"
+            :height="88"
             placeholder="默认：扩写为图像生成提示词。留空可让 AI 按输入自由响应。"
-            rows="3"
-            class="node-textarea nodrag nopan w-full"
+            container-class="nodrag nopan"
+            input-class="text-[11px]"
             :disabled="data.locked"
-          ></textarea>
+          />
           <div class="flex items-center justify-between mt-1">
             <span class="text-[9px] text-text-disabled">留空让 AI 按用户输入自由响应</span>
             <button
@@ -76,6 +78,7 @@ import { ref, computed, inject, watch } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
 import { useCanvasStore } from '@/stores/canvas'
 import { useWorkflowEngine } from '../composables/useWorkflowEngine'
+import PromptTextarea from '@/components/PromptTextarea.vue'
 
 type HandleClickHandler = (e: MouseEvent, nodeId: string, handleId: string, dataType: 'text' | 'image') => void
 

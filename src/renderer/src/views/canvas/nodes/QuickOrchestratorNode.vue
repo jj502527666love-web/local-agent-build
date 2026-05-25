@@ -20,14 +20,16 @@
 
       <div class="mb-2">
         <label class="node-label">需求</label>
-        <textarea
+        <PromptTextarea
           v-model="instruction"
-          @input="debouncedSave"
+          @change="saveData"
+          title="编辑快捷编排需求"
+          :height="112"
           :placeholder="instructionPlaceholder"
-          rows="4"
-          class="node-textarea nodrag nopan"
+          container-class="nodrag nopan"
+          input-class="text-[11px]"
           :disabled="data.locked || data.status === 'running'"
-        ></textarea>
+        />
       </div>
 
       <div v-if="mode === 'product_workflow'" class="grid grid-cols-2 gap-2 mb-2">
@@ -119,6 +121,7 @@ import { useCanvasStore } from '@/stores/canvas'
 import { useWorkflowEngine } from '../composables/useWorkflowEngine'
 import ImageSizePicker from '@/components/ImageSizePicker.vue'
 import ResolutionTierPicker from '@/components/ResolutionTierPicker.vue'
+import PromptTextarea from '@/components/PromptTextarea.vue'
 
 type HandleClickHandler = (e: MouseEvent, nodeId: string, handleId: string, dataType: 'text' | 'image') => void
 
@@ -139,8 +142,6 @@ const detailSize = ref(props.data.detail_size || '4:5')
 const tier = ref(props.data.tier_id || DEFAULT_TIER_ID)
 const requireReference = ref(Boolean(props.data.require_reference))
 const detailConsistencyEnabled = ref(Boolean(props.data.detail_consistency_enabled))
-let saveTimer: ReturnType<typeof setTimeout> | null = null
-
 const projectImageModelId = computed(() => canvasStore.currentProject?.image_model_id || '')
 const resolutionSizeValue = computed(() => {
   if (mode.value !== 'product_workflow') return size.value
@@ -205,11 +206,6 @@ function hasImageOutput(node: any): boolean {
 function clampCount(value: number, min: number, max: number, fallback: number): number {
   if (!Number.isFinite(value)) return fallback
   return Math.max(min, Math.min(max, Math.round(value)))
-}
-
-function debouncedSave() {
-  if (saveTimer) clearTimeout(saveTimer)
-  saveTimer = setTimeout(saveData, 300)
 }
 
 function saveData() {

@@ -32,12 +32,13 @@
                     >En</button>
                   </div>
                 </div>
-                <textarea
+                <PromptTextarea
                   v-model="prompt"
-                  rows="5"
-                  class="w-full px-3 py-2 text-xs bg-surface-1 border border-surface-3 rounded-lg resize-y focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent placeholder:text-text-disabled"
+                  title="编辑生图提示词"
+                  :height="132"
+                  :max-length="IMAGE_PROMPT_MAX_LENGTH"
                   placeholder="描述你想要生成的图片..."
-                ></textarea>
+                />
                 <div v-if="optimizing" class="flex items-center gap-1.5 mt-1 text-[10px] text-text-tertiary">
                   <svg class="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
                   正在优化提示词...
@@ -510,7 +511,9 @@ import ImageLightbox from '@/components/ImageLightbox.vue'
 import CreationDetailModal from '@/components/CreationDetailModal.vue'
 import ConsumptionEstimate from '@/components/ConsumptionEstimate.vue'
 import LowBalanceModal from '@/components/LowBalanceModal.vue'
+import PromptTextarea from '@/components/PromptTextarea.vue'
 import type { ImageGeneration } from '@/stores/image-gen'
+import { IMAGE_PROMPT_MAX_LENGTH } from '@shared/prompt-limits'
 
 const route = useRoute()
 const router = useRouter()
@@ -777,7 +780,7 @@ const optimizeModelGroups = computed(() => {
 })
 
 const canGenerate = computed(() =>
-  prompt.value.trim() && selectedProviderId.value && selectedModelId.value
+  prompt.value.trim() && prompt.value.length <= IMAGE_PROMPT_MAX_LENGTH && selectedProviderId.value && selectedModelId.value
 )
 
 const imageEstimate = computed(() => estimateImageCost(selectedProviderId.value, selectedModelId.value, batchCount.value))

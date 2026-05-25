@@ -24,7 +24,14 @@
           </div>
           <label class="block mt-2">
             <span class="text-text-tertiary">描述</span>
-            <textarea v-model="draft.description" rows="2" maxlength="500" class="mt-0.5 w-full px-2 py-1.5 border border-surface-3 rounded bg-surface-0 outline-none focus:ring-1 focus:ring-primary-500" placeholder="可选" />
+            <PromptTextarea
+              v-model="draft.description"
+              title="编辑分类描述"
+              :height="64"
+              :max-length="500"
+              placeholder="可选"
+              input-class="text-xs"
+            />
           </label>
           <label class="flex items-center gap-1.5 mt-2">
             <input type="checkbox" v-model="draft.is_visible" />
@@ -85,6 +92,7 @@ import {
   type CreativeTemplateCategory,
 } from '@/stores/creative-templates'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
+import PromptTextarea from '@/components/PromptTextarea.vue'
 
 const props = defineProps<{
   categories: CreativeTemplateCategory[]

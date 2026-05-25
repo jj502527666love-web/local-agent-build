@@ -73,11 +73,11 @@
               class="text-[10px] text-text-tertiary hover:text-primary-600 transition-colors"
             >重置</button>
           </div>
-          <textarea
+          <PromptTextarea
             v-model="systemPrompt"
-            rows="5"
-            class="w-full px-3 py-2 text-xs bg-surface-1 border border-surface-3 rounded-lg resize-y focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent placeholder:text-text-disabled"
-          ></textarea>
+            title="编辑反推系统提示词"
+            :height="132"
+          />
         </div>
 
         <!-- Concurrency -->
@@ -202,12 +202,14 @@
                 </div>
 
                 <!-- Result -->
-                <textarea
+                <PromptTextarea
                   v-model="task.result"
+                  title="编辑反推结果"
+                  :height="78"
+                  :max-length="IMAGE_PROMPT_MAX_LENGTH"
                   :placeholder="task.status === 'error' ? task.error : '反推结果将显示在此处…'"
-                  rows="3"
-                  class="w-full px-2.5 py-1.5 text-xs bg-surface-1 border border-surface-3 rounded-lg resize-y focus:outline-none focus:ring-1 focus:ring-primary-500 placeholder:text-text-disabled"
-                ></textarea>
+                  input-class="text-xs"
+                />
 
                 <!-- Actions -->
                 <div class="flex items-center justify-end gap-1.5 mt-1.5">
@@ -271,6 +273,8 @@ import {
 } from '@/utils/image2prompt-presets'
 import GalleryPicker from '@/components/GalleryPicker.vue'
 import ImageLightbox from '@/components/ImageLightbox.vue'
+import PromptTextarea from '@/components/PromptTextarea.vue'
+import { IMAGE_PROMPT_MAX_LENGTH } from '@shared/prompt-limits'
 
 // Task 类型已提到 stores/image2prompt.ts，下面作为本地别名使用
 type Task = Image2PromptTask

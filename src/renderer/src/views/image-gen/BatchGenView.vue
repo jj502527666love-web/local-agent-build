@@ -32,12 +32,13 @@
               >En</button>
             </div>
           </div>
-          <textarea
+          <PromptTextarea
             v-model="defaultPrompt"
-            rows="4"
-            class="w-full px-3 py-2 text-xs bg-surface-1 border border-surface-3 rounded-lg resize-y focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent placeholder:text-text-disabled"
+            title="编辑默认提示词"
+            :height="112"
+            :max-length="IMAGE_PROMPT_MAX_LENGTH"
             placeholder="所有参考图的默认提示词..."
-          ></textarea>
+          />
           <div v-if="optimizing" class="flex items-center gap-1.5 mt-1 text-[10px] text-text-tertiary">
             <svg class="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
             正在优化提示词...
@@ -237,7 +238,14 @@
               <div v-if="task.expanded" class="px-3 pb-3 space-y-3">
                 <div>
                   <label class="text-[10px] font-medium text-text-tertiary mb-1 block">自定义提示词 (留空使用默认)</label>
-                  <textarea v-model="task.customPrompt" rows="2" class="w-full px-2 py-1.5 text-[11px] bg-surface-1 border border-surface-3 rounded-md resize-y focus:outline-none focus:ring-1 focus:ring-primary-500 placeholder:text-text-disabled" placeholder="留空使用默认提示词..."></textarea>
+                  <PromptTextarea
+                    v-model="task.customPrompt"
+                    title="编辑单图自定义提示词"
+                    :height="72"
+                    :max-length="IMAGE_PROMPT_MAX_LENGTH"
+                    placeholder="留空使用默认提示词..."
+                    input-class="text-[11px]"
+                  />
                 </div>
                 <div>
                   <label class="text-[10px] font-medium text-text-tertiary mb-1 block">尺寸</label>
@@ -354,6 +362,8 @@ import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import GalleryPicker from '@/components/GalleryPicker.vue'
 import ImageLightbox from '@/components/ImageLightbox.vue'
 import { translateError } from '@/utils/error-message'
+import PromptTextarea from '@/components/PromptTextarea.vue'
+import { IMAGE_PROMPT_MAX_LENGTH } from '@shared/prompt-limits'
 
 // BatchTask 类型已提到 stores/batch-gen-form.ts，下面作为本地别名使用
 type BatchTask = BatchGenTask
@@ -461,6 +471,8 @@ const optimizeModelGroups = computed(() => {
 const canStart = computed(() =>
   tasks.value.length > 0 &&
   (defaultPrompt.value.trim() || tasks.value.every(t => t.customPrompt.trim())) &&
+  defaultPrompt.value.length <= IMAGE_PROMPT_MAX_LENGTH &&
+  tasks.value.every(t => t.customPrompt.length <= IMAGE_PROMPT_MAX_LENGTH) &&
   selectedProviderId.value &&
   selectedModelId.value
 )

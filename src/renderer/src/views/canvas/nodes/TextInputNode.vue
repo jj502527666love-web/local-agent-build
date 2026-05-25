@@ -10,14 +10,17 @@
       </button>
     </div>
     <div class="node-body">
-      <textarea
+      <PromptTextarea
         v-model="text"
-        @input="debouncedSave"
+        @change="saveData"
+        title="编辑文本提示词"
+        :height="96"
+        :max-length="IMAGE_PROMPT_MAX_LENGTH"
         placeholder="输入提示词文本..."
-        rows="4"
-        class="node-textarea nodrag nopan"
+        container-class="nodrag nopan"
+        input-class="text-[11px]"
         :disabled="data.locked"
-      ></textarea>
+      />
       <div v-if="!text.trim()" class="text-[9px] text-red-400 mt-1 px-0.5">未输入文本</div>
     </div>
     <Handle
@@ -67,6 +70,8 @@ import { ref, computed, watch, onMounted, inject } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
 import { useCanvasStore } from '@/stores/canvas'
 import { usePromptPresetStore } from '@/stores/prompt-presets'
+import PromptTextarea from '@/components/PromptTextarea.vue'
+import { IMAGE_PROMPT_MAX_LENGTH } from '@shared/prompt-limits'
 
 type HandleClickHandler = (e: MouseEvent, nodeId: string, handleId: string, dataType: 'text' | 'image') => void
 
@@ -93,12 +98,6 @@ const presetType = computed(() => {
 const presetGroups = computed(() => presetStore.visibleGrouped(presetType.value))
 
 watch(() => props.data.text, (v) => { if (v !== text.value) text.value = v || '' })
-
-let saveTimer: ReturnType<typeof setTimeout> | null = null
-function debouncedSave() {
-  if (saveTimer) clearTimeout(saveTimer)
-  saveTimer = setTimeout(saveData, 300)
-}
 
 function saveData() {
   if (!props.data.nodeId) return

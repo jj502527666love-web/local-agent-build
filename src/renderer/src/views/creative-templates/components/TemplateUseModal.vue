@@ -27,11 +27,12 @@
           <div v-for="v in template.variables" :key="v.key">
             <label class="block">
               <span class="text-text-secondary">{{ v.label }}{{ v.required ? ' *' : '' }}<span class="ml-1 text-text-tertiary">{{ v.key }}</span></span>
-              <textarea
+              <PromptTextarea
                 v-if="v.type === 'textarea'"
-                v-model="values[v.key]"
-                rows="3"
-                class="mt-1 w-full px-3 py-2 border border-surface-3 rounded-lg bg-surface-0 outline-none focus:ring-2 focus:ring-primary-500"
+                :model-value="stringValue(v.key)"
+                @update:model-value="setStringValue(v.key, $event)"
+                :title="`编辑${v.label || v.key}`"
+                :height="88"
                 :placeholder="v.placeholder || ''"
               />
               <div
@@ -104,6 +105,7 @@
         <pre class="p-3 bg-surface-2 rounded-lg text-text-primary whitespace-pre-wrap break-words text-[12px] leading-relaxed max-h-40 overflow-auto">{{ renderedPrompt }}</pre>
         <p v-if="missingRequired.length" class="mt-2 text-error text-[11px]">还有必填项未填写：{{ missingRequired.join(', ') }}</p>
         <p v-if="unresolvedPlaceholders.length" class="mt-2 text-error text-[11px]">提示词仍有未替换变量：{{ unresolvedPlaceholders.join(', ') }}</p>
+        <p v-if="promptTooLong" class="mt-2 text-error text-[11px]">最终提示词不能超过 {{ IMAGE_PROMPT_MAX_LENGTH }} 字，当前 {{ renderedPrompt.length }} 字</p>
 
         <div class="mt-5">
           <div class="flex items-center justify-between mb-2">
@@ -135,7 +137,7 @@
         >另存到本地</button>
         <button
           class="px-3 py-1.5 text-xs text-white bg-primary-600 hover:bg-primary-700 rounded-lg disabled:opacity-50"
-          :disabled="missingRequired.length > 0 || missingRefImage || unresolvedPlaceholders.length > 0"
+          :disabled="missingRequired.length > 0 || missingRefImage || unresolvedPlaceholders.length > 0 || promptTooLong"
           @click="useInImageGen"
         >填入生图</button>
       </div>
@@ -155,8 +157,10 @@ import { computed, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useHandoffStore } from '@/stores/handoff'
 import ImageSourcePickerDialog from '@/components/ImageSourcePickerDialog.vue'
+import PromptTextarea from '@/components/PromptTextarea.vue'
 import { loadAsDataUri } from '@/utils/image-source'
 import type { CloudCreativeTemplate, CreativeTemplate } from '@/stores/creative-templates'
+import { IMAGE_PROMPT_MAX_LENGTH, assertImagePromptLength } from '@shared/prompt-limits'
 
 const props = defineProps<{
   template: CreativeTemplate | CloudCreativeTemplate
@@ -229,6 +233,7 @@ const renderedPrompt = computed(() => {
 })
 
 const unresolvedPlaceholders = computed<string[]>(() => Array.from(new Set(extractPlaceholders(renderedPrompt.value))))
+const promptTooLong = computed(() => renderedPrompt.value.length > IMAGE_PROMPT_MAX_LENGTH)
 
 function cleanupRenderedPrompt(text: string): string {
   const markerPattern = new RegExp(`(^|[，,；;、])[^，,；;、\\n]*${OPTIONAL_EMPTY_MARKER}[^，,；;、\\n]*`, 'g')
@@ -284,6 +289,15 @@ function toggleMulti(key: string, opt: string): void {
 
 function selectOption(key: string, opt: string): void {
   values[key] = opt
+}
+
+function stringValue(key: string): string {
+  const value = values[key]
+  return Array.isArray(value) ? value.join(', ') : String(value ?? '')
+}
+
+function setStringValue(key: string, value: string): void {
+  values[key] = value
 }
 
 function optionList(v: { options?: string[] | string }): string[] {
@@ -348,7 +362,8 @@ async function copyPrompt(): Promise<void> {
 // 把渲染好的提示词 + 参考图 + 默认尺寸 handoff 到 imageGen 页面
 // 与 InspirationView 行为一致；ImageGenView 在 onMounted 消费 handoff 写入输入框
 function useInImageGen(): void {
-  if (missingRequired.value.length || missingRefImage.value || unresolvedPlaceholders.value.length) return
+  if (missingRequired.value.length || missingRefImage.value || unresolvedPlaceholders.value.length || promptTooLong.value) return
+  assertImagePromptLength(renderedPrompt.value, '模板提示词')
   const refs = mergedRefImages.value.slice(0, 8)
   handoff.set('imageGen', {
     prompt: renderedPrompt.value,

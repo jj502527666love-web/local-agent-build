@@ -13,6 +13,7 @@ import { stripModelId } from '@shared/model-id'
 import { normalizeApiBase } from './api-base-normalize'
 import { addToCreation, removeByRelativePath } from './gallery'
 import { probeImage } from './image-probe'
+import { assertImagePromptLength } from '@shared/prompt-limits'
 import {
   buildRequestSnapshot,
   describeFormData,
@@ -1402,6 +1403,7 @@ export async function generateImages(
   options: GenerateImageOptions,
   window?: BrowserWindow | null
 ): Promise<ImageGeneration[]> {
+  assertImagePromptLength(options.prompt, '生图提示词')
   // 前置：模型工作模式校验（mode = 'edit_only' / 'text2img' / 'both'）
   // 在创建 DB 记录与发送 API 请求之前拦截，提供友好提示（避免上游返回生涩英文报错）。
   // 默认 'both' = 任意请求都放行；只有显式注册了 mode 的模型才会拦截。

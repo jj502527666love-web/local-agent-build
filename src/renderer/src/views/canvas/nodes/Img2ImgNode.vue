@@ -34,7 +34,17 @@
       <!-- Optional prompt -->
       <div class="mb-2">
         <label class="node-label">提示词 (可选)</label>
-        <textarea v-model="prompt" @change="savePrompt" placeholder="描述变化方向..." rows="2" class="node-textarea nodrag nopan" :disabled="data.locked"></textarea>
+        <PromptTextarea
+          v-model="prompt"
+          @change="savePrompt"
+          title="编辑图生图提示词"
+          :height="72"
+          :max-length="IMAGE_PROMPT_MAX_LENGTH"
+          placeholder="描述变化方向..."
+          container-class="nodrag nopan"
+          input-class="text-[11px]"
+          :disabled="data.locked"
+        />
       </div>
       <!-- Status & Result -->
       <div v-if="data.status === 'running'" class="flex items-center gap-1.5 text-[10px] text-amber-600 mb-2">
@@ -84,6 +94,8 @@ import ImageSizePicker from '@/components/ImageSizePicker.vue'
 import ResolutionTierPicker from '@/components/ResolutionTierPicker.vue'
 import ImageLightbox from '@/components/ImageLightbox.vue'
 import { DEFAULT_TIER_ID } from '@shared/image-size'
+import PromptTextarea from '@/components/PromptTextarea.vue'
+import { IMAGE_PROMPT_MAX_LENGTH } from '@shared/prompt-limits'
 
 type HandleClickHandler = (e: MouseEvent, nodeId: string, handleId: string, dataType: 'text' | 'image') => void
 

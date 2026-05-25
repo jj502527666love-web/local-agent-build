@@ -30,7 +30,13 @@
         <section v-else-if="mode === 'analyze'" class="rounded-xl border border-surface-3 p-4 space-y-4">
           <label class="block">
             <span class="text-text-secondary">完整提示词</span>
-            <textarea v-model="promptText" rows="8" class="mt-1 w-full px-3 py-2 border border-surface-3 rounded-lg bg-surface-0 outline-none focus:ring-2 focus:ring-primary-500" placeholder="粘贴成熟的整段提示词，AI 会拆成可复用模板和变量。" />
+            <PromptTextarea
+              v-model="promptText"
+              title="编辑完整提示词"
+              :height="176"
+              :max-length="IMAGE_PROMPT_MAX_LENGTH"
+              placeholder="粘贴成熟的整段提示词，AI 会拆成可复用模板和变量。"
+            />
           </label>
           <ModelPicker label="拆解模型" cap="chat" v-model:provider-id="chatProviderId" v-model:model-id="chatModelId" />
           <button class="px-3 py-1.5 text-xs text-white bg-primary-600 hover:bg-primary-700 rounded-lg disabled:opacity-50" :disabled="busy" @click="startAnalyze">开始 AI 拆解</button>
@@ -46,7 +52,12 @@
               <button class="px-3 py-1.5 text-xs text-text-secondary border border-surface-3 rounded-lg hover:bg-surface-1" @click="pickReverseImage">上传图片</button>
               <label class="block">
                 <span class="text-text-secondary">补充说明</span>
-                <textarea v-model="reverseHint" rows="3" class="mt-1 w-full px-3 py-2 border border-surface-3 rounded-lg bg-surface-0 outline-none focus:ring-2 focus:ring-primary-500" placeholder="可选，例如保留主体姿态、构图和配色。" />
+                <PromptTextarea
+                  v-model="reverseHint"
+                  title="编辑反推补充说明"
+                  :height="88"
+                  placeholder="可选，例如保留主体姿态、构图和配色。"
+                />
               </label>
             </div>
           </div>
@@ -107,6 +118,8 @@ import { groupAndSort, type ModelCap } from '@/utils/model-caps'
 import { getHintsSync, recordUsage, warmHintsCache } from '@/utils/model-usage-hints'
 import { compressImage } from '@/utils/compress-image'
 import { getSystemPrompt as getImage2PromptSystemPrompt, getUserPrompt as getImage2PromptUserPrompt, isEnOnly, type OutputLang, type StylePreset } from '@/utils/image2prompt-presets'
+import PromptTextarea from '@/components/PromptTextarea.vue'
+import { IMAGE_PROMPT_MAX_LENGTH } from '@shared/prompt-limits'
 
 interface DraftPayload {
   source_type?: CreativeTemplateSource

@@ -29,14 +29,16 @@
             全局提示词
           </button>
           <div v-if="globalPromptExpanded" class="absolute right-0 top-full mt-1 w-[400px] bg-surface-0 border border-surface-3 rounded-xl shadow-lg z-50 p-3">
-            <textarea
+            <PromptTextarea
               v-model="globalPromptText"
-              @input="debouncedSaveGlobalPrompt"
+              @change="debouncedSaveGlobalPrompt"
+              title="编辑全局提示词"
+              :height="104"
+              :max-length="IMAGE_PROMPT_MAX_LENGTH"
               placeholder="风格前缀，例如：杰作，4K，超细节，柔和光线"
-              rows="4"
-              class="w-full text-xs text-text-primary bg-surface-1 border border-surface-3 rounded-lg px-3 py-2 resize-none outline-none focus:border-primary-400 transition-colors"
+              input-class="text-xs"
               :disabled="workflowRunning"
-            ></textarea>
+            />
             <p class="text-[10px] text-text-disabled mt-1.5">作为风格前缀拼接到每次生图提示词前（用 --- 分隔约束与主题）</p>
           </div>
         </div>
@@ -332,6 +334,8 @@ import MattingNode from './nodes/MattingNode.vue'
 import DeletableEdge from './edges/DeletableEdge.vue'
 import HandleCreateMenu from './components/HandleCreateMenu.vue'
 import AiOrchestrateDialog from './components/AiOrchestrateDialog.vue'
+import PromptTextarea from '@/components/PromptTextarea.vue'
+import { IMAGE_PROMPT_MAX_LENGTH } from '@shared/prompt-limits'
 
 const route = useRoute()
 const router = useRouter()

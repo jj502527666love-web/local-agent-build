@@ -55,11 +55,24 @@
           </label>
           <label class="block">
             <span class="text-text-secondary">模板描述</span>
-            <textarea v-model="form.description" rows="2" maxlength="500" class="mt-1 w-full px-3 py-2 border border-surface-3 rounded-lg bg-surface-0 outline-none focus:ring-2 focus:ring-primary-500" placeholder="一句话介绍模板用途" />
+            <PromptTextarea
+              v-model="form.description"
+              title="编辑模板描述"
+              :height="72"
+              :max-length="500"
+              placeholder="一句话介绍模板用途"
+            />
           </label>
           <label class="block">
             <span class="text-text-secondary">提示词模板 <span class="text-error">*</span><span class="ml-2 text-text-tertiary">用 {{ PLACEHOLDER_HINT }} 作为占位符</span></span>
-            <textarea v-model="form.prompt_template" rows="6" class="mt-1 w-full px-3 py-2 border border-surface-3 rounded-lg bg-surface-0 outline-none focus:ring-2 focus:ring-primary-500 font-mono" :placeholder="PROMPT_PLACEHOLDER_EXAMPLE" />
+            <PromptTextarea
+              v-model="form.prompt_template"
+              title="编辑提示词模板"
+              :height="148"
+              :max-length="IMAGE_PROMPT_MAX_LENGTH"
+              input-class="font-mono"
+              :placeholder="PROMPT_PLACEHOLDER_EXAMPLE"
+            />
           </label>
         </section>
 
@@ -180,7 +193,9 @@ import {
 } from '@/stores/creative-templates'
 import ImageSizePicker from '@/components/ImageSizePicker.vue'
 import ImageSourcePickerDialog from '@/components/ImageSourcePickerDialog.vue'
+import PromptTextarea from '@/components/PromptTextarea.vue'
 import { loadAsDataUri } from '@/utils/image-source'
+import { IMAGE_PROMPT_MAX_LENGTH } from '@shared/prompt-limits'
 
 const props = defineProps<{
   modelValue: boolean

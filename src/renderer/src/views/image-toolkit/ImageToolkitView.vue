@@ -133,6 +133,11 @@
       @confirm="onPoseChangeConfirm"
     />
 
+    <StyleTransferDialog
+      v-model:visible="styleTransferDialogVisible"
+      @confirm="onStyleTransferConfirm"
+    />
+
     <!-- 加载提示（处理大图时短暂显示） -->
     <div v-if="processing" class="fixed inset-0 z-[60] flex items-center justify-center pointer-events-none">
       <div class="bg-surface-0 rounded-xl shadow-[0_0_40px_rgba(0,0,0,0.18)] px-5 py-3 flex items-center gap-3">
@@ -161,6 +166,7 @@ import ImageSourcePickerDialog from '@/components/ImageSourcePickerDialog.vue'
 import IDPhotoStyleDialog from '@/components/IDPhotoStyleDialog.vue'
 import OutfitChangeDialog from '@/components/OutfitChangeDialog.vue'
 import PoseChangeDialog from '@/components/PoseChangeDialog.vue'
+import StyleTransferDialog from '@/components/StyleTransferDialog.vue'
 import IllustrationGen from '@/components/illustrations/IllustrationGen.vue'
 import IllustrationBatch from '@/components/illustrations/IllustrationBatch.vue'
 import IllustrationEdit from '@/components/illustrations/IllustrationEdit.vue'
@@ -169,6 +175,7 @@ import { useHandoffStore } from '@/stores/handoff'
 import { composeIDPhotoPrompt, type IDPhotoStyle } from '@shared/id-photo-styles'
 import { composeOutfitChangePrompt, type OutfitSource, type OutfitPreserveOptions } from '@shared/outfit-change-presets'
 import { composePoseChangePrompt, type PoseSource, type PosePreserveOptions } from '@shared/pose-change-presets'
+import { composeStyleTransferPrompt, type ContentPreserveLevel, type StyleStrength } from '@shared/style-transfer-presets'
 
 // Hero 卡片的 3 张抽象插画（顺序与 HERO_CARDS 一一对应）
 const HERO_ILLUSTRATIONS = [IllustrationGen, IllustrationBatch, IllustrationEdit]
@@ -244,6 +251,16 @@ let pendingOutfitChange: {
   summary: string
 } | null = null
 
+const styleTransferDialogVisible = ref(false)
+let pendingStyleTransfer: {
+  styleRefDataUri: string
+  imageType?: string
+  styleStrength: StyleStrength
+  contentPreserve: ContentPreserveLevel
+  extraPrompt?: string
+  summary: string
+} | null = null
+
 // ---- 卡片点击分流 ----
 function onCardClick(card: ToolCard) {
   const action = card.action
@@ -271,6 +288,12 @@ function onCardClick(card: ToolCard) {
   if (card.id === 'ai-pose-change' && action.type === 'pick-then-gen') {
     pendingCard = card
     poseChangeDialogVisible.value = true
+    return
+  }
+
+  if (card.id === 'style-transfer' && action.type === 'pick-then-gen') {
+    pendingCard = card
+    styleTransferDialogVisible.value = true
     return
   }
 
@@ -406,6 +429,18 @@ async function onImagesSelected(paths: string[]) {
           finalSize = findClosestPresetSize(items[0].width, items[0].height)
         }
         pendingPoseChange = null
+      } else if (pendingStyleTransfer) {
+        finalPrompt = composeStyleTransferPrompt({
+          imageType: pendingStyleTransfer.imageType,
+          styleStrength: pendingStyleTransfer.styleStrength,
+          contentPreserve: pendingStyleTransfer.contentPreserve,
+          extraPrompt: pendingStyleTransfer.extraPrompt
+        })
+        refImageList = [pendingStyleTransfer.styleRefDataUri, ...refImageList]
+        if (action.autoSize && items[0]) {
+          finalSize = findClosestPresetSize(items[0].width, items[0].height)
+        }
+        pendingStyleTransfer = null
       } else if (action.autoSize && items[0]) {
         // O9：如果卡片标记了 autoSize，按图片实际宽高比找最接近的预设尺寸
         finalSize = findClosestPresetSize(items[0].width, items[0].height)
@@ -440,6 +475,7 @@ function onPickerCancel() {
   pendingIDPhoto = null
   pendingOutfitChange = null
   pendingPoseChange = null
+  pendingStyleTransfer = null
   pendingCard = null
 }
 
@@ -476,6 +512,22 @@ function onOutfitChangeConfirm(payload: {
   if (!pendingCard) return
   pickerTitle.value = '选择照片 - AI 换装'
   pickerHint.value = '挑一张人物正面或半身照，AI 会保留脸、姿势与背景，仅替换服装'
+  pickerMultiple.value = false
+  pickerVisible.value = true
+}
+
+function onStyleTransferConfirm(payload: {
+  styleRefDataUri: string
+  imageType?: string
+  styleStrength: StyleStrength
+  contentPreserve: ContentPreserveLevel
+  extraPrompt?: string
+  summary: string
+}) {
+  pendingStyleTransfer = { ...payload }
+  if (!pendingCard) return
+  pickerTitle.value = '选择内容图 - 风格迁移'
+  pickerHint.value = '挑一张需要保留主体、构图和结构的图片，AI 会将风格图效果迁移到这张图上'
   pickerMultiple.value = false
   pickerVisible.value = true
 }

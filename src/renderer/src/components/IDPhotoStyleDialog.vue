@@ -97,12 +97,14 @@
               ]"
             >{{ o.label }}</button>
           </div>
-          <input
+          <PromptTextarea
             v-model="customOutfit"
-            type="text"
+            title="编辑证件照服装描述"
+            :height="56"
+            :max-length="IMAGE_PROMPT_MAX_LENGTH"
             placeholder="自定义服装描述（填写后将覆盖上方选项）"
-            class="w-full px-3 py-1.5 text-xs bg-surface-1 border border-surface-3 rounded-lg outline-none focus:ring-1 focus:ring-primary-500 text-text-primary placeholder:text-text-disabled"
-            @focus="selectedOutfitId = ''"
+            input-class="text-xs"
+            @change="selectedOutfitId = ''"
           />
           <p class="text-[10px] text-text-tertiary mt-1.5">例如：纯色领带 + 深蓝西装、报考照指定的黑色西装等</p>
         </div>
@@ -142,6 +144,8 @@ import {
   ID_PHOTO_OUTFIT_PRESETS,
   type IDPhotoStyle
 } from '@shared/id-photo-styles'
+import PromptTextarea from './PromptTextarea.vue'
+import { IMAGE_PROMPT_MAX_LENGTH } from '@shared/prompt-limits'
 
 defineProps<{ visible: boolean }>()
 const emit = defineEmits<{

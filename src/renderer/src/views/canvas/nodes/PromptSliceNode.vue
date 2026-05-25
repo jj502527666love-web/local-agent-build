@@ -21,14 +21,18 @@
         class="prompt-slice-row flex items-start gap-1.5 mb-3 last:mb-1 relative group"
       >
         <span class="text-[10px] text-text-disabled mt-2.5 w-4 text-right flex-shrink-0">{{ idx + 1 }}</span>
-        <textarea
-          :value="row.text"
-          @input="(e: Event) => updateRowText(idx, (e.target as HTMLTextAreaElement).value)"
+        <PromptTextarea
+          :model-value="row.text"
+          @update:model-value="(value) => updateRowText(idx, value)"
+          @change="saveData"
+          :title="`编辑第 ${idx + 1} 条提示词`"
+          :height="84"
+          :max-length="IMAGE_PROMPT_MAX_LENGTH"
           placeholder="输入提示词..."
-          rows="3"
-          class="flex-1 text-[11px] leading-relaxed text-text-primary bg-surface-1 border border-surface-3 rounded-lg px-2.5 py-2 resize-none outline-none focus:border-pink-400 transition-colors nodrag nopan"
+          container-class="flex-1 nodrag nopan"
+          input-class="text-[11px] leading-relaxed"
           :disabled="data.locked"
-        ></textarea>
+        />
         <button
           @click="removeRow(idx)"
           :disabled="data.locked"
@@ -60,7 +64,13 @@
         <div class="p-4 space-y-3">
           <div>
             <label class="text-[11px] font-medium text-text-secondary mb-1 block">描述</label>
-            <textarea v-model="aiInput" rows="4" placeholder="输入整体主题描述，AI 会拆分为多条提示词..." class="w-full text-xs text-text-primary bg-surface-1 border border-surface-3 rounded-lg px-3 py-2 resize-none outline-none focus:border-pink-400 transition-colors"></textarea>
+            <PromptTextarea
+              v-model="aiInput"
+              title="编辑 AI 切片描述"
+              :height="104"
+              placeholder="输入整体主题描述，AI 会拆分为多条提示词..."
+              input-class="text-xs"
+            />
           </div>
           <div class="flex items-center gap-3">
             <label class="text-[11px] font-medium text-text-secondary">切片数</label>
@@ -82,6 +92,8 @@ import { ref, watch, inject } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
 import { useCanvasStore } from '@/stores/canvas'
 import { extractJson } from '@shared/json-extract'
+import PromptTextarea from '@/components/PromptTextarea.vue'
+import { IMAGE_PROMPT_MAX_LENGTH } from '@shared/prompt-limits'
 
 type HandleClickHandler = (e: MouseEvent, nodeId: string, handleId: string, dataType: 'text' | 'image') => void
 
