@@ -6,7 +6,7 @@
       class="fixed z-[9998] w-[240px] bg-surface-0 border border-surface-3 rounded-xl shadow-xl overflow-hidden"
       :style="menuStyle"
       @click.stop
-      @mousedown.stop
+      @pointerdown.stop
       @wheel.stop
     >
       <div class="px-3 py-2 border-b border-surface-3 flex items-center justify-between">
@@ -173,7 +173,7 @@ watch(() => props.visible, (v) => {
   if (!v) emit('hover', null)
 })
 
-function onDocumentMouseDown(e: MouseEvent) {
+function onDocumentPointerDown(e: PointerEvent) {
   if (!props.visible) return
   const el = menuRef.value
   if (!el) return
@@ -185,12 +185,12 @@ function onEsc(e: KeyboardEvent) {
 }
 
 onMounted(() => {
-  document.addEventListener('mousedown', onDocumentMouseDown)
+  document.addEventListener('pointerdown', onDocumentPointerDown, true)
   document.addEventListener('keydown', onEsc)
 })
 
 onBeforeUnmount(() => {
-  document.removeEventListener('mousedown', onDocumentMouseDown)
+  document.removeEventListener('pointerdown', onDocumentPointerDown, true)
   document.removeEventListener('keydown', onEsc)
 })
 </script>

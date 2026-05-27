@@ -32,6 +32,9 @@ export interface CloudPermissions {
   allow_custom_embedding: boolean
   /** 自定义视频模型：开启后桌面端侧栏「视频模型」入口可见。默认 false，独立于 allow_custom_provider */
   allow_custom_video_provider: boolean
+  allow_ai_video: boolean
+  video_quota_per_day: number
+  video_quota_per_month: number
   allow_image_gen: boolean
   allow_knowledge_base: boolean
   max_context_messages: number
@@ -133,6 +136,9 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
     allow_custom_provider: false,
     allow_custom_embedding: true,
     allow_custom_video_provider: false,
+    allow_ai_video: false,
+    video_quota_per_day: 0,
+    video_quota_per_month: 0,
     allow_image_gen: true,
     allow_knowledge_base: true,
     max_context_messages: 50,
@@ -221,6 +227,9 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
       allow_custom_provider: false,
       allow_custom_embedding: true,
       allow_custom_video_provider: false,
+      allow_ai_video: false,
+      video_quota_per_day: 0,
+      video_quota_per_month: 0,
       allow_image_gen: true,
       allow_knowledge_base: true,
       max_context_messages: 50,

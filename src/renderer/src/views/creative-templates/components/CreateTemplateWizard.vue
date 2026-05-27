@@ -49,7 +49,7 @@
               <span v-else class="text-text-tertiary">未选择图片</span>
             </div>
             <div class="flex-1 space-y-3">
-              <button class="px-3 py-1.5 text-xs text-text-secondary border border-surface-3 rounded-lg hover:bg-surface-1" @click="pickReverseImage">上传图片</button>
+              <button class="px-3 py-1.5 text-xs text-text-secondary border border-surface-3 rounded-lg hover:bg-surface-1" @click="reversePickerOpen = true">上传图片</button>
               <label class="block">
                 <span class="text-text-secondary">补充说明</span>
                 <PromptTextarea
@@ -107,6 +107,12 @@
         </section>
       </div>
     </div>
+    <ImageSourcePickerDialog
+      v-model:visible="reversePickerOpen"
+      title="选择反推图片"
+      hint="可从电脑上传，也可以从图库选择一张图片。"
+      @select="onReverseImageSelected"
+    />
   </div>
 </template>
 
@@ -116,8 +122,9 @@ import { useModelStore } from '@/stores/models'
 import type { CreativeTemplateSource, CreativeTemplateVariable } from '@/stores/creative-templates'
 import { groupAndSort, type ModelCap } from '@/utils/model-caps'
 import { getHintsSync, recordUsage, warmHintsCache } from '@/utils/model-usage-hints'
-import { compressImage } from '@/utils/compress-image'
+import { loadAsDataUri } from '@/utils/image-source'
 import { getSystemPrompt as getImage2PromptSystemPrompt, getUserPrompt as getImage2PromptUserPrompt, isEnOnly, type OutputLang, type StylePreset } from '@/utils/image2prompt-presets'
+import ImageSourcePickerDialog from '@/components/ImageSourcePickerDialog.vue'
 import PromptTextarea from '@/components/PromptTextarea.vue'
 import { IMAGE_PROMPT_MAX_LENGTH } from '@shared/prompt-limits'
 
@@ -168,6 +175,7 @@ const busyText = ref('')
 const error = ref('')
 const promptText = ref('')
 const reverseImage = ref('')
+const reversePickerOpen = ref(false)
 const reverseHint = ref('')
 const reversePrompt = ref('')
 const chatProviderId = ref('')
@@ -569,31 +577,11 @@ function limitText(value: unknown, len: number): string {
   return String(value || '').trim().slice(0, len)
 }
 
-async function pickReverseImage(): Promise<void> {
-  const file = await chooseImageFile()
-  if (!file) return
-  const uri = await fileToDataUri(file)
-  reverseImage.value = await compressImage(uri, 1280, 0.85)
+async function onReverseImageSelected(paths: string[]): Promise<void> {
+  const [item] = await loadAsDataUri(paths.slice(0, 1), { maxSize: 1280, quality: 0.85 })
+  if (!item) return
+  reverseImage.value = item.dataUri
   reversePrompt.value = ''
-}
-
-function chooseImageFile(): Promise<File | null> {
-  return new Promise((resolve) => {
-    const input = document.createElement('input')
-    input.type = 'file'
-    input.accept = 'image/png,image/jpeg,image/webp'
-    input.addEventListener('change', () => resolve(input.files?.[0] || null))
-    input.click()
-  })
-}
-
-function fileToDataUri(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(reader.result as string)
-    reader.onerror = () => reject(new Error('读取图片失败'))
-    reader.readAsDataURL(file)
-  })
 }
 
 async function loadInspirations(targetPage?: number): Promise<void> {

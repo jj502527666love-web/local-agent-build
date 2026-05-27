@@ -24,26 +24,32 @@
       <div class="flex items-center gap-2">
         <!-- Global prompt button -->
         <div class="relative" ref="globalPromptRef">
-          <button @click="globalPromptExpanded = !globalPromptExpanded" :disabled="workflowRunning" class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-surface-3 rounded-lg hover:bg-surface-2 disabled:opacity-40 disabled:cursor-not-allowed transition-colors" :class="canvasStore.currentProject?.system_prompt ? 'text-primary-600' : 'text-text-secondary'">
+          <button @click="toggleGlobalPrompt" :disabled="workflowRunning" class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-surface-3 rounded-lg hover:bg-surface-2 disabled:opacity-40 disabled:cursor-not-allowed transition-colors" :class="canvasStore.currentProject?.system_prompt ? 'text-primary-600' : 'text-text-secondary'">
             <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" /></svg>
             全局提示词
           </button>
           <div v-if="globalPromptExpanded" class="absolute right-0 top-full mt-1 w-[400px] bg-surface-0 border border-surface-3 rounded-xl shadow-lg z-50 p-3">
             <PromptTextarea
+              ref="globalPromptTextareaRef"
               v-model="globalPromptText"
-              @change="debouncedSaveGlobalPrompt"
               title="编辑全局提示词"
               :height="104"
               :max-length="IMAGE_PROMPT_MAX_LENGTH"
+              :disabled="workflowRunning"
               placeholder="风格前缀，例如：杰作，4K，超细节，柔和光线"
               input-class="text-xs"
-              :disabled="workflowRunning"
+              inline-edit
+              change-on-input
+              dialog-live-edit
+              @change="scheduleSaveGlobalPrompt"
+              @blur="flushGlobalPromptSave"
             />
             <p class="text-[10px] text-text-disabled mt-1.5">作为风格前缀拼接到每次生图提示词前（用 --- 分隔约束与主题）</p>
           </div>
         </div>
         <!-- AI Orchestrate -->
         <button
+          v-if="showGlobalAiOrchestrate"
           @click="showAiOrchestrate = true"
           :disabled="workflowRunning || !canvasStore.currentProject?.text_provider_id || !canvasStore.currentProject?.image_provider_id"
           class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-surface-3 text-text-secondary rounded-lg hover:bg-surface-2 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
@@ -145,7 +151,7 @@
     </div>
 
     <!-- Vue Flow Canvas -->
-    <div class="flex-1 relative">
+    <div class="flex-1 relative" ref="canvasWrapRef">
       <VueFlow
         :key="vueFlowKey"
         :nodes="flowNodes"
@@ -171,6 +177,7 @@
         @viewport-change="onViewportChange"
         @node-drag-stop="onNodeDragStop"
         @node-drag="onNodeDrag"
+        @pane-context-menu="onPaneContextMenu"
       >
         <!-- 右下角全局缩略预览：可拖拽小地图直接平移视口；节点用类型色着色便于辨识。
              暗色模式下 mask-color 需要适配（在 :style 里用主题色），避免遮罩太亮 -->
@@ -200,6 +207,31 @@
         ></div>
       </VueFlow>
     </div>
+
+    <Teleport to="body">
+      <div
+        v-if="canvasContextMenu.visible"
+        ref="canvasContextMenuRef"
+        class="fixed z-[9998] w-44 bg-surface-0 border border-surface-3 rounded-xl shadow-xl py-1 overflow-hidden"
+        :style="{ left: canvasContextMenu.x + 'px', top: canvasContextMenu.y + 'px' }"
+        @click.stop
+        @pointerdown.stop
+        @contextmenu.prevent.stop
+      >
+        <div class="px-3 py-2 border-b border-surface-3 text-[11px] font-semibold text-text-secondary">
+          添加节点
+        </div>
+        <button
+          v-for="nt in nodeTypes"
+          :key="nt.type"
+          @click="addNodeAtContextPosition(nt.type)"
+          class="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-text-secondary hover:bg-surface-2 transition-colors"
+        >
+          <span class="w-2 h-2 rounded-full flex-shrink-0" :style="{ background: nt.color }"></span>
+          {{ nt.label }}
+        </button>
+      </div>
+    </Teleport>
 
     <!-- Settings Dialog -->
     <div v-if="showSettings" class="fixed inset-0 z-50 flex items-center justify-center">
@@ -293,6 +325,7 @@
 
     <!-- AI Orchestrate dialog -->
     <AiOrchestrateDialog
+      v-if="showGlobalAiOrchestrate"
       :visible="showAiOrchestrate"
       :project-id="projectId"
       :initial-description="pendingOrchestrateDescription"
@@ -342,6 +375,7 @@ const router = useRouter()
 const canvasStore = useCanvasStore()
 const modelStore = useModelStore()
 const handoff = useHandoffStore()
+const showGlobalAiOrchestrate = false
 
 const projectId = computed(() => route.params.id as string)
 
@@ -356,13 +390,38 @@ const pendingOrchestrateDescription = ref('')
 const confirmClear = ref(false)
 const globalPromptExpanded = ref(false)
 const globalPromptText = ref('')
-let globalPromptTimer: ReturnType<typeof setTimeout> | null = null
-function debouncedSaveGlobalPrompt() {
-  if (globalPromptTimer) clearTimeout(globalPromptTimer)
-  globalPromptTimer = setTimeout(async () => {
-    if (!projectId.value) return
-    await canvasStore.updateProject(projectId.value, { system_prompt: globalPromptText.value })
-  }, 500)
+const globalPromptLength = computed(() => globalPromptText.value.length)
+const globalPromptOverLimit = computed(() => globalPromptLength.value > IMAGE_PROMPT_MAX_LENGTH)
+let globalPromptSaveTimer: ReturnType<typeof setTimeout> | null = null
+let globalPromptSavePromise: Promise<void> | null = null
+async function persistGlobalPrompt() {
+  if (!projectId.value) return
+  if (globalPromptOverLimit.value) return
+  const nextPrompt = globalPromptText.value.trim()
+  if (canvasStore.currentProject?.system_prompt === nextPrompt) return
+  const savePromise = canvasStore.updateProject(projectId.value, { system_prompt: nextPrompt }).then(() => {})
+  globalPromptSavePromise = savePromise
+  try {
+    await savePromise
+  } finally {
+    if (globalPromptSavePromise === savePromise) globalPromptSavePromise = null
+  }
+}
+function scheduleSaveGlobalPrompt() {
+  if (globalPromptSaveTimer) clearTimeout(globalPromptSaveTimer)
+  globalPromptSaveTimer = setTimeout(() => {
+    globalPromptSaveTimer = null
+    persistGlobalPrompt()
+  }, 300)
+}
+async function flushGlobalPromptSave() {
+  if (globalPromptSaveTimer) {
+    clearTimeout(globalPromptSaveTimer)
+    globalPromptSaveTimer = null
+    await persistGlobalPrompt()
+    return
+  }
+  if (globalPromptSavePromise) await globalPromptSavePromise
 }
 const toast = ref<{ text: string; type: 'success' | 'error' } | null>(null)
 let toastTimer: ReturnType<typeof setTimeout> | null = null
@@ -371,10 +430,26 @@ function showToast(text: string, type: 'success' | 'error' = 'success', duration
   toast.value = { text, type }
   toastTimer = setTimeout(() => { toast.value = null }, duration)
 }
+function toggleGlobalPrompt() {
+  globalPromptExpanded.value = !globalPromptExpanded.value
+  if (globalPromptExpanded.value) {
+    nextTick(() => globalPromptTextareaRef.value?.focus())
+  }
+}
 const globalPromptRef = ref<HTMLElement | null>(null)
+const globalPromptTextareaRef = ref<InstanceType<typeof PromptTextarea> | null>(null)
 const addMenuRef = ref<HTMLElement | null>(null)
 const layoutMenuRef = ref<HTMLElement | null>(null)
+const canvasWrapRef = ref<HTMLElement | null>(null)
+const canvasContextMenuRef = ref<HTMLElement | null>(null)
 const showLayoutMenu = ref(false)
+const canvasContextMenu = ref({
+  visible: false,
+  x: 0,
+  y: 0,
+  flowX: 0,
+  flowY: 0
+})
 // 上次使用的布局方向（持久化在 project.layout_direction）——
 // 下拉菜单用它在选项前点个小色块提示用户，注意不是「默认」而是「上次」。
 // 老画布 / 脟数据会被主进程 normalizeLayoutDirection 打到 'LR'
@@ -1106,6 +1181,17 @@ async function addNodeAtCenter(type: string) {
   const x = (-vp.x + 400) / vp.zoom
   const y = (-vp.y + 200) / vp.zoom
 
+  await addNodeAtPosition(type, x, y)
+}
+
+async function addNodeAtContextPosition(type: string) {
+  const { flowX, flowY } = canvasContextMenu.value
+  closeCanvasContextMenu()
+  await addNodeAtPosition(type, flowX, flowY)
+}
+
+async function addNodeAtPosition(type: string, x: number, y: number) {
+  if (!projectId.value) return
   const defaultData = getDefaultNodeData(type)
   await canvasStore.addNode(projectId.value, {
     type,
@@ -1113,6 +1199,43 @@ async function addNodeAtCenter(type: string) {
     position_y: y,
     data: defaultData
   })
+}
+
+async function adjustCanvasContextMenuPosition() {
+  await nextTick()
+  const el = canvasContextMenuRef.value
+  if (!el) return
+  const rect = el.getBoundingClientRect()
+  const margin = 8
+  const x = Math.min(Math.max(canvasContextMenu.value.x, margin), window.innerWidth - rect.width - margin)
+  const y = Math.min(Math.max(canvasContextMenu.value.y, margin), window.innerHeight - rect.height - margin)
+  canvasContextMenu.value.x = x
+  canvasContextMenu.value.y = y
+}
+
+function onPaneContextMenu(event: MouseEvent) {
+  event.preventDefault()
+  if (workflowRunning.value) return
+  closeHandleMenu()
+  showAddMenu.value = false
+  showLayoutMenu.value = false
+  globalPromptExpanded.value = false
+  const vp = getViewport()
+  const rect = canvasWrapRef.value?.getBoundingClientRect()
+  const canvasX = rect ? event.clientX - rect.left : event.clientX
+  const canvasY = rect ? event.clientY - rect.top : event.clientY
+  canvasContextMenu.value = {
+    visible: true,
+    x: event.clientX,
+    y: event.clientY,
+    flowX: (canvasX - vp.x) / vp.zoom,
+    flowY: (canvasY - vp.y) / vp.zoom
+  }
+  adjustCanvasContextMenuPosition()
+}
+
+function closeCanvasContextMenu() {
+  canvasContextMenu.value.visible = false
 }
 
 function getDefaultNodeData(type: string): Record<string, any> {
@@ -1203,6 +1326,7 @@ async function onRunOrCancel() {
     return
   }
   if (!projectId.value) return
+  await flushGlobalPromptSave()
   const result = await executeWorkflow(projectId.value)
   if (result) {
     showToast(result.message, result.ok ? 'success' : 'error', result.ok ? 3000 : 5000)
@@ -1238,8 +1362,14 @@ function onClickOutside(e: MouseEvent) {
   if (layoutMenuRef.value && !layoutMenuRef.value.contains(e.target as globalThis.Node)) {
     showLayoutMenu.value = false
   }
-  if (globalPromptRef.value && !globalPromptRef.value.contains(e.target as globalThis.Node)) {
+  const target = e.target as globalThis.Node
+  const inGlobalPromptPanel = globalPromptRef.value?.contains(target)
+  const inGlobalPromptDialog = globalPromptTextareaRef.value?.containsDialogTarget(e.target) || false
+  if (globalPromptRef.value && !inGlobalPromptPanel && !inGlobalPromptDialog) {
     globalPromptExpanded.value = false
+  }
+  if (canvasContextMenuRef.value && !canvasContextMenuRef.value.contains(e.target as globalThis.Node)) {
+    closeCanvasContextMenu()
   }
 }
 
@@ -1274,7 +1404,7 @@ onMounted(async () => {
   }
 
   const pending = handoff.consume<{ description?: string }>('canvasOrchestrate')
-  if (pending?.description) {
+  if (showGlobalAiOrchestrate && pending?.description) {
     pendingOrchestrateDescription.value = pending.description
     await nextTick()
     showAiOrchestrate.value = true

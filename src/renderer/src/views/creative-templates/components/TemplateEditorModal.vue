@@ -122,7 +122,7 @@
             </div>
             <label v-if="v.type === 'select' || v.type === 'multi_select'" class="block">
               <span class="text-text-tertiary">选项（用 / 分隔）</span>
-              <input :value="(v.options || []).join(' / ')" class="mt-0.5 w-full px-2 py-1 border border-surface-3 rounded bg-surface-0 outline-none focus:ring-1 focus:ring-primary-500" placeholder="例如 写实 / 国潮 / 极简" @input="onOptionsInput(idx, ($event.target as HTMLInputElement).value)" />
+              <input v-model="optionTexts[idx]" class="mt-0.5 w-full px-2 py-1 border border-surface-3 rounded bg-surface-0 outline-none focus:ring-1 focus:ring-primary-500" placeholder="例如 写实 / 国潮 / 极简" />
             </label>
           </div>
         </section>
@@ -281,6 +281,7 @@ const coverData = ref<string>('')
 const coverChanged = ref(false)
 const refs = ref<string[]>([])
 const refsChanged = ref(false)
+const optionTexts = ref<string[]>([])
 const sizeChoice = ref('')
 const saving = ref(false)
 type ImagePickerTarget = 'cover' | 'refs'
@@ -321,22 +322,33 @@ function addVariable(): void {
     default: '',
     options: [],
   })
+  optionTexts.value.push('')
 }
 
 function removeVariable(idx: number): void {
   form.value.variables.splice(idx, 1)
+  optionTexts.value.splice(idx, 1)
 }
 
 function moveVariable(idx: number, dir: -1 | 1): void {
   const target = idx + dir
   if (target < 0 || target >= form.value.variables.length) return
   const list = form.value.variables
+  const options = optionTexts.value
   ;[list[idx], list[target]] = [list[target], list[idx]]
+  ;[options[idx], options[target]] = [options[target] || '', options[idx] || '']
 }
 
-function onOptionsInput(idx: number, value: string): void {
-  const list = value.split('/').map((s) => s.trim()).filter(Boolean).slice(0, 20)
-  form.value.variables[idx].options = list
+function formatOptionText(options: string[] | undefined): string {
+  return (options || []).join(' / ')
+}
+
+function parseOptionText(value: string): string[] {
+  return value.split('/').map((s) => s.trim()).filter(Boolean).slice(0, 20)
+}
+
+function syncOptionTexts(): void {
+  optionTexts.value = form.value.variables.map((v) => formatOptionText(v.options))
 }
 
 function insertPlaceholder(key: string): void {
@@ -407,11 +419,11 @@ async function save(): Promise<void> {
       default_size: normalizeDefaultSizeForSave(),
       requires_ref_image: form.value.requires_ref_image,
       prompt_template: form.value.prompt_template,
-      variables: form.value.variables.map((v) => ({
+      variables: form.value.variables.map((v, idx) => ({
         ...v,
         key: (v.key || '').trim(),
         label: (v.label || '').trim() || v.key,
-        options: v.type === 'select' || v.type === 'multi_select' ? v.options || [] : [],
+        options: v.type === 'select' || v.type === 'multi_select' ? parseOptionText(optionTexts.value[idx] || '') : [],
       })),
       is_visible: form.value.is_visible,
       sort_order: form.value.sort_order || 0,
@@ -528,6 +540,7 @@ watch(
       refsChanged.value = initialRefs.length > 0
       sizeChoice.value = ''
     }
+    syncOptionTexts()
   },
   { immediate: true },
 )

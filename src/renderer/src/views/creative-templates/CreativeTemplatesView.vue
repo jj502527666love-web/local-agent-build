@@ -2,7 +2,6 @@
   <div class="h-full flex flex-col">
     <header class="page-header justify-between">
       <div class="flex items-center gap-3">
-        <span class="text-sm font-medium text-text-secondary">创意模板</span>
         <div class="flex items-center bg-surface-2 rounded-lg p-0.5">
           <button
             v-for="tab in TABS"
@@ -94,7 +93,12 @@
           v-if="activeTab === 'local'"
           class="mt-4 px-3 py-1.5 text-xs text-white bg-primary-600 hover:bg-primary-700 rounded-lg"
           @click="openCreatePicker"
-        >添加模板</button>
+        >创建模板</button>
+        <button
+          v-if="activeTab === 'local'"
+          class="mt-2 px-3 py-1.5 text-xs border border-surface-3 rounded-lg bg-surface-0 hover:bg-surface-1"
+          @click="switchTab('cloud')"
+        >使用云端模板</button>
       </div>
 
       <!-- 卡片网格 -->
@@ -398,9 +402,9 @@ const cloudTotalPages = computed(() => {
   return Math.max(1, Math.ceil(store.cloudTotal / store.cloudPageSize))
 })
 
-const emptyText = computed(() => activeTab.value === 'local' ? '暂无本地模板' : '暂无云端模板')
+const emptyText = computed(() => activeTab.value === 'local' ? '暂无模板' : '暂无云端模板')
 const emptyHint = computed(() => activeTab.value === 'local'
-  ? '点击「新建模板」开始创建你的第一个创意模板'
+  ? '请创建模板或使用云端模板'
   : '管理员还未发布云端模板，或当前筛选条件无结果')
 
 function switchTab(tab: TabKey): void {

@@ -124,6 +124,20 @@ const api = {
       return () => ipcRenderer.off('matting:progress', handler)
     },
   },
+  videoGen: {
+    invoke: (channel: string, ...args: unknown[]) =>
+      ipcRenderer.invoke(`videoGen:${channel}`, ...args),
+    onUpdated: (callback: (data: unknown) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, data: unknown) => callback(data)
+      ipcRenderer.on('videoGen:updated', handler)
+      return () => ipcRenderer.off('videoGen:updated', handler)
+    },
+    onDeleted: (callback: (data: unknown) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, data: unknown) => callback(data)
+      ipcRenderer.on('videoGen:deleted', handler)
+      return () => ipcRenderer.off('videoGen:deleted', handler)
+    },
+  },
   cloud: {
     setToken: (token: string | null) => ipcRenderer.invoke('cloud:setToken', token),
     getToken: () => ipcRenderer.invoke('cloud:getToken'),
@@ -176,7 +190,13 @@ const api = {
       data?: any
       /** 原图过大触发自动 JPEG 压缩后上传时为 true，前端可据此提示用户 */
       compressed?: boolean
-    }>
+    }>,
+    downloadVideo: (url: string, defaultName?: string) =>
+      ipcRenderer.invoke('cloudVideo:download', url, defaultName) as Promise<{
+        success: boolean
+        path?: string
+        error?: string
+      }>
   },
   clipboard: {
     writeImage: (filePath: string) => ipcRenderer.invoke('clipboard:writeImage', filePath)

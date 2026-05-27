@@ -7,29 +7,29 @@
 
               <!-- Prompt -->
               <div>
-                <div class="flex items-center justify-between mb-1.5">
-                  <div class="flex items-center gap-1.5">
-                    <label class="text-xs font-medium text-text-secondary">提示词 (Prompt)</label>
+                <div class="flex items-center justify-between gap-3 mb-1.5">
+                  <div class="flex items-center gap-2">
+                    <label class="text-xs font-medium text-text-secondary">提示词</label>
                     <button
                       @click="showPresetPopup = !showPresetPopup"
-                      class="px-1.5 py-0.5 rounded text-[10px] text-text-tertiary hover:text-primary-600 hover:bg-surface-2 transition-colors"
+                      class="rounded-lg border border-surface-3 bg-surface-1 px-2.5 py-1 text-[11px] font-medium text-text-secondary transition-colors hover:border-primary-300 hover:bg-surface-2 hover:text-primary-600"
                     >预设</button>
                   </div>
-                  <div class="flex items-center gap-1.5">
+                  <div class="flex items-center gap-2">
                     <button
                       v-if="prompt.trim() && optimizeProviderId && optimizeModelId"
                       @click="optimizePrompt('cn')"
                       :disabled="optimizing"
-                      class="px-2 py-1 rounded-md text-xs font-medium text-text-tertiary hover:text-primary-600 hover:bg-surface-2 transition-colors"
+                      class="rounded-lg bg-primary-600 px-2.5 py-1 text-[11px] font-semibold text-white shadow-sm transition-colors hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-50"
                       title="优化为中文提示词"
-                    >中</button>
+                    >中文优化</button>
                     <button
                       v-if="prompt.trim() && optimizeProviderId && optimizeModelId"
                       @click="optimizePrompt('en')"
                       :disabled="optimizing"
-                      class="px-2 py-1 rounded-md text-xs font-medium text-text-tertiary hover:text-primary-600 hover:bg-surface-2 transition-colors"
+                      class="rounded-lg border border-primary-300 bg-primary-50 px-2.5 py-1 text-[11px] font-semibold text-primary-700 shadow-sm transition-colors hover:border-primary-500 hover:bg-primary-100 dark:bg-primary-900/20 dark:text-primary-200 disabled:cursor-not-allowed disabled:opacity-50"
                       title="优化为英文提示词"
-                    >En</button>
+                    >英文优化</button>
                   </div>
                 </div>
                 <PromptTextarea
@@ -1015,6 +1015,7 @@ function useDetailPrompt() {
   if (!detailItem.value) return
   prompt.value = detailItem.value.prompt
   refImages.value = detailItem.value.ref_images?.slice(0, 10) || []
+  if (detailItem.value.size) selectedSize.value = detailItem.value.size
   detailItem.value = null
 }
 
@@ -1022,6 +1023,7 @@ function useDetailRevisedPrompt() {
   if (!detailItem.value?.revised_prompt) return
   prompt.value = detailItem.value.revised_prompt
   refImages.value = detailItem.value.ref_images?.slice(0, 10) || []
+  if (detailItem.value.size) selectedSize.value = detailItem.value.size
   detailItem.value = null
 }
 

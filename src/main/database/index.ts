@@ -138,6 +138,62 @@ function runMigrations(): void {
     db.exec('CREATE INDEX IF NOT EXISTS idx_image_generations_status_created ON image_generations(status, created_at DESC)')
   }
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS video_generations (
+      id TEXT PRIMARY KEY,
+      cloud_task_id TEXT NOT NULL DEFAULT '',
+      task_id TEXT NOT NULL DEFAULT '',
+      provider_protocol TEXT NOT NULL DEFAULT '',
+      model_id TEXT NOT NULL DEFAULT '',
+      model_name TEXT NOT NULL DEFAULT '',
+      sku_key TEXT NOT NULL DEFAULT '',
+      sku_title TEXT NOT NULL DEFAULT '',
+      mode TEXT NOT NULL DEFAULT '',
+      duration_seconds INTEGER NOT NULL DEFAULT 0,
+      resolution TEXT NOT NULL DEFAULT '',
+      aspect_ratio TEXT NOT NULL DEFAULT '',
+      quality TEXT NOT NULL DEFAULT '',
+      prompt TEXT NOT NULL DEFAULT '',
+      negative_prompt TEXT NOT NULL DEFAULT '',
+      reference_assets TEXT NOT NULL DEFAULT '[]',
+      reference_image_urls TEXT NOT NULL DEFAULT '[]',
+      reference_video_urls TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'pending',
+      progress INTEGER NOT NULL DEFAULT 0,
+      estimated_credits REAL NOT NULL DEFAULT 0,
+      credits_used REAL NOT NULL DEFAULT 0,
+      error TEXT NOT NULL DEFAULT '',
+      remote_url TEXT NOT NULL DEFAULT '',
+      storage_url TEXT NOT NULL DEFAULT '',
+      cover_url TEXT NOT NULL DEFAULT '',
+      local_path TEXT NOT NULL DEFAULT '',
+      file_size INTEGER NOT NULL DEFAULT 0,
+      mime_type TEXT NOT NULL DEFAULT '',
+      download_status TEXT NOT NULL DEFAULT 'pending',
+      download_error TEXT NOT NULL DEFAULT '',
+      download_attempts INTEGER NOT NULL DEFAULT 0,
+      remote_expires_at TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      completed_at TEXT NOT NULL DEFAULT '',
+      downloaded_at TEXT NOT NULL DEFAULT '',
+      is_deleted INTEGER NOT NULL DEFAULT 0,
+      deleted_at TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_video_generations_cloud_task ON video_generations(cloud_task_id);
+    CREATE INDEX IF NOT EXISTS idx_video_generations_status_created ON video_generations(status, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_video_generations_download_status ON video_generations(download_status);
+  `)
+  const videoCols = db.prepare("PRAGMA table_info(video_generations)").all() as any[]
+  const videoColNames = videoCols.map((c: any) => c.name)
+  if (videoCols.length > 0 && !videoColNames.includes('is_deleted')) {
+    db.exec("ALTER TABLE video_generations ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0")
+  }
+  if (videoCols.length > 0 && !videoColNames.includes('deleted_at')) {
+    db.exec("ALTER TABLE video_generations ADD COLUMN deleted_at TEXT NOT NULL DEFAULT ''")
+  }
+  db.exec('CREATE INDEX IF NOT EXISTS idx_video_generations_deleted ON video_generations(is_deleted, created_at DESC)')
+
   // conversations: 「智能体不再绑定模型」改造（v0.6.5+）
   // 每个会话独立记忆模型：新建会话从云控端默认拉取，用户输入框切换持久写回
   // 旧库的 conversation 行为：active_model_* 为空字符串，sendMessage 时按回退链解析

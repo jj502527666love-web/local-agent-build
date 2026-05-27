@@ -124,6 +124,14 @@
               <label class="form-label">默认温度</label>
               <input v-model="generalForm.temperature" type="number" step="0.1" min="0" max="2" class="input-field max-w-xs" />
             </div>
+            <div>
+              <label class="form-label">点击关闭按钮时</label>
+              <select v-model="generalForm.windowCloseBehavior" class="select-field max-w-xs">
+                <option value="close-window">关闭窗口，应用继续在后台运行</option>
+                <option value="minimize">最小化窗口，应用继续运行</option>
+              </select>
+              <p class="text-[11px] text-text-tertiary mt-1.5">选择关闭窗口后，再次打开应用会恢复到主窗口。</p>
+            </div>
             <div class="flex items-center gap-3 pt-1">
               <button @click="saveGeneralSettings" class="btn-primary">保存</button>
               <span v-if="generalSaved" class="text-xs text-emerald-600 dark:text-emerald-400 font-medium animate-pulse">已保存</span>
@@ -505,7 +513,12 @@ function describeMeta(m?: { model: string; source: string; dim: number }): strin
   const model = m.model || '(旧版本未记录模型)'
   return `${src} / ${model}${m.dim ? ` · ${m.dim} 维` : ''}`
 }
-const generalForm = ref({ temperature: '0.7' })
+type WindowCloseBehavior = 'close-window' | 'minimize'
+
+const generalForm = ref<{ temperature: string; windowCloseBehavior: WindowCloseBehavior }>({
+  temperature: '0.7',
+  windowCloseBehavior: 'close-window'
+})
 const vectorSaved = ref(false)
 const vectorTesting = ref(false)
 const vectorTestResult = ref('')
@@ -825,6 +838,9 @@ async function loadSettings() {
   if (all['vector_api_key']) vectorForm.value.api_key = all['vector_api_key']
   if (all['vector_model']) vectorForm.value.model = all['vector_model']
   if (all['temperature']) generalForm.value.temperature = all['temperature']
+  if (all['window_close_behavior'] === 'minimize' || all['window_close_behavior'] === 'close-window') {
+    generalForm.value.windowCloseBehavior = all['window_close_behavior']
+  }
 
   // 加载云端 embedding 状态：包括用户偏好模型 + 当前可用模型列表
   try {
@@ -956,6 +972,7 @@ async function testVectorConnection() {
 
 async function saveGeneralSettings() {
   await window.api.settings.invoke('set', 'temperature', generalForm.value.temperature)
+  await window.api.settings.invoke('set', 'window_close_behavior', generalForm.value.windowCloseBehavior)
   generalSaved.value = true
   setTimeout(() => { generalSaved.value = false }, 2000)
 }

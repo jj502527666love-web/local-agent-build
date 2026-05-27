@@ -25,6 +25,7 @@
         @keydown.enter.exact="handlePreviewEnter"
         @focus="handlePreviewFocus"
         @click.stop="handlePreviewClick"
+        @blur="emitBlur"
         @paste="emitPaste"
       ></textarea>
       <button
@@ -42,14 +43,20 @@
   </div>
 
   <Teleport to="body">
-    <div v-if="dialogOpen" class="fixed inset-0 z-[9200] flex items-center justify-center p-6 pointer-events-none">
-      <div class="pointer-events-auto w-full max-w-4xl max-h-[88vh] rounded-2xl border border-surface-3 bg-surface-0 shadow-2xl flex flex-col overflow-hidden">
-        <div class="flex items-center justify-between gap-3 border-b border-surface-3 px-5 py-3">
+    <div v-if="dialogOpen" class="fixed inset-0 z-[9200] pointer-events-none">
+      <div
+        ref="dialogPanelRef"
+        class="prompt-textarea-dialog pointer-events-auto fixed rounded-2xl border border-surface-3 bg-surface-0 shadow-2xl flex flex-col overflow-hidden"
+        :style="dialogPanelStyle"
+        @click.stop
+        @pointerdown.stop
+      >
+        <div class="flex cursor-move select-none items-center justify-between gap-3 border-b border-surface-3 px-5 py-3" @pointerdown="startDialogDrag">
           <div class="min-w-0">
             <h3 class="text-sm font-semibold text-text-primary truncate">{{ dialogTitle }}</h3>
             <p class="mt-0.5 text-[11px] text-text-tertiary">大输入框编辑，{{ saveShortcutLabel }} 保存</p>
           </div>
-          <button type="button" class="rounded-lg p-1.5 text-text-tertiary transition-colors hover:bg-surface-2 hover:text-text-primary" @click="cancelDialog">
+          <button type="button" class="rounded-lg p-1.5 text-text-tertiary transition-colors hover:bg-surface-2 hover:text-text-primary" @pointerdown.stop @click="cancelDialog">
             <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18 18 6M6 6l12 12" /></svg>
           </button>
         </div>
@@ -59,7 +66,9 @@
             v-model="draft"
             :placeholder="placeholder"
             :maxlength="hardLimit ? maxLength : undefined"
-            class="h-[56vh] min-h-[320px] w-full resize-none rounded-xl border border-surface-3 bg-surface-1 px-4 py-3 text-sm leading-relaxed text-text-primary outline-none transition-colors placeholder:text-text-disabled focus:border-primary-400 focus:ring-2 focus:ring-primary-500"
+            class="h-full min-h-0 w-full resize-none rounded-xl border border-surface-3 bg-surface-1 px-4 py-3 text-sm leading-relaxed text-text-primary outline-none transition-colors placeholder:text-text-disabled focus:border-primary-400 focus:ring-2 focus:ring-primary-500"
+            @input="handleDialogInput"
+            @blur="emitBlur"
             @keydown.ctrl.enter.prevent="confirmDialog"
             @keydown.meta.enter.prevent="confirmDialog"
             @keydown.enter.exact="handleEnter"
@@ -71,7 +80,7 @@
             {{ draftCountText }}<span v-if="draftOverLimit">，请删减后保存</span>
           </div>
           <div class="flex items-center gap-2">
-            <button type="button" class="rounded-lg border border-surface-3 px-3 py-1.5 text-xs text-text-secondary transition-colors hover:bg-surface-2" @click="cancelDialog">取消</button>
+            <button type="button" class="rounded-lg border border-surface-3 px-3 py-1.5 text-xs text-text-secondary transition-colors hover:bg-surface-2" @click="cancelDialog">{{ dialogLiveEdit ? '关闭' : '取消' }}</button>
             <button type="button" :disabled="draftOverLimit" class="rounded-lg bg-primary-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-50" @click="confirmDialog">保存</button>
           </div>
         </div>
@@ -81,7 +90,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, type CSSProperties } from 'vue'
 
 const props = withDefaults(defineProps<{
   modelValue: string
@@ -97,6 +106,8 @@ const props = withDefaults(defineProps<{
   submitOnEnter?: boolean
   inlineEdit?: boolean
   showCount?: boolean
+  changeOnInput?: boolean
+  dialogLiveEdit?: boolean
 }>(), {
   modelValue: '',
   placeholder: '',
@@ -109,20 +120,26 @@ const props = withDefaults(defineProps<{
   containerClass: '',
   submitOnEnter: false,
   inlineEdit: false,
-  showCount: true
+  showCount: true,
+  changeOnInput: false,
+  dialogLiveEdit: false
 })
 
 const emit = defineEmits<{
   (e: 'update:modelValue', value: string): void
   (e: 'change'): void
   (e: 'submit'): void
+  (e: 'blur'): void
   (e: 'paste', event: ClipboardEvent): void
 }>()
 
 const previewTextareaRef = ref<HTMLTextAreaElement | null>(null)
 const dialogTextareaRef = ref<HTMLTextAreaElement | null>(null)
+const dialogPanelRef = ref<HTMLDivElement | null>(null)
 const dialogOpen = ref(false)
 const draft = ref('')
+const dialogPosition = ref({ x: 0, y: 0 })
+const dialogSize = ref({ width: 582, height: 540 })
 
 const normalizedHeight = computed(() => typeof props.height === 'number' ? `${props.height}px` : props.height)
 const length = computed(() => String(props.modelValue || '').length)
@@ -134,12 +151,80 @@ const draftCountText = computed(() => props.maxLength ? `${draftLength.value}/${
 const limitMessage = computed(() => props.maxLength ? `最多 ${props.maxLength} 字，当前 ${length.value} 字` : '')
 const dialogTitle = computed(() => props.title || '编辑提示词')
 const saveShortcutLabel = computed(() => navigator.platform.toLowerCase().includes('mac') ? '⌘ + Enter' : 'Ctrl + Enter')
+const dialogPanelStyle = computed<CSSProperties>(() => ({
+  left: `${dialogPosition.value.x}px`,
+  top: `${dialogPosition.value.y}px`,
+  width: `${dialogSize.value.width}px`,
+  height: `${dialogSize.value.height}px`,
+  minWidth: '360px',
+  minHeight: '320px',
+  maxWidth: 'calc(100vw - 48px)',
+  maxHeight: 'calc(100vh - 48px)',
+  resize: 'both',
+  overflow: 'hidden'
+}))
+
+let dragState: { startClientX: number; startClientY: number; startX: number; startY: number } | null = null
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max)
+}
+
+function resetDialogLayout() {
+  const baseWidth = Math.round(896 * 0.65)
+  const width = clamp(baseWidth, 360, window.innerWidth - 48)
+  const height = clamp(Math.round(window.innerHeight * 0.7), 420, window.innerHeight - 48)
+  dialogSize.value = { width, height }
+  dialogPosition.value = {
+    x: Math.round((window.innerWidth - width) / 2),
+    y: Math.round((window.innerHeight - height) / 2)
+  }
+}
 
 function openDialog() {
   if (props.disabled) return
   draft.value = props.modelValue || ''
+  resetDialogLayout()
   dialogOpen.value = true
   nextTick(() => dialogTextareaRef.value?.focus())
+}
+
+function startDialogDrag(event: PointerEvent) {
+  if (event.button !== 0) return
+  const target = event.target as HTMLElement
+  if (target.closest('button, textarea, input, select')) return
+  const rect = dialogPanelRef.value?.getBoundingClientRect()
+  if (rect) {
+    dialogSize.value = {
+      width: Math.round(rect.width),
+      height: Math.round(rect.height)
+    }
+  }
+  dragState = {
+    startClientX: event.clientX,
+    startClientY: event.clientY,
+    startX: dialogPosition.value.x,
+    startY: dialogPosition.value.y
+  }
+  document.addEventListener('pointermove', onDialogDragMove)
+  document.addEventListener('pointerup', stopDialogDrag)
+}
+
+function onDialogDragMove(event: PointerEvent) {
+  if (!dragState) return
+  const rect = dialogPanelRef.value?.getBoundingClientRect()
+  const width = rect?.width || dialogSize.value.width
+  const height = rect?.height || dialogSize.value.height
+  dialogPosition.value = {
+    x: clamp(dragState.startX + event.clientX - dragState.startClientX, 8, window.innerWidth - Math.min(width, 80)),
+    y: clamp(dragState.startY + event.clientY - dragState.startClientY, 8, window.innerHeight - Math.min(height, 48))
+  }
+}
+
+function stopDialogDrag() {
+  dragState = null
+  document.removeEventListener('pointermove', onDialogDragMove)
+  document.removeEventListener('pointerup', stopDialogDrag)
 }
 
 function handleContainerClick() {
@@ -161,6 +246,17 @@ function handlePreviewFocus() {
 function handlePreviewInput(event: Event) {
   if (!props.inlineEdit) return
   emit('update:modelValue', (event.target as HTMLTextAreaElement).value)
+  if (props.changeOnInput) emit('change')
+}
+
+function handleDialogInput() {
+  if (!props.dialogLiveEdit) return
+  emit('update:modelValue', draft.value)
+  if (props.changeOnInput) emit('change')
+}
+
+function emitBlur() {
+  emit('blur')
 }
 
 function handlePreviewEnter(event: KeyboardEvent) {
@@ -200,5 +296,13 @@ function focus() {
   previewTextareaRef.value?.focus()
 }
 
-defineExpose({ focus, openDialog })
+function containsDialogTarget(target: EventTarget | null): boolean {
+  return Boolean(target instanceof Node && dialogPanelRef.value?.contains(target))
+}
+
+onBeforeUnmount(() => {
+  stopDialogDrag()
+})
+
+defineExpose({ focus, openDialog, containsDialogTarget })
 </script>

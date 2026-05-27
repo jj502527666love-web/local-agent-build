@@ -205,6 +205,51 @@ CREATE TABLE IF NOT EXISTS image_generations (
 CREATE INDEX IF NOT EXISTS idx_image_generations_session ON image_generations(session_id);
 CREATE INDEX IF NOT EXISTS idx_image_generations_status_created ON image_generations(status, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS video_generations (
+  id TEXT PRIMARY KEY,
+  cloud_task_id TEXT NOT NULL DEFAULT '',
+  task_id TEXT NOT NULL DEFAULT '',
+  provider_protocol TEXT NOT NULL DEFAULT '',
+  model_id TEXT NOT NULL DEFAULT '',
+  model_name TEXT NOT NULL DEFAULT '',
+  sku_key TEXT NOT NULL DEFAULT '',
+  sku_title TEXT NOT NULL DEFAULT '',
+  mode TEXT NOT NULL DEFAULT '',
+  duration_seconds INTEGER NOT NULL DEFAULT 0,
+  resolution TEXT NOT NULL DEFAULT '',
+  aspect_ratio TEXT NOT NULL DEFAULT '',
+  quality TEXT NOT NULL DEFAULT '',
+  prompt TEXT NOT NULL DEFAULT '',
+  negative_prompt TEXT NOT NULL DEFAULT '',
+  reference_assets TEXT NOT NULL DEFAULT '[]',
+  reference_image_urls TEXT NOT NULL DEFAULT '[]',
+  reference_video_urls TEXT NOT NULL DEFAULT '[]',
+  status TEXT NOT NULL DEFAULT 'pending',
+  progress INTEGER NOT NULL DEFAULT 0,
+  estimated_credits REAL NOT NULL DEFAULT 0,
+  credits_used REAL NOT NULL DEFAULT 0,
+  error TEXT NOT NULL DEFAULT '',
+  remote_url TEXT NOT NULL DEFAULT '',
+  storage_url TEXT NOT NULL DEFAULT '',
+  cover_url TEXT NOT NULL DEFAULT '',
+  local_path TEXT NOT NULL DEFAULT '',
+  file_size INTEGER NOT NULL DEFAULT 0,
+  mime_type TEXT NOT NULL DEFAULT '',
+  download_status TEXT NOT NULL DEFAULT 'pending',
+  download_error TEXT NOT NULL DEFAULT '',
+  download_attempts INTEGER NOT NULL DEFAULT 0,
+  remote_expires_at TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  completed_at TEXT NOT NULL DEFAULT '',
+  downloaded_at TEXT NOT NULL DEFAULT '',
+  is_deleted INTEGER NOT NULL DEFAULT 0,
+  deleted_at TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_video_generations_cloud_task ON video_generations(cloud_task_id);
+CREATE INDEX IF NOT EXISTS idx_video_generations_status_created ON video_generations(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_video_generations_download_status ON video_generations(download_status);
 CREATE TABLE IF NOT EXISTS prompt_categories (
   id TEXT PRIMARY KEY,
   type TEXT NOT NULL,

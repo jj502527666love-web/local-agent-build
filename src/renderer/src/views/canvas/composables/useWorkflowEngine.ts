@@ -804,8 +804,8 @@ export function useWorkflowEngine() {
           throw new Error('请先在画布设置中配置生图模型')
         }
 
-        const globalPrompt = project.system_prompt || ''
-        const rawPrompt = upstream.texts.join('\n') || ''
+        const globalPrompt = (project.system_prompt || '').trim()
+        const rawPrompt = (upstream.texts.join('\n') || '').trim()
         if (!rawPrompt) throw new Error('文生图节点需要提示词：请连接文本输入或 AI 文本节点')
         // 用 "\n\n---\n\n" 分隔全局风格前缀与本次主题，便于模型区分约束与主题
         const prompt = globalPrompt ? `${globalPrompt}\n\n---\n\n${rawPrompt}` : rawPrompt
@@ -877,8 +877,8 @@ export function useWorkflowEngine() {
           throw new Error('请先在画布设置中配置生图模型')
         }
 
-        const globalPromptImg = project?.system_prompt || ''
-        const rawPromptImg = upstream.texts.join('\n') || node.data.prompt || ''
+        const globalPromptImg = (project?.system_prompt || '').trim()
+        const rawPromptImg = (upstream.texts.join('\n') || node.data.prompt || '').trim()
         if (!rawPromptImg && !globalPromptImg) {
           throw new Error('图生图节点需要提示词：请连接文本输入、在节点中填写描述或在画布全局提示词中配置')
         }

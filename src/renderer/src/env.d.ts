@@ -27,6 +27,11 @@ interface Window {
         }) => void,
       ) => () => void
     }
+    videoGen: {
+      invoke: (channel: string, ...args: unknown[]) => Promise<unknown>
+      onUpdated: (callback: (data: unknown) => void) => () => void
+      onDeleted: (callback: (data: unknown) => void) => () => void
+    }
     model: { invoke: (channel: string, ...args: unknown[]) => Promise<unknown> }
     persona: { invoke: (channel: string, ...args: unknown[]) => Promise<unknown> }
     knowledge: { invoke: (channel: string, ...args: unknown[]) => Promise<unknown> }
@@ -104,6 +109,11 @@ interface Window {
         error?: string
         data?: any
         compressed?: boolean
+      }>
+      downloadVideo: (url: string, defaultName?: string) => Promise<{
+        success: boolean
+        path?: string
+        error?: string
       }>
     }
     clipboard: {

@@ -1,5 +1,5 @@
 // 通过 preload 暴露的 runtimeConfig 派生 API base（生产由 inject 注入，dev fallback 默认）
-function getCloudApiBase(): string {
+export function getCloudApiBase(): string {
   const cfg = (window as unknown as { runtimeConfig?: { apiDomain?: string } }).runtimeConfig
   return cfg?.apiDomain ? `${cfg.apiDomain}/api` : 'https://agent-admin.o455.com/api'
 }
@@ -149,7 +149,8 @@ async function request(
   options: RequestOptions = {},
   attempt = 0,
 ): Promise<any> {
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  const isFormData = typeof FormData !== 'undefined' && body instanceof FormData
+  const headers: Record<string, string> = isFormData ? {} : { 'Content-Type': 'application/json' }
   const t = getCloudToken()
   if (t) headers['Authorization'] = `Bearer ${t}`
   const oemProjectKey = getOemProjectKey()
@@ -159,12 +160,13 @@ async function request(
     if (deviceId) headers['X-Device-Id'] = deviceId
   }
 
+  const requestBody = body ? (isFormData ? body as BodyInit : JSON.stringify(body)) : undefined
   let res: Response
   try {
     res = await fetch(`${getCloudApiBase()}${path}`, {
       method,
       headers,
-      body: body ? JSON.stringify(body) : undefined
+      body: requestBody
     })
   } catch (e: any) {
     throw new Error(e?.message?.includes('fetch') ? '网络请求失败，请检查网络连接' : (e?.message || '网络异常'))
@@ -248,6 +250,25 @@ export const cloudClient = {
     return request('GET', `/client/usage${qs}`)
   },
   myBillingRules: () => request('GET', '/client/billing-rules'),
+  videoCatalog: () => request('GET', '/client/videos/catalog'),
+  uploadVideoReference: async (file: File, assetType: 'image' | 'video' | 'audio' = 'image') => {
+    const fd = new FormData()
+    fd.append('file', file)
+    fd.append('asset_type', assetType)
+    return request('POST', '/client/videos/reference-assets', fd)
+  },
+  videoTasks: (params?: Record<string, string>) => {
+    const qs = params ? '?' + new URLSearchParams(params).toString() : ''
+    return request('GET', `/client/videos/tasks${qs}`)
+  },
+  submitVideoTask: (data: Record<string, any>) => request('POST', '/client/videos/tasks', data),
+  getVideoTask: (taskId: string) => request('GET', `/client/videos/tasks/${encodeURIComponent(taskId)}`),
+  refreshVideoTask: (taskId: string) => request('POST', `/client/videos/tasks/${encodeURIComponent(taskId)}/refresh`),
+  cancelVideoTask: (taskId: string) => request('POST', `/client/videos/tasks/${encodeURIComponent(taskId)}/cancel`),
+  videoUsage: (params?: Record<string, string>) => {
+    const qs = params ? '?' + new URLSearchParams(params).toString() : ''
+    return request('GET', `/client/videos/usage${qs}`)
+  },
   myPlans: () => request('GET', '/client/my-plans'),
   redeem: (code: string) => request('POST', '/client/redeem', { code }),
   // 商城列表（所有 active 套餐）

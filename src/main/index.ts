@@ -1,6 +1,7 @@
 import { app, shell, BrowserWindow, session, nativeImage, protocol, ipcMain } from 'electron'
 import { join } from 'path'
-import { readFileSync, existsSync } from 'fs'
+import { createReadStream, existsSync, statSync } from 'fs'
+import { Readable } from 'stream'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { autoUpdater } from 'electron-updater'
 import { getDatabase, closeDatabase } from './database'
@@ -12,6 +13,8 @@ import { stopAllMcpServers } from './services/mcp-server'
 import { getDataDir } from './services/data-path'
 import { runStartupTasks as runBackupStartupTasks } from './services/backup'
 import { getRuntimeConfig } from './services/runtime-config'
+import { getSetting } from './services/settings'
+import { startAutoDownloadScheduler, stopAutoDownloadScheduler } from './services/video-generation'
 
 if (is.dev) {
   process.env['ELECTRON_DISABLE_SECURITY_WARNINGS'] = 'true'
@@ -27,6 +30,75 @@ function configureStableUserDataPath(): void {
 }
 
 configureStableUserDataPath()
+
+type WindowCloseBehavior = 'close-window' | 'minimize'
+
+let isQuitting = false
+const gotSingleInstanceLock = app.requestSingleInstanceLock()
+
+function getLocalFileMime(filePath: string): string {
+  const ext = filePath.split('.').pop()?.toLowerCase() || ''
+  if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg'
+  if (ext === 'png') return 'image/png'
+  if (ext === 'webp') return 'image/webp'
+  if (ext === 'gif') return 'image/gif'
+  if (ext === 'svg') return 'image/svg+xml'
+  if (ext === 'mp4') return 'video/mp4'
+  if (ext === 'webm') return 'video/webm'
+  if (ext === 'mov') return 'video/quicktime'
+  if (ext === 'mkv') return 'video/x-matroska'
+  if (ext === 'mpeg' || ext === 'mpg') return 'video/mpeg'
+  return 'application/octet-stream'
+}
+
+function createLocalFileResponse(filePath: string, request: Request): Response {
+  const stat = statSync(filePath)
+  const mime = getLocalFileMime(filePath)
+  const range = request.headers.get('range')
+  if (range && stat.size > 0) {
+    const match = /^bytes=(\d*)-(\d*)$/.exec(range)
+    if (match) {
+      let start = match[1] ? Number(match[1]) : 0
+      let end = match[2] ? Number(match[2]) : stat.size - 1
+      if (!Number.isFinite(start) || start < 0) start = 0
+      if (!Number.isFinite(end) || end >= stat.size) end = stat.size - 1
+      if (start <= end) {
+        const stream = createReadStream(filePath, { start, end })
+        return new Response(Readable.toWeb(stream) as any, {
+          status: 206,
+          headers: {
+            'Content-Type': mime,
+            'Content-Length': String(end - start + 1),
+            'Content-Range': `bytes ${start}-${end}/${stat.size}`,
+            'Accept-Ranges': 'bytes',
+            'Access-Control-Allow-Origin': '*',
+          },
+        })
+      }
+    }
+  }
+  const stream = createReadStream(filePath)
+  return new Response(Readable.toWeb(stream) as any, {
+    headers: {
+      'Content-Type': mime,
+      'Content-Length': String(stat.size),
+      'Accept-Ranges': 'bytes',
+      'Access-Control-Allow-Origin': '*',
+    },
+  })
+}
+
+if (!gotSingleInstanceLock) {
+  app.quit()
+}
+
+function getWindowCloseBehavior(): WindowCloseBehavior {
+  try {
+    return getSetting('window_close_behavior') === 'minimize' ? 'minimize' : 'close-window'
+  } catch {
+    return 'close-window'
+  }
+}
 
 function createAppIcon(): Electron.NativeImage {
   const paths = [
@@ -46,7 +118,7 @@ function createAppIcon(): Electron.NativeImage {
   return nativeImage.createFromBuffer(Buffer.from(svg), { scaleFactor: 1 })
 }
 
-function createWindow(): void {
+function createWindow(): BrowserWindow {
   const isWin = process.platform === 'win32'
   // Windows 使用 hidden 标题栏 + titleBarOverlay 方案：保留右上角最小/最大/关闭按钮，
   // UI 顶栏自渲染并 app-drag 实现窗口拖动。
@@ -78,6 +150,14 @@ function createWindow(): void {
   }
   const mainWindow = new BrowserWindow(winOptions)
 
+  mainWindow.on('close', (event) => {
+    if (isQuitting) return
+    if (getWindowCloseBehavior() === 'minimize') {
+      event.preventDefault()
+      mainWindow.minimize()
+    }
+  })
+
   mainWindow.on('ready-to-show', () => {
     mainWindow.show()
   })
@@ -92,6 +172,19 @@ function createWindow(): void {
   } else {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
+
+  return mainWindow
+}
+
+function showOrCreateMainWindow(): void {
+  const existingWindow = BrowserWindow.getAllWindows().find((win) => !win.isDestroyed())
+  if (!existingWindow) {
+    createWindow()
+    return
+  }
+  if (existingWindow.isMinimized()) existingWindow.restore()
+  if (!existingWindow.isVisible()) existingWindow.show()
+  existingWindow.focus()
 }
 
 protocol.registerSchemesAsPrivileged([
@@ -115,8 +208,13 @@ if (process.platform === 'win32') {
   } catch {}
 }
 
-app.whenReady().then(async () => {
-  electronApp.setAppUserModelId(getRuntimeConfig().appId)
+if (gotSingleInstanceLock) {
+  app.on('second-instance', () => {
+    showOrCreateMainWindow()
+  })
+
+  app.whenReady().then(async () => {
+    electronApp.setAppUserModelId(getRuntimeConfig().appId)
 
   protocol.handle('local-file', (request) => {
     try {
@@ -145,10 +243,7 @@ app.whenReady().then(async () => {
         const placeholder = getThumbnailPlaceholderBytes()
         return new Response(new Uint8Array(placeholder.data), { headers: { 'Content-Type': placeholder.mime, 'Access-Control-Allow-Origin': '*' } })
       }
-      const data = readFileSync(filePath)
-      const ext = filePath.split('.').pop()?.toLowerCase() || 'png'
-      const mime = ext === 'jpg' ? 'image/jpeg' : ext === 'webp' ? 'image/webp' : ext === 'gif' ? 'image/gif' : 'image/png'
-      return new Response(data, { headers: { 'Content-Type': mime, 'Access-Control-Allow-Origin': '*' } })
+      return createLocalFileResponse(filePath, request)
     } catch (e) {
       console.error('local-file protocol error:', e)
       return new Response('Error', { status: 500 })
@@ -159,8 +254,8 @@ app.whenReady().then(async () => {
     const headers = { ...details.responseHeaders }
     headers['Content-Security-Policy'] = [
       is.dev
-        ? "default-src 'self' 'unsafe-inline' 'unsafe-eval'; connect-src 'self' ws: wss: https: http:; img-src 'self' data: https: http: local-file:"
-        : "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https: http:; img-src 'self' data: https: http: local-file:"
+        ? "default-src 'self' 'unsafe-inline' 'unsafe-eval'; connect-src 'self' ws: wss: https: http:; img-src 'self' data: https: http: local-file:; media-src 'self' https: http: local-file: blob:"
+        : "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https: http:; img-src 'self' data: https: http: local-file:; media-src 'self' https: http: local-file: blob:"
     ]
     // Bypass CORS for cloud API requests（apiDomain 由 inject 注入，dev fallback 默认）
     const apiHost = (() => {
@@ -200,6 +295,7 @@ app.whenReady().then(async () => {
 
   // Backup startup tasks: 清理上次崩溃残骸 + 异步触发自动备份（如配置）
   runBackupStartupTasks().catch((e) => console.error('Backup startup error:', e))
+  startAutoDownloadScheduler()
 
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
@@ -213,9 +309,10 @@ app.whenReady().then(async () => {
   }
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    showOrCreateMainWindow()
   })
 })
+}
 
 function setupAutoUpdater(): void {
   autoUpdater.autoDownload = false
@@ -293,13 +390,11 @@ function setupAutoUpdater(): void {
   }, 3000)
 }
 
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit()
-  }
-})
+app.on('window-all-closed', () => {})
 
 app.on('before-quit', () => {
+  isQuitting = true
+  stopAutoDownloadScheduler()
   stopAllMcpServers()
   closeDatabase()
 })

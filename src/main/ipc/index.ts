@@ -31,6 +31,8 @@ import * as canvasService from '../services/canvas'
 import * as galleryService from '../services/gallery'
 import * as mattingService from '../services/matting'
 import * as mattingProviderService from '../services/matting-providers'
+import * as cloudVideoService from '../services/cloud-video'
+import * as videoGenerationService from '../services/video-generation'
 import { fetchQuota as fetchMattingQuotaFromCloud } from '../services/cloud-matting'
 import { parseDocumentFromBuffer, readFileSmart } from '../services/document-parser'
 import {
@@ -1031,6 +1033,32 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('gallery:sync', (_, categoryId?: string) => galleryService.sync(categoryId))
   ipcMain.handle('gallery:addToCreation', (_, filePath: string) =>
     galleryService.addToCreation(filePath)
+  )
+
+  ipcMain.handle('cloudVideo:download', async (event, url: string, defaultName?: string) => {
+    const window = BrowserWindow.fromWebContents(event.sender)
+    return cloudVideoService.downloadRemoteVideo(url, defaultName || '', window)
+  })
+
+  ipcMain.handle('videoGen:list', (_, options?: videoGenerationService.VideoGenerationListOptions) =>
+    videoGenerationService.listGenerations(options || {})
+  )
+  ipcMain.handle('videoGen:get', (_, id: string) => videoGenerationService.getGeneration(id))
+  ipcMain.handle('videoGen:getDeletedIds', (_, ids: string[]) =>
+    videoGenerationService.getDeletedGenerationIds(Array.isArray(ids) ? ids : [])
+  )
+  ipcMain.handle('videoGen:syncTask', (_, input: videoGenerationService.SyncVideoTaskInput) =>
+    videoGenerationService.syncCloudTask(input)
+  )
+  ipcMain.handle('videoGen:syncTasks', (_, inputs: videoGenerationService.SyncVideoTaskInput[]) =>
+    videoGenerationService.syncCloudTasks(Array.isArray(inputs) ? inputs : [])
+  )
+  ipcMain.handle('videoGen:save', (_, id: string) => videoGenerationService.saveGenerationVideo(id))
+  ipcMain.handle('videoGen:runPendingDownloads', (_, limit?: number) =>
+    videoGenerationService.runPendingDownloads(limit)
+  )
+  ipcMain.handle('videoGen:delete', (_, id: string, deleteFile?: boolean) =>
+    videoGenerationService.deleteGeneration(id, Boolean(deleteFile))
   )
 
   // === Cloud Token ===

@@ -148,13 +148,13 @@ export const routes: RouteRecordRaw[] = [
       {
         path: 'video-creations',
         name: 'videoCreations',
-        component: () => import('@/views/common/DevelopingView.vue'),
+        component: () => import('@/views/video/VideoCreationsView.vue'),
         meta: { title: '视频创作' }
       },
       {
         path: 'ai-video',
         name: 'aiVideo',
-        component: () => import('@/views/common/DevelopingView.vue'),
+        component: () => import('@/views/video/AiVideoView.vue'),
         meta: { title: 'AI 视频' }
       },
       {
