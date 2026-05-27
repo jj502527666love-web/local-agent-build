@@ -21,6 +21,14 @@ export interface ReleaseNote {
 
 export const CHANGELOG: ReleaseNote[] = [
   {
+    version: '0.7.11',
+    date: '2026-05-28',
+    notes: [
+      'AI 视频参考图用途选择后会正确保存',
+      'AI 视频页面去掉重复标题，界面更简洁'
+    ]
+  },
+  {
     version: '0.7.10',
     date: '2026-05-26',
     notes: [

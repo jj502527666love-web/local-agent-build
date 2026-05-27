@@ -1,9 +1,6 @@
 <template>
   <div class="h-full flex flex-col">
-    <header class="page-header">
-      <div>
-        <h2 class="page-title">AI 视频</h2>
-      </div>
+    <header class="page-header justify-end">
       <div class="flex items-center gap-2">
         <button class="btn-secondary text-xs" @click="goToCreations">创作记录</button>
         <button class="btn-secondary text-xs" :disabled="loading" @click="reloadAll">刷新</button>
@@ -174,7 +171,7 @@
                         <span class="truncate font-medium text-text-primary">{{ asset.original_name || asset.url }}</span>
                         <button class="shrink-0 text-text-tertiary hover:text-red-500" @click="removeAsset(asset.id)">移除</button>
                       </div>
-                      <select v-if="asset.asset_type === 'image'" v-model="asset.role" class="input-field py-1 text-xs" @change="normalizeReferenceAssetsForMode">
+                      <select v-if="asset.asset_type === 'image'" :value="asset.role" class="input-field py-1 text-xs" @change="onReferenceRoleChange(asset.id, $event)">
                         <option value="reference">通用参考</option>
                         <option value="subject">主体/角色</option>
                         <option value="scene">场景</option>
@@ -647,6 +644,13 @@ function frameAsset(role: Extract<VideoReferenceRole, 'first_frame' | 'last_fram
 
 function removeAsset(id: number | string) {
   referenceAssets.value = referenceAssets.value.filter(a => a.id !== id)
+  normalizeReferenceAssetsForMode()
+}
+
+function onReferenceRoleChange(id: number | string, event: Event) {
+  const role = (event.target as HTMLSelectElement).value as VideoReferenceRole
+  if (!['reference', 'subject', 'scene', 'style'].includes(role)) return
+  referenceAssets.value = referenceAssets.value.map((asset) => asset.id === id ? { ...asset, role } : asset)
   normalizeReferenceAssetsForMode()
 }
 
