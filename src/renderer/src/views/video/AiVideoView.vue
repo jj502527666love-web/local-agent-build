@@ -135,7 +135,7 @@
                   <button type="button" class="btn-secondary text-xs" @click="openReferenceGallery()">从图库选择</button>
                   <label class="btn-secondary text-xs cursor-pointer">
                     上传素材
-                    <input class="hidden" type="file" accept="image/*,video/*" multiple @change="onPickReferences" />
+                    <input class="hidden" type="file" :accept="referenceAccept" multiple @change="onPickReferences" />
                   </label>
                 </div>
               </div>
@@ -476,20 +476,24 @@ const optimizeButtonTitle = computed(() => {
 })
 const referenceSubmitReady = computed(() => {
   if (!isFirstLastFrameMode.value) return true
-  return Boolean(frameAsset('first_frame') && frameAsset('last_frame'))
+  return selectedModel.value?.provider_protocol === 'veo'
+    ? orderedReferenceAssets.value.some((asset) => asset.asset_type === 'image')
+    : Boolean(frameAsset('first_frame') && frameAsset('last_frame'))
 })
 const canSubmit = computed(() => Boolean(selectedSku.value && prompt.value.trim() && referenceSubmitReady.value && !submitting.value && !loading.value))
 const creditBalance = computed(() => Number(cloudAuth.quotas?.balances?.credit?.total ?? cloudAuth.balances.find(b => b.type === 'credit')?.amount ?? 0))
 const referenceHint = computed(() => {
-  if (selectedMode.value === 'image_to_video') return '图生视频建议上传 1 张参考图。'
-  if (selectedMode.value === 'first_last_frame') return '首尾帧模式建议上传首帧和尾帧 2 张图。'
-  return '可选。部分模型支持参考图或视频素材。'
+  if (selectedMode.value === 'image_to_video') return selectedModel.value?.provider_protocol === 'veo' ? 'VEO 图生视频支持 1-3 张参考图。' : '图生视频建议上传 1 张参考图。'
+  if (selectedMode.value === 'first_last_frame') return selectedModel.value?.provider_protocol === 'veo' ? 'VEO 首尾帧模式支持上传 1-2 张图片。' : '首尾帧模式建议上传首帧和尾帧 2 张图。'
+  if (selectedModel.value?.provider_protocol === 'seedance') return '可选。Seedance 支持图片、视频或音频参考素材。'
+  return '可选。当前模型仅支持图片参考素材。'
 })
 const referenceGuide = computed(() => {
-  if (isFirstLastFrameMode.value) return '首帧图会作为视频开始画面，尾帧图会作为视频结束画面。'
+  if (isFirstLastFrameMode.value) return selectedModel.value?.provider_protocol === 'veo' ? '上传两张图时会作为首尾帧；仅上传一张图时由上游按首尾帧模式匹配。' : '首帧图会作为视频开始画面，尾帧图会作为视频结束画面。'
   if (orderedReferenceAssets.value.some((asset) => asset.asset_type === 'image')) return '多张参考图可在提示词中使用“参考图1、参考图2”指定对应关系。'
   return ''
 })
+const referenceAccept = computed(() => selectedModel.value?.provider_protocol === 'seedance' ? 'image/*,video/*,audio/*' : 'image/*')
 const monthQuotaLabel = computed(() => {
   const counter = cloudAuth.quotas?.usage_counters?.video_quota_per_month
   if (!counter || counter.unlimited || counter.limit <= 0) return '不限'
@@ -592,6 +596,20 @@ function referenceRoleLabel(role: VideoReferenceRole): string {
 function normalizeReferenceAssetList(items: ReferenceAsset[], firstLastMode: boolean): ReferenceAsset[] {
   const valid = items.filter((asset) => asset?.url)
   if (firstLastMode) {
+    if (selectedModel.value?.provider_protocol === 'veo') {
+      return valid
+        .filter((asset) => asset.asset_type === 'image')
+        .slice(0, 2)
+        .map((asset, index) => ({
+          id: asset.id,
+          asset_type: 'image',
+          original_name: asset.original_name || '',
+          url: asset.url,
+          role: asset.role === 'last_frame' ? 'last_frame' : (index === 1 ? 'last_frame' : 'first_frame'),
+          index: index + 1,
+          label: index === 1 ? '尾帧图' : '首帧图',
+        } as ReferenceAsset))
+    }
     return frameSlots
       .map((slot, index) => {
         const asset = valid.find((item) => item.role === slot.role && item.asset_type === 'image')
@@ -670,17 +688,24 @@ function referenceAssetNotes(items: ReferenceAsset[], firstLastMode: boolean): s
 function normalizedReferencePayload() {
   const assets = normalizeReferenceAssetList(referenceAssets.value, isFirstLastFrameMode.value)
   if (isFirstLastFrameMode.value) {
-    const hasFirst = assets.some((asset) => asset.role === 'first_frame')
-    const hasLast = assets.some((asset) => asset.role === 'last_frame')
-    if (!hasFirst || !hasLast) throw new Error('首尾帧模式需要分别上传首帧图和尾帧图')
-    if (assets.length !== 2) throw new Error('首尾帧模式只能包含首帧图和尾帧图')
+    if (selectedModel.value?.provider_protocol === 'veo') {
+      const imageCount = assets.filter((asset) => asset.asset_type === 'image').length
+      if (imageCount < 1 || imageCount > 2) throw new Error('VEO 首尾帧模式支持 1 到 2 张图片')
+    } else {
+      const hasFirst = assets.some((asset) => asset.role === 'first_frame')
+      const hasLast = assets.some((asset) => asset.role === 'last_frame')
+      if (!hasFirst || !hasLast) throw new Error('首尾帧模式需要分别上传首帧图和尾帧图')
+      if (assets.length !== 2) throw new Error('首尾帧模式只能包含首帧图和尾帧图')
+    }
   }
   const imageUrls = assets.filter((asset) => asset.asset_type === 'image').map((asset) => asset.url)
   const videoUrls = assets.filter((asset) => asset.asset_type === 'video').map((asset) => asset.url)
+  const audioUrls = assets.filter((asset) => asset.asset_type === 'audio').map((asset) => asset.url)
   return {
     assets,
     imageUrls,
     videoUrls,
+    audioUrls,
     notes: referenceAssetNotes(assets, isFirstLastFrameMode.value),
   }
 }
@@ -1006,6 +1031,9 @@ async function onPickReferences(event: Event) {
   try {
     for (const file of files) {
       const assetType = file.type.startsWith('video/') ? 'video' : file.type.startsWith('audio/') ? 'audio' : 'image'
+      if (selectedModel.value?.provider_protocol !== 'seedance' && assetType !== 'image') {
+        throw new Error('当前模型仅支持上传图片参考素材')
+      }
       const res = await cloudClient.uploadVideoReference(file, assetType as any)
       if (res.asset) referenceAssets.value.push(structureUploadedAsset(res.asset))
     }
@@ -1051,6 +1079,7 @@ async function submitTask() {
       reference_assets: referencePayload.assets,
       reference_image_urls: referencePayload.imageUrls,
       reference_video_urls: referencePayload.videoUrls,
+      reference_audio_urls: referencePayload.audioUrls,
       reference_asset_notes: referencePayload.notes,
     })
     currentTask.value = res.task

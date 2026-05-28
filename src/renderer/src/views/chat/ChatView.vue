@@ -649,15 +649,12 @@ const chatEstimate = computed(() => {
   const conv = chatStore.currentConversation
   const rule = effectiveBillingRule(conv?.active_model_provider_id || '', conv?.active_model_id || '')
   if (!rule) return { balanceType: 'token', amount: 0 }
-  if (rule.billing_type === 'credit') {
-    return { balanceType: 'credit', amount: Number(rule.credit_per_call || 0) }
-  }
-  if (rule.billing_type === 'token') {
+  if (rule.billing_type === 'token' || rule.billing_type === 'credit') {
     const inputTokens = Math.ceil((inputText.value.trim().length + pendingAttachments.value.length * 300) / 3)
     const outputTokens = 800
     const amount = (inputTokens / 1000000) * Number(rule.input_price || 0)
       + (outputTokens / 1000000) * Number(rule.output_price || 0)
-    return { balanceType: 'token', amount }
+    return { balanceType: rule.billing_type === 'credit' ? 'credit' : 'token', amount }
   }
   return { balanceType: 'token', amount: 0 }
 })

@@ -345,8 +345,8 @@ interface CreativeTemplateDraftPayload {
 }
 
 const TABS: Array<{ value: TabKey; label: string }> = [
-  { value: 'local', label: '我的模板' },
   { value: 'cloud', label: '云端模板' },
+  { value: 'local', label: '我的模板' },
 ]
 
 const SOURCE_BADGE: Record<string, { text: string; cls: string }> = {
@@ -365,8 +365,8 @@ const SUBMISSION_BADGE: Record<string, { text: string; cls: string }> = {
 const store = useCreativeTemplateStore()
 const cloudAuth = useCloudAuthStore()
 
-const activeTab = ref<TabKey>('local')
-const searchInput = ref('')
+const activeTab = ref<TabKey>('cloud')
+const searchInput = ref(store.cloudSearch)
 const createPickerOpen = ref(false)
 const editorOpen = ref(false)
 const editing = ref<CreativeTemplate | null>(null)
@@ -641,8 +641,12 @@ watch(activeTab, (_, prev) => {
 })
 
 onMounted(async () => {
-  await store.fetchCategories()
-  await store.fetchTemplates()
+  await Promise.all([
+    store.fetchCategories(),
+    store.fetchTemplates(),
+    store.fetchCloudCategories(),
+    store.fetchCloudTemplates(),
+  ])
   if (cloudAuth.permissions.inspiration_uploader) {
     void store.syncSubmissionStatus().catch(() => {})
   }

@@ -2,7 +2,7 @@
   <div class="h-full flex flex-col">
     <header class="page-header justify-between">
       <div class="flex items-center gap-3">
-        <span class="text-sm font-medium text-text-secondary">灵感广场</span>
+        <span class="text-sm font-medium text-text-secondary">发现可复用的提示词与参考图</span>
       </div>
       <div class="flex items-center gap-2">
         <div class="relative">
@@ -175,6 +175,9 @@ interface Inspiration {
 }
 
 let _cachedItems: Inspiration[] = []
+let _cachedCategories: string[] = []
+let _cachedPage = 1
+let _cachedTotal = 0
 let _hasLoaded = false
 </script>
 
@@ -198,12 +201,12 @@ const detailRefImages = computed(() => {
   return (item.ref_images?.length ? item.ref_images : (item.ref_image ? [item.ref_image] : [])).slice(0, 8)
 })
 
-const dynamicCategories = ref<string[]>([])
+const dynamicCategories = ref<string[]>(_cachedCategories)
 
 // 云控端自定义灵感是有限数据集，使用分页浏览
-const page = ref(1)
+const page = ref(_cachedPage)
 const pageSize = ref(40)
-const total = ref(0)
+const total = ref(_cachedTotal)
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
 
 const displayCategories = computed(() => dynamicCategories.value)
@@ -232,11 +235,17 @@ async function fetchOnline(targetPage?: number) {
       page: wantedPage,
       pageSize: pageSize.value,
     })
-    allItems.value = result.items
-    _cachedItems = result.items
-    dynamicCategories.value = Array.isArray(result.categories) ? result.categories : []
-    total.value = typeof result.total === 'number' ? result.total : result.items.length
+    const items = Array.isArray(result.items) ? result.items : []
+    const categories = Array.isArray(result.categories) ? result.categories.filter(Boolean) : []
+    allItems.value = items
+    _cachedItems = items
+    dynamicCategories.value = categories.length ? categories : Array.from(new Set(items.map((item: Inspiration) => item.category).filter(Boolean)))
+    _cachedCategories = dynamicCategories.value
+    total.value = typeof result.total === 'number' ? result.total : items.length
+    _cachedTotal = total.value
     page.value = wantedPage
+    _cachedPage = wantedPage
+    _hasLoaded = true
   } catch (e) {
     console.error('Failed to fetch inspirations:', e)
   } finally {
@@ -271,7 +280,6 @@ function useInspiration(promptText: string, item: Inspiration) {
 
 onMounted(() => {
   if (!_hasLoaded) {
-    _hasLoaded = true
     fetchOnline()
   }
 })

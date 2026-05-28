@@ -69,6 +69,9 @@
                   <span v-if="r.billing_type === 'token'" class="text-text-secondary whitespace-nowrap">
                     {{ r.input_price }} / {{ r.output_price }} {{ siteConfig.labels.token }} / M tokens
                   </span>
+                  <span v-else-if="r.model_type === 'chat'" class="text-text-secondary whitespace-nowrap">
+                    {{ r.input_price }} / {{ r.output_price }} {{ siteConfig.labels.credit }} / M tokens
+                  </span>
                   <span v-else class="text-text-secondary whitespace-nowrap">
                     {{ r.credit_per_call }} {{ siteConfig.labels.credit }}/次
                   </span>

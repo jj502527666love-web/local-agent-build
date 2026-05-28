@@ -21,6 +21,19 @@ export interface ReleaseNote {
 
 export const CHANGELOG: ReleaseNote[] = [
   {
+    version: '0.7.12',
+    date: '2026-05-28',
+    notes: [
+      '对话模型积分计费会按输入和输出分开预估',
+      '用户中心计费标准会区分对话积分和按次积分',
+      'AI 视频会按模型限制参考素材类型',
+      'AI 视频支持 Seedance 音频参考素材',
+      'VEO 首尾帧支持上传 1 到 2 张图片',
+      '灵感广场分类显示更稳定，页面副标题更清晰',
+      '创意模板默认展示云端模板，并将云端模板放在前面'
+    ]
+  },
+  {
     version: '0.7.11',
     date: '2026-05-28',
     notes: [
