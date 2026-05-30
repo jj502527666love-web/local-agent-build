@@ -417,30 +417,48 @@ let unsubscribeVideoDeleted: (() => void) | null = null
 
 const selectedModel = computed(() => catalogModels.value.find(m => m.model_id === selectedModelId.value) || null)
 const modelSkus = computed(() => selectedModel.value?.skus || [])
-const modeOptions = computed(() => uniqueStrings(modelSkus.value.map(s => s.mode)))
-const durationOptions = computed(() => uniqueNumbers(modelSkus.value
-  .filter(s => !selectedMode.value || s.mode === selectedMode.value)
-  .map(s => s.duration_seconds)))
-const aspectRatioOptions = computed(() => uniqueStrings(modelSkus.value
-  .filter(s => !selectedMode.value || s.mode === selectedMode.value)
-  .filter(s => selectedDuration.value === '' || Number(s.duration_seconds) === Number(selectedDuration.value))
-  .map(s => s.aspect_ratio)))
-const resolutionOptions = computed(() => uniqueStrings(modelSkus.value
-  .filter(s => !selectedMode.value || s.mode === selectedMode.value)
-  .filter(s => selectedDuration.value === '' || Number(s.duration_seconds) === Number(selectedDuration.value))
-  .filter(s => !selectedAspectRatio.value || s.aspect_ratio === selectedAspectRatio.value)
-  .map(s => s.resolution || s.quality)))
+// L2：SKU 锁定（所有 SKU 该字段非空）= 计费/固定维度，选项取自 SKU；否则该维度由用户在模型 supported_* 内自选。
+const skuLocks = (field: 'mode' | 'resolution' | 'aspect_ratio'): boolean =>
+  modelSkus.value.length > 0 && modelSkus.value.every(s => String((s as any)[field] ?? '') !== '')
+const skuLocksDuration = computed(() => modelSkus.value.length > 0 && modelSkus.value.every(s => Number(s.duration_seconds) > 0))
+const modeOptions = computed(() => skuLocks('mode')
+  ? uniqueStrings(modelSkus.value.map(s => s.mode))
+  : uniqueStrings(selectedModel.value?.supported_modes || []))
+const durationOptions = computed(() => skuLocksDuration.value
+  ? uniqueNumbers(modelSkus.value.map(s => s.duration_seconds))
+  : uniqueNumbers((selectedModel.value?.supported_durations || []).map(v => Number(v))))
+const resolutionOptions = computed(() => skuLocks('resolution')
+  ? uniqueStrings(modelSkus.value.map(s => s.resolution))
+  : uniqueStrings(selectedModel.value?.supported_resolutions || []))
+const aspectRatioOptions = computed(() => skuLocks('aspect_ratio')
+  ? uniqueStrings(modelSkus.value.map(s => s.aspect_ratio))
+  : uniqueStrings(selectedModel.value?.supported_aspect_ratios || []))
+// 计费档匹配：仅按 SKU 锁定（非空）的维度匹配；未锁定（空）的维度由用户自选、不参与匹配
 const selectedSku = computed(() => modelSkus.value.find(s =>
-  s.mode === selectedMode.value &&
-  Number(s.duration_seconds) === Number(selectedDuration.value) &&
-  s.aspect_ratio === selectedAspectRatio.value &&
-  (s.resolution || s.quality) === selectedResolution.value
+  (Number(s.duration_seconds) === 0 || Number(s.duration_seconds) === Number(selectedDuration.value)) &&
+  (String(s.resolution ?? '') === '' || (s.resolution || s.quality) === selectedResolution.value) &&
+  (String(s.mode ?? '') === '' || s.mode === selectedMode.value) &&
+  (String(s.aspect_ratio ?? '') === '' || s.aspect_ratio === selectedAspectRatio.value)
 ) || null)
 const isFirstLastFrameMode = computed(() => selectedMode.value === 'first_last_frame')
 const frameSlots: Array<{ role: Extract<VideoReferenceRole, 'first_frame' | 'last_frame'>; label: string }> = [
   { role: 'first_frame', label: '首帧图' },
   { role: 'last_frame', label: '尾帧图' },
 ]
+type ProtocolAssetType = 'image' | 'video' | 'audio'
+interface ProtocolCapability { assetTypes: ProtocolAssetType[]; firstLastFrameByImage: boolean }
+const PROTOCOL_CAPABILITIES: Record<string, ProtocolCapability> = {
+  seedance: { assetTypes: ['image', 'video', 'audio'], firstLastFrameByImage: false },
+  veo: { assetTypes: ['image'], firstLastFrameByImage: true },
+  grok: { assetTypes: ['image'], firstLastFrameByImage: false },
+  openai_video: { assetTypes: ['image', 'video'], firstLastFrameByImage: false },
+}
+const DEFAULT_PROTOCOL_CAPABILITY: ProtocolCapability = { assetTypes: ['image'], firstLastFrameByImage: false }
+function protocolCapability(protocol?: string): ProtocolCapability {
+  return PROTOCOL_CAPABILITIES[(protocol || '').toLowerCase()] || DEFAULT_PROTOCOL_CAPABILITY
+}
+const ASSET_ACCEPT_MAP: Record<ProtocolAssetType, string> = { image: 'image/*', video: 'video/*', audio: 'audio/*' }
+const ASSET_TYPE_LABEL: Record<ProtocolAssetType, string> = { image: '图片', video: '视频', audio: '音频' }
 const orderedReferenceAssets = computed(() =>
   normalizeReferenceAssetList(referenceAssets.value, isFirstLastFrameMode.value)
 )
@@ -476,24 +494,25 @@ const optimizeButtonTitle = computed(() => {
 })
 const referenceSubmitReady = computed(() => {
   if (!isFirstLastFrameMode.value) return true
-  return selectedModel.value?.provider_protocol === 'veo'
+  return protocolCapability(selectedModel.value?.provider_protocol).firstLastFrameByImage
     ? orderedReferenceAssets.value.some((asset) => asset.asset_type === 'image')
     : Boolean(frameAsset('first_frame') && frameAsset('last_frame'))
 })
 const canSubmit = computed(() => Boolean(selectedSku.value && prompt.value.trim() && referenceSubmitReady.value && !submitting.value && !loading.value))
 const creditBalance = computed(() => Number(cloudAuth.quotas?.balances?.credit?.total ?? cloudAuth.balances.find(b => b.type === 'credit')?.amount ?? 0))
 const referenceHint = computed(() => {
-  if (selectedMode.value === 'image_to_video') return selectedModel.value?.provider_protocol === 'veo' ? 'VEO 图生视频支持 1-3 张参考图。' : '图生视频建议上传 1 张参考图。'
-  if (selectedMode.value === 'first_last_frame') return selectedModel.value?.provider_protocol === 'veo' ? 'VEO 首尾帧模式支持上传 1-2 张图片。' : '首尾帧模式建议上传首帧和尾帧 2 张图。'
-  if (selectedModel.value?.provider_protocol === 'seedance') return '可选。Seedance 支持图片、视频或音频参考素材。'
-  return '可选。当前模型仅支持图片参考素材。'
+  const cap = protocolCapability(selectedModel.value?.provider_protocol)
+  if (selectedMode.value === 'image_to_video') return cap.firstLastFrameByImage ? '图生视频支持 1-3 张参考图。' : '图生视频建议上传 1 张参考图。'
+  if (selectedMode.value === 'first_last_frame') return cap.firstLastFrameByImage ? '首尾帧模式支持上传 1-2 张图片。' : '首尾帧模式建议上传首帧和尾帧 2 张图。'
+  const extra = cap.assetTypes.filter((t) => t !== 'image').map((t) => ASSET_TYPE_LABEL[t])
+  return extra.length ? `可选。支持图片、${extra.join('、')}参考素材。` : '可选。当前模型仅支持图片参考素材。'
 })
 const referenceGuide = computed(() => {
-  if (isFirstLastFrameMode.value) return selectedModel.value?.provider_protocol === 'veo' ? '上传两张图时会作为首尾帧；仅上传一张图时由上游按首尾帧模式匹配。' : '首帧图会作为视频开始画面，尾帧图会作为视频结束画面。'
+  if (isFirstLastFrameMode.value) return protocolCapability(selectedModel.value?.provider_protocol).firstLastFrameByImage ? '上传两张图时会作为首尾帧；仅上传一张图时由上游按首尾帧模式匹配。' : '首帧图会作为视频开始画面，尾帧图会作为视频结束画面。'
   if (orderedReferenceAssets.value.some((asset) => asset.asset_type === 'image')) return '多张参考图可在提示词中使用“参考图1、参考图2”指定对应关系。'
   return ''
 })
-const referenceAccept = computed(() => selectedModel.value?.provider_protocol === 'seedance' ? 'image/*,video/*,audio/*' : 'image/*')
+const referenceAccept = computed(() => protocolCapability(selectedModel.value?.provider_protocol).assetTypes.map((t) => ASSET_ACCEPT_MAP[t]).join(','))
 const monthQuotaLabel = computed(() => {
   const counter = cloudAuth.quotas?.usage_counters?.video_quota_per_month
   if (!counter || counter.unlimited || counter.limit <= 0) return '不限'
@@ -596,7 +615,7 @@ function referenceRoleLabel(role: VideoReferenceRole): string {
 function normalizeReferenceAssetList(items: ReferenceAsset[], firstLastMode: boolean): ReferenceAsset[] {
   const valid = items.filter((asset) => asset?.url)
   if (firstLastMode) {
-    if (selectedModel.value?.provider_protocol === 'veo') {
+    if (protocolCapability(selectedModel.value?.provider_protocol).firstLastFrameByImage) {
       return valid
         .filter((asset) => asset.asset_type === 'image')
         .slice(0, 2)
@@ -688,9 +707,9 @@ function referenceAssetNotes(items: ReferenceAsset[], firstLastMode: boolean): s
 function normalizedReferencePayload() {
   const assets = normalizeReferenceAssetList(referenceAssets.value, isFirstLastFrameMode.value)
   if (isFirstLastFrameMode.value) {
-    if (selectedModel.value?.provider_protocol === 'veo') {
+    if (protocolCapability(selectedModel.value?.provider_protocol).firstLastFrameByImage) {
       const imageCount = assets.filter((asset) => asset.asset_type === 'image').length
-      if (imageCount < 1 || imageCount > 2) throw new Error('VEO 首尾帧模式支持 1 到 2 张图片')
+      if (imageCount < 1 || imageCount > 2) throw new Error('首尾帧模式支持 1 到 2 张图片')
     } else {
       const hasFirst = assets.some((asset) => asset.role === 'first_frame')
       const hasLast = assets.some((asset) => asset.role === 'last_frame')
@@ -1031,8 +1050,9 @@ async function onPickReferences(event: Event) {
   try {
     for (const file of files) {
       const assetType = file.type.startsWith('video/') ? 'video' : file.type.startsWith('audio/') ? 'audio' : 'image'
-      if (selectedModel.value?.provider_protocol !== 'seedance' && assetType !== 'image') {
-        throw new Error('当前模型仅支持上传图片参考素材')
+      const allowedTypes = protocolCapability(selectedModel.value?.provider_protocol).assetTypes
+      if (!allowedTypes.includes(assetType as ProtocolAssetType)) {
+        throw new Error('当前模型支持的参考素材：' + allowedTypes.map((t) => ASSET_TYPE_LABEL[t]).join('、'))
       }
       const res = await cloudClient.uploadVideoReference(file, assetType as any)
       if (res.asset) referenceAssets.value.push(structureUploadedAsset(res.asset))
@@ -1071,10 +1091,10 @@ async function submitTask() {
       sku_key: selectedSku.value.sku_key,
       prompt: prompt.value.trim(),
       negative_prompt: negativePrompt.value.trim() || undefined,
-      mode: selectedSku.value.mode,
-      duration_seconds: selectedSku.value.duration_seconds,
-      resolution: selectedSku.value.resolution,
-      aspect_ratio: selectedSku.value.aspect_ratio,
+      mode: selectedMode.value || selectedSku.value.mode,
+      duration_seconds: Number(selectedDuration.value) || selectedSku.value.duration_seconds,
+      resolution: selectedResolution.value || selectedSku.value.resolution,
+      aspect_ratio: selectedAspectRatio.value || selectedSku.value.aspect_ratio,
       quality: selectedSku.value.quality,
       reference_assets: referencePayload.assets,
       reference_image_urls: referencePayload.imageUrls,

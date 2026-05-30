@@ -214,6 +214,12 @@ export const routes: RouteRecordRaw[] = [
         meta: { title: '套餐商城' }
       },
       {
+        path: 'recharge',
+        name: 'recharge',
+        component: () => import('@/views/recharge/RechargeView.vue'),
+        meta: { title: '充值' }
+      },
+      {
         path: 'oem-channel',
         name: 'oemChannel',
         component: () => import('@/views/user-center/OemChannelCenterView.vue'),

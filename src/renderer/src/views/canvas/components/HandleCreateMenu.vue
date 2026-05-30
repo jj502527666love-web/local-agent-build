@@ -11,7 +11,7 @@
     >
       <div class="px-3 py-2 border-b border-surface-3 flex items-center justify-between">
         <span class="text-[11px] font-semibold text-text-secondary">
-          {{ sourceDataType === 'text' ? '文本输出' : '图像输出' }}
+          {{ sourceDataType === 'text' ? '文本输出' : sourceDataType === 'video' ? '视频输出' : '图像输出' }}
         </span>
         <button
           @click="$emit('close')"
@@ -115,7 +115,7 @@ interface ExistingNode {
 const props = defineProps<{
   visible: boolean
   position: { x: number; y: number }
-  sourceDataType: 'text' | 'image'
+  sourceDataType: 'text' | 'image' | 'video'
   candidates: Candidate[]
   existing: ExistingNode[]
 }>()

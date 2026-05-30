@@ -12,6 +12,9 @@ import {
   type OutputLang,
 } from '@/utils/image2prompt-presets'
 import { compressImage } from '@/utils/compress-image'
+import { cloudClient } from '@/utils/cloud-api'
+import { useVideoTaskPolling } from './useVideoTaskPolling'
+import { useVideoCatalogSelection } from './useVideoCatalogSelection'
 
 export type TaskStatus = 'pending' | 'running' | 'done' | 'error' | 'skipped' | 'blocked'
 
@@ -26,6 +29,7 @@ interface UpstreamData {
   demandTexts: string[]
   recognitionTexts: string[]
   images: string[]
+  videos: string[]
 }
 
 type QuickOrchestratorMode = 'storyboard' | 'batch_image' | 'product_workflow'
@@ -93,6 +97,69 @@ async function resolveRefImages(images: string[]): Promise<string[]> {
   // 把失败计数挂到数组上（不改 return type 兼容现有调用方），上层可读取并提示
   ;(result as any).__failedCount = failed
   return result
+}
+
+// === 流式画布 AI 视频节点辅助（模块级，无组件依赖）===
+
+/** dataURI → File，用于把画布本地参考图上传为云端临时素材。 */
+async function dataUriToFile(dataUri: string, name: string): Promise<File> {
+  const res = await fetch(dataUri)
+  const blob = await res.blob()
+  return new File([blob], name, { type: blob.type || 'image/png' })
+}
+
+/** 画布参考图（相对路径 / dataURI）→ 读取 → 上传云端 → 返回 https URL；失败抛错以中止提交。 */
+async function uploadCanvasImageToCloud(img: string): Promise<string> {
+  const resolved = await resolveRefImages([img])
+  if (!resolved.length) throw new Error('参考图读取失败：上游图片可能已被删除')
+  const file = await dataUriToFile(resolved[0], `canvas-ref-${Date.now()}.png`)
+  const res = await cloudClient.uploadVideoReference(file, 'image')
+  const url = res?.asset?.url
+  if (!url) throw new Error('参考图上传失败，请重试')
+  return String(url)
+}
+
+/** 视频任务 → 同步到本地创作记录（带画布上下文，落盘到 canvas/{projectId}/）。 */
+async function syncVideoRecordForNode(task: any, projectId: string, nodeId: string): Promise<any> {
+  return await api().videoGen.invoke('syncTask', {
+    task,
+    requestParams: {
+      mode: task?.request_params?.mode || '',
+      duration_seconds: task?.request_params?.duration || task?.request_params?.duration_seconds || 0,
+      resolution: task?.request_params?.resolution || '',
+      aspect_ratio: task?.request_params?.aspect_ratio || '',
+      quality: task?.request_params?.quality || '',
+    },
+    canvasProjectId: projectId,
+    canvasNodeId: nodeId,
+  })
+}
+
+/** 云端视频任务状态 → 画布节点状态。 */
+function mapVideoNodeStatus(taskStatus: string): TaskStatus {
+  if (taskStatus === 'completed') return 'done'
+  if (taskStatus === 'failed' || taskStatus === 'canceled') return 'error'
+  return 'running'
+}
+
+/** 把云端视频任务写回画布节点（落盘 + 更新 data）。后台轮询与工作流等待共用。 */
+async function applyVideoTaskToNode(nodeId: string, projectId: string, taskId: string, task: any): Promise<void> {
+  const canvasStore = useCanvasStore()
+  const node = canvasStore.nodes.find((n) => n.id === nodeId)
+  if (!node) return
+  let record: any = null
+  try { record = await syncVideoRecordForNode(task, projectId, nodeId) } catch { /* 落盘失败不阻塞状态更新 */ }
+  const status = mapVideoNodeStatus(String(task?.status || ''))
+  const patch: Record<string, any> = {
+    cloud_task_id: taskId,
+    status,
+    progress: Number(task?.progress) || 0,
+    error: status === 'error' ? (task?.error_message || task?.error || '视频生成失败') : '',
+    video_url: record?.storage_url || record?.remote_url || task?.result?.video_url || node.data.video_url || '',
+    cover_url: record?.cover_url || task?.result?.cover_url || node.data.cover_url || '',
+    result_path: record?.local_path || node.data.result_path || '',
+  }
+  await canvasStore.updateNode(nodeId, { data: { ...node.data, ...patch } })
 }
 
 // Module-level singletons so all composable consumers share the same state.
@@ -168,6 +235,7 @@ export function useWorkflowEngine() {
     const demandTexts: string[] = []
     const recognitionTexts: string[] = []
     const images: string[] = []
+    const videos: string[] = []
 
     for (const edge of edges) {
       const sourceNode = canvasStore.nodes.find((n) => n.id === edge.source_node_id)
@@ -208,10 +276,33 @@ export function useWorkflowEngine() {
           sourceNode.data.image_data ||
           ''
         if (img) images.push(img)
+      } else if (outputDef.dataType === 'video') {
+        // 上游视频节点产出：优先本地落盘路径，回落云端 URL（24h 有效）
+        const vid = sourceNode.data.result_path || sourceNode.data.video_url || ''
+        if (vid) videos.push(vid)
       }
     }
 
-    return { texts, demandTexts, recognitionTexts, images }
+    return { texts, demandTexts, recognitionTexts, images, videos }
+  }
+
+  // 按指定 target_handle 收集上游图片（保序），用于视频节点首尾帧/参考图分槽。
+  function getUpstreamImagesByHandle(nodeId: string, projectId: string, handle: string): string[] {
+    const canvasStore = useCanvasStore()
+    const edges = canvasStore.edges.filter(
+      (e) => e.project_id === projectId && e.target_node_id === nodeId && e.target_handle === handle
+    )
+    const result: string[] = []
+    for (const edge of edges) {
+      const sourceNode = canvasStore.nodes.find((n) => n.id === edge.source_node_id)
+      if (!sourceNode) continue
+      const def = getNodeTypeDef(sourceNode.type)
+      const output = def?.outputs.find((o) => o.handle === edge.source_handle)
+      if (output?.dataType !== 'image') continue
+      const img = sourceNode.data.result_path || sourceNode.data.image_path || sourceNode.data.image_data || ''
+      if (img) result.push(img)
+    }
+    return result
   }
 
   function checkRequiredInputs(nodeId: string, projectId: string): { ok: boolean; missing: string[] } {
@@ -725,6 +816,10 @@ export function useWorkflowEngine() {
         // Ref image nodes don't need execution
         break
 
+      case 'videoResult':
+        // 视频结果节点：纯展示，不执行
+        break
+
       case 'promptSlice':
         // Prompt slice nodes don't need execution, they already have data
         break
@@ -932,6 +1027,11 @@ export function useWorkflowEngine() {
         } else {
           throw new Error(gen?.error || '图像生成失败')
         }
+        break
+      }
+
+      case 'aiVideo': {
+        await executeAiVideoNode(node, nodeId, projectId, upstream)
         break
       }
 
@@ -1452,6 +1552,113 @@ export function useWorkflowEngine() {
     }
   }
 
+  // === AI 视频节点：登记统一轮询 + 提交执行 ===
+
+  /** 把视频任务登记到统一后台轮询；每轮 refresh 后落盘 + 更新节点 data。单节点生成与重开恢复用。 */
+  function attachVideoTaskPolling(nodeId: string, projectId: string, taskId: string): void {
+    const { register } = useVideoTaskPolling()
+    register(taskId, async (task: any) => { await applyVideoTaskToNode(nodeId, projectId, taskId, task) })
+  }
+
+  /** 工作流模式下等待视频任务到终态（下游依赖视频产物），期间持续落盘 + 更新节点。 */
+  async function waitVideoTaskTerminal(nodeId: string, projectId: string, taskId: string): Promise<void> {
+    const intervalMs = 6000
+    const deadline = Date.now() + 30 * 60 * 1000
+    while (Date.now() < deadline) {
+      if (cancelRequested.value) return
+      await new Promise((r) => setTimeout(r, intervalMs))
+      let task: any = null
+      try {
+        const res = await cloudClient.refreshVideoTask(taskId)
+        task = res?.task
+      } catch {
+        continue
+      }
+      if (!task) continue
+      await applyVideoTaskToNode(nodeId, projectId, taskId, task)
+      if (['completed', 'failed', 'canceled'].includes(task.status)) {
+        if (task.status !== 'completed') throw new Error(task.error_message || task.error || '视频生成失败')
+        return
+      }
+    }
+    throw new Error('视频生成超时')
+  }
+
+  /** 执行 AI 视频节点：选规格匹配计费档 → 按 handle 收集/上传参考图 → 提交 → 登记轮询。 */
+  async function executeAiVideoNode(node: any, nodeId: string, projectId: string, upstream: UpstreamData): Promise<void> {
+    const canvasStore = useCanvasStore()
+    const { getModel, matchSku, loadCatalog } = useVideoCatalogSelection()
+    await loadCatalog()
+
+    const model = getModel(String(node.data.model_id || ''))
+    if (!model) throw new Error('请先在节点中选择视频模型')
+
+    const mode = String(node.data.mode || '')
+    const duration: number | '' = Number(node.data.duration_seconds) || ''
+    const resolution = String(node.data.resolution || '')
+    const aspectRatio = String(node.data.aspect_ratio || '')
+    const sku = matchSku(model, { mode, duration, resolution, aspect_ratio: aspectRatio })
+    if (!sku) throw new Error('当前规格暂无可用计费档，请调整时长 / 清晰度')
+
+    const isFirstLast = mode === 'first_last_frame'
+    // 后端 clientSubmit 要求 prompt 必填，所有模式（含首尾帧）都需要提示词
+    const prompt = (upstream.texts.join('\n') || node.data.prompt || '').trim()
+    if (!prompt) {
+      throw new Error('AI 视频节点需要提示词：请连接文本输入或在节点中填写')
+    }
+
+    // 收集参考图并上传（按 handle 分槽：首尾帧 vs 参考图）
+    const referenceAssets: Array<{ asset_type: string; url: string; role: string; index: number }> = []
+    if (isFirstLast) {
+      const first = getUpstreamImagesByHandle(nodeId, projectId, 'first-frame-input')[0]
+      const last = getUpstreamImagesByHandle(nodeId, projectId, 'last-frame-input')[0]
+      if (!first || !last) throw new Error('首尾帧模式需要分别连接「首帧」和「尾帧」图片节点')
+      referenceAssets.push({ asset_type: 'image', url: await uploadCanvasImageToCloud(first), role: 'first_frame', index: 1 })
+      referenceAssets.push({ asset_type: 'image', url: await uploadCanvasImageToCloud(last), role: 'last_frame', index: 2 })
+    } else {
+      const refs = getUpstreamImagesByHandle(nodeId, projectId, 'image-input')
+      const max = Number(model.max_reference_images) || 0
+      const picked = max > 0 ? refs.slice(0, max) : refs
+      for (let i = 0; i < picked.length; i++) {
+        referenceAssets.push({ asset_type: 'image', url: await uploadCanvasImageToCloud(picked[i]), role: 'reference', index: i + 1 })
+      }
+    }
+
+    await canvasStore.updateNode(nodeId, {
+      data: { ...node.data, sku_key: sku.sku_key, status: 'running', progress: 1, error: '', cloud_task_id: '', result_path: '', video_url: '', cover_url: '' }
+    })
+
+    const payload: Record<string, any> = {
+      sku_key: sku.sku_key,
+      prompt,
+      mode,
+      duration_seconds: Number(duration) || sku.duration_seconds,
+      resolution: resolution || sku.resolution,
+      aspect_ratio: aspectRatio || sku.aspect_ratio,
+    }
+    if (referenceAssets.length) {
+      payload.reference_assets = referenceAssets
+      payload.reference_image_urls = referenceAssets.map((a) => a.url)
+    }
+
+    const res = await cloudClient.submitVideoTask(payload)
+    const task = res?.task
+    if (!task?.id) throw new Error('视频任务提交失败')
+
+    const latest = canvasStore.nodes.find((n) => n.id === nodeId)
+    await canvasStore.updateNode(nodeId, {
+      data: { ...(latest?.data || node.data), cloud_task_id: task.id, status: 'running', progress: Number(task.progress) || 1 }
+    })
+    try { await syncVideoRecordForNode(task, projectId, nodeId) } catch { /* 首次落盘失败不阻塞，轮询会重试 */ }
+    if (workflowRunning.value) {
+      // 工作流批量执行：等待视频完成，下游节点才能拿到产物
+      await waitVideoTaskTerminal(nodeId, projectId, task.id)
+    } else {
+      // 单节点生成：后台轮询，不阻塞用户
+      attachVideoTaskPolling(nodeId, projectId, task.id)
+    }
+  }
+
   return {
     running,
     workflowRunning,
@@ -1464,6 +1671,7 @@ export function useWorkflowEngine() {
     nodeStatuses,
     runWorkflow,
     cancelWorkflow,
-    executeSingleNode
+    executeSingleNode,
+    attachVideoTaskPolling
   }
 }

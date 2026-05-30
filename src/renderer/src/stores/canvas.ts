@@ -302,6 +302,26 @@ export const useCanvasStore = defineStore('canvas', () => {
             status: 'idle',
             error: ''
           }
+        case 'aiVideo':
+          // 复制画布作为模板：保留规格选择，清空运行态与产物
+          return {
+            model_id: data.model_id || '',
+            mode: data.mode || '',
+            duration_seconds: data.duration_seconds || 0,
+            resolution: data.resolution || '',
+            aspect_ratio: data.aspect_ratio || '',
+            prompt: data.prompt || '',
+            sku_key: data.sku_key || '',
+            status: 'idle',
+            progress: 0,
+            error: '',
+            cloud_task_id: '',
+            video_url: '',
+            cover_url: '',
+            result_path: ''
+          }
+        case 'videoResult':
+          return {}
         default:
           return { ...data, status: undefined, error: undefined }
       }

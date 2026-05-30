@@ -4,6 +4,7 @@ import { join } from 'path'
 import { existsSync, mkdirSync, writeFileSync, rmSync, readdirSync } from 'fs'
 import { getDataDir } from './data-path'
 import { removeByRelativePath } from './gallery'
+import { deleteGenerationsByCanvasNode } from './video-generation'
 import {
   CANVAS_EXPORT_SCHEMA_VERSION,
   type CanvasExportFile,
@@ -113,6 +114,8 @@ function parseDataUrl(dataUrl: string): { buffer: Buffer; ext: string } {
  * 不存在则何作为。
  */
 function cleanupNodeFiles(projectId: string, nodeId: string): void {
+  // v0.7.14+ 级联软删该节点的视频创作记录（独立于物理文件清理，目录不存在也要清 DB 记录）
+  try { deleteGenerationsByCanvasNode(projectId, nodeId) } catch {}
   const dir = join(getCanvasDir(), projectId)
   if (!existsSync(dir)) return
   try {

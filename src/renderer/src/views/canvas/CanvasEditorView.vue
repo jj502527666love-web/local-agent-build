@@ -364,6 +364,8 @@ import PromptSliceNode from './nodes/PromptSliceNode.vue'
 import ReverseNode from './nodes/ReverseNode.vue'
 import ImageRecognitionNode from './nodes/ImageRecognitionNode.vue'
 import MattingNode from './nodes/MattingNode.vue'
+import AiVideoNode from './nodes/AiVideoNode.vue'
+import VideoResultNode from './nodes/VideoResultNode.vue'
 import DeletableEdge from './edges/DeletableEdge.vue'
 import HandleCreateMenu from './components/HandleCreateMenu.vue'
 import AiOrchestrateDialog from './components/AiOrchestrateDialog.vue'
@@ -467,7 +469,9 @@ const customNodeTypes: Record<string, any> = {
   img2img: markRaw(Img2ImgNode),
   refImage: markRaw(RefImageNode),
   imageResult: markRaw(ImageResultNode),
-  promptSlice: markRaw(PromptSliceNode)
+  promptSlice: markRaw(PromptSliceNode),
+  aiVideo: markRaw(AiVideoNode),
+  videoResult: markRaw(VideoResultNode)
 }
 const customEdgeTypes: Record<string, any> = {
   deletable: markRaw(DeletableEdge)
@@ -714,7 +718,7 @@ type HandleMenuState = {
   y: number
   sourceNodeId: string
   sourceHandle: string
-  sourceDataType: 'text' | 'image'
+  sourceDataType: 'text' | 'image' | 'video'
 }
 const handleMenu = ref<HandleMenuState>({
   visible: false,
@@ -729,7 +733,7 @@ function onHandleClick(
   event: MouseEvent,
   nodeId: string,
   handleId: string,
-  dataType: 'text' | 'image'
+  dataType: 'text' | 'image' | 'video'
 ) {
   // Structural edits are disabled while the whole-workflow run is active.
   // Single-node runs don't block this: independent nodes can still be wired up.
@@ -1294,6 +1298,11 @@ function getDefaultNodeData(type: string): Record<string, any> {
       matting_task_id: '',
       error: ''
     }
+    case 'aiVideo': return {
+      model_id: '', mode: '', duration_seconds: 0, resolution: '', aspect_ratio: '', prompt: '',
+      sku_key: '', status: 'idle', progress: 0, error: '', cloud_task_id: '', video_url: '', cover_url: '', result_path: ''
+    }
+    case 'videoResult': return {}
     default: return {}
   }
 }
@@ -1474,6 +1483,13 @@ onBeforeRouteLeave(() => {
 .vue-flow__handle.handle-image:hover {
   border-color: #d97706;
   box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.22);
+}
+.vue-flow__handle.handle-video {
+  border-color: #d946ef;
+}
+.vue-flow__handle.handle-video:hover {
+  border-color: #c026d3;
+  box-shadow: 0 0 0 4px rgba(217, 70, 239, 0.22);
 }
 /* Whole-row hover on promptSlice pre-highlights the row's handle,
    so users know exactly which row a handle belongs to even before touching it. */

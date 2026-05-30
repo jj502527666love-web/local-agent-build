@@ -312,15 +312,14 @@ async function loadPlans() {
 
 function canPurchase(p: StorePlan): boolean {
   if (Number(p.price) <= 0) return false
-  const current = currentUserPlan(p)
-  if (current && !current.expires_at) return false
+  // 永久套餐允许复购：已拥有时仍可再次购买（每次独立发放一份额度）
   return true
 }
 
 function purchaseLabel(p: StorePlan): string {
   if (Number(p.price) <= 0) return '不可在线购买'
   const current = currentUserPlan(p)
-  if (current && !current.expires_at) return '已拥有'
+  if (current && !current.expires_at) return '再次购买'
   if (current) return '续费'
   if (primaryActivePlan.value) return '新购此套餐'
   return '立即购买'

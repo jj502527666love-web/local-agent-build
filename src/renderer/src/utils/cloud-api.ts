@@ -282,6 +282,10 @@ export const cloudClient = {
   createTianqueOrder: (planId: number) => request('POST', '/client/orders/tianque', { plan_id: planId }),
   upgradePlanTianque: (fromUserPlanId: number, planId: number) => request('POST', '/client/orders/tianque/upgrade', { from_user_plan_id: fromUserPlanId, plan_id: planId }),
   syncTianqueOrder: (orderNo: string) => request('POST', `/client/orders/${orderNo}/tianque-sync`),
+
+  getRechargeConfig: () => request('GET', '/client/recharge/config'),
+  createRechargeOrder: (data: Record<string, any>) => request('POST', '/client/recharge/order', data),
+  createRechargeOrderTianque: (data: Record<string, any>) => request('POST', '/client/recharge/order/tianque', data),
   // 公告：当前启用的排序最高的一条公告；无公告时 announcement=null
   currentAnnouncement: () => request('GET', '/client/announcement/current'),
   oemChannelProfile: () => request('GET', '/client/oem-channel/profile'),

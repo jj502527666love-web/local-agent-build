@@ -6,6 +6,38 @@
 
 ---
 
+## [0.7.13] - 2026-05-29
+
+> **直充 + 永久套餐复购 + AI 视频通用服务商 + 画布视频节点**：新增用户按金额/档位充值金币与积分；永久套餐支持再次购买；AI 视频参考素材交互改为「协议能力表」驱动以兼容通用视频服务商；流式画布新增 AI 视频节点（文本 / 图片生成视频，支持图生视频与首尾帧）。
+
+### 新增
+
+- **`src/renderer/src/components/RechargeDialog.vue`** + **`src/renderer/src/views/recharge/RechargeView.vue`**：用户直充（选金币/积分 + 快捷档位 / 自由金额 + 实时到账预览 + 扫码支付，复用支付轮询/二维码），用户中心头部新增「充值」入口；`utils/cloud-api.ts` 新增直充配置与下单接口。
+
+- **流式画布 AI 视频节点**（`aiVideo` + `videoResult`）：
+  - `views/canvas/composables/useNodeTypes.ts`：dataType 扩展 `video`；新增 `aiVideo`（文本 / 参考图 / 首帧 / 尾帧 4 输入 handle）与 `videoResult` 节点。
+  - `views/canvas/composables/useVideoCatalogSelection.ts`（新）：复用云控端 L2 catalog 的计费档 / 能力选择逻辑（catalog 模块级缓存 + 选项推导 + SKU 匹配 + 归一化）。
+  - `views/canvas/composables/useVideoTaskPolling.ts`（新）：模块级单例轮询（单 timer + 多任务登记 + 终态自动注销）。
+  - `views/canvas/nodes/AiVideoNode.vue`（新）：规格选择 + 进度 + 视频播放 + 模式驱动动态 handle（图生视频 `image-input`，首尾帧 `first/last-frame-input` 分槽）+ 重开恢复轮询 + 下载完成回填 + 删记录复位。
+  - `views/canvas/nodes/VideoResultNode.vue`（新）：实时读取上游视频产物展示。
+  - `views/canvas/composables/useWorkflowEngine.ts`：新增 `case 'aiVideo'`（按 handle 收图 → 参考图懒上传 → 提交 → 轮询）；单节点后台轮询 / 工作流等待双模式；`getUpstreamData` 支持 video 上游、`getUpstreamImagesByHandle` 按槽收图。
+  - `main/services/video-generation.ts` + `main/database/index.ts`：视频落盘支持画布上下文，画布产物落 `canvas/{projectId}/{nodeId}_{taskId}.mp4`（对齐画布生图），`video_generations` 加 `canvas_project_id` / `canvas_node_id` 列；下载调度天然复用。
+  - `main/services/canvas.ts`：删画布节点级联软删其视频创作记录。
+  - `CanvasEditorView.vue` / `HandleCreateMenu.vue` / `stores/canvas.ts`：注册节点、handle-video 样式与连线校验、点 output 一键创建 `videoResult`、复制画布保留规格清运行态。
+  - 计费沿用「完成才扣 / 失败不扣」，落盘与创作记录与独立视频页一致。
+
+### 变更
+
+- **`src/renderer/src/views/plans-store/PlansStoreView.vue`**：永久套餐放开复购，已拥有时购买按钮显示「再次购买」（每次充一份额度）。
+
+- **`src/renderer/src/views/video/AiVideoView.vue`**：
+  - 新增 `PROTOCOL_CAPABILITIES` 协议能力表（`assetTypes` / `firstLastFrameByImage`），替代散落的 `provider_protocol === 'veo' / 'seedance'` 硬编码判断。
+  - `referenceSubmitReady` / `referenceHint` / `referenceGuide` / `referenceAccept` / `normalizeReferenceAssetList` / `normalizedReferencePayload` / `onPickReferences` 改为按 `protocolCapability(provider_protocol)` 取能力。
+  - 新增 `openai_video` 协议支持图片 + 视频参考素材；未知协议回落仅图片，行为安全。
+  - **AI 视频规格精简（L2 计费维度模型）**：规格选择改为「计费档（取自 SKU 锁定维度）+ 自选维度（取自模型 `supported_*`）」——`modeOptions` / `durationOptions` / `resolutionOptions` / `aspectRatioOptions` 按 `skuLocks()` 判断取自 SKU 或模型能力；`selectedSku` 仅按 SKU 锁定的计费维度匹配；`submitTask` 改传用户自选的模式/时长/清晰度/比例。修复 Seedance Fast、GROK 此前无可用规格，以及 Seedance Fast 误含 1080p 的问题。
+
+---
+
 ## [0.7.11] - 2026-05-28
 
 ### 修复

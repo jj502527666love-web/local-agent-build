@@ -15,6 +15,11 @@
         >渠道中心</button>
         <button
           type="button"
+          class="btn-secondary text-xs"
+          @click="goRecharge"
+        >充值</button>
+        <button
+          type="button"
           class="btn-primary text-xs"
           @click="goPlansStore"
         >去套餐商城</button>
@@ -282,6 +287,10 @@ function handleLogout() {
 
 function goPlansStore() {
   router.push('/plans-store')
+}
+
+function goRecharge() {
+  router.push('/recharge')
 }
 
 function goOemChannel() {

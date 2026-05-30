@@ -58,6 +58,8 @@ export interface VideoGeneration {
   downloaded_at: string
   is_deleted: boolean
   deleted_at: string
+  canvas_project_id: string
+  canvas_node_id: string
   updated_at: string
 }
 
@@ -79,6 +81,9 @@ export interface SyncVideoTaskInput {
     aspect_ratio?: string
     quality?: string
   }
+  // v0.7.14+ 流式画布视频节点来源：传入后落盘到 canvas/{projectId}/，文件名带 nodeId 前缀
+  canvasProjectId?: string
+  canvasNodeId?: string
 }
 
 const downloadingIds = new Set<string>()
@@ -154,8 +159,18 @@ function ensureVideosDir(): string {
   return dir
 }
 
-function uniqueTargetPath(fileName: string): string {
-  const dir = ensureVideosDir()
+// v0.7.14+ 画布视频节点落盘到 canvas/{projectId}/，与画布生图同目录；其余仍落全局 videos/。
+function videoOutputDir(canvasProjectId: string): string {
+  if (canvasProjectId) {
+    const dir = join(getDataDir(), 'canvas', canvasProjectId)
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+    return dir
+  }
+  return ensureVideosDir()
+}
+
+function uniqueTargetPath(fileName: string, baseDir?: string): string {
+  const dir = baseDir || ensureVideosDir()
   const parsed = parse(fileName)
   let candidate = join(dir, fileName)
   let index = 1
@@ -310,6 +325,8 @@ function parseRow(row: any): VideoGeneration {
     downloaded_at: toStringValue(row.downloaded_at),
     is_deleted: toBooleanValue(row.is_deleted),
     deleted_at: toStringValue(row.deleted_at),
+    canvas_project_id: toStringValue(row.canvas_project_id),
+    canvas_node_id: toStringValue(row.canvas_node_id),
     updated_at: toStringValue(row.updated_at),
   }
 }
@@ -363,14 +380,20 @@ function notifyDeleted(id: string): void {
   }
 }
 
-async function downloadUrlToLibrary(url: string, defaultName: string): Promise<{ localPath: string; absolutePath: string; fileSize: number; mimeType: string }> {
+async function downloadUrlToLibrary(url: string, defaultName: string, ctx?: { canvasProjectId?: string; canvasNodeId?: string; taskId?: string }): Promise<{ localPath: string; absolutePath: string; fileSize: number; mimeType: string }> {
   if (!/^https?:\/\//i.test(url)) throw new Error('无效的视频地址')
   const res = await fetch(url)
   if (!res.ok || !res.body) throw new Error(`下载失败 HTTP ${res.status}`)
   const mimeType = (res.headers.get('content-type') || 'video/mp4').split(';')[0].trim() || 'video/mp4'
   const ext = videoExtensionFromUrl(url) || videoExtensionFromMime(mimeType) || extname(defaultName).toLowerCase() || '.mp4'
-  const fileName = `${parse(safeFilename(defaultName || `ai-video-${Date.now()}`)).name}${ext}`
-  const targetPath = uniqueTargetPath(fileName)
+  const canvasProjectId = ctx?.canvasProjectId || ''
+  const targetDir = videoOutputDir(canvasProjectId)
+  // 画布产物用 {nodeId}_{taskId} 前缀命名，对齐画布生图 cleanupNodeFiles 的按前缀级联清理约定
+  const baseName = canvasProjectId && ctx?.canvasNodeId
+    ? safeFilename(`${ctx.canvasNodeId}_${ctx.taskId || Date.now()}`)
+    : parse(safeFilename(defaultName || `ai-video-${Date.now()}`)).name
+  const fileName = `${baseName}${ext}`
+  const targetPath = uniqueTargetPath(fileName, targetDir)
   const tempPath = `${targetPath}.${Date.now()}.tmp`
   try {
     await pipeline(Readable.fromWeb(res.body as any), createWriteStream(tempPath))
@@ -533,6 +556,8 @@ export function syncCloudTask(input: SyncVideoTaskInput): VideoGeneration | null
     created_at: toStringValue(task.created_at || existingRow?.created_at || now),
     completed_at: completedAt,
     downloaded_at: toStringValue(existingRow?.downloaded_at),
+    canvas_project_id: toStringValue(input.canvasProjectId || existingRow?.canvas_project_id),
+    canvas_node_id: toStringValue(input.canvasNodeId || existingRow?.canvas_node_id),
     updated_at: now,
   }
   if (existingRow) {
@@ -541,14 +566,16 @@ export function syncCloudTask(input: SyncVideoTaskInput): VideoGeneration | null
       mode = ?, duration_seconds = ?, resolution = ?, aspect_ratio = ?, quality = ?, prompt = ?, negative_prompt = ?,
       reference_assets = ?, reference_image_urls = ?, reference_video_urls = ?, status = ?, progress = ?, estimated_credits = ?, credits_used = ?,
       error = ?, remote_url = ?, storage_url = ?, cover_url = ?, local_path = ?, file_size = ?, mime_type = ?, download_status = ?,
-      download_error = ?, download_attempts = ?, remote_expires_at = ?, created_at = ?, completed_at = ?, downloaded_at = ?, updated_at = ?
+      download_error = ?, download_attempts = ?, remote_expires_at = ?, created_at = ?, completed_at = ?, downloaded_at = ?,
+      canvas_project_id = ?, canvas_node_id = ?, updated_at = ?
       WHERE id = ?`)
       .run(
         row.cloud_task_id, row.task_id, row.provider_protocol, row.model_id, row.model_name, row.sku_key, row.sku_title,
         row.mode, row.duration_seconds, row.resolution, row.aspect_ratio, row.quality, row.prompt, row.negative_prompt,
         stringifyArray(row.reference_assets), stringifyArray(row.reference_image_urls), stringifyArray(row.reference_video_urls), row.status, row.progress, row.estimated_credits, row.credits_used,
         row.error, row.remote_url, row.storage_url, row.cover_url, row.local_path, row.file_size, row.mime_type, row.download_status,
-        row.download_error, row.download_attempts, row.remote_expires_at, row.created_at, row.completed_at, row.downloaded_at, row.updated_at,
+        row.download_error, row.download_attempts, row.remote_expires_at, row.created_at, row.completed_at, row.downloaded_at,
+        row.canvas_project_id, row.canvas_node_id, row.updated_at,
         row.id,
       )
   } else {
@@ -557,14 +584,16 @@ export function syncCloudTask(input: SyncVideoTaskInput): VideoGeneration | null
       mode, duration_seconds, resolution, aspect_ratio, quality, prompt, negative_prompt,
       reference_assets, reference_image_urls, reference_video_urls, status, progress, estimated_credits, credits_used,
       error, remote_url, storage_url, cover_url, local_path, file_size, mime_type, download_status,
-      download_error, download_attempts, remote_expires_at, created_at, completed_at, downloaded_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      download_error, download_attempts, remote_expires_at, created_at, completed_at, downloaded_at,
+      canvas_project_id, canvas_node_id, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(
         row.id, row.cloud_task_id, row.task_id, row.provider_protocol, row.model_id, row.model_name, row.sku_key, row.sku_title,
         row.mode, row.duration_seconds, row.resolution, row.aspect_ratio, row.quality, row.prompt, row.negative_prompt,
         stringifyArray(row.reference_assets), stringifyArray(row.reference_image_urls), stringifyArray(row.reference_video_urls), row.status, row.progress, row.estimated_credits, row.credits_used,
         row.error, row.remote_url, row.storage_url, row.cover_url, row.local_path, row.file_size, row.mime_type, row.download_status,
-        row.download_error, row.download_attempts, row.remote_expires_at, row.created_at, row.completed_at, row.downloaded_at, row.updated_at,
+        row.download_error, row.download_attempts, row.remote_expires_at, row.created_at, row.completed_at, row.downloaded_at,
+        row.canvas_project_id, row.canvas_node_id, row.updated_at,
       )
   }
   const saved = getGeneration(row.id)!
@@ -610,7 +639,11 @@ export async function saveGenerationVideo(id: string, options: { automatic?: boo
     .run('downloading', '', startedAt, row.id)
   notifyUpdated(getGeneration(row.id)!)
   try {
-    const downloaded = await downloadUrlToLibrary(url, `${row.model_name || row.sku_title || 'ai-video'}-${row.cloud_task_id || row.id}.mp4`)
+    const downloaded = await downloadUrlToLibrary(url, `${row.model_name || row.sku_title || 'ai-video'}-${row.cloud_task_id || row.id}.mp4`, {
+      canvasProjectId: row.canvas_project_id,
+      canvasNodeId: row.canvas_node_id,
+      taskId: row.cloud_task_id || row.id,
+    })
     const finishedAt = nowIso()
     db.prepare(`UPDATE video_generations SET
       local_path = ?, file_size = ?, mime_type = ?, download_status = ?, download_error = ?, downloaded_at = ?, updated_at = ?
@@ -649,6 +682,28 @@ export function deleteGeneration(id: string, deleteFile = false): boolean {
   const result = getDatabase().prepare('UPDATE video_generations SET is_deleted = 1, deleted_at = ?, download_status = ?, updated_at = ? WHERE id = ?').run(now, 'skipped', now, row.id)
   if (result.changes > 0) notifyDeleted(row.id)
   return result.changes > 0
+}
+
+/**
+ * v0.7.14+ 删画布节点时级联软删其视频记录。
+ * 物理文件由 canvas.ts 的 cleanupNodeFiles 按 {nodeId}_ 前缀清理，这里只软删 DB 记录并通知前端。
+ */
+export function deleteGenerationsByCanvasNode(canvasProjectId: string, canvasNodeId: string): number {
+  if (!canvasProjectId || !canvasNodeId) return 0
+  const db = getDatabase()
+  const rows = db.prepare("SELECT id FROM video_generations WHERE canvas_project_id = ? AND canvas_node_id = ? AND is_deleted = 0").all(canvasProjectId, canvasNodeId) as Array<{ id: string }>
+  if (!rows.length) return 0
+  const now = nowIso()
+  const stmt = db.prepare('UPDATE video_generations SET is_deleted = 1, deleted_at = ?, download_status = ?, updated_at = ? WHERE id = ?')
+  let count = 0
+  for (const row of rows) {
+    const result = stmt.run(now, 'skipped', now, row.id)
+    if (result.changes > 0) {
+      notifyDeleted(row.id)
+      count++
+    }
+  }
+  return count
 }
 
 export async function runPendingDownloads(limit = 2): Promise<{ attempted: number; downloaded: number; failed: number }> {

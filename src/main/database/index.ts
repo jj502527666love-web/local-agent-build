@@ -178,6 +178,8 @@ function runMigrations(): void {
       downloaded_at TEXT NOT NULL DEFAULT '',
       is_deleted INTEGER NOT NULL DEFAULT 0,
       deleted_at TEXT NOT NULL DEFAULT '',
+      canvas_project_id TEXT NOT NULL DEFAULT '',
+      canvas_node_id TEXT NOT NULL DEFAULT '',
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_video_generations_cloud_task ON video_generations(cloud_task_id);
@@ -192,7 +194,15 @@ function runMigrations(): void {
   if (videoCols.length > 0 && !videoColNames.includes('deleted_at')) {
     db.exec("ALTER TABLE video_generations ADD COLUMN deleted_at TEXT NOT NULL DEFAULT ''")
   }
+  // v0.7.14+ 流式画布视频节点：标记任务来源画布，用于落盘到 canvas/{projectId}/ 与删节点级联清理
+  if (videoCols.length > 0 && !videoColNames.includes('canvas_project_id')) {
+    db.exec("ALTER TABLE video_generations ADD COLUMN canvas_project_id TEXT NOT NULL DEFAULT ''")
+  }
+  if (videoCols.length > 0 && !videoColNames.includes('canvas_node_id')) {
+    db.exec("ALTER TABLE video_generations ADD COLUMN canvas_node_id TEXT NOT NULL DEFAULT ''")
+  }
   db.exec('CREATE INDEX IF NOT EXISTS idx_video_generations_deleted ON video_generations(is_deleted, created_at DESC)')
+  db.exec('CREATE INDEX IF NOT EXISTS idx_video_generations_canvas ON video_generations(canvas_project_id, canvas_node_id)')
 
   // conversations: 「智能体不再绑定模型」改造（v0.6.5+）
   // 每个会话独立记忆模型：新建会话从云控端默认拉取，用户输入框切换持久写回

@@ -2,8 +2,8 @@ export interface NodeTypeDef {
   type: string
   label: string
   color: string
-  inputs: { handle: string; dataType: 'text' | 'image'; required: boolean }[]
-  outputs: { handle: string; dataType: 'text' | 'image' }[]
+  inputs: { handle: string; dataType: 'text' | 'image' | 'video'; required: boolean }[]
+  outputs: { handle: string; dataType: 'text' | 'image' | 'video' }[]
   dynamicOutputs?: boolean
 }
 
@@ -99,6 +99,28 @@ export const NODE_TYPE_DEFS: NodeTypeDef[] = [
     color: '#a855f7',
     inputs: [{ handle: 'image-input', dataType: 'image', required: true }],
     outputs: [{ handle: 'output', dataType: 'image' }]
+  },
+  // v0.7.14+ AI 视频：上游文本/图片 → 视频（dataType 'video'）。
+  // 图片输入按模式分槽：image-input=参考图（图生视频，可多连）；first/last-frame-input=首尾帧（各 1 张）。
+  // 规格/计费走 L2 catalog；异步任务由 useVideoTaskPolling 轮询、完成后落盘到 canvas/{projectId}/。
+  {
+    type: 'aiVideo',
+    label: 'AI 视频',
+    color: '#d946ef',
+    inputs: [
+      { handle: 'text-input', dataType: 'text', required: false },
+      { handle: 'image-input', dataType: 'image', required: false },
+      { handle: 'first-frame-input', dataType: 'image', required: false },
+      { handle: 'last-frame-input', dataType: 'image', required: false }
+    ],
+    outputs: [{ handle: 'output', dataType: 'video' }]
+  },
+  {
+    type: 'videoResult',
+    label: '视频结果',
+    color: '#c026d3',
+    inputs: [{ handle: 'input', dataType: 'video', required: true }],
+    outputs: []
   }
 ]
 
@@ -110,7 +132,7 @@ export function getHandleType(
   nodeType: string,
   handleId: string,
   direction: 'input' | 'output'
-): 'text' | 'image' | null {
+): 'text' | 'image' | 'video' | null {
   const def = getNodeTypeDef(nodeType)
   if (!def) return null
 
