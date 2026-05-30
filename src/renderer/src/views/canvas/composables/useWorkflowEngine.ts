@@ -15,6 +15,7 @@ import { compressImage } from '@/utils/compress-image'
 import { cloudClient } from '@/utils/cloud-api'
 import { useVideoTaskPolling } from './useVideoTaskPolling'
 import { useVideoCatalogSelection } from './useVideoCatalogSelection'
+import { useVideoFrames } from './useVideoFrames'
 
 export type TaskStatus = 'pending' | 'running' | 'done' | 'error' | 'skipped' | 'blocked'
 
@@ -147,6 +148,8 @@ async function applyVideoTaskToNode(nodeId: string, projectId: string, taskId: s
   const canvasStore = useCanvasStore()
   const node = canvasStore.nodes.find((n) => n.id === nodeId)
   if (!node) return
+  // 更新前捕获旧状态：用于判断本次是否「由非完成态首次转为完成」，从而只刷一次余额
+  const prevStatus = String(node.data.status || '')
   let record: any = null
   try { record = await syncVideoRecordForNode(task, projectId, nodeId) } catch { /* 落盘失败不阻塞状态更新 */ }
   const status = mapVideoNodeStatus(String(task?.status || ''))
@@ -160,6 +163,9 @@ async function applyVideoTaskToNode(nodeId: string, projectId: string, taskId: s
     result_path: record?.local_path || node.data.result_path || '',
   }
   await canvasStore.updateNode(nodeId, { data: { ...node.data, ...patch } })
+  // 视频「完成才扣积分」（后端策略），首次进入 done 时刷新余额显示，对齐独立视频页；
+  // 仅在非完成→完成时刷一次，避免重开已完成画布或重复轮询时多次刷新。
+  if (status === 'done' && prevStatus !== 'done') refreshCloudBalances()
 }
 
 // Module-level singletons so all composable consumers share the same state.
@@ -254,10 +260,13 @@ export function useWorkflowEngine() {
       if (outputDef.dataType === 'text') {
         let text = ''
         if (sourceNode.type === 'promptSlice') {
-          const handleId = edge.source_handle
-          const rowId = handleId.replace('output-', '')
+          const rowId = edge.source_handle.replace('output-', '')
           const row = (sourceNode.data.rows || []).find((r: any) => r.id === rowId)
           text = row?.text || ''
+        } else if (sourceNode.type === 'storyboard') {
+          const shotId = edge.source_handle.replace('output-', '')
+          const shot = (sourceNode.data.shots || []).find((s: any) => s.id === shotId)
+          text = shot?.prompt || ''
         } else {
           text = sourceNode.data.result || sourceNode.data.outputContent || sourceNode.data.text || ''
         }
@@ -267,14 +276,20 @@ export function useWorkflowEngine() {
           else demandTexts.push(text)
         }
       } else if (outputDef.dataType === 'image') {
-        // 读取优先级：result_path（生图节点产出，相对路径） > image_path（refImage
-        // 节点落盘后的相对路径） > image_data（refImage 落盘失败时的内存 base64 兜底）。
-        // 旧实现漏读 image_path，导致 refImage 节点持久化成功后参考图 100% 丢失。
-        const img =
-          sourceNode.data.result_path ||
-          sourceNode.data.image_path ||
-          sourceNode.data.image_data ||
-          ''
+        let img = ''
+        if (sourceNode.type === 'videoFrames' && edge.source_handle.startsWith('output-')) {
+          // 关键帧抽取节点：按 output-{frameId} 取对应帧
+          const frameId = edge.source_handle.replace('output-', '')
+          const frame = (sourceNode.data.frames || []).find((f: any) => f.id === frameId)
+          img = frame?.path || ''
+        } else {
+          // 读取优先级：result_path（生图产出） > image_path（refImage 落盘） > image_data（base64 兜底）
+          img =
+            sourceNode.data.result_path ||
+            sourceNode.data.image_path ||
+            sourceNode.data.image_data ||
+            ''
+        }
         if (img) images.push(img)
       } else if (outputDef.dataType === 'video') {
         // 上游视频节点产出：优先本地落盘路径，回落云端 URL（24h 有效）
@@ -297,12 +312,32 @@ export function useWorkflowEngine() {
       const sourceNode = canvasStore.nodes.find((n) => n.id === edge.source_node_id)
       if (!sourceNode) continue
       const def = getNodeTypeDef(sourceNode.type)
-      const output = def?.outputs.find((o) => o.handle === edge.source_handle)
+      let output = def?.outputs.find((o) => o.handle === edge.source_handle)
+      if (!output && def?.dynamicOutputs && edge.source_handle.startsWith('output-')) output = def.outputs[0]
       if (output?.dataType !== 'image') continue
-      const img = sourceNode.data.result_path || sourceNode.data.image_path || sourceNode.data.image_data || ''
+      let img = ''
+      if (sourceNode.type === 'videoFrames' && edge.source_handle.startsWith('output-')) {
+        const frameId = edge.source_handle.replace('output-', '')
+        const frame = (sourceNode.data.frames || []).find((f: any) => f.id === frameId)
+        img = frame?.path || ''
+      } else {
+        img = sourceNode.data.result_path || sourceNode.data.image_path || sourceNode.data.image_data || ''
+      }
       if (img) result.push(img)
     }
     return result
+  }
+
+  // 取上游「视频输入」节点的视频路径（videoInput.video_path / aiVideo.result_path / video_url）
+  function getUpstreamVideo(nodeId: string, projectId: string): string {
+    const canvasStore = useCanvasStore()
+    const edge = canvasStore.edges.find(
+      (e) => e.project_id === projectId && e.target_node_id === nodeId && e.target_handle === 'video-input'
+    )
+    if (!edge) return ''
+    const src = canvasStore.nodes.find((n) => n.id === edge.source_node_id)
+    if (!src) return ''
+    return String(src.data.video_path || src.data.video_url || src.data.result_path || '')
   }
 
   function checkRequiredInputs(nodeId: string, projectId: string): { ok: boolean; missing: string[] } {
@@ -820,6 +855,10 @@ export function useWorkflowEngine() {
         // 视频结果节点：纯展示，不执行
         break
 
+      case 'videoInput':
+        // 视频源节点：不需要执行
+        break
+
       case 'promptSlice':
         // Prompt slice nodes don't need execution, they already have data
         break
@@ -1034,6 +1073,30 @@ export function useWorkflowEngine() {
         await executeAiVideoNode(node, nodeId, projectId, upstream)
         break
       }
+
+      case 'videoFrames': {
+        await executeVideoFramesNode(node, nodeId, projectId)
+        break
+      }
+
+      case 'videoReverse': {
+        await executeVideoReverseNode(node, nodeId, projectId)
+        break
+      }
+
+      case 'storyboard': {
+        await executeStoryboardNode(node, nodeId, projectId, upstream)
+        break
+      }
+
+      case 'createCharacter': {
+        await executeCreateCharacterNode(node, nodeId, projectId, upstream)
+        break
+      }
+
+      case 'characterRef':
+        // 角色引用节点为纯数据源，仅向下游提供定妆图，无需执行逻辑
+        break
 
       case 'reverse': {
         // 图片反推节点：image → text 桥，复用 Image2PromptView 同款调用链
@@ -1657,6 +1720,179 @@ export function useWorkflowEngine() {
       // 单节点生成：后台轮询，不阻塞用户
       attachVideoTaskPolling(nodeId, projectId, task.id)
     }
+  }
+
+  // ===== 关键帧抽取 / 视频反推 / 智能分镜 =====
+
+  function frameIdFor(mode: string, index: number): string {
+    if (mode === 'first_last') return index === 0 ? 'first' : 'last'
+    return `f${index}`
+  }
+
+  /** 关键帧抽取：上游视频 → 前端抽帧 → 批量落盘 → frames（每帧一个 image 动态输出）。 */
+  async function executeVideoFramesNode(node: any, nodeId: string, projectId: string): Promise<void> {
+    const canvasStore = useCanvasStore()
+    const videoPath = getUpstreamVideo(nodeId, projectId)
+    if (!videoPath) throw new Error('关键帧抽取需要连接「视频输入」节点')
+    await canvasStore.updateNode(nodeId, { data: { ...node.data, status: 'running', error: '' } })
+
+    const { extractFrames } = useVideoFrames()
+    const mode = String(node.data.mode || 'uniform')
+    const raw = await extractFrames(videoPath, {
+      mode: mode as any,
+      count: Number(node.data.count) || 4,
+      intervalSec: Number(node.data.intervalSec) || 2,
+      maxFrames: 20,
+    })
+    if (!raw.length) throw new Error('未能从视频抽取到关键帧')
+
+    const payload = raw.map((f, i) => ({ id: frameIdFor(mode, i), dataUrl: f.dataUrl, time: f.time }))
+    const saved = await api().canvas.invoke('saveNodeFrames', projectId, nodeId,
+      payload.map((p) => ({ id: p.id, dataUrl: p.dataUrl }))) as Array<{ id: string; path: string }>
+    const pathById = new Map((saved || []).map((s) => [s.id, s.path]))
+    const frames = payload
+      .map((p) => ({ id: p.id, time: p.time, path: pathById.get(p.id) || '' }))
+      .filter((f) => f.path)
+
+    const latest = canvasStore.nodes.find((n) => n.id === nodeId)
+    await canvasStore.updateNode(nodeId, { data: { ...(latest?.data || node.data), status: 'done', frames } })
+  }
+
+  function buildVideoReverseSystemPrompt(mode: string, lang: string): string {
+    if (mode === 'storyboard') {
+      return lang === 'en'
+        ? 'You are a film director. Break these video keyframes (in time order) into shots; output one concise English image/video prompt per shot, one per line. No extra text.'
+        : '你是影视导演。请把这些按时间排列的视频关键帧拆解为分镜，每个镜头输出一句可直接用于生图/生视频的中文画面提示词，每行一个，不要其他内容。'
+    }
+    return lang === 'en'
+      ? 'You are a video analysis expert. Synthesize these keyframes into ONE detailed English prompt suitable for video generation (subject, scene, action, camera, style). Output a single paragraph.'
+      : '你是视频分析专家。请把这些关键帧综合为一段可直接用于视频生成的中文提示词（主体、场景、动作、运镜、风格），只输出一段文字。'
+  }
+
+  /** 视频反推：上游视频 → 抽代表帧 → 多模态拆解为提示词 / 分镜文本（复用视觉模型链）。 */
+  async function executeVideoReverseNode(node: any, nodeId: string, projectId: string): Promise<void> {
+    const canvasStore = useCanvasStore()
+    const project = canvasStore.currentProject
+    const videoPath = getUpstreamVideo(nodeId, projectId)
+    if (!videoPath) throw new Error('视频反推需要连接「视频输入」节点')
+
+    const visionProviderId = node.data.vision_provider_id || project?.vision_provider_id || ''
+    const visionModelId = node.data.vision_model_id || project?.vision_model_id || ''
+    if (!visionProviderId || !visionModelId) {
+      throw new Error('请在节点选择视觉模型，或在画布设置中配置默认视觉模型')
+    }
+    await canvasStore.updateNode(nodeId, { data: { ...node.data, status: 'running', error: '' } })
+
+    const { extractFrames } = useVideoFrames()
+    const limit = Math.max(2, Math.min(12, Number(node.data.frameLimit) || 8))
+    const raw = await extractFrames(videoPath, { mode: 'uniform', count: limit, maxFrames: limit })
+    if (!raw.length) throw new Error('未能从视频抽取关键帧用于反推')
+
+    const images: string[] = []
+    for (const f of raw) {
+      try { images.push(await compressImage(f.dataUrl)) } catch { images.push(f.dataUrl) }
+    }
+
+    const outputLang = node.data.output_lang === 'en' ? 'en' : 'cn'
+    const mode = node.data.mode === 'storyboard' ? 'storyboard' : 'prompt'
+    const sys = buildVideoReverseSystemPrompt(mode, outputLang)
+    const userContent: any[] = [{ type: 'text', text: outputLang === 'en' ? 'Keyframes in time order:' : '按时间顺序的关键帧：' }]
+    for (const url of images) userContent.push({ type: 'image_url', image_url: { url } })
+
+    const result = await api().llm.invoke('call', visionProviderId, visionModelId, [
+      { role: 'system', content: sys },
+      { role: 'user', content: userContent },
+    ])
+    let resultText = ''
+    if (typeof result === 'string') resultText = result.trim()
+    else if (result?.content) resultText = String(result.content).trim()
+    else resultText = String(result || '').trim()
+    if (!resultText) throw new Error('反推未返回结果：可能模型不支持图像输入或上游异常')
+
+    const latest = canvasStore.nodes.find((n) => n.id === nodeId)
+    await canvasStore.updateNode(nodeId, { data: { ...(latest?.data || node.data), status: 'done', result: resultText } })
+    await recordUsage('vision', visionProviderId, visionModelId)
+  }
+
+  /** 智能分镜：小说/剧情文本 → LLM 拆镜头 → shots（每镜头一个 text 动态输出）。 */
+  async function executeStoryboardNode(node: any, nodeId: string, projectId: string, upstream: UpstreamData): Promise<void> {
+    const canvasStore = useCanvasStore()
+    const project = canvasStore.currentProject
+    if (!project?.text_provider_id || !project?.text_model_id) {
+      throw new Error('请先在画布设置中配置文本模型')
+    }
+    const source = (upstream.texts.join('\n') || node.data.text || '').trim()
+    if (!source) throw new Error('智能分镜需要输入：请连接文本节点或在节点中填写小说/剧情')
+    await canvasStore.updateNode(nodeId, { data: { ...node.data, status: 'running', error: '' } })
+
+    const sys = '你是影视分镜策划师。请把用户提供的小说/剧情文本拆分成镜头列表，每个镜头输出一句可直接用于生图/生视频的中文画面提示词。只输出 JSON 对象 {"shots":[{"scene_index":1,"prompt":"...","shot_size":"","camera":"","mood":""}]}，不要其他内容。'
+    const result = await api().llm.invoke('call', project.text_provider_id, project.text_model_id,
+      [{ role: 'system', content: sys }, { role: 'user', content: source }],
+      { stream: false, notifyStream: false, max_tokens: 4000, response_format: { type: 'json_object' } })
+
+    const extracted = extractJson(result)
+    let arr: any[] = []
+    if (Array.isArray(extracted)) arr = extracted
+    else if (extracted && typeof extracted === 'object') {
+      const found = Object.values(extracted).find((v) => Array.isArray(v))
+      arr = Array.isArray(found) ? found : []
+    }
+    if (!arr.length) throw new Error('AI 未返回有效分镜')
+
+    const shots = arr.slice(0, 30).map((it: any, i: number) => ({
+      id: `s${i}`,
+      scene_index: (it && it.scene_index) || i + 1,
+      prompt: String((it && (it.prompt || it.描述 || it.提示词)) || (typeof it === 'string' ? it : '')).trim(),
+      shot_size: String((it && it.shot_size) || ''),
+      camera: String((it && it.camera) || ''),
+      mood: String((it && it.mood) || ''),
+    })).filter((s: any) => s.prompt)
+    if (!shots.length) throw new Error('AI 返回中未找到可用镜头提示词')
+
+    const latest = canvasStore.nodes.find((n) => n.id === nodeId)
+    await canvasStore.updateNode(nodeId, { data: { ...(latest?.data || node.data), status: 'done', shots } })
+    await recordUsage('chat', project.text_provider_id, project.text_model_id)
+  }
+
+  async function executeCreateCharacterNode(node: any, nodeId: string, projectId: string, upstream: UpstreamData): Promise<void> {
+    const canvasStore = useCanvasStore()
+    const project = canvasStore.currentProject
+    if (!project?.image_provider_id || !project?.image_model_id) {
+      throw new Error('请先在画布设置中配置生图模型')
+    }
+    const desc = (upstream.texts.join('\n') || node.data.description || '').trim()
+    if (!desc) throw new Error('创建角色需要描述：请连接文本或在节点中填写')
+    await canvasStore.updateNode(nodeId, { data: { ...node.data, status: 'running', error: '' } })
+
+    const gen = (await api().imageGen.invoke('generate', {
+      prompt: desc,
+      modelProviderId: project.image_provider_id,
+      modelId: project.image_model_id,
+      size: node.data.size || '1:1',
+      tierId: node.data.tier_id || '2k',
+      quality: 'auto',
+      canvasProjectId: project.id,
+      canvasNodeId: nodeId
+    }))?.[0]
+    if (!gen || gen.status !== 'done') throw new Error(gen?.error || '角色定妆图生成失败')
+
+    // 角色入库失败不应阻断节点产出：定妆图已生成，库写入异常仅丢失复用能力
+    let character: any = null
+    try {
+      character = await api().canvas.invoke('createCharacter', projectId, {
+        name: node.data.name || '角色',
+        description: desc,
+        ref_image_path: gen.result_path
+      })
+    } catch {
+      character = null
+    }
+
+    const latest = canvasStore.nodes.find((n) => n.id === nodeId)
+    await canvasStore.updateNode(nodeId, {
+      data: { ...(latest?.data || node.data), status: 'done', result_path: gen.result_path, character_id: character?.id || '' }
+    })
+    await recordUsage('image', project.image_provider_id, project.image_model_id)
   }
 
   return {

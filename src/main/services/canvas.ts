@@ -1,7 +1,7 @@
 import { getDatabase } from '../database'
 import { v4 as uuid } from 'uuid'
-import { join } from 'path'
-import { existsSync, mkdirSync, writeFileSync, rmSync, readdirSync } from 'fs'
+import { join, extname } from 'path'
+import { existsSync, mkdirSync, writeFileSync, rmSync, readdirSync, copyFileSync } from 'fs'
 import { getDataDir } from './data-path'
 import { removeByRelativePath } from './gallery'
 import { deleteGenerationsByCanvasNode } from './video-generation'
@@ -140,6 +140,122 @@ export function saveNodeImage(projectId: string, nodeId: string, dataUrl: string
   const filePath = join(dir, filename)
   writeFileSync(filePath, buffer)
   return { image_path: toRelativePath(filePath) }
+}
+
+/**
+ * v0.7.14+ 流式画布视频输入节点：把本地源视频复制进 canvas/{projectId}/，
+ * 文件名带 {nodeId}_ 前缀以复用 cleanupNodeFiles 的级联清理。视频体积大，直接 copy
+ * 文件而非走 base64，避免内存与 SQLite 膨胀；返回相对路径存入 node.data.video_path。
+ */
+export function saveNodeVideo(projectId: string, nodeId: string, sourcePath: string): { video_path: string } {
+  if (!sourcePath || !existsSync(sourcePath)) throw new Error('源视频文件不存在')
+  const dir = getProjectImageDir(projectId)
+  cleanupNodeFiles(projectId, nodeId)
+  const ext = (extname(sourcePath).replace('.', '').toLowerCase()) || 'mp4'
+  const filename = `${nodeId}_${Date.now()}.${ext}`
+  const filePath = join(dir, filename)
+  copyFileSync(sourcePath, filePath)
+  return { video_path: toRelativePath(filePath) }
+}
+
+/**
+ * v0.7.14+ 关键帧抽取节点：一次性批量落盘多帧。
+ * 不能复用 saveNodeImage（它每次都 cleanupNodeFiles 会把前面已落的帧删掉）；
+ * 这里只在开头清理一次旧帧，再按 {nodeId}_{frameId} 命名批量写入。
+ */
+export function saveNodeFrames(projectId: string, nodeId: string, frames: Array<{ id: string; dataUrl: string }>): Array<{ id: string; path: string }> {
+  const dir = getProjectImageDir(projectId)
+  cleanupNodeFiles(projectId, nodeId)
+  const out: Array<{ id: string; path: string }> = []
+  for (const f of frames || []) {
+    if (!f || !f.id || !f.dataUrl) continue
+    const { buffer, ext } = parseDataUrl(f.dataUrl)
+    const filename = `${nodeId}_${f.id}.${ext}`
+    const filePath = join(dir, filename)
+    writeFileSync(filePath, buffer)
+    out.push({ id: f.id, path: toRelativePath(filePath) })
+  }
+  return out
+}
+
+// ===== v0.7.14+ 角色一致性库 =====
+
+export interface CanvasCharacter {
+  id: string
+  project_id: string
+  name: string
+  description: string
+  ref_image_path: string
+  created_at: string
+}
+
+export function listCharacters(projectId: string): CanvasCharacter[] {
+  return getDatabase()
+    .prepare('SELECT * FROM canvas_characters WHERE project_id = ? ORDER BY created_at DESC')
+    .all(projectId) as CanvasCharacter[]
+}
+
+export function createCharacter(projectId: string, data: { name?: string; description?: string; ref_image_path?: string }): CanvasCharacter {
+  const id = uuid()
+  const now = new Date().toISOString()
+  const row: CanvasCharacter = {
+    id,
+    project_id: projectId,
+    name: data.name || '',
+    description: data.description || '',
+    ref_image_path: data.ref_image_path || '',
+    created_at: now,
+  }
+  getDatabase()
+    .prepare('INSERT INTO canvas_characters (id, project_id, name, description, ref_image_path, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(row.id, row.project_id, row.name, row.description, row.ref_image_path, row.created_at)
+  return row
+}
+
+export function deleteCharacter(id: string): { ok: true } {
+  getDatabase().prepare('DELETE FROM canvas_characters WHERE id = ?').run(id)
+  return { ok: true }
+}
+
+/**
+ * v0.7.14+ 复制画布项目时一并克隆角色库：把源项目的角色行 + 定妆图文件复制到
+ * 目标项目目录（定妆图改名为 char_{uuid}，独立于任何节点，不会被 cleanupNodeFiles 误删），
+ * 返回旧→新角色 id 映射，供渲染端把 characterRef 节点的 character_id / image_path
+ * 重写到新项目，避免引用悬空到源项目。
+ */
+export function cloneCharacters(
+  sourceProjectId: string,
+  targetProjectId: string
+): Array<{ old_id: string; new_id: string; ref_image_path: string }> {
+  const rows = listCharacters(sourceProjectId)
+  if (!rows.length) return []
+  const dir = getProjectImageDir(targetProjectId)
+  const dataDir = getDataDir()
+  const db = getDatabase()
+  const out: Array<{ old_id: string; new_id: string; ref_image_path: string }> = []
+  for (const c of rows) {
+    let newRefPath = ''
+    if (c.ref_image_path) {
+      try {
+        const srcFull = join(dataDir, c.ref_image_path)
+        if (existsSync(srcFull)) {
+          const ext = extname(srcFull).replace('.', '').toLowerCase() || 'png'
+          const filePath = join(dir, `char_${uuid()}.${ext}`)
+          copyFileSync(srcFull, filePath)
+          newRefPath = toRelativePath(filePath)
+        }
+      } catch {
+        newRefPath = ''
+      }
+    }
+    const newId = uuid()
+    const now = new Date().toISOString()
+    db.prepare(
+      'INSERT INTO canvas_characters (id, project_id, name, description, ref_image_path, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run(newId, targetProjectId, c.name, c.description, newRefPath, now)
+    out.push({ old_id: c.id, new_id: newId, ref_image_path: newRefPath })
+  }
+  return out
 }
 
 function deleteNodeImageFiles(projectId: string, nodeId: string): void {

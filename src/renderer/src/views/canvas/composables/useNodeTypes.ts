@@ -121,6 +121,55 @@ export const NODE_TYPE_DEFS: NodeTypeDef[] = [
     color: '#c026d3',
     inputs: [{ handle: 'input', dataType: 'video', required: true }],
     outputs: []
+  },
+  // v0.7.14+ 视频创作链：视频源 → 关键帧/反推 → 回喂 aiVideo；小说 → 智能分镜
+  {
+    type: 'videoInput',
+    label: '视频输入',
+    color: '#0ea5e9',
+    inputs: [],
+    outputs: [{ handle: 'output', dataType: 'video' }]
+  },
+  // 关键帧抽取：video → 多张 image（动态输出，每帧一个 output-{frameId}）
+  {
+    type: 'videoFrames',
+    label: '关键帧抽取',
+    color: '#0891b2',
+    inputs: [{ handle: 'video-input', dataType: 'video', required: true }],
+    outputs: [{ handle: 'output-0', dataType: 'image' }],
+    dynamicOutputs: true
+  },
+  // 视频反推：video → text（抽代表帧 + 多模态拆解为提示词/分镜）
+  {
+    type: 'videoReverse',
+    label: '视频反推',
+    color: '#0d9488',
+    inputs: [{ handle: 'video-input', dataType: 'video', required: true }],
+    outputs: [{ handle: 'output', dataType: 'text' }]
+  },
+  // 智能分镜：text(小说/剧情) → 多条镜头提示词 text（动态输出，每镜头一个 output-{shotId}）
+  {
+    type: 'storyboard',
+    label: '智能分镜',
+    color: '#7c3aed',
+    inputs: [{ handle: 'text-input', dataType: 'text', required: false }],
+    outputs: [{ handle: 'output-0', dataType: 'text' }],
+    dynamicOutputs: true
+  },
+  // 角色一致性：创建角色（生成定妆图 + 入库）/ 角色引用（选库中角色输出参考图）
+  {
+    type: 'createCharacter',
+    label: '创建角色',
+    color: '#db2777',
+    inputs: [{ handle: 'text-input', dataType: 'text', required: false }],
+    outputs: [{ handle: 'output', dataType: 'image' }]
+  },
+  {
+    type: 'characterRef',
+    label: '角色引用',
+    color: '#e11d48',
+    inputs: [],
+    outputs: [{ handle: 'output', dataType: 'image' }]
   }
 ]
 

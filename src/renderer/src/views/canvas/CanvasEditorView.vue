@@ -366,6 +366,12 @@ import ImageRecognitionNode from './nodes/ImageRecognitionNode.vue'
 import MattingNode from './nodes/MattingNode.vue'
 import AiVideoNode from './nodes/AiVideoNode.vue'
 import VideoResultNode from './nodes/VideoResultNode.vue'
+import VideoInputNode from './nodes/VideoInputNode.vue'
+import VideoFramesNode from './nodes/VideoFramesNode.vue'
+import VideoReverseNode from './nodes/VideoReverseNode.vue'
+import StoryboardNode from './nodes/StoryboardNode.vue'
+import CreateCharacterNode from './nodes/CreateCharacterNode.vue'
+import CharacterRefNode from './nodes/CharacterRefNode.vue'
 import DeletableEdge from './edges/DeletableEdge.vue'
 import HandleCreateMenu from './components/HandleCreateMenu.vue'
 import AiOrchestrateDialog from './components/AiOrchestrateDialog.vue'
@@ -471,7 +477,13 @@ const customNodeTypes: Record<string, any> = {
   imageResult: markRaw(ImageResultNode),
   promptSlice: markRaw(PromptSliceNode),
   aiVideo: markRaw(AiVideoNode),
-  videoResult: markRaw(VideoResultNode)
+  videoResult: markRaw(VideoResultNode),
+  videoInput: markRaw(VideoInputNode),
+  videoFrames: markRaw(VideoFramesNode),
+  videoReverse: markRaw(VideoReverseNode),
+  storyboard: markRaw(StoryboardNode),
+  createCharacter: markRaw(CreateCharacterNode),
+  characterRef: markRaw(CharacterRefNode)
 }
 const customEdgeTypes: Record<string, any> = {
   deletable: markRaw(DeletableEdge)
@@ -1303,6 +1315,12 @@ function getDefaultNodeData(type: string): Record<string, any> {
       sku_key: '', status: 'idle', progress: 0, error: '', cloud_task_id: '', video_url: '', cover_url: '', result_path: ''
     }
     case 'videoResult': return {}
+    case 'videoInput': return { video_path: '' }
+    case 'videoFrames': return { mode: 'uniform', count: 4, intervalSec: 2, frames: [], status: 'idle', error: '' }
+    case 'videoReverse': return { mode: 'prompt', output_lang: 'cn', frameLimit: 8, vision_provider_id: '', vision_model_id: '', result: '', status: 'idle', error: '' }
+    case 'storyboard': return { mode: 'novel', text: '', shots: [], status: 'idle', error: '' }
+    case 'createCharacter': return { name: '', description: '', result_path: '', character_id: '', status: 'idle', error: '' }
+    case 'characterRef': return { character_id: '', character_name: '', image_path: '' }
     default: return {}
   }
 }

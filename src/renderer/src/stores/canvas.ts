@@ -239,6 +239,14 @@ export const useCanvasStore = defineStore('canvas', () => {
     const srcNodes: CanvasNode[] = await api().canvas.invoke('listNodes', sourceId)
     const srcEdges: CanvasEdge[] = await api().canvas.invoke('listEdges', sourceId)
 
+    // v0.7.14+ 角色库随项目一起克隆：先把源项目角色行 + 定妆图复制到新项目，拿到
+    // 旧→新角色 id / 新定妆图路径映射，供下方 cleanNodeData 把 characterRef 节点的
+    // character_id / image_path 重写到新项目（否则引用会悬空到源项目，复制后失效）。
+    const clonedChars: Array<{ old_id: string; new_id: string; ref_image_path: string }> =
+      (await api().canvas.invoke('cloneCharacters', sourceId, newProject.id)) || []
+    const charIdMap = new Map(clonedChars.map((c) => [c.old_id, c.new_id]))
+    const charImgMap = new Map(clonedChars.map((c) => [c.old_id, c.ref_image_path]))
+
     // Clean node data: keep user inputs, strip results and statuses
     function cleanNodeData(type: string, data: Record<string, any>): Record<string, any> {
       switch (type) {
@@ -322,6 +330,27 @@ export const useCanvasStore = defineStore('canvas', () => {
           }
         case 'videoResult':
           return {}
+        case 'videoInput':
+          return { video_path: '' }
+        case 'videoFrames':
+          return { mode: data.mode || 'uniform', count: data.count || 4, intervalSec: data.intervalSec || 2, frames: [], status: 'idle', error: '' }
+        case 'videoReverse':
+          return { mode: data.mode || 'prompt', output_lang: data.output_lang || 'cn', frameLimit: data.frameLimit || 8, vision_provider_id: data.vision_provider_id || '', vision_model_id: data.vision_model_id || '', result: '', status: 'idle', error: '' }
+        case 'storyboard':
+          return { mode: data.mode || 'novel', text: data.text || '', shots: [], status: 'idle', error: '' }
+        case 'createCharacter':
+          return { name: data.name || '', description: data.description || '', result_path: '', character_id: '', status: 'idle', error: '' }
+        case 'characterRef': {
+          // 角色库已克隆到新项目：按旧→新 id 映射重写 character_id / image_path，
+          // 引用不再悬空；角色已删或未选（映射缺失）则回落为空白节点。
+          const oldCharId = data.character_id || ''
+          const newCharId = charIdMap.get(oldCharId) || ''
+          return {
+            character_id: newCharId,
+            character_name: newCharId ? (data.character_name || '') : '',
+            image_path: charImgMap.get(oldCharId) || ''
+          }
+        }
         default:
           return { ...data, status: undefined, error: undefined }
       }

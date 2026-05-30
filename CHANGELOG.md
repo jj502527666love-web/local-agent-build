@@ -6,6 +6,38 @@
 
 ---
 
+## [0.7.14] - 2026-05-30
+
+> **流式画布「视频创作 + 智能分镜 + 角色一致性」**：在 0.7.13 的 AI 视频节点之上，补齐从「视频素材 → 关键帧 / 反推回喂」「小说 → 分镜」到「角色定妆图生成 / 复用」的完整创作链，后端零改动（仅画布本地服务与本地库扩展）。
+
+### 新增
+
+- **视频创作链节点**（`videoInput` / `videoFrames` / `videoReverse` / `storyboard`）：
+  - `views/canvas/composables/useNodeTypes.ts`：新增上述 4 节点定义（`videoFrames` / `storyboard` 为 `dynamicOutputs`，每帧 / 每镜头一个 `output-{id}`）。
+  - `views/canvas/composables/useVideoFrames.ts`（新）：纯前端抽帧（`fetch → blob → video.seek → canvas.drawImage → toDataURL`）。
+  - `views/canvas/nodes/VideoInputNode.vue`（新）：导入本地视频并以 `video` 输出。
+  - `views/canvas/nodes/VideoFramesNode.vue`（新）：均匀 / 按秒抽帧，逐帧落盘后按动态 handle 输出 image。
+  - `views/canvas/nodes/VideoReverseNode.vue`（新）：抽代表帧 + 多模态反推，输出提示词 / 分镜 text。
+  - `views/canvas/nodes/StoryboardNode.vue`（新）：小说 / 剧情 → 镜头提示词列表，逐镜头动态输出 text。
+  - `views/canvas/composables/useWorkflowEngine.ts`：新增 `case 'videoFrames' / 'videoReverse' / 'storyboard'` 与对应 `executeVideoFramesNode` / `executeVideoReverseNode` / `executeStoryboardNode`；`getUpstreamData` 支持分镜文本 + videoFrames 动态图片、`getUpstreamImagesByHandle` 支持 videoFrames、新增 `getUpstreamVideo`。
+  - `main/services/canvas.ts`：新增 `saveNodeVideo`（copyFile）、`saveNodeFrames`（批量落帧）。
+
+- **角色一致性库**（`createCharacter` / `characterRef`）：
+  - `main/database/index.ts`：新增 `canvas_characters` 表（项目级角色库）。
+  - `main/services/canvas.ts`：`listCharacters` / `createCharacter` / `deleteCharacter` CRUD。
+  - `main/ipc/index.ts`：`canvas:saveNodeVideo` / `saveNodeFrames` / `listCharacters` / `createCharacter` / `deleteCharacter`。
+  - `views/canvas/nodes/CreateCharacterNode.vue`（新）：角色名 + 描述（或上游文本）→ 生成定妆图并入库，输出 image。
+  - `views/canvas/nodes/CharacterRefNode.vue`（新）：从角色库下拉选角色，输出其定妆图作为下游参考图。
+  - `views/canvas/composables/useWorkflowEngine.ts`：新增 `case 'createCharacter'`（`executeCreateCharacterNode`：生成定妆图 → 入库失败不阻断产出）与 `case 'characterRef'`（纯数据源）。
+  - `CanvasEditorView.vue` / `stores/canvas.ts`：注册 6 个新节点、`getDefaultNodeData` 默认值、`cleanNodeData` 复制画布时保留可复用字段并清运行态。
+  - **复制项目连角色库一起克隆**：`main/services/canvas.ts` 新增 `cloneCharacters`（复制角色行 + 把定妆图以 `char_{uuid}` 复制到新项目目录）+ `canvas:cloneCharacters` IPC；`stores/canvas.ts` 的 `duplicateProject` 在复制节点前先克隆角色库拿到旧→新映射，`cleanNodeData` 据此把 `characterRef` 节点的 `character_id` / `image_path` 重写到新项目，引用不再悬空。
+
+### 修复
+
+- **流式画布 AI 视频生成完成后账户余额不自动刷新**：`useWorkflowEngine.ts` 的 `applyVideoTaskToNode` 在任务首次进入完成态时调用 `refreshCloudBalances()`（仅「非完成→完成」刷一次），覆盖单节点后台轮询 / 工作流等待 / 重开恢复三条路径，对齐独立视频页与画布抠图节点。此前画布生成视频扣积分后，界面余额需手动刷新才更新（实际扣费由后端按 `sku_key`「完成才扣」处理，金额一直正确）。
+
+---
+
 ## [0.7.13] - 2026-05-29
 
 > **直充 + 永久套餐复购 + AI 视频通用服务商 + 画布视频节点**：新增用户按金额/档位充值金币与积分；永久套餐支持再次购买；AI 视频参考素材交互改为「协议能力表」驱动以兼容通用视频服务商；流式画布新增 AI 视频节点（文本 / 图片生成视频，支持图生视频与首尾帧）。

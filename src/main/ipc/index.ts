@@ -902,6 +902,18 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('canvas:saveNodeImage', (_, projectId: string, nodeId: string, dataUrl: string) =>
     canvasService.saveNodeImage(projectId, nodeId, dataUrl)
   )
+  ipcMain.handle('canvas:saveNodeVideo', (_, projectId: string, nodeId: string, sourcePath: string) =>
+    canvasService.saveNodeVideo(projectId, nodeId, sourcePath)
+  )
+  ipcMain.handle('canvas:saveNodeFrames', (_, projectId: string, nodeId: string, frames: Array<{ id: string; dataUrl: string }>) =>
+    canvasService.saveNodeFrames(projectId, nodeId, Array.isArray(frames) ? frames : [])
+  )
+  ipcMain.handle('canvas:listCharacters', (_, projectId: string) => canvasService.listCharacters(projectId))
+  ipcMain.handle('canvas:createCharacter', (_, projectId: string, data: any) => canvasService.createCharacter(projectId, data || {}))
+  ipcMain.handle('canvas:deleteCharacter', (_, id: string) => canvasService.deleteCharacter(id))
+  ipcMain.handle('canvas:cloneCharacters', (_, sourceProjectId: string, targetProjectId: string) =>
+    canvasService.cloneCharacters(sourceProjectId, targetProjectId)
+  )
   ipcMain.handle('canvas:deleteNodeImage', (_, projectId: string, nodeId: string) =>
     canvasService.deleteNodeImage(projectId, nodeId)
   )

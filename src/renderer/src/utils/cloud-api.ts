@@ -284,6 +284,7 @@ export const cloudClient = {
   syncTianqueOrder: (orderNo: string) => request('POST', `/client/orders/${orderNo}/tianque-sync`),
 
   getRechargeConfig: () => request('GET', '/client/recharge/config'),
+  desktopMenu: () => request('GET', '/client/desktop-menu'),
   createRechargeOrder: (data: Record<string, any>) => request('POST', '/client/recharge/order', data),
   createRechargeOrderTianque: (data: Record<string, any>) => request('POST', '/client/recharge/order/tianque', data),
   // 公告：当前启用的排序最高的一条公告；无公告时 announcement=null

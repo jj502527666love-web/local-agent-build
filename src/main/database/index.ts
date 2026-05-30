@@ -204,6 +204,19 @@ function runMigrations(): void {
   db.exec('CREATE INDEX IF NOT EXISTS idx_video_generations_deleted ON video_generations(is_deleted, created_at DESC)')
   db.exec('CREATE INDEX IF NOT EXISTS idx_video_generations_canvas ON video_generations(canvas_project_id, canvas_node_id)')
 
+  // v0.7.14+ 流式画布角色一致性库：跨镜头复用同一角色参考图，保证人物一致
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS canvas_characters (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL DEFAULT '',
+      name TEXT NOT NULL DEFAULT '',
+      description TEXT NOT NULL DEFAULT '',
+      ref_image_path TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_canvas_characters_project ON canvas_characters(project_id);
+  `)
+
   // conversations: 「智能体不再绑定模型」改造（v0.6.5+）
   // 每个会话独立记忆模型：新建会话从云控端默认拉取，用户输入框切换持久写回
   // 旧库的 conversation 行为：active_model_* 为空字符串，sendMessage 时按回退链解析

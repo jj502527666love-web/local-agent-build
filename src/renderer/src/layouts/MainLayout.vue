@@ -20,7 +20,7 @@
         </div>
       </div>
       <nav class="flex-1 px-3 py-1 overflow-y-auto space-y-0.5">
-        <template v-for="item in navItems" :key="item.path || item.label">
+        <template v-for="item in navItems" :key="item.path || item.key">
           <router-link
             v-if="!item.children"
             :to="item.path"
@@ -34,13 +34,13 @@
             <button
               class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-text-secondary hover:bg-surface-2 transition-all duration-150 w-full text-left"
               :class="{ 'nav-active': isGroupActive(item) }"
-              @click="toggleGroup(item.label)"
+              @click="toggleGroup(item.key)"
             >
               <component :is="item.icon" class="w-[18px] h-[18px] flex-shrink-0" />
               <span class="font-medium flex-1">{{ item.label }}</span>
-              <IconChevron class="w-3.5 h-3.5 flex-shrink-0 transition-transform duration-200" :class="{ 'rotate-90': expandedGroups.has(item.label) }" />
+              <IconChevron class="w-3.5 h-3.5 flex-shrink-0 transition-transform duration-200" :class="{ 'rotate-90': expandedGroups.has(item.key) }" />
             </button>
-            <div v-show="expandedGroups.has(item.label)" class="mt-0.5 space-y-0.5">
+            <div v-show="expandedGroups.has(item.key)" class="mt-0.5 space-y-0.5">
               <router-link
                 v-for="child in item.children"
                 :key="child.path"
@@ -113,7 +113,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watchEffect } from 'vue'
+import { computed, onMounted, ref, watchEffect } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useWorkflowEngine } from '@/views/canvas/composables/useWorkflowEngine'
 import IconChat from '@/components/icons/IconChat.vue'
@@ -146,6 +146,7 @@ import AnnouncementBar from '@/components/AnnouncementBar.vue'
 import ExpiryGlobalBanner from '@/components/ExpiryGlobalBanner.vue'
 import SidebarBalanceBadge from '@/components/SidebarBalanceBadge.vue'
 import { useCloudAuthStore } from '@/stores/cloud-auth'
+import { cloudClient } from '@/utils/cloud-api'
 import { appName, appAbbr, appIconUrl } from '@/utils/branding'
 
 const route = useRoute()
@@ -197,6 +198,7 @@ const allNavItems = [
   { path: '/models', label: '模型服务', icon: IconModel, requireAnyPermission: ['allow_custom_provider', 'allow_custom_video_provider', 'allow_custom_matting_provider'] },
   { path: '/personas', label: '人格规则', icon: IconPersona },
   {
+    key: 'group:ai-creation',
     label: 'AI 创作',
     icon: IconAICreation,
     children: [
@@ -212,6 +214,7 @@ const allNavItems = [
   { path: '/inspiration', label: '灵感广场', icon: IconInspiration },
   { path: '/canvas-square', label: '创意模板', icon: IconCanvasSquare },
   {
+    key: 'group:my-creations',
     label: '我的创作',
     icon: IconCreation,
     children: [
@@ -220,6 +223,7 @@ const allNavItems = [
     ]
   },
   {
+    key: 'group:extensions',
     label: '扩展能力',
     icon: IconExtension,
     children: [
@@ -234,6 +238,18 @@ const allNavItems = [
 
 const expandedGroups = ref<Set<string>>(new Set())
 
+// 云控端「桌面端菜单配置」：{ menu_key: { visible, title } }；登录后拉取，覆盖默认菜单的显隐与名称。
+// menu_key：叶子菜单用 path，分组用 group:xxx。「模型服务 / AI 抠图」不下发（继续按功能权限）。
+const menuOverrides = ref<Record<string, { visible: boolean; title: string }>>({})
+onMounted(async () => {
+  try {
+    const res: any = await cloudClient.desktopMenu()
+    menuOverrides.value = res?.overrides && typeof res.overrides === 'object' ? res.overrides : {}
+  } catch {
+    menuOverrides.value = {}
+  }
+})
+
 /**
  * 路径匹配：避免 `/canvas-square` 错命中 `/canvas` 这种「字符串前缀但语义不同」的情况。
  * 规则：完全相等 OR 完全相等 + 紧跟 `/`（用于带 :id 的子路径，比如 /canvas/abc）。
@@ -243,18 +259,18 @@ function pathMatches(routePath: string, menuPath: string): boolean {
 }
 
 watchEffect(() => {
-  for (const item of allNavItems) {
-    if (item.children?.some(child => pathMatches(route.path, child.path))) {
-      expandedGroups.value.add(item.label)
+  for (const item of allNavItems as any[]) {
+    if (item.children?.some((child: any) => pathMatches(route.path, child.path))) {
+      expandedGroups.value.add(item.key)
     }
   }
 })
 
-function toggleGroup(label: string) {
-  if (expandedGroups.value.has(label)) {
-    expandedGroups.value.delete(label)
+function toggleGroup(key: string) {
+  if (expandedGroups.value.has(key)) {
+    expandedGroups.value.delete(key)
   } else {
-    expandedGroups.value.add(label)
+    expandedGroups.value.add(key)
   }
 }
 
@@ -278,14 +294,30 @@ function passesPermissionFilter(item: any): boolean {
 }
 
 const navItems = computed(() => {
-  return allNavItems
-    .filter(passesPermissionFilter)
-    .map((item) => {
-      if (!item.children) return item
-      // 二级菜单同样过滤；若过滤后子项全空就保留父项（避免误隐藏分组本体）
-      const visibleChildren = item.children.filter(passesPermissionFilter)
-      return { ...item, children: visibleChildren.length > 0 ? visibleChildren : item.children }
-    })
+  const cfg = menuOverrides.value
+  // 叶子项：先过功能权限；权限项（模型服务 / AI 抠图）不受菜单配置影响；其余按云端 override 隐藏/改名
+  const applyLeaf = (item: any): any | null => {
+    if (!passesPermissionFilter(item)) return null
+    if (item.requireAnyPermission || item.requirePermission) return item
+    const o = cfg[item.path]
+    if (o && o.visible === false) return null
+    if (o && o.title) return { ...item, label: o.title }
+    return item
+  }
+  const result: any[] = []
+  for (const item of allNavItems as any[]) {
+    if (item.children) {
+      const go = cfg[item.key]
+      if (go && go.visible === false) continue // 整组被隐藏
+      const children = item.children.map(applyLeaf).filter(Boolean)
+      if (children.length === 0) continue // 子项全部被隐藏 / 无权限则不显示分组
+      result.push({ ...item, label: go && go.title ? go.title : item.label, children })
+    } else {
+      const applied = applyLeaf(item)
+      if (applied) result.push(applied)
+    }
+  }
+  return result
 })
 </script>
 
