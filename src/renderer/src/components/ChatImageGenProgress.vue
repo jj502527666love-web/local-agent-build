@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount, watchEffect } from 'vue'
+import { ref, onMounted, onBeforeUnmount, watchEffect, watch } from 'vue'
 import { useChatStore } from '@/stores/chat'
 
 /**
@@ -21,6 +21,8 @@ interface ProgressTask {
   genId: string
   /** 所属聊天轮次：用于在用户中断/被新消息覆盖时把仍在 generating 的卡片清掉 */
   requestId?: string
+  /** 所属会话：用于切换会话时只保留当前会话的卡片（多会话生图不串台） */
+  conversationId?: string
   status: 'generating' | 'completed' | 'error'
   prompt: string
   resultPath?: string
@@ -65,6 +67,9 @@ function dismiss(genId: string): void {
 
 function handleProgress(data: any): void {
   if (!data || data.source !== 'chat') return
+  // 仅显示当前会话的生图：切走的会话的生图事件不进本浮窗（多会话同时生图不串台）。
+  // conversationId 由主进程 emitProgress 透传（chat 工具调用必带）。
+  if (data.conversationId && data.conversationId !== chatStore.currentConversationId) return
   if (data.requestId && chatStore.isRequestCanceled(data.requestId)) {
     if (data.genId) {
       clearAutoClose(data.genId)
@@ -83,6 +88,7 @@ function handleProgress(data: any): void {
         {
           genId,
           requestId: data.requestId,
+          conversationId: data.conversationId,
           status: 'generating',
           prompt: String(data.prompt || ''),
           createdAt: Date.now()
@@ -109,6 +115,7 @@ function handleProgress(data: any): void {
         ...tasks.value,
         {
           genId,
+          conversationId: data.conversationId,
           status: 'completed',
           prompt,
           resultPath,
@@ -130,6 +137,7 @@ function handleProgress(data: any): void {
         ...tasks.value,
         {
           genId,
+          conversationId: data.conversationId,
           status: 'error',
           prompt: '',
           error: errorMsg,
@@ -158,6 +166,17 @@ watchEffect(() => {
   for (const id of staleIds) clearAutoClose(id)
   tasks.value = tasks.value.filter((t) => !staleIds.has(t.genId))
 })
+
+// 切换会话：本浮窗只反映 currentConversationId 的生图，切走即清空，
+// 避免上一个会话残留的卡片在新会话里继续显示。
+watch(
+  () => chatStore.currentConversationId,
+  () => {
+    for (const t of autoCloseTimers.values()) clearTimeout(t)
+    autoCloseTimers.clear()
+    tasks.value = []
+  }
+)
 
 onBeforeUnmount(() => {
   if (unsubscribe) {

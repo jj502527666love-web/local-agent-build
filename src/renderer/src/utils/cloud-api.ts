@@ -150,7 +150,11 @@ async function request(
   attempt = 0,
 ): Promise<any> {
   const isFormData = typeof FormData !== 'undefined' && body instanceof FormData
-  const headers: Record<string, string> = isFormData ? {} : { 'Content-Type': 'application/json' }
+  // Accept: application/json 让 Laravel 在 4xx/5xx 时也返回 JSON 错误体；否则会回退 HTML 错误页，
+  // 客户端 res.json() 解析失败只能显示笼统的「服务器错误 (500)」，真实原因被吞掉。
+  const headers: Record<string, string> = isFormData
+    ? { Accept: 'application/json' }
+    : { 'Content-Type': 'application/json', Accept: 'application/json' }
   const t = getCloudToken()
   if (t) headers['Authorization'] = `Bearer ${t}`
   const oemProjectKey = getOemProjectKey()

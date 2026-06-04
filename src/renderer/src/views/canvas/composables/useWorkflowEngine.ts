@@ -102,11 +102,27 @@ async function resolveRefImages(images: string[]): Promise<string[]> {
 
 // === 流式画布 AI 视频节点辅助（模块级，无组件依赖）===
 
-/** dataURI → File，用于把画布本地参考图上传为云端临时素材。 */
+/** dataURI → File，用于把画布本地参考图上传为云端临时素材。
+ * 注意：不能用 fetch(dataUri)——Electron 生产 CSP 的 connect-src 仅含 'self' https: http:，
+ * 不含 data:，fetch 一个 data: URI 会被 CSP 拦截抛原生 "Failed to fetch"。
+ * 这里直接解析 base64 / URL 编码构造 Blob，绕开网络栈与 CSP。 */
 async function dataUriToFile(dataUri: string, name: string): Promise<File> {
-  const res = await fetch(dataUri)
-  const blob = await res.blob()
-  return new File([blob], name, { type: blob.type || 'image/png' })
+  const match = /^data:([^;,]*)(;base64)?,([\s\S]*)$/.exec(dataUri)
+  if (!match) throw new Error('参考图数据格式异常，无法解析')
+  const mime = match[1] || 'image/png'
+  const isBase64 = Boolean(match[2])
+  const raw = match[3] || ''
+  let bytes: Uint8Array
+  if (isBase64) {
+    const binary = atob(raw)
+    bytes = new Uint8Array(binary.length)
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+  } else {
+    const decoded = decodeURIComponent(raw)
+    bytes = new Uint8Array(decoded.length)
+    for (let i = 0; i < decoded.length; i++) bytes[i] = decoded.charCodeAt(i)
+  }
+  return new File([bytes], name, { type: mime })
 }
 
 /** 画布参考图（相对路径 / dataURI）→ 读取 → 上传云端 → 返回 https URL；失败抛错以中止提交。 */

@@ -411,6 +411,33 @@ CREATE INDEX IF NOT EXISTS idx_matting_tasks_status ON matting_tasks(status);
 CREATE INDEX IF NOT EXISTS idx_matting_tasks_created ON matting_tasks(created_at);
 CREATE INDEX IF NOT EXISTS idx_matting_tasks_canvas ON matting_tasks(canvas_project_id);
 
+-- 精细抠图本地任务历史（抠抠图 koukoutu，仅云端中转）。
+-- 记录 tier（1/2/3 长边尺寸档）与 cost（本系统积分扣费），便于「我的精细抠图」分类展示 + 失败重试。
+CREATE TABLE IF NOT EXISTS fine_matting_tasks (
+  id TEXT PRIMARY KEY,
+  -- 原图绝对路径（用户选的或临时落盘的）；用于失败重试
+  source_image_path TEXT NOT NULL DEFAULT '',
+  -- 结果 PNG 绝对路径；保存到 dataDir/fine-matting/{taskId}.png
+  result_path TEXT NOT NULL DEFAULT '',
+  -- 结果 URL（抠抠图临时 URL，仅作 trace）
+  result_url TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending',
+  error TEXT NOT NULL DEFAULT '',
+  -- 我们端 trace ID
+  request_id TEXT NOT NULL DEFAULT '',
+  -- 抠抠图端 task_id
+  provider_task_id TEXT NOT NULL DEFAULT '',
+  elapsed_ms INTEGER NOT NULL DEFAULT 0,
+  -- 长边尺寸档位（1=4K以下 / 2=4K-8K / 3=8K以上）
+  tier INTEGER NOT NULL DEFAULT 0,
+  -- 本次扣费（本系统积分）
+  cost REAL NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_fine_matting_tasks_status ON fine_matting_tasks(status);
+CREATE INDEX IF NOT EXISTS idx_fine_matting_tasks_created ON fine_matting_tasks(created_at);
+
 -- 创意模板（v0.7.7+）：本地用户私有的创意模板系统
 -- 数据完全本地，与云端模板独立；云端模板由云控端提供，不写入此表。
 -- 用 TEXT/UUID 主键以便与 ipc 调用 stringly 兼容。

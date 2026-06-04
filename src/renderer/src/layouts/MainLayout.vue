@@ -133,6 +133,7 @@ import IconCreation from '@/components/icons/IconCreation.vue'
 import IconBatchGen from '@/components/icons/IconBatchGen.vue'
 import IconImage2Prompt from '@/components/icons/IconImage2Prompt.vue'
 import IconImageMatting from '@/components/icons/IconImageMatting.vue'
+import IconFineMatting from '@/components/icons/IconFineMatting.vue'
 import IconPrompt from '@/components/icons/IconPrompt.vue'
 import IconCanvas from '@/components/icons/IconCanvas.vue'
 import IconGallery from '@/components/icons/IconGallery.vue'
@@ -205,7 +206,8 @@ const allNavItems = [
       { path: '/image-gen', label: 'AI 生图', icon: IconImageGen },
       { path: '/batch-gen', label: '批量生图', icon: IconBatchGen },
       { path: '/image-to-prompt', label: '图片反推', icon: IconImage2Prompt },
-      { path: '/ai-matting', label: 'AI 抠图', icon: IconImageMatting, requireAnyPermission: ['allow_image_matting', 'allow_custom_matting_provider'] },
+      { path: '/ai-matting', label: '快速抠图', icon: IconImageMatting, requireAnyPermission: ['allow_image_matting', 'allow_custom_matting_provider'] },
+      { path: '/fine-matting', label: '精细抠图', icon: IconFineMatting, requireAnyPermission: ['allow_fine_matting'] },
       { path: '/canvas', label: '流式画布', icon: IconCanvas },
       { path: '/ai-video', label: 'AI 视频', icon: IconVideoGen }
     ]

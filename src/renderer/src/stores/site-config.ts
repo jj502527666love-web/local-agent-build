@@ -30,6 +30,23 @@ export interface RegisterAvailability {
 }
 
 /**
+ * 套餐商城入口开关。云控后台「套餐管理」关闭后，桌面端用户中心隐藏「套餐商城」入口。
+ * 默认 true（保留原有行为），拉取到 publicConfig 后用后端值覆盖。
+ */
+export interface PlansStoreAvailability {
+  enabled: boolean
+}
+
+/**
+ * 充值分类型显隐。云控后台「直充配置」可分别关闭金币（token）/ 积分（credit）充值，
+ * 关闭后桌面端隐藏对应入口与充值页 tab。默认都为 true（保留原有行为）。
+ */
+export interface RechargeAvailability {
+  token: boolean
+  credit: boolean
+}
+
+/**
  * 注册页协议（注册协议、隐私协议）。由云控端「系统设置 → 协议管理」维护，
  * 桌面端在注册前弹窗展示。content 是 HTML 富文本，渲染前用 DOMPurify 过滤。
  */
@@ -64,6 +81,8 @@ export interface CustomerServiceInfo {
 const DEFAULT_LABELS: CurrencyLabels = { token: '金币', credit: '积分' }
 const DEFAULT_PAYMENT: PaymentAvailability = { wechat: true, tianque: true }
 const DEFAULT_REGISTER: RegisterAvailability = { enabled: true }
+const DEFAULT_PLANS_STORE: PlansStoreAvailability = { enabled: true }
+const DEFAULT_RECHARGE: RechargeAvailability = { token: true, credit: true }
 const DEFAULT_AGREEMENTS: Agreements = {
   register: { title: '注册协议', content: '' },
   privacy: { title: '隐私协议', content: '' },
@@ -74,6 +93,8 @@ const DEFAULT_CUSTOMER_SERVICE: CustomerServiceInfo | null = null
 const STORAGE_KEY = 'site_config_currency'
 const PAYMENT_STORAGE_KEY = 'site_config_payment'
 const REGISTER_STORAGE_KEY = 'site_config_register'
+const PLANS_STORE_STORAGE_KEY = 'site_config_plans_store'
+const RECHARGE_STORAGE_KEY = 'site_config_recharge'
 const AGREEMENTS_STORAGE_KEY = 'site_config_agreements'
 const CHAT_MODEL_STORAGE_KEY = 'site_config_chat_default_model'
 const CUSTOMER_SERVICE_STORAGE_KEY = 'site_config_customer_service'
@@ -138,6 +159,49 @@ function readRegisterCache(): RegisterAvailability {
 function writeRegisterCache(r: RegisterAvailability) {
   try {
     localStorage.setItem(REGISTER_STORAGE_KEY, JSON.stringify(r))
+  } catch {
+    // 静默失败
+  }
+}
+
+function readPlansStoreCache(): PlansStoreAvailability {
+  try {
+    const raw = localStorage.getItem(PLANS_STORE_STORAGE_KEY)
+    if (!raw) return { ...DEFAULT_PLANS_STORE }
+    const parsed = JSON.parse(raw)
+    return {
+      enabled: typeof parsed?.enabled === 'boolean' ? parsed.enabled : DEFAULT_PLANS_STORE.enabled,
+    }
+  } catch {
+    return { ...DEFAULT_PLANS_STORE }
+  }
+}
+
+function writePlansStoreCache(p: PlansStoreAvailability) {
+  try {
+    localStorage.setItem(PLANS_STORE_STORAGE_KEY, JSON.stringify(p))
+  } catch {
+    // 静默失败
+  }
+}
+
+function readRechargeCache(): RechargeAvailability {
+  try {
+    const raw = localStorage.getItem(RECHARGE_STORAGE_KEY)
+    if (!raw) return { ...DEFAULT_RECHARGE }
+    const parsed = JSON.parse(raw)
+    return {
+      token: typeof parsed?.token === 'boolean' ? parsed.token : DEFAULT_RECHARGE.token,
+      credit: typeof parsed?.credit === 'boolean' ? parsed.credit : DEFAULT_RECHARGE.credit,
+    }
+  } catch {
+    return { ...DEFAULT_RECHARGE }
+  }
+}
+
+function writeRechargeCache(r: RechargeAvailability) {
+  try {
+    localStorage.setItem(RECHARGE_STORAGE_KEY, JSON.stringify(r))
   } catch {
     // 静默失败
   }
@@ -229,6 +293,8 @@ export const useSiteConfigStore = defineStore('siteConfig', () => {
   const labels = ref<CurrencyLabels>(readCache())
   const payment = ref<PaymentAvailability>(readPaymentCache())
   const register = ref<RegisterAvailability>(readRegisterCache())
+  const plansStore = ref<PlansStoreAvailability>(readPlansStoreCache())
+  const recharge = ref<RechargeAvailability>(readRechargeCache())
   const agreements = ref<Agreements>(readAgreementsCache())
   const chatDefaultModel = ref<ChatDefaultModel>(readChatDefaultModelCache())
   const customerService = ref<CustomerServiceInfo | null>(readCustomerServiceCache())
@@ -245,6 +311,9 @@ export const useSiteConfigStore = defineStore('siteConfig', () => {
 
   /** 存在可用的支付通道 */
   const hasAnyPayment = computed(() => payment.value.wechat || payment.value.tianque)
+
+  /** 存在任一可充值类型（金币 / 积分），用于控制充值入口显隐 */
+  const hasAnyRecharge = computed(() => recharge.value.token || recharge.value.credit)
 
   async function fetch(): Promise<void> {
     loading.value = true
@@ -273,6 +342,24 @@ export const useSiteConfigStore = defineStore('siteConfig', () => {
         }
         register.value = nextRegister
         writeRegisterCache(nextRegister)
+      }
+
+      // plans_store / recharge 字段为后加，老后端不带时保持当前值（缓存或默认 true，不误隐藏入口）
+      if (data?.plans_store && typeof data.plans_store === 'object') {
+        const nextPlansStore: PlansStoreAvailability = {
+          enabled: typeof data.plans_store.enabled === 'boolean' ? data.plans_store.enabled : DEFAULT_PLANS_STORE.enabled,
+        }
+        plansStore.value = nextPlansStore
+        writePlansStoreCache(nextPlansStore)
+      }
+
+      if (data?.recharge && typeof data.recharge === 'object') {
+        const nextRecharge: RechargeAvailability = {
+          token: typeof data.recharge.token === 'boolean' ? data.recharge.token : DEFAULT_RECHARGE.token,
+          credit: typeof data.recharge.credit === 'boolean' ? data.recharge.credit : DEFAULT_RECHARGE.credit,
+        }
+        recharge.value = nextRecharge
+        writeRechargeCache(nextRecharge)
       }
 
       // agreements 字段为后加，老后端不带时保持当前值（缓存或默认占位）
@@ -322,5 +409,5 @@ export const useSiteConfigStore = defineStore('siteConfig', () => {
     fetch()
   }
 
-  return { labels, payment, register, agreements, chatDefaultModel, customerService, hasAnyPayment, loading, lastFetchedAt, labelOf, fetch, init }
+  return { labels, payment, register, plansStore, recharge, agreements, chatDefaultModel, customerService, hasAnyPayment, hasAnyRecharge, loading, lastFetchedAt, labelOf, fetch, init }
 })

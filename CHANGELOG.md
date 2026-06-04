@@ -6,6 +6,56 @@
 
 ---
 
+## [0.7.17] - 2026-06-04
+
+> **智能体市场：付费购买 + 定向可见**：从市场「保存到本地」前先经云控端 `acquire` 校验——收费智能体扣金币 / 积分（余额不足弹「前往充值」引导）、定向智能体仅被授权的用户 / 用户组可见可存；收费智能体购买后才下发系统提示词，删本地后重存不重复扣费。需配合云控端 1.5.34。
+>
+> **新增「精细抠图」+ 原「AI 抠图」更名「快速抠图」**：精细抠图对接抠抠图（koukoutu）高清抠图，按上传图片长边尺寸三档计费（4K 以下 / 4K–8K / 8K 以上，后台自定义价格），仅云端中转、全站并发 5；原「AI 抠图」更名「快速抠图」，两者并存。两套抠图的报错 / 余额不足提示同步中文友好化。
+>
+> 本版另含图生图手动中止生成中任务 + 队列记录管理、AI 视频参考图上传前自动压缩、长任务历史上下文自动精简、超大工具结果转存文件等改进（详见应用内「更新日志」）。
+
+### 新增
+
+- **精细抠图（抠抠图 koukoutu，按尺寸三档计费）**：
+  - 新增独立「精细抠图」：`renderer/views/fine-matting/FineMattingView.vue` + `renderer/stores/fine-matting.ts` + 主进程 `services/fine-matting.ts` / `services/cloud-fine-matting.ts` + `fineMatting:*` IPC + preload / `env.d.ts` 命名空间 + 本地 `fine_matting_tasks` 表（`schema.sql` / `database/index.ts`）+ 图库「我的精细抠图」分类（`gallery.ts`）+ 图标 `IconFineMatting.vue` + 路由 `/fine-matting` + 侧栏菜单（受 `allow_fine_matting` 控制）。
+  - 对接抠抠图通用抠图异步 API（create → poll，Image File 模式，输出透明 PNG），仅云端中转、API Key 不下发桌面端；结果落 `dataDir/fine-matting/` 并自动归档。
+  - 按上传图片长边尺寸三档计费（默认 <4096 / 4096–7680 / ≥7680，阈值与三档积分价均后台可配）；待处理缩略图实时显示档位 + 预估价。
+  - 原「AI 抠图」更名为「快速抠图」（菜单 / 路由标题、`DesktopMenuController` 文案；路由 `/ai-matting` 与本地数据不变）。
+  - 需配合云控端：网关 `/gateway/fine-matting/*`、管理后台「精细抠图」、权限 `allow_fine_matting` + `fine_matting_quota_per_month`。
+
+- **智能体市场付费购买 + 定向可见**：
+  - `main/services/cloud-agent-market.ts`：列表 / 详情请求改带云端 token（`getCloudToken`）——登录后按可见范围过滤并取得 `is_owned`，未登录仍可浏览公开智能体；`CloudAgent` 加 `price` / `price_balance_type` / `is_owned`；新增 `acquireAgent`（`POST /client/agents/{id}/acquire`，区分 401 未登录 / 403 无权限 / 402 余额不足）；`importAgentAsLocal` 改为「先购买 / 获取成功，再用服务端下发的完整数据（含购买后才返回的 `system_prompt`）建本地智能体」，删本地后重存不重复扣费。
+  - `renderer/stores/bots.ts`：`MarketAgent` 加 `price` / `price_balance_type` / `is_owned`；`importFromMarket` 透传 `needLogin` / `needRecharge` / `forbidden` / `needed` / `current` / `balanceType`。
+  - `renderer/views/bots/BotListView.vue`：市场卡片展示「价格 / 已拥有 / 免费」，按钮按是否收费显示「购买并添加」；保存流程处理未登录（引导登录）、无权限、余额不足（弹 `LowBalanceModal`），购买成功刷新余额。
+  - `renderer/components/LowBalanceModal.vue`：新增「前往充值」按钮（此前仅「套餐商城」）。
+  - 需配合云控端 1.5.34。
+
+- **图生图手动中止生成中的任务（真中止 / 计费不返还）**：
+  - `main/services/image-generation.ts`：新增 `GenerationCanceledError` 与 `genId → AbortController` 注册表，导出 `cancelGeneration` / `cancelGenerations`；`fetchWithTimeout` / `fetchWithRetry` / `pollAsyncTask` 全链路接入外部 `AbortSignal`——自定义渠道立即断开 HTTP 连接，云端 / 多米异步轮询用可打断的 `interruptibleSleep` 立即停止轮询，中止错误不参与退避重试、不计入瞬态失败；`callImageAPI` / `callCloudImageAPI` / `callDuoMiImageAPI` 透传信号；`generateImages.runOne` 为每个生成项注册 controller，捕获中止后标记 `status='canceled'`（区别于 `error`）并回发带完整记录的 `canceled` 进度事件，`finally` 注销句柄。
+  - `main/ipc/index.ts`：新增 `imageGen:cancelGeneration` / `imageGen:cancelGenerations`。
+  - `renderer/stores/image-gen.ts`：新增 `cancelGeneration`（占位卡乐观置 `canceling`，IPC 失败回滚）/ `cancelAllInFlight`；`onProgress` 处理 `canceled` 事件，用带真实参数（prompt / 模型 / 尺寸）的记录替换占位卡，便于查看 / 重新生成 / 删除。
+  - `renderer/views/image-gen/ImageGenView.vue`：生成中卡片（网格 / 列表）新增「中止」按钮，新增「已取消」状态卡，队列区加「中止生成」批量入口；`isInFlightStatus` / `statusLabel` 纳入 `canceling` / `canceled`。
+  - 计费不返还：仅断开桌面端本地请求并停止等待 / 落盘，已提交到云端 / 多米的异步任务上游若已执行仍照常扣费；未触碰云控端。
+
+### 修复
+
+- **画布 AI 视频带参考图生成报 `Failed to fetch`**：`views/canvas/composables/useWorkflowEngine.ts` 的 `dataUriToFile` 改用 base64 解码直接构造 `File`，替代原 `fetch(dataUri)`。图生视频 / 首尾帧模式上传参考图时，`fetch` 一个 `data:` URI 会被 Electron 生产 CSP 的 `connect-src`（仅 `'self' https: http:`，不含 `data:`）拦截，抛原生 `Failed to fetch` 致提交中止；改为本地解析 base64 绕开网络栈与 CSP（更高效、对大图更稳）。纯文生视频不受影响。
+- **多入口 / 多会话生图进度卡片串台**：`renderer/stores/image-gen.ts` 的 `onProgress` 监听此前不区分来源，会把编辑页 / 聊天 / 画布的生图进度并入图生图列表的 `inFlight` 占位与顶部进度条；改为仅处理 `source==='image-gen' | 'batch'`。`renderer/components/ChatImageGenProgress.vue` 此前只按 `source==='chat'` 过滤、未按会话隔离（注释与实现不符），多会话同时生图时卡片会串台；改为按 `conversationId` 过滤 + 切换会话清空浮窗，`ProgressTask` 补 `conversationId` 字段。
+- **刚登录即生图的错路由隐患**：`main/services/image-generation.ts` 云端生图分支，若 `cloudModels` 尚未从渲染端 IPC 同步到主进程（此时 `cloud_model_id` 必为 `null`），此前会照发请求、由云端按 `model_id` 兜底（多家同名服务商可能错路由 / 错扣费）；改为在模型缓存为空（明确未就绪）时抛「云端模型尚未同步完成，请稍候重试」，多家同名场景交由云端返回明确错误。
+
+### 改进
+
+- **快速抠图 / 精细抠图：报错与余额提示优化**：
+  - 余额不足、配额用尽改中文友好提示（含所需 / 当前、已用 / 上限），不再显示英文 `Insufficient credit balance` / `Quota exceeded`；新增 `renderer/utils/matting-error.ts` 统一归类队列失败原因（余额 / 配额 / 繁忙 / 网络 / 超时 / 格式 / 登录）。
+  - 云端处理阶段新增「处理中」进度相位；轮询超时文案改为「任务可能仍在云端处理，请稍后重试」。
+  - 两页顶部新增服务状态条，批量结束给失败数量汇总；精细抠图提交前预检图片尺寸（测量完成才可提交、长边超 10000px 标红拦截）。
+
+- **编辑页生图标记来源**：`renderer/views/image-gen/ImageEditView.vue` 重绘提交补 `progressContext.source='edit'`，避免被图生图 / 批量列表的进度监听误并入其 `inFlight`。
+- **聊天生图默认 2K 档位**：`main/services/core-tools.ts` 的 `image_gen` 工具补默认 `tierId='2k'`（与画布节点一致；图片按 per-call 计费，分辨率档位不影响扣费）。
+- **图生图队列记录可视化 + 单条移除**：`renderer/views/image-gen/ImageGenView.vue` 左侧原仅「清空队列」，扩展为完整排队记录列表（序号 / 提示词摘要 / 批量数 ×N + 逐条「移出队列」按钮，复用 store 既有 `removeFromQueue`），并保留「清空队列」；正在生成的任务通过卡片「中止」或队列区「中止生成」处理。
+- **账单明细充值类记录文案中文化**：`renderer/components/BalanceLogsDialog.vue` 的 `changeTypeLabel` 补全 `recharge`（充值）/ `recharge_bonus`（充值赠送）/ `deduct`（扣减），不再回退显示英文 `change_type`；`displayRemark` 剥除备注内部技术前缀（`[tianque_sync]` / `[recharge]` / `[order]` / `[admin_sync]`），充值到账备注由 `[tianque_sync] PO… 充值到账` 变为 `PO… 充值到账`；筛选下拉补充「充值 / 充值赠送 / 扣减」三项（后端真实存在但此前缺失的 `change_type`）。
+- **套餐商城 / 充值入口按云控端开关显隐**：`stores/site-config.ts` 解析公开配置新增 `plans_store` / `recharge`（token/credit）开关 + 本地缓存 + `hasAnyRecharge`；`UserCenterView.vue`（顶部与侧边栏「去套餐商城」、「充值」入口）、`LowBalanceModal.vue`（「套餐商城」「前往充值」按钮）、`RechargeView.vue`（按 `config.token/credit.enabled` 过滤充值 tab、选中类型被关时自动切到可用类型）据此显隐。配合云控端 1.5.34 的三个开关。
+
 ## [0.7.16] - 2026-06-04
 
 > **智能体市场（桌面端）**：智能体页重构为「我的智能体 / 智能体市场」双 Tab，可从云控端上架的市场拉取智能体并「保存到本地」（自动建人格承载系统提示词、下载 2:3 形象图落盘、绑定 6 个内置小工具，并按 `cloud_agent_id` 去重）；本地智能体支持设置 2:3 形象图、发布到市场（投稿）+ 审核状态徽标 + 撤回、对市场智能体评分。需配合云控端 1.5.31。

@@ -47,6 +47,9 @@ export interface CloudPermissions {
   allow_image_matting: boolean
   allow_custom_matting_provider: boolean
   image_matting_quota_per_month: number
+  // 精细抠图（抠抠图 koukoutu）：是否允许（关闭后桌面端「精细抠图」入口隐藏）+ 月配额（张，0=不限）
+  allow_fine_matting: boolean
+  fine_matting_quota_per_month: number
   [key: string]: any
 }
 
@@ -146,6 +149,8 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
     allow_image_matting: true,
     allow_custom_matting_provider: false,
     image_matting_quota_per_month: 100,
+    allow_fine_matting: true,
+    fine_matting_quota_per_month: 100,
   })
   const balances = ref<{ type: string; amount: number }[]>([])
   const quotas = ref<CloudQuotas | null>(null)
@@ -237,6 +242,8 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
       allow_image_matting: true,
       allow_custom_matting_provider: false,
       image_matting_quota_per_month: 100,
+      allow_fine_matting: true,
+      fine_matting_quota_per_month: 100,
     }
     window.api?.cloud?.setPermissions({
       allow_custom_provider: false,

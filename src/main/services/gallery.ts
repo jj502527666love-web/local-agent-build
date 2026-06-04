@@ -38,10 +38,12 @@ export interface PagedResult<T> {
 
 const SYSTEM_CREATION_ID = '__sys_creation__'
 const SYSTEM_MATTING_ID  = '__sys_matting__'
+const SYSTEM_FINE_MATTING_ID = '__sys_fine_matting__'
 
 export const GALLERY_SYSTEM_IDS = {
   CREATION: SYSTEM_CREATION_ID,
   MATTING:  SYSTEM_MATTING_ID,
+  FINE_MATTING: SYSTEM_FINE_MATTING_ID,
 }
 
 const IMAGE_EXTENSIONS = new Set([
@@ -402,6 +404,18 @@ export function addToMatting(filePath: string): GalleryItem | null {
   const absPath = isAbsolute ? filePath : join(getDataDir(), filePath)
   if (!existsSync(absPath)) return null
   return addFile(SYSTEM_MATTING_ID, absPath)
+}
+
+/**
+ * 将精细抠图（抠抠图）结果自动归入系统「我的精细抠图」分类（透明 PNG）。
+ * 与 addToMatting 同等接口，只是落到不同分类。
+ */
+export function addToFineMatting(filePath: string): GalleryItem | null {
+  if (!filePath) return null
+  const isAbsolute = /^[A-Za-z]:|^\//.test(filePath)
+  const absPath = isAbsolute ? filePath : join(getDataDir(), filePath)
+  if (!existsSync(absPath)) return null
+  return addFile(SYSTEM_FINE_MATTING_ID, absPath)
 }
 
 /**

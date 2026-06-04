@@ -212,12 +212,19 @@
               </span>
               <span>下载 {{ formatCount(a.download_count) }}</span>
             </div>
-            <div class="mt-auto flex gap-2">
-              <button v-if="isSaved(a)" disabled class="flex-1 px-3 py-2 text-xs font-medium bg-surface-2 text-text-tertiary rounded-lg cursor-default">已添加</button>
-              <button v-else @click="saveToLocal(a)" :disabled="savingId === a.id" class="flex-1 px-3 py-2 text-xs font-medium bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors disabled:opacity-50">
-                {{ savingId === a.id ? '添加中...' : '添加' }}
-              </button>
-              <button @click="openRate(a)" class="btn-ghost">评分</button>
+            <div class="mt-auto">
+              <div class="flex items-center gap-2 text-[11px] mb-2">
+                <span v-if="a.price > 0 && !a.is_owned" class="px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 font-medium">{{ a.price }} {{ labelOf(a.price_balance_type) }}</span>
+                <span v-else-if="a.price > 0 && a.is_owned" class="px-1.5 py-0.5 rounded bg-green-100 text-green-700 font-medium">已拥有</span>
+                <span v-else class="text-text-tertiary">免费</span>
+              </div>
+              <div class="flex gap-2">
+                <button v-if="isSaved(a)" disabled class="flex-1 px-3 py-2 text-xs font-medium bg-surface-2 text-text-tertiary rounded-lg cursor-default">已添加</button>
+                <button v-else @click="saveToLocal(a)" :disabled="savingId === a.id" class="flex-1 px-3 py-2 text-xs font-medium bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors disabled:opacity-50">
+                  {{ savingId === a.id ? '添加中...' : (a.price > 0 && !a.is_owned ? '购买并添加' : '添加') }}
+                </button>
+                <button @click="openRate(a)" class="btn-ghost">评分</button>
+              </div>
             </div>
           </div>
         </div>
@@ -243,18 +250,29 @@
     </div>
 
     <GalleryPicker v-model:visible="showGalleryPicker" :multiple="false" @select="onGallerySelect" />
+
+    <LowBalanceModal
+      v-model:visible="lowBalance.visible"
+      :balance-type="lowBalance.balanceType"
+      :required="lowBalance.required"
+      :available="lowBalance.available"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, reactive } from 'vue'
+import { useRouter } from 'vue-router'
 import { useBotStore, type Bot, type MarketAgent } from '@/stores/bots'
 import { usePersonaStore } from '@/stores/personas'
 import { useKnowledgeStore } from '@/stores/knowledge'
 import { useSkillStore } from '@/stores/skills'
 import { useMcpStore } from '@/stores/mcps'
 import { usePromptSkillStore } from '@/stores/prompt-skills'
+import { useCloudAuthStore } from '@/stores/cloud-auth'
+import { useSiteConfigStore } from '@/stores/site-config'
 import GalleryPicker from '@/components/GalleryPicker.vue'
+import LowBalanceModal from '@/components/LowBalanceModal.vue'
 import { loadAsDataUri } from '@/utils/image-source'
 
 const botStore = useBotStore()
@@ -267,6 +285,9 @@ const userSkills = computed(() =>
 )
 const mcpStore = useMcpStore()
 const promptSkillStore = usePromptSkillStore()
+const router = useRouter()
+const cloudAuth = useCloudAuthStore()
+const siteConfig = useSiteConfigStore()
 
 const activeTab = ref<'mine' | 'market'>('mine')
 const showForm = ref(false)
@@ -443,6 +464,11 @@ async function withdraw(bot: Bot) {
 const marketSearch = ref('')
 const marketLoaded = ref(false)
 const savingId = ref<number | null>(null)
+const lowBalance = reactive({ visible: false, balanceType: 'credit' as 'token' | 'credit', required: 0, available: 0 })
+
+function labelOf(type: 'token' | 'credit'): string {
+  return siteConfig.labelOf(type)
+}
 
 async function switchToMarket() {
   activeTab.value = 'market'
@@ -461,11 +487,34 @@ function formatCount(n: number): string {
   return String(n)
 }
 async function saveToLocal(a: MarketAgent) {
+  // 未登录：收费 / 受限智能体需登录才能获取，直接引导登录
+  if (!cloudAuth.isLoggedIn) {
+    if (confirm('保存智能体需要先登录晓晓云账号，是否前往登录？')) router.push('/login')
+    return
+  }
   savingId.value = a.id
   try {
     const res = await botStore.importFromMarket(a)
-    if (!res.ok) alert('添加失败：' + (res.error || ''))
-    else if (res.alreadyExists) alert('该智能体已添加过')
+    if (res.ok) {
+      if (res.alreadyExists) {
+        alert('该智能体已添加过')
+      } else {
+        // 收费智能体此时已扣费，刷新余额并标记已拥有
+        cloudAuth.refreshBalancesThrottled(true).catch(() => {})
+        a.is_owned = true
+      }
+    } else if (res.needLogin) {
+      if (confirm('登录态已失效，请重新登录后再保存，是否前往登录？')) router.push('/login')
+    } else if (res.forbidden) {
+      alert(res.error || '你没有权限获取该智能体')
+    } else if (res.needRecharge) {
+      lowBalance.balanceType = res.balanceType || a.price_balance_type
+      lowBalance.required = res.needed || a.price
+      lowBalance.available = res.current || 0
+      lowBalance.visible = true
+    } else {
+      alert('添加失败：' + (res.error || ''))
+    }
   } finally {
     savingId.value = null
   }

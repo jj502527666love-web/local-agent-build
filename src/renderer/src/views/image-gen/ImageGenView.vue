@@ -180,13 +180,32 @@
                 <svg v-if="store.generating && !store.queue.length" class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
                 {{ store.generating ? (store.queue.length ? `加入队列 (${store.queue.length + 1})` : `生成中 (${store.progress?.completed || 0}/${store.progress?.total || batchCount})`) : '开始生成' }}
               </button>
-              <!-- Queue indicator -->
-              <div v-if="store.queue.length" class="mt-2 flex items-center justify-between px-1">
-                <div class="flex items-center gap-1.5 text-[11px] text-text-tertiary">
-                  <svg class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
-                  <span>生成中 ({{ store.progress?.completed || 0 }}/{{ store.progress?.total || '?' }}) + 排队 {{ store.queue.length }}</span>
+              <!-- Queue indicator + 队列记录列表 -->
+              <div v-if="store.generating || store.queue.length" class="mt-2">
+                <div class="flex items-center justify-between px-1 mb-1.5">
+                  <div class="flex items-center gap-1.5 text-[11px] text-text-tertiary min-w-0">
+                    <svg v-if="store.generating" class="w-3.5 h-3.5 animate-spin flex-shrink-0" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                    <span class="truncate">
+                      <template v-if="store.generating">生成中 ({{ store.progress?.completed || 0 }}/{{ store.progress?.total || '?' }})<template v-if="store.queue.length"> · 排队 {{ store.queue.length }}</template></template>
+                      <template v-else>排队 {{ store.queue.length }} 项</template>
+                    </span>
+                  </div>
+                  <div class="flex items-center gap-2 flex-shrink-0">
+                    <button v-if="store.generating" @click="store.cancelAllInFlight()" class="text-[11px] text-red-500 hover:text-red-600 dark:text-red-400 dark:hover:text-red-300">中止生成</button>
+                    <button v-if="store.queue.length" @click="store.clearQueue()" class="text-[11px] text-red-500 hover:text-red-600 dark:text-red-400 dark:hover:text-red-300">清空队列</button>
+                  </div>
                 </div>
-                <button @click="store.clearQueue()" class="text-[11px] text-red-500 hover:text-red-600 dark:text-red-400 dark:hover:text-red-300">清空队列</button>
+                <!-- 排队记录：每条可单独移出（正在生成的任务请用上方「中止生成」或右侧卡片中止） -->
+                <div v-if="store.queue.length" class="max-h-40 overflow-y-auto space-y-1 rounded-lg border border-surface-3 bg-surface-1 p-1.5">
+                  <div v-for="(item, idx) in store.queue" :key="item.id" class="flex items-center gap-2 px-2 py-1.5 rounded-md bg-surface-0 border border-surface-3">
+                    <span class="w-4 flex-shrink-0 text-center text-[10px] text-text-tertiary">{{ idx + 1 }}</span>
+                    <span class="flex-1 min-w-0 truncate text-[11px] text-text-secondary" :title="item.options.prompt">{{ item.label || item.options.prompt }}</span>
+                    <span v-if="(item.options.batchCount || 1) > 1" class="flex-shrink-0 text-[10px] text-text-tertiary">×{{ item.options.batchCount }}</span>
+                    <button @click="store.removeFromQueue(item.id)" class="flex-shrink-0 p-0.5 text-text-tertiary hover:text-red-500 rounded transition-colors" title="移出队列">
+                      <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18 18 6M6 6l12 12" /></svg>
+                    </button>
+                  </div>
+                </div>
               </div>
               <div v-if="store.lastError" class="mt-2 px-3 py-1.5 text-[11px] text-red-600 bg-red-50 dark:text-red-300 dark:bg-red-900/20 rounded-lg">{{ store.lastError }}</div>
             </div>
@@ -262,8 +281,29 @@
                       </button>
                     </div>
                   </div>
-                  <div v-else-if="gen.status === 'generating' || gen.status === 'pending'" class="aspect-square flex items-center justify-center bg-surface-2">
+                  <div v-else-if="gen.status === 'generating' || gen.status === 'pending' || gen.status === 'canceling'" class="aspect-square flex flex-col items-center justify-center gap-2 bg-surface-2">
                     <svg class="w-8 h-8 animate-spin text-primary-500" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                    <button
+                      v-if="gen.status === 'canceling'"
+                      disabled
+                      class="px-2 py-0.5 text-[10px] text-text-tertiary border border-surface-4 rounded-md cursor-not-allowed"
+                    >中止中…</button>
+                    <button
+                      v-else
+                      @click.stop="cancelGen(gen.id)"
+                      class="px-2 py-0.5 text-[10px] text-red-600 border border-red-300 rounded-md hover:bg-red-50 dark:text-red-300 dark:border-red-800 dark:hover:bg-red-900/30 transition-colors"
+                    >中止</button>
+                  </div>
+                  <div v-else-if="gen.status === 'canceled'" class="aspect-square flex flex-col items-center justify-center bg-surface-2 p-3">
+                    <svg class="w-6 h-6 text-text-tertiary mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 0 0 5.636 5.636m12.728 12.728A9 9 0 0 1 5.636 5.636m12.728 12.728L5.636 5.636" /></svg>
+                    <p class="text-[10px] text-text-tertiary text-center">已手动中止</p>
+                    <div class="mt-1.5 flex items-center gap-1">
+                      <button
+                        type="button"
+                        @click.stop="askRegenerate(gen)"
+                        class="px-2 py-0.5 text-[10px] text-primary-700 border border-primary-300 rounded-md hover:bg-primary-50 transition-colors"
+                      >重新生成</button>
+                    </div>
                   </div>
                   <div v-else-if="gen.status === 'error'" class="aspect-square flex flex-col items-center justify-center bg-red-50 dark:bg-red-900/20 p-3">
                     <svg class="w-6 h-6 text-red-400 dark:text-red-300 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z" /></svg>
@@ -303,8 +343,11 @@
                   </div>
                   <div class="w-20 h-20 rounded-lg overflow-hidden flex-shrink-0 bg-surface-2">
                     <img v-if="gen.status === 'done' && gen.result_path" :src="localFileUrl(gen.result_path, true)" loading="lazy" decoding="async" class="w-full h-full object-cover cursor-pointer" @click.stop="selectMode ? toggleSelect(gen.id) : openDetail(gen)" />
-                    <div v-else-if="gen.status === 'generating' || gen.status === 'pending'" class="w-full h-full flex items-center justify-center">
+                    <div v-else-if="gen.status === 'generating' || gen.status === 'pending' || gen.status === 'canceling'" class="w-full h-full flex items-center justify-center">
                       <svg class="w-5 h-5 animate-spin text-primary-500" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                    </div>
+                    <div v-else-if="gen.status === 'canceled'" class="w-full h-full flex items-center justify-center">
+                      <svg class="w-5 h-5 text-text-tertiary" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 0 0 5.636 5.636m12.728 12.728A9 9 0 0 1 5.636 5.636m12.728 12.728L5.636 5.636" /></svg>
                     </div>
                     <div v-else class="w-full h-full flex items-center justify-center bg-red-50 dark:bg-red-900/20">
                       <svg class="w-5 h-5 text-red-400 dark:text-red-300" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z" /></svg>
@@ -316,7 +359,7 @@
                     <div class="flex items-center gap-3 mt-1.5">
                       <span class="text-[10px] text-text-tertiary">{{ modelStore.formatModelLabel(gen.model_provider_id, gen.model_id) }}</span>
                       <span class="text-[10px] text-text-tertiary">{{ gen.size }}</span>
-                      <span :class="['text-[10px]', gen.status === 'done' ? 'text-green-600 dark:text-green-400' : gen.status === 'error' ? 'text-red-500 dark:text-red-400' : 'text-text-tertiary']">{{ gen.status }}</span>
+                      <span :class="['text-[10px]', gen.status === 'done' ? 'text-green-600 dark:text-green-400' : gen.status === 'error' ? 'text-red-500 dark:text-red-400' : 'text-text-tertiary']">{{ statusLabel(gen.status) }}</span>
                     </div>
                     <p v-if="gen.status === 'error'" class="text-[10px] text-red-500 dark:text-red-400 mt-1 line-clamp-2">{{ translateError(gen.error) }}</p>
                     <div v-if="gen.status === 'error'" class="mt-1 flex items-center gap-1">
@@ -333,6 +376,15 @@
                     </div>
                   </div>
                   <div v-if="!selectMode" class="flex items-start gap-1">
+                    <button
+                      v-if="gen.status === 'generating' || gen.status === 'pending'"
+                      @click.stop="cancelGen(gen.id)"
+                      class="p-1.5 text-red-500 hover:text-red-600 rounded-lg hover:bg-surface-2 transition-all"
+                      title="中止生成"
+                    >
+                      <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 0 0 5.636 5.636m12.728 12.728A9 9 0 0 1 5.636 5.636m12.728 12.728L5.636 5.636" /></svg>
+                    </button>
+                    <span v-else-if="gen.status === 'canceling'" class="p-1.5 text-[10px] text-text-tertiary whitespace-nowrap">中止中…</span>
                     <button
                       @click.stop="askRegenerate(gen)"
                       class="opacity-0 group-hover:opacity-100 p-1.5 text-text-tertiary hover:text-primary-600 rounded-lg hover:bg-surface-2 transition-all"
@@ -655,7 +707,21 @@ function toggleSelectAll() {
  * 与“已被删除”语义冲突。遇到这种只隐藏占位卡。
  */
 function isInFlightStatus(s: string): boolean {
-  return s === 'generating' || s === 'pending'
+  return s === 'generating' || s === 'pending' || s === 'canceling'
+}
+
+/** 手动中止一个生成中的任务：主进程会断开上游请求 / 停止轮询。计费不返还。 */
+function cancelGen(genId: string) {
+  store.cancelGeneration(genId)
+}
+
+/** 生成状态的中文展示 */
+function statusLabel(s: string): string {
+  const map: Record<string, string> = {
+    done: '已完成', error: '失败', generating: '生成中',
+    pending: '等待中', canceled: '已取消', canceling: '中止中'
+  }
+  return map[s] || s
 }
 
 async function deleteSelected() {

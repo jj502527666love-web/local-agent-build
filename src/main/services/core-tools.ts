@@ -662,6 +662,9 @@ async function runImageGenInBackground(
         modelProviderId: args.model_provider_id,
         modelId: args.model_id,
         size: args.size || '1:1',
+        // 聊天工具不暴露分辨率档位，默认 2k（与画布节点一致）：图片按 per-call 计费，
+        // 像素档位不影响扣费，2k 让聊天里随手生图也有较清晰的结果。
+        tierId: '2k',
         quality: 'auto',
         batchCount: 1,
         refImages: args.ref_images || undefined,

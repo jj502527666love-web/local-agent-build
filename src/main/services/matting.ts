@@ -153,7 +153,9 @@ export async function segment(input: SegmentInput): Promise<SegmentOutput> {
   let result: MattingResult
   try {
     if (input.source === 'cloud') {
-      result = await segmentLocalFileViaCloud(input.localPath)
+      result = await segmentLocalFileViaCloud(input.localPath, {
+        onProcessing: () => broadcastProgress(taskId, 'processing'),
+      })
     } else {
       const creds = resolveCredentials(input.providerId!)
       if (!creds) throw new Error(`Provider 不存在：${input.providerId}`)

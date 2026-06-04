@@ -27,6 +27,20 @@ interface Window {
         }) => void,
       ) => () => void
     }
+    fineMatting: {
+      invoke: (channel: string, ...args: unknown[]) => Promise<unknown>
+      /**
+       * 精细抠图任务进度回调；payload = { taskId, phase: 'uploading'|'processing'|'downloading'|'done', message? }
+       * 返回 unsubscribe 函数，多视图共用此信道时可安全 off 自己的监听器。
+       */
+      onProgress: (
+        callback: (data: {
+          taskId: string
+          phase: 'uploading' | 'processing' | 'downloading' | 'done'
+          message?: string
+        }) => void,
+      ) => () => void
+    }
     videoGen: {
       invoke: (channel: string, ...args: unknown[]) => Promise<unknown>
       onUpdated: (callback: (data: unknown) => void) => () => void

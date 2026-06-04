@@ -208,6 +208,32 @@ export const useImageGenStore = defineStore('imageGen', () => {
     inFlight.value = inFlight.value.filter(g => !set.has(g.id))
   }
 
+  /**
+   * 手动中止一个生成中的任务。主进程会 abort 上游请求 / 停止轮询，并回发 'canceled' 事件。
+   * 这里先把占位卡转 'canceling' 做即时反馈，最终态由 'canceled' 事件落定。
+   * 注意：计费不返还——已提交到上游的异步任务上游可能仍执行扣费，桌面端仅停止本地等待 / 落盘。
+   */
+  async function cancelGeneration(genId: string) {
+    const gen = inFlight.value.find(g => g.id === genId)
+    if (gen && (gen.status === 'generating' || gen.status === 'pending')) {
+      gen.status = 'canceling'
+    }
+    try {
+      await api().imageGen.invoke('cancelGeneration', genId)
+    } catch {
+      // 中止请求本身失败：回滚乐观态，让用户可再次尝试
+      if (gen && gen.status === 'canceling') gen.status = 'generating'
+    }
+  }
+
+  /** 中止当前所有生成中 / 排队占位（不含已取消 / 已完成 / 失败项） */
+  async function cancelAllInFlight() {
+    const ids = inFlight.value
+      .filter(g => g.status === 'generating' || g.status === 'pending')
+      .map(g => g.id)
+    await Promise.all(ids.map(id => cancelGeneration(id)))
+  }
+
   async function deleteGenerations(ids: string[]) {
     await api().imageGen.invoke('deleteGenerations', JSON.parse(JSON.stringify(ids)))
     const idSet = new Set(ids)
@@ -245,6 +271,10 @@ export const useImageGenStore = defineStore('imageGen', () => {
     // Bug #6: 重复调用不重复注册；采用 unsubscribe 模式隔离其他视图的监听器
     if (_unsubscribeProgress) return
     _unsubscribeProgress = api().imageGen.onProgress((data: any) => {
+      // 只处理「图生图 / 批量」来源的进度：编辑(edit)/聊天(chat)/画布(canvas) 各有独立进度 UI，
+      // 不应并入本列表的 inFlight 占位与顶部进度条，否则多入口同时生图会串台。
+      const src = data?.source
+      if (src && src !== 'image-gen' && src !== 'batch') return
       if (data.type === 'done') {
         // generating 状态由 generate() 的 finally 统一管理，此处不再重置
         // 仅清理 progress 展示
@@ -282,6 +312,17 @@ export const useImageGenStore = defineStore('imageGen', () => {
       if (data.type === 'completed' && data.generation) {
         mergeCompleted(data.generation)
         refreshCloudBalances(data.generation.model_provider_id)
+      }
+      if (data.type === 'canceled' && data.genId) {
+        // 主进程把该项标记 canceled 并回传完整记录；用带真实参数（prompt/模型/尺寸）的
+        // 已取消卡替换占位卡，便于用户查看 / 重新生成 / 删除。
+        const idx = inFlight.value.findIndex(g => g.id === data.genId)
+        if (idx >= 0) {
+          const full = data.generation as ImageGeneration | undefined
+          inFlight.value[idx] = full
+            ? { ...full, status: 'canceled', error: full.error || '已手动中止' }
+            : { ...inFlight.value[idx], status: 'canceled', error: '已手动中止' }
+        }
       }
       if (data.type === 'error' && data.genId) {
         // 失败项保留在 inFlight 中（状态标为 error），置顶提醒用户；
@@ -349,6 +390,8 @@ export const useImageGenStore = defineStore('imageGen', () => {
     deleteGeneration,
     deleteGenerations,
     dismissInFlight,
+    cancelGeneration,
+    cancelAllInFlight,
     listenProgress,
     stopListenProgress
   }

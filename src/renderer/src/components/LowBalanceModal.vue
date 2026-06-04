@@ -31,7 +31,8 @@
 
         <div class="flex gap-2 mt-5">
           <button type="button" class="flex-1 py-2 text-xs font-medium border border-surface-3 rounded-lg text-text-secondary hover:bg-surface-2" @click="$emit('update:visible', false)">稍后再说</button>
-          <button type="button" class="flex-1 btn-primary text-xs" @click="goPlansStore">前往套餐商城</button>
+          <button v-if="siteConfig.plansStore.enabled" type="button" class="flex-1 py-2 text-xs font-medium border border-surface-3 rounded-lg text-text-secondary hover:bg-surface-2" @click="goPlansStore">套餐商城</button>
+          <button v-if="rechargeVisible" type="button" class="flex-1 btn-primary text-xs" @click="goRecharge">前往充值</button>
         </div>
       </div>
     </div>
@@ -60,10 +61,19 @@ const siteConfig = useSiteConfigStore()
 const label = computed(() => siteConfig.labelOf(props.balanceType || 'credit'))
 const required = computed(() => Number(props.required || 0))
 const available = computed(() => Number(props.available || 0))
+// 该额度类型对应的充值是否开放（金币 → recharge.token / 积分 → recharge.credit）
+const rechargeVisible = computed(() =>
+  (props.balanceType || 'credit') === 'token' ? siteConfig.recharge.token : siteConfig.recharge.credit
+)
 
 function goPlansStore() {
   emit('update:visible', false)
   router.push('/plans-store')
+}
+
+function goRecharge() {
+  emit('update:visible', false)
+  router.push('/recharge')
 }
 
 function formatAmount(value: number): string {

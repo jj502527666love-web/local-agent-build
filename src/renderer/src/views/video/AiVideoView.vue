@@ -297,6 +297,7 @@ import { useCloudAuthStore } from '@/stores/cloud-auth'
 import { useSiteConfigStore } from '@/stores/site-config'
 import { useModelStore } from '@/stores/models'
 import { dataUriToBlob, loadAsDataUri } from '@/utils/image-source'
+import { compressImage } from '@/utils/compress-image'
 import { translateError } from '@/utils/error-message'
 import { groupAndSort } from '@/utils/model-caps'
 import { getHintsSync, recordUsage, warmHintsCache } from '@/utils/model-usage-hints'
@@ -746,6 +747,45 @@ function openReferenceGallery(role: Extract<VideoReferenceRole, 'first_frame' | 
   referenceGalleryVisible.value = true
 }
 
+// 参考素材上传前预处理：图片压缩 + 体积拦截。详见 prepareReferenceUploadFile。
+const MAX_REFERENCE_UPLOAD_BYTES = 50 * 1024 * 1024
+
+function readFileAsDataUri(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result || ''))
+    reader.onerror = () => reject(reader.error || new Error('读取文件失败'))
+    reader.readAsDataURL(file)
+  })
+}
+
+/**
+ * 上传前预处理参考素材：
+ *  - 图片：统一压到长边 1600 的 JPEG（顺带剥 EXIF），把几十 MB 的手机原图 / 单反图压到 1~2MB 内，
+ *    从根上避免云端把原图转存对象存储时超时 / 内存溢出而回笼统的「服务器错误 500」；
+ *    与「从图库选图」走同一压缩档位，体验一致。
+ *  - 视频 / 音频：无法压缩，仅做体积上限拦截（与云端 max:51200=50MB 对齐），超限直接提示。
+ */
+async function prepareReferenceUploadFile(file: File, assetType: ProtocolAssetType): Promise<File> {
+  let out = file
+  if (assetType === 'image') {
+    try {
+      const dataUri = await readFileAsDataUri(file)
+      const compressed = await compressImage(dataUri, 1600, 0.9)
+      const blob = dataUriToBlob(compressed)
+      const baseName = file.name.replace(/\.[^.]+$/, '') || 'reference'
+      out = new File([blob], `${baseName}.jpg`, { type: 'image/jpeg' })
+    } catch {
+      out = file
+    }
+  }
+  if (out.size > MAX_REFERENCE_UPLOAD_BYTES) {
+    const mb = (out.size / 1024 / 1024).toFixed(1)
+    throw new Error(`素材体积过大（${mb}MB，超过 50MB 上限），请压缩或更换更小的文件后再上传`)
+  }
+  return out
+}
+
 async function imagePathToUploadFile(path: string): Promise<File | null> {
   const [item] = await loadAsDataUri([path], { maxSize: 1600, quality: 0.9 })
   if (!item) return null
@@ -1054,7 +1094,8 @@ async function onPickReferences(event: Event) {
       if (!allowedTypes.includes(assetType as ProtocolAssetType)) {
         throw new Error('当前模型支持的参考素材：' + allowedTypes.map((t) => ASSET_TYPE_LABEL[t]).join('、'))
       }
-      const res = await cloudClient.uploadVideoReference(file, assetType as any)
+      const uploadFile = await prepareReferenceUploadFile(file, assetType as ProtocolAssetType)
+      const res = await cloudClient.uploadVideoReference(uploadFile, assetType as any)
       if (res.asset) referenceAssets.value.push(structureUploadedAsset(res.asset))
     }
     normalizeReferenceAssetsForMode()
@@ -1069,7 +1110,8 @@ async function onPickFrameReference(event: Event, role: Extract<VideoReferenceRo
   if (!file) return
   submitError.value = ''
   try {
-    const res = await cloudClient.uploadVideoReference(file, 'image')
+    const uploadFile = await prepareReferenceUploadFile(file, 'image')
+    const res = await cloudClient.uploadVideoReference(uploadFile, 'image')
     if (res.asset) {
       referenceAssets.value = referenceAssets.value.filter((asset) => asset.role !== role)
       referenceAssets.value.push(structureUploadedAsset(res.asset, role))

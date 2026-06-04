@@ -31,7 +31,7 @@
           {{ loadError }}
           <button type="button" class="ml-2 underline" @click="load">重试</button>
         </div>
-        <div v-else-if="!config || !config.enabled" class="text-center py-16 text-xs text-text-tertiary">
+        <div v-else-if="!config || !config.enabled || !balanceTypes.length" class="text-center py-16 text-xs text-text-tertiary">
           充值功能暂未开启
         </div>
 
@@ -110,7 +110,14 @@ const customAmount = ref<number | ''>('')
 const payOpen = ref(false)
 const payload = ref<any>(null)
 
-const balanceTypes = ['token', 'credit'] as const
+// 仅展示云控端开启的充值类型（config.token.enabled / config.credit.enabled）；老后端不带该字段时默认展示
+const balanceTypes = computed<Array<'token' | 'credit'>>(() => {
+  const cfg = config.value
+  const out: Array<'token' | 'credit'> = []
+  if (!cfg || cfg.token?.enabled !== false) out.push('token')
+  if (!cfg || cfg.credit?.enabled !== false) out.push('credit')
+  return out
+})
 const labelOf = (t: string) => (t === 'token' ? siteConfig.labels.token : siteConfig.labels.credit)
 const fmt = (v: any) => {
   const n = Number(v)
@@ -142,6 +149,10 @@ async function load() {
   loadError.value = ''
   try {
     config.value = await cloudClient.getRechargeConfig()
+    // 当前选中类型被云控端关闭时，自动切到第一个可用类型
+    if (!balanceTypes.value.includes(balanceType.value) && balanceTypes.value.length) {
+      balanceType.value = balanceTypes.value[0]
+    }
   } catch (e: any) {
     loadError.value = e?.message || '加载失败'
   }

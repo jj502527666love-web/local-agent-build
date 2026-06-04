@@ -32,10 +32,13 @@
               @change="reload"
             >
               <option value="">全部变动</option>
+              <option value="recharge">充值</option>
+              <option value="recharge_bonus">充值赠送</option>
               <option value="register_bonus">注册赠送</option>
               <option value="redeem">兑换码</option>
               <option value="plan_grant">套餐发放</option>
               <option value="usage">用量扣费</option>
+              <option value="deduct">扣减</option>
               <option value="admin_adjust">管理员调整</option>
             </select>
             <button
@@ -159,7 +162,10 @@ function changeTypeLabel(t: string): string {
     case 'register_bonus': return '注册赠送'
     case 'redeem':         return '兑换码'
     case 'plan_grant':     return '套餐发放'
+    case 'recharge':       return '充值'
+    case 'recharge_bonus': return '充值赠送'
     case 'usage':          return '用量扣费'
+    case 'deduct':         return '扣减'
     case 'admin_adjust':   return '管理员调整'
     default: return t
   }
@@ -168,16 +174,21 @@ function changeTypeLabel(t: string): string {
 function displayRemark(log: BalanceLog): string {
   const raw = String(log.remark || '').trim()
   if (!raw) return ''
-  if (log.change_type !== 'usage') return raw
 
-  const type = raw.split(/\s+/)[0]
-  switch (type) {
-    case 'chat':      return '对话扣费'
-    case 'image':     return '图片生成扣费'
-    case 'embedding': return '向量处理扣费'
-    case 'matting':   return '智能抠图扣费'
-    default:          return '用量扣费'
+  if (log.change_type === 'usage') {
+    const type = raw.split(/\s+/)[0]
+    switch (type) {
+      case 'chat':      return '对话扣费'
+      case 'image':     return '图片生成扣费'
+      case 'embedding': return '向量处理扣费'
+      case 'matting':   return '快速抠图扣费'
+      case 'fine_matting': return '精细抠图扣费'
+      default:          return '用量扣费'
+    }
   }
+
+  // 去掉内部技术前缀（如 [tianque_sync] [recharge] [order] [admin_sync]），只给用户展示可读信息
+  return raw.replace(/^(?:\s*\[[^\]]*\]\s*)+/, '').trim()
 }
 
 function formatTime(iso: string): string {

@@ -48,11 +48,18 @@ export const routes: RouteRecordRaw[] = [
         redirect: { name: 'models', query: { tab: 'video' } },
       },
       {
-        // v0.6.9+ AI 抠图（阿里 viapi SegmentHDCommonImage）
+        // v0.6.9+ 快速抠图（阿里 viapi SegmentHDCommonImage）
         path: 'ai-matting',
         name: 'aiMatting',
         component: () => import('@/views/matting/MattingView.vue'),
-        meta: { title: 'AI 抠图' }
+        meta: { title: '快速抠图' }
+      },
+      {
+        // 精细抠图（抠抠图 koukoutu 异步 API，按尺寸三档计费，仅云端中转）
+        path: 'fine-matting',
+        name: 'fineMatting',
+        component: () => import('@/views/fine-matting/FineMattingView.vue'),
+        meta: { title: '精细抠图' }
       },
       {
         path: 'personas',

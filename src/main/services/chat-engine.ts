@@ -1,6 +1,6 @@
 import { BrowserWindow } from 'electron'
 import { join, resolve, isAbsolute, relative } from 'path'
-import { existsSync, mkdirSync } from 'fs'
+import { existsSync, mkdirSync, writeFileSync } from 'fs'
 import { v4 as uuid } from 'uuid'
 import { getDataDir } from './data-path'
 import { getBot, type ToolApproval } from './bot'
@@ -75,6 +75,11 @@ const AGENT_HARD_DEADLINE_MS = 30 * 60_000
 // 真正想取消的话用对话面板的「中止」按钮（走 cancelChat → abortController.abort()）。
 const APPROVAL_TIMEOUT_MS = 30 * 60_000
 const MAX_TOOL_RESULT_CHARS = 12_000
+// Agent loop 内上下文压缩：单次回答的多轮工具调用会让 currentMessages 只增不减、逼近模型
+// 上下文上限，导致 prefill 变慢 / 请求过重 → 间接触发流式 terminated。进入时的滑动窗口只在
+// 「回答之间」生效，管不到 loop 内，故这里单独压缩。下面两个常量控制压缩力度（可调）。
+const KEEP_TOOL_RESULT_ROUNDS = 2  // 最近 N 轮工具结果保全文，更早的压成占位
+const MIN_KEEP_ROUNDS = 3          // 硬裁兜底：至少保留最近 N 轮（N*2 条核心消息）
 
 function getModelPromptBudget(modelId: string): number {
   const id = String(modelId || '')
@@ -346,6 +351,84 @@ async function retrieveRelevantChunks(docText: string, query: string, docName: s
 function limitToolResult(resultStr: string): string {
   if (resultStr.length <= MAX_TOOL_RESULT_CHARS) return resultStr
   return resultStr.slice(0, MAX_TOOL_RESULT_CHARS) + `\n...[tool result truncated, ${resultStr.length} chars total]`
+}
+
+// 大工具结果 offload：超过阈值的结果写入会话工作区文件，上下文里只放「预览 + 路径」，模型需要
+// 完整内容时用 file_ops 读该路径或 grep 检索。借鉴 Cursor「大输出落盘、按需引用」，从源头避免单个
+// 大结果（读大文件 / 终端长输出 / 生成的 SVG 等）撑爆 agent loop 上下文；完整原文留在工作区不丢失。
+const TOOL_RESULT_OFFLOAD_DIR = 'tool-outputs'
+const TOOL_RESULT_PREVIEW_CHARS = 1500
+
+function offloadOrLimitToolResult(resultStr: string, toolName: string, sandboxDir: string, round: number): string {
+  if (resultStr.length <= MAX_TOOL_RESULT_CHARS) return resultStr
+  try {
+    const dir = join(sandboxDir, TOOL_RESULT_OFFLOAD_DIR)
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+    const safeName = (toolName || 'tool').replace(/[^a-zA-Z0-9_-]/g, '_')
+    const fname = `${safeName}-r${round}-${uuid().slice(0, 8)}.txt`
+    writeFileSync(join(dir, fname), resultStr, 'utf-8')
+    const rel = `${TOOL_RESULT_OFFLOAD_DIR}/${fname}`
+    const preview = resultStr.slice(0, TOOL_RESULT_PREVIEW_CHARS)
+    return (
+      `[工具结果较大（${resultStr.length} 字符），完整内容已保存到工作区文件：${rel}\n` +
+      `需要完整内容时用 file_ops 读取该路径，或 grep 检索关键字。以下为前 ${TOOL_RESULT_PREVIEW_CHARS} 字符预览：]\n` +
+      preview +
+      `\n...[预览到此截断，完整内容见 ${rel}]`
+    )
+  } catch {
+    // offload 失败（磁盘 / 权限等）回退到原截断逻辑，保证工具链不被阻塞
+    return limitToolResult(resultStr)
+  }
+}
+
+/**
+ * Agent loop 内上下文压缩。两步（先 B 温和、后 A 兜底）：
+ *   B. 把较早轮次的工具结果（role=tool）压成占位，仅保留最近 KEEP_TOOL_RESULT_ROUNDS 轮全文——
+ *      工具结果是上下文大头，且 agent 决策主要依赖最近 1-2 步，压它损失最小、收益最大。
+ *   A. 若压缩后仍超 budget，从「对话区」头部成组丢最旧消息，保底最近 MIN_KEEP_ROUNDS 轮。
+ *
+ * 仅压缩「发给模型的 currentMessages」，不动数据库（每轮 addMessage 已落全量），故 DB 历史完整。
+ * 每轮调用前 currentMessages 都是 tool_call 配对完整的（工具执行完才进下一轮），裁剪安全。
+ *
+ * @param messages    完整 currentMessages（前 systemCount 条为 system，恒保留）
+ * @param systemCount system 段长度
+ * @param budget      对话区 token 预算（= getModelPromptBudget - systemTokens，同滑动窗口口径）
+ */
+function compactAgentContext(messages: ChatMessage[], systemCount: number, budget: number): ChatMessage[] {
+  const system = messages.slice(0, systemCount)
+  let convo = messages.slice(systemCount)
+
+  // B：给每条消息标轮号（每遇到一个 assistant.tool_calls 轮号 +1），把较早轮的工具结果压占位。
+  let round = 0
+  const toolRound: number[] = new Array(convo.length)
+  for (let i = 0; i < convo.length; i++) {
+    const m: any = convo[i]
+    if (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length > 0) round++
+    toolRound[i] = round
+  }
+  if (round > KEEP_TOOL_RESULT_ROUNDS) {
+    const cutoff = round - KEEP_TOOL_RESULT_ROUNDS
+    convo = convo.map((m: any, i): ChatMessage => {
+      if (
+        m.role === 'tool' &&
+        toolRound[i] <= cutoff &&
+        typeof m.content === 'string' &&
+        !m.content.startsWith('[较早工具结果已省略')
+      ) {
+        return { ...m, content: `[较早工具结果已省略以节省上下文，原 ${m.content.length} 字符]` }
+      }
+      return m
+    })
+  }
+
+  // A：仍超 budget 则从对话区头部成组硬裁，保底最近 MIN_KEEP_ROUNDS 轮，repairHistoryHead 修配对。
+  const floor = MIN_KEEP_ROUNDS * 2
+  while (convo.length > floor && estimateMessagesTokens(convo) > budget) {
+    convo = convo.slice(2)
+    convo = repairHistoryHead(convo)
+  }
+
+  return [...system, ...convo]
 }
 
 function estimateTokens(text: string): number {
@@ -890,6 +973,8 @@ export async function sendMessage(
 
     while (round <= MAX_TOOL_ROUNDS) {
       if (signal.aborted) throw new AbortedError()
+      // 每轮调用前压缩 loop 内累积的上下文（先压旧工具结果，仍超预算再硬裁），防止逼近上限 → terminated。
+      currentMessages = compactAgentContext(currentMessages, systemCount, budget)
       const t0 = Date.now()
       const response = await callLLM(
         effectiveProviderId,
@@ -1010,7 +1095,7 @@ export async function sendMessage(
         // 上游（deepseek/智谱/豆包/Moonshot 等）拿到这种「双重转义字符串」会触发
         // silent 200 + 空 SSE，表现为「调用工具后 AI 不再回复」。
         const rawResultStr = typeof result === 'string' ? result : JSON.stringify(result)
-        const resultStr = limitToolResult(rawResultStr)
+        const resultStr = offloadOrLimitToolResult(rawResultStr, p.fnName, sandboxDir, round)
         const summary = buildToolSummary(p.fnName, result, resultStr)
         emitStream({ type: 'tool_result', tool: p.fnName, summary })
         return { ...p, result, resultStr }
@@ -1059,6 +1144,7 @@ export async function sendMessage(
         console.log(`[chat] max tool rounds (${MAX_TOOL_ROUNDS}) reached, final call without tools`)
         emitStream({ type: 'tool_done' })
         if (signal.aborted) throw new AbortedError()
+        currentMessages = compactAgentContext(currentMessages, systemCount, budget)
         const finalResponse = await callLLM(
           effectiveProviderId,
           {

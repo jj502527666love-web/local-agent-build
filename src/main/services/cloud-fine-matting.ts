@@ -1,31 +1,36 @@
 import { readFileSync, statSync, existsSync } from 'fs'
 import { basename, extname } from 'path'
 import { getCloudToken, getCloudApiBase, fetchWithCloudAuth } from './cloud-token'
-import type { MattingResult } from './aliyun-matting'
 
 /**
- * 云接口模式：把本地图 multipart 上传到 /api/gateway/matting/segment，
- * 拿 task_id，再轮询 /api/gateway/matting/status/{taskId} 直到 completed / failed。
+ * 精细抠图云接口模式：把本地图 multipart 上传到 /api/gateway/fine-matting/segment，
+ * 拿 task_id，再轮询 /api/gateway/fine-matting/status/{taskId} 直到 completed / failed。
  *
- * 凭证不下发到桌面：所有 AK 都在服务端 .env 里。
+ * 凭证（抠抠图 API Key）不下发桌面：全部在云控端 SystemSetting 里。
  *
  * 限制：
- *   - 30 任务/分钟（云控端 throttle）
- *   - 单用户并发 3（云控端 RateLimiter）
- *   - 全站 5 QPS（云控端 RateLimiter）
- *   - 月配额（permission_policies.image_matting_quota_per_month）
+ *   - 全站并发 5（云控端 FineMattingConcurrencyLimiter）
+ *   - 提交 30/min（云控端 throttle）
+ *   - 月配额（fine_matting_quota_per_month）
+ *   - 单图 ≤ 40MB，格式 png/jpg/jpeg/webp
  *
- * 超时：默认 90s（覆盖云控端最长 60s + 30s buffer）
- *
- * 实现说明：用 Electron 主进程 Node 18+ 原生 FormData + Blob + fetch（与 cloud-inspiration.ts 一致），
- * 不依赖第三方 form-data 库，避免 Node Readable stream 与 undici fetch 的兼容问题。
+ * 超时：默认 150s（覆盖云控端最长 120s + buffer）
  */
 
-const POLL_INTERVAL_MS = 2000
-const DEFAULT_TIMEOUT_MS = 90_000
+export interface FineMattingResult {
+  image_url: string
+  request_id: string
+  provider_task_id: string
+  elapsed_ms: number
+  tier: number
+  cost: number
+}
 
-export interface CloudMattingOptions {
-  /** 总超时（毫秒），默认 90s */
+const POLL_INTERVAL_MS = 1500
+const DEFAULT_TIMEOUT_MS = 150_000
+const ALLOWED_EXTS = new Set(['png', 'jpg', 'jpeg', 'webp'])
+
+export interface CloudFineMattingOptions {
   timeoutMs?: number
   /** 提交成功、进入云端处理阶段时回调（用于上报 processing 进度） */
   onProcessing?: () => void
@@ -33,13 +38,16 @@ export interface CloudMattingOptions {
 
 export async function segmentLocalFileViaCloud(
   localPath: string,
-  options: CloudMattingOptions = {},
-): Promise<MattingResult> {
+  options: CloudFineMattingOptions = {},
+): Promise<FineMattingResult> {
   if (!existsSync(localPath)) throw new Error(`文件不存在：${localPath}`)
   const st = statSync(localPath)
   if (st.size <= 0) throw new Error('文件为空')
-  if (st.size > 40 * 1024 * 1024) {
-    throw new Error('文件超过 40MB 限制')
+  if (st.size > 40 * 1024 * 1024) throw new Error('文件超过 40MB 限制')
+
+  const ext = extname(localPath).slice(1).toLowerCase()
+  if (!ALLOWED_EXTS.has(ext)) {
+    throw new Error(`不支持的格式 .${ext}（仅支持 ${[...ALLOWED_EXTS].join('/')}）`)
   }
 
   if (!getCloudToken()) throw new Error('未登录云控端')
@@ -47,11 +55,10 @@ export async function segmentLocalFileViaCloud(
   if (!apiBase) throw new Error('云控端 apiBase 未配置')
 
   const start = Date.now()
-  const taskId = await submit(apiBase, localPath)
+  const taskId = await submit(apiBase, localPath, ext)
   options.onProcessing?.()
   const timeout = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
 
-  // 轮询
   while (true) {
     if (Date.now() - start > timeout) {
       throw new Error(`等待结果超时（>${(timeout / 1000).toFixed(0)}s），任务可能仍在云端处理，请稍后重试`)
@@ -64,29 +71,37 @@ export async function segmentLocalFileViaCloud(
       const r = status.result || {}
       if (!r.image_url) throw new Error('云控端返回 result.image_url 为空')
       return {
-        image_url:  r.image_url,
-        request_id: r.request_id || taskId,
-        elapsed_ms: r.elapsed_ms ?? Date.now() - start,
+        image_url:        r.image_url,
+        request_id:       r.request_id || taskId,
+        provider_task_id: r.provider_task_id || '',
+        elapsed_ms:       r.elapsed_ms ?? Date.now() - start,
+        tier:             Number(status.tier ?? 0),
+        cost:             Number(status.cost ?? 0),
       }
     }
     if (status.status === 'failed') {
-      throw new Error(status.error || '云控端抠图失败')
+      throw new Error(status.error || '云控端精细抠图失败')
     }
     // pending / processing → 继续轮询
   }
 }
 
 /**
- * 我的本月抠图配额（拉云控端）。失败时返回 null，由调用方兜底。
+ * 我的精细抠图配额 + 三档价 + 阈值（拉云控端）。失败返回 null，调用方兜底。
  */
 export async function fetchQuota(): Promise<null | {
-  matting_enabled: boolean
-  allow_image_matting: boolean
-  allow_custom_matting_provider: boolean
-  image_matting_quota_per_month: number
+  fine_matting_enabled: boolean
+  allow_fine_matting: boolean
+  fine_matting_quota_per_month: number
   used_this_month: number
-  credit_per_call: number
+  tier1_credit: number
+  tier2_credit: number
+  tier3_credit: number
+  tier_threshold_1: number
+  tier_threshold_2: number
   current_credit_balance: number
+  max_file_size_mb: number
+  allowed_extensions: string[]
 }> {
   const token = getCloudToken()
   if (!token) return null
@@ -94,9 +109,7 @@ export async function fetchQuota(): Promise<null | {
   if (!apiBase) return null
 
   try {
-    // routes/api.php 由 RouteServiceProvider 加 `prefix('api')`，所以前端 URL 是 /api/gateway/...
-    // getCloudApiBase() 已经返回 ${apiDomain}/api，因此这里只用 /gateway/ 即可，不要再加 /v1
-    const resp = await fetchWithCloudAuth(`${apiBase}/gateway/matting/quota`, {}, '云端抠图配额 401')
+    const resp = await fetchWithCloudAuth(`${apiBase}/gateway/fine-matting/quota`, {}, '云端精细抠图配额 401')
     if (!resp.ok) return null
     return (await resp.json()) as any
   } catch {
@@ -106,15 +119,12 @@ export async function fetchQuota(): Promise<null | {
 
 // ===== private =====
 
-async function submit(apiBase: string, localPath: string): Promise<string> {
+async function submit(apiBase: string, localPath: string, ext: string): Promise<string> {
   const filename = basename(localPath)
-  const ext = extname(localPath).slice(1).toLowerCase()
   const mime = ext === 'png' ? 'image/png'
-             : ext === 'bmp' ? 'image/bmp'
+             : ext === 'webp' ? 'image/webp'
              : 'image/jpeg'
 
-  // 用原生 FormData + Blob（与 cloud-inspiration.ts 一致），避免第三方 form-data 库与 undici fetch 兼容问题。
-  // 注意：fetch 自带 boundary + Content-Length，不需要手动设 Content-Type；手动设会丢 boundary 导致后端解析失败。
   const buf = readFileSync(localPath)
   const blob = new Blob([new Uint8Array(buf)], { type: mime })
   const fd = new FormData()
@@ -122,10 +132,10 @@ async function submit(apiBase: string, localPath: string): Promise<string> {
 
   let resp: Response
   try {
-    resp = await fetchWithCloudAuth(`${apiBase}/gateway/matting/segment`, {
+    resp = await fetchWithCloudAuth(`${apiBase}/gateway/fine-matting/segment`, {
       method: 'POST',
       body: fd,
-    }, '云端抠图提交 401')
+    }, '云端精细抠图提交 401')
   } catch (e: any) {
     throw new Error(`网络请求失败：${e?.message || '未知错误'}`)
   }
@@ -146,13 +156,15 @@ async function submit(apiBase: string, localPath: string): Promise<string> {
 async function pollStatus(apiBase: string, taskId: string): Promise<{
   task_id: string
   status: 'pending' | 'processing' | 'completed' | 'failed'
-  result?: { image_url?: string; request_id?: string; elapsed_ms?: number }
+  tier?: number
+  cost?: number
+  result?: { image_url?: string; request_id?: string; provider_task_id?: string; elapsed_ms?: number }
   error?: string
 }> {
   const resp = await fetchWithCloudAuth(
-    `${apiBase}/gateway/matting/status/${encodeURIComponent(taskId)}`,
+    `${apiBase}/gateway/fine-matting/status/${encodeURIComponent(taskId)}`,
     {},
-    '云端抠图轮询 401',
+    '云端精细抠图轮询 401',
   )
   if (!resp.ok) {
     const j: any = await resp.json().catch(() => ({}))

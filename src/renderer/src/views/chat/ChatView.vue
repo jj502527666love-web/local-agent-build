@@ -73,7 +73,7 @@
           <!-- Messages -->
           <div ref="messagesContainer" class="flex-1 overflow-y-auto px-6 py-6" @click="onMessagesClick">
             <div class="max-w-3xl mx-auto space-y-5">
-              <div v-for="msg in visibleMessages" :key="msg.id" :class="['flex gap-3 group/msg', msg.role === 'user' ? 'flex-row-reverse' : '']">
+              <div v-for="msg in renderedMessages" :key="msg.id" :class="['flex gap-3 group/msg', msg.role === 'user' ? 'flex-row-reverse' : '']">
                 <div v-if="msg.role === 'user'" class="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 text-xs font-bold bg-primary-600 text-white">你</div>
                 <div v-else class="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 text-xs font-bold bg-primary-100 text-primary-700">{{ botInitial }}</div>
                 <div :class="['max-w-[75%] relative', msg.role === 'user' ? 'flex flex-col items-end' : 'min-w-0']">
@@ -701,8 +701,36 @@ const visibleMessages = computed(() =>
   chatStore.messages.filter((m) => {
     if (m.role === 'tool') return false
     if (m.role === 'assistant' && m.tool_calls?.length && !m.content) return false
-    return m.role === 'user' || (m.role === 'assistant' && (m.content || chatStore.streaming))
+    return m.role === 'user' || (m.role === 'assistant' && !!m.content)
   })
+)
+
+// 进行中的流式回复：拼成一条虚拟 live 气泡追加到列表末尾。
+// 数据源是 store 级 streamingStates，故切走会话/页面再回来只要本轮仍在跑就能继续逐字渲染。
+const liveMessage = computed(() => {
+  const convId = chatStore.currentConversationId
+  if (!convId || !chatStore.isConversationStreaming(convId)) return null
+  const st = chatStore.getStreamingState(convId)
+  if (!st) return null
+  return {
+    id: '__live__',
+    conversation_id: convId,
+    role: 'assistant',
+    content: st.content,
+    attachments: [],
+    tool_calls: [],
+    created_at: '',
+    _reasoning: st.reasoning,
+    _reasoningActive: st.reasoningActive,
+    _reasoningCollapsed: !st.reasoningActive,
+    _toolLogs: st.toolLogs,
+    _toolActive: st.toolActive,
+    _collapsed: st.collapsed,
+  } as any
+})
+
+const renderedMessages = computed(() =>
+  liveMessage.value ? [...visibleMessages.value, liveMessage.value] : visibleMessages.value
 )
 
 function onClickOutside(e: MouseEvent) {
@@ -1290,6 +1318,8 @@ async function send() {
 
 onMounted(async () => {
   document.addEventListener('click', onClickOutside)
+  // app 级常驻流式监听（幂等，永不退订）：保证切走会话/页面再回来仍能继续逐字渲染
+  chatStore.initStreamListener()
   chatStore.listenTitleUpdates()
   // 监听 image_gen fire-and-forget 完成后追加的图片消息（异步生图工作流）
   chatStore.listenAppendMessage()

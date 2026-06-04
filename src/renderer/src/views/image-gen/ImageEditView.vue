@@ -2644,7 +2644,9 @@ async function runInpaint() {
       modelId: effectiveModel,
       size: finalSize,
       quality: generation.value.quality || 'auto',
-      batchCount: batchCount.value
+      batchCount: batchCount.value,
+      // 标记来源为 edit，避免被 image-gen / batch 列表的进度监听误并入其 inFlight 占位
+      progressContext: { source: 'edit' }
     })
 
     if (inpaintCancelled) {

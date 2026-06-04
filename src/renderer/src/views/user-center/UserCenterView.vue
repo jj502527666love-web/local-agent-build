@@ -14,11 +14,13 @@
           @click="goOemChannel"
         >渠道中心</button>
         <button
+          v-if="siteConfig.hasAnyRecharge"
           type="button"
           class="btn-secondary text-xs"
           @click="goRecharge"
         >充值</button>
         <button
+          v-if="siteConfig.plansStore.enabled"
           type="button"
           class="btn-primary text-xs"
           @click="goPlansStore"
@@ -139,7 +141,7 @@
           </div>
 
           <!-- Plans store entry -->
-          <div class="card p-5">
+          <div v-if="siteConfig.plansStore.enabled" class="card p-5">
             <div class="min-w-0">
               <h3 class="text-sm font-semibold text-text-primary">套餐商城</h3>
               <p class="text-xs text-text-tertiary mt-1 leading-relaxed">购买、升级或续费套餐，支付后自动开通。</p>
@@ -309,5 +311,7 @@ async function loadOemChannelVisibility() {
 onMounted(() => {
   store.fetchCloudData()
   loadOemChannelVisibility()
+  // 刷新公开配置，确保套餐商城 / 充值入口开关取云控端最新值（无需重启应用）
+  siteConfig.fetch()
 })
 </script>

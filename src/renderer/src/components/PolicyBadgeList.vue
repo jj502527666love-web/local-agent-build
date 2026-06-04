@@ -26,8 +26,9 @@ const labelMap: Record<string, string> = {
   allow_custom_video_provider: '自定义视频',
   allow_image_gen: 'AI 生图',
   allow_knowledge_base: '知识库',
-  allow_image_matting: 'AI 抠图',
+  allow_image_matting: '快速抠图',
   allow_custom_matting_provider: '自定义抠图',
+  allow_fine_matting: '精细抠图',
   max_context_messages: '上下文',
   chat_quota_per_day: '日对话',
   chat_quota_per_month: '月对话',
@@ -35,9 +36,11 @@ const labelMap: Record<string, string> = {
   image_quota_per_month: '月生图',
   embed_chars_per_day: '日向量字符',
   embed_chars_per_month: '月向量字符',
-  matting_quota_per_day: '日抠图',
-  matting_quota_per_month: '月抠图',
-  image_matting_quota_per_month: '月抠图',
+  matting_quota_per_day: '日快速抠图',
+  matting_quota_per_month: '月快速抠图',
+  image_matting_quota_per_month: '月快速抠图',
+  fine_matting_quota_per_day: '日精细抠图',
+  fine_matting_quota_per_month: '月精细抠图',
 }
 
 const visibleItems = computed(() => {

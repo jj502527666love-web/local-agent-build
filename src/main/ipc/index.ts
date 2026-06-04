@@ -37,6 +37,8 @@ import * as mattingProviderService from '../services/matting-providers'
 import * as cloudVideoService from '../services/cloud-video'
 import * as videoGenerationService from '../services/video-generation'
 import { fetchQuota as fetchMattingQuotaFromCloud } from '../services/cloud-matting'
+import * as fineMattingService from '../services/fine-matting'
+import { fetchQuota as fetchFineMattingQuotaFromCloud } from '../services/cloud-fine-matting'
 import { parseDocumentFromBuffer, readFileSmart } from '../services/document-parser'
 import {
   setCloudToken,
@@ -607,6 +609,12 @@ export function registerIpcHandlers(): void {
     const window = BrowserWindow.fromWebContents(event.sender)
     return imageGenService.generateImages(options, window)
   })
+  ipcMain.handle('imageGen:cancelGeneration', (_, genId: string) =>
+    imageGenService.cancelGeneration(genId)
+  )
+  ipcMain.handle('imageGen:cancelGenerations', (_, genIds: string[]) =>
+    imageGenService.cancelGenerations(genIds)
+  )
   ipcMain.handle('imageGen:deleteGeneration', (_, id: string) =>
     imageGenService.deleteGeneration(id)
   )
@@ -1218,4 +1226,16 @@ export function registerIpcHandlers(): void {
 
   // 拉云控端配额状态（剩余张数 / 单次扣费）。用于桌面端 MattingView 顶部 banner 展示
   ipcMain.handle('matting:fetchCloudQuota', () => fetchMattingQuotaFromCloud())
+
+  // === 精细抠图（抠抠图 koukoutu，仅云端中转，按尺寸三档计费）===
+  ipcMain.handle('fineMatting:segment', (_, input: fineMattingService.SegmentInput) =>
+    fineMattingService.segment(input),
+  )
+  ipcMain.handle('fineMatting:listTasks', (_, limit?: number, offset?: number) =>
+    fineMattingService.listTasks(limit ?? 50, offset ?? 0),
+  )
+  ipcMain.handle('fineMatting:getTask', (_, id: string) => fineMattingService.getTask(id))
+  ipcMain.handle('fineMatting:deleteTask', (_, id: string) => fineMattingService.deleteTask(id))
+  // 拉云控端精细抠图配额 + 三档价 + 阈值。用于桌面端 FineMattingView 顶部 banner + 按尺寸预估
+  ipcMain.handle('fineMatting:fetchCloudQuota', () => fetchFineMattingQuotaFromCloud())
 }

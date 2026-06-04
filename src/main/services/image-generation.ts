@@ -3,7 +3,7 @@ import { v4 as uuid } from 'uuid'
 import { getModelProvider, type ModelProvider } from './model-provider'
 import { createImageSession } from './image-session'
 import { getDataDir } from './data-path'
-import { getCloudToken, getCloudApiBase, getCloudGatewayUrl, resolveCloudModelId, refreshCloudToken, notifyCloudAuthExpired, wasLastCloudTokenRefreshAuthFailure } from './cloud-token'
+import { getCloudToken, getCloudApiBase, getCloudGatewayUrl, resolveCloudModelId, refreshCloudToken, notifyCloudAuthExpired, wasLastCloudTokenRefreshAuthFailure, getCloudModels } from './cloud-token'
 import { join } from 'path'
 import { mkdirSync, writeFileSync, unlinkSync, existsSync } from 'fs'
 import { BrowserWindow, nativeImage } from 'electron'
@@ -61,23 +61,90 @@ function releaseApiSlot(): void {
   if (next) next.resolve()
 }
 
+// ---- generation cancellation (manual abort) ----
+/**
+ * 用户手动中止生成时抛出的标记错误。与"超时 / 网络错误"区分：
+ *  - fetchWithRetry 识别后不再退避重试，立即冒泡
+ *  - pollAsyncTask 识别后不计入瞬态失败，立即终止轮询
+ *  - generateImages.runOne 识别后把该项标记 status='canceled' 而非 'error'
+ */
+class GenerationCanceledError extends Error {
+  readonly canceled = true
+  constructor(message = '生成已手动中止') {
+    super(message)
+    this.name = 'GenerationCanceledError'
+  }
+}
+
+function isCanceledError(e: any): boolean {
+  return !!(e && (e.canceled === true || e?.name === 'GenerationCanceledError'))
+}
+
+/**
+ * genId → AbortController 注册表。generateImages 为每个生成项注册，
+ * cancelGeneration(genId) 触发对应 controller.abort()，沿 fetch / 轮询链路冒泡中止。
+ * runOne 的 finally 负责注销，避免泄漏。
+ */
+const inflightAbortControllers = new Map<string, AbortController>()
+
+/** 手动中止单个生成项。返回是否命中一个仍在跑的任务 */
+export function cancelGeneration(genId: string): boolean {
+  const controller = inflightAbortControllers.get(genId)
+  if (!controller) return false
+  controller.abort()
+  return true
+}
+
+/** 批量中止；返回实际命中的任务数 */
+export function cancelGenerations(genIds: string[]): number {
+  let hit = 0
+  for (const id of genIds) if (cancelGeneration(id)) hit++
+  return hit
+}
+
+/** 可被 AbortSignal 打断的 sleep：中止时立即 reject(GenerationCanceledError)，不必等满间隔 */
+function interruptibleSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new GenerationCanceledError())
+      return
+    }
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(new GenerationCanceledError())
+    }
+    const timer = setTimeout(() => {
+      if (signal) signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    if (signal) signal.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
 // ---- fetch with timeout (Bug #4) ----
 /**
- * 带超时的 fetch。AbortController 触发后 fetch 抛 AbortError，
- * 上层用 wrapFetchError 转成更可读的"请求超时"。
+ * 带超时的 fetch。内部 AbortController 负责超时；externalSignal 负责用户手动中止。
+ * 两者任一触发都会 abort fetch；通过 externalSignal.aborted 区分二者：
+ * 手动中止抛 GenerationCanceledError，超时抛"请求超时"。
  */
-async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: number): Promise<Response> {
+async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: number, externalSignal?: AbortSignal): Promise<Response> {
+  if (externalSignal?.aborted) throw new GenerationCanceledError()
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
+  const onExternalAbort = () => controller.abort()
+  if (externalSignal) externalSignal.addEventListener('abort', onExternalAbort, { once: true })
   try {
     return await fetch(url, { ...options, signal: controller.signal })
   } catch (e: any) {
+    // 外部中止优先于超时判定：用户点了中止，就报"已手动中止"而非"请求超时"
+    if (externalSignal?.aborted) throw new GenerationCanceledError()
     if (e?.name === 'AbortError') {
       throw new Error(`请求超时 (${timeoutMs}ms): ${url}`)
     }
     throw e
   } finally {
     clearTimeout(timer)
+    if (externalSignal) externalSignal.removeEventListener('abort', onExternalAbort)
   }
 }
 
@@ -142,14 +209,15 @@ async function fetchWithRetry(
   url: string,
   options: RequestInit,
   timeoutMs: number,
-  opts: { retries?: number; errorPrefix?: string } = {}
+  opts: { retries?: number; errorPrefix?: string; signal?: AbortSignal } = {}
 ): Promise<Response> {
   const retries = Math.max(0, opts.retries ?? 2)
   const errorPrefix = opts.errorPrefix || 'API'
   let lastErr: any
   for (let attempt = 0; attempt <= retries; attempt++) {
+    if (opts.signal?.aborted) throw new GenerationCanceledError()
     try {
-      const res = await fetchWithTimeout(url, options, timeoutMs)
+      const res = await fetchWithTimeout(url, options, timeoutMs, opts.signal)
       if (res.ok) return res
       // HTTP 错误：可重试码退避，不可重试码立即抛
       if (isRetriableStatus(res.status) && attempt < retries) {
@@ -163,6 +231,8 @@ async function fetchWithRetry(
       const message = await readResponseError(res)
       throw new Error(`${errorPrefix} ${res.status}: ${message}`)
     } catch (e: any) {
+      // 用户手动中止：不退避重试，立即冒泡
+      if (isCanceledError(e)) throw e
       lastErr = e
       // 业务层 throw 出来的（已经带 errorPrefix 的）直接终止
       if (typeof e?.message === 'string' && e.message.startsWith(`${errorPrefix} `)) throw e
@@ -570,6 +640,8 @@ interface PollTaskConfig {
   pollTimeoutMs?: number
   /** 连续瞬态失败上限。undefined = 不限（直到 deadline）；正整数 = 达到即抛错 */
   maxConsecutiveTransientFailures?: number
+  /** 用户手动中止信号：aborted 时立即终止轮询并抛 GenerationCanceledError */
+  signal?: AbortSignal
 }
 
 async function pollAsyncTask(config: PollTaskConfig): Promise<ImageAPIResult[]> {
@@ -594,15 +666,18 @@ async function pollAsyncTask(config: PollTaskConfig): Promise<ImageAPIResult[]> 
   }
 
   while (Date.now() - start < maxWait) {
-    await new Promise(r => setTimeout(r, pollInterval))
+    if (config.signal?.aborted) throw new GenerationCanceledError()
+    await interruptibleSleep(pollInterval, config.signal)
 
     let statusRes: Response
     try {
       statusRes = await fetchWithTimeout(config.statusUrl, {
         method: 'GET',
         headers: config.headers
-      }, pollTimeout)
+      }, pollTimeout, config.signal)
     } catch (e: any) {
+      // 用户手动中止：立即终止轮询，不计入瞬态失败
+      if (isCanceledError(e)) throw e
       bumpTransient(String(e?.message || e))
       continue
     }
@@ -664,7 +739,8 @@ async function callImageAPI(
   refImages?: string[],
   mask?: string,
   tierId?: string,
-  n: number = 1
+  n: number = 1,
+  signal?: AbortSignal
 ): Promise<ImageAPIResult[]> {
   // 渲染端 cloud:default 下的 modelId 可能是复合 key `{model_id}#@{provider_name}`，
   // 上游真实 API 不识别；云端分支用 resolveCloudModelId 同时拿到纯 model_id 与 cloud_model_id 主键，
@@ -676,14 +752,23 @@ async function callImageAPI(
     const resolved = resolveCloudModelId(modelId, 'image')
     modelId = resolved.pureModelId
     cloudModelId = resolved.cloudModelId
+    // 防启动竞态错路由：刚登录、cloudModels 还没从渲染端 IPC 同步到主进程时，cloudModelId
+    // 必为 null，此时若照发请求，云端只能按 model_id 兜底（多家同名会错路由 / 错扣费）。
+    // 仅在「完全没有模型缓存」（明确未同步）时拦截并提示重试；多家同名等场景交由云端
+    // 返回 ambiguous_model 明确报错，避免误伤合法的单家路由。
+    if (cloudModelId === null && getCloudModels().length === 0) {
+      throw new Error('云端模型尚未同步完成，请稍候几秒后重试')
+    }
   } else {
     modelId = stripModelId(modelId)
   }
   // Bug #3: 全局 semaphore — 所有入口共享上限
   await acquireApiSlot()
   try {
+    // 等待 semaphore 排队期间用户可能已点中止：拿到 slot 后先判一次
+    if (signal?.aborted) throw new GenerationCanceledError()
     if (isCloud) {
-      return await callCloudImageAPI(modelId, prompt, size, quality, refImages, mask, tierId, n, cloudModelId)
+      return await callCloudImageAPI(modelId, prompt, size, quality, refImages, mask, tierId, n, cloudModelId, signal)
     }
 
     const provider = getModelProvider(providerId)
@@ -691,7 +776,7 @@ async function callImageAPI(
 
     // 多米 API：与 OpenAI 协议差异大（裸 token 鉴权 + 强制异步 + 轮询 /tasks/{id}），走专用函数
     if (provider.type === 'duomi') {
-      return await callDuoMiImageAPI(provider, modelId, prompt, size, refImages, tierId, n)
+      return await callDuoMiImageAPI(provider, modelId, prompt, size, refImages, tierId, n, signal)
     }
 
     const apiBase = normalizeApiBase(provider.api_base)
@@ -799,7 +884,8 @@ async function callImageAPI(
       // 单次 15min timeout + 5xx/429 自动退避重试（已统一为全档位 15min，tierId 仅为兼容签名）
       const response = await fetchWithRetry(url, fetchOptions, getImageApiTimeout(tierId), {
         retries: 2,
-        errorPrefix: 'Image API error'
+        errorPrefix: 'Image API error',
+        signal
       })
 
       // 响应体也可能是非法 JSON（如某些代理返回 HTML 200）— 安全解析
@@ -848,7 +934,8 @@ async function callCloudImageAPI(
   mask?: string,
   tierId?: string,
   n: number = 1,
-  cloudModelId: number | null = null
+  cloudModelId: number | null = null,
+  signal?: AbortSignal
 ): Promise<ImageAPIResult[]> {
   const token = getCloudToken()
   if (!token) throw new Error('Cloud login required')
@@ -919,7 +1006,7 @@ async function callCloudImageAPI(
         method: 'POST',
         headers,
         body: JSON.stringify(body)
-      }, 60_000, { retries: 2, errorPrefix: 'Image API error' })
+      }, 60_000, { retries: 2, errorPrefix: 'Image API error', signal })
     } catch (e: any) {
       if (!String(e?.message || '').startsWith('Image API error 401:')) throw e
       const nextToken = await refreshCloudToken()
@@ -932,7 +1019,7 @@ async function callCloudImageAPI(
         method: 'POST',
         headers,
         body: JSON.stringify(body)
-      }, 60_000, { retries: 2, errorPrefix: 'Image API error' })
+      }, 60_000, { retries: 2, errorPrefix: 'Image API error', signal })
     }
 
     let submitData: any
@@ -958,6 +1045,7 @@ async function callCloudImageAPI(
       headers: { 'Authorization': headers['Authorization'] },
       taskId,
       errorPrefix: 'Image API error',
+      signal,
       refreshHeaders: async (reason) => {
         const nextToken = await refreshCloudToken()
         if (!nextToken) {
@@ -1181,7 +1269,8 @@ async function callDuoMiImageAPI(
   size: string,
   refImages?: string[],
   tierId?: string,
-  n: number = 1
+  n: number = 1,
+  signal?: AbortSignal
 ): Promise<ImageAPIResult[]> {
   const apiBase = normalizeApiBase(provider.api_base)
   const apiKey = provider.api_key
@@ -1259,7 +1348,7 @@ async function callDuoMiImageAPI(
         'Authorization': apiKey
       },
       body: JSON.stringify(submitBody)
-    }, 60_000, { retries: 2, errorPrefix: '多米 API 提交失败' })
+    }, 60_000, { retries: 2, errorPrefix: '多米 API 提交失败', signal })
 
     let submitData: any
     try {
@@ -1281,6 +1370,7 @@ async function callDuoMiImageAPI(
       headers: { 'Authorization': apiKey },  // 多米是裸 token，无 Bearer 前缀
       taskId,
       errorPrefix: '多米 API',
+      signal,
       maxConsecutiveTransientFailures: 12,  // 12 * 3s ≈ 36s 持续失败后早退
       extractDiagnostic: (statusData) => statusData?.state,
       parseStatus: (statusData) => {
@@ -1519,6 +1609,9 @@ export async function generateImages(
 
     async function runOne(i: number): Promise<void> {
       const genId = genIds[i]
+      // 注册中止句柄：cancelGeneration(genId) 会 abort 此 controller，沿 fetch / 轮询链路终止
+      const abortController = new AbortController()
+      inflightAbortControllers.set(genId, abortController)
       try {
         updateGenerationStatus(genId, 'generating', {})
         emitProgress({
@@ -1539,7 +1632,8 @@ export async function generateImages(
           options.refImages,
           options.mask,
           options.tierId,
-          1
+          1,
+          abortController.signal
         )
         const apiResult = apiResults[0]
         if (!apiResult) throw new Error('服务商未返回图片数据')
@@ -1589,6 +1683,23 @@ export async function generateImages(
           generation: gen
         })
       } catch (e: any) {
+        // 用户手动中止：标记 canceled（区别于 error），发 canceled 事件让前端把占位卡转为"已取消"。
+        // 计费不返还——已提交到上游的异步任务上游可能仍执行扣费，桌面端只负责停止本地等待 / 落盘。
+        if (isCanceledError(e)) {
+          updateGenerationStatus(genId, 'canceled', { error: '已手动中止' })
+          const gen = getGeneration(genId)!
+          ordered[i] = gen
+          completedCount++
+          emitProgress({
+            type: 'canceled',
+            index: i,
+            total: batchCount,
+            completed: completedCount,
+            genId,
+            generation: gen
+          })
+          return
+        }
         const errorMsg = e?.message || 'Unknown error'
         // 失败诊断：从 error.rawRequest 提取 callXxxImageAPI 在 fetch 前抓的请求快照（已脱敏 JSON 字符串），
         // 与 error 字段一同写入数据库；UI 端 ErrorDetailDialog 据此展示「原始请求」并支持复制。
@@ -1613,6 +1724,8 @@ export async function generateImages(
           error: errorMsg,
           raw_request: rawRequest
         })
+      } finally {
+        inflightAbortControllers.delete(genId)
       }
     }
 

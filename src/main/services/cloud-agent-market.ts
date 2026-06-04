@@ -1,6 +1,6 @@
 import https from 'https'
 import http from 'http'
-import { getCloudApiBase } from './cloud-token'
+import { getCloudApiBase, getCloudToken, fetchWithCloudAuth } from './cloud-token'
 import { createBot, getBot, getBotByCloudAgentId, updateBot, type Bot, type ToolApproval } from './bot'
 import { createPersona } from './persona'
 import { downloadAvatarFromUrl } from './bot-avatar'
@@ -37,13 +37,22 @@ export interface CloudAgent {
   rating_avg: number
   rating_count: number
   author_nickname: string
+  // 定价：price=0 免费；>0 需购买。price_balance_type：token=金币 / credit=积分
+  price: number
+  price_balance_type: 'token' | 'credit'
+  // 当前登录用户是否已拥有（已购买 / 免费已领取）
+  is_owned: boolean
   created_at?: string
 }
 
+/** 市场列表/详情请求：登录则带 token（按身份过滤 + 标记已拥有），未登录匿名（只看公开免费）。 */
 function fetchJson(url: string, timeoutMs = 12000): Promise<any> {
   return new Promise((resolve, reject) => {
     const mod = url.startsWith('https') ? https : http
-    const req = mod.get(url, (res) => {
+    const token = getCloudToken()
+    const headers: Record<string, string> = {}
+    if (token) headers['Authorization'] = `Bearer ${token}`
+    const req = mod.get(url, { headers }, (res) => {
       const status = res.statusCode || 0
       let data = ''
       res.on('data', (chunk: string) => (data += chunk))
@@ -101,6 +110,9 @@ function mapAgent(raw: any, origin: string): CloudAgent {
     rating_avg: Number(raw.rating_avg || 0),
     rating_count: Number(raw.rating_count || 0),
     author_nickname: String(raw.author_nickname || ''),
+    price: Number(raw.price || 0),
+    price_balance_type: raw.price_balance_type === 'token' ? 'token' : 'credit',
+    is_owned: !!raw.is_owned,
     created_at: raw.created_at || undefined,
   }
 }
@@ -143,14 +155,63 @@ export async function fetchMarketAgent(id: number): Promise<CloudAgent> {
   return mapAgent(json, origin)
 }
 
-/** 保存到本地时回调下载量 +1（best-effort，失败不影响主流程） */
-async function incrementDownload(id: number): Promise<void> {
+export interface AcquireResult {
+  ok: boolean
+  alreadyOwned?: boolean
+  needLogin?: boolean
+  needRecharge?: boolean
+  forbidden?: boolean
+  price?: number
+  balanceType?: 'token' | 'credit'
+  needed?: number
+  current?: number
+  error?: string
+  // 购买成功后服务端下发的完整数据（含收费智能体购买前隐藏的 system_prompt）
+  agent?: any
+}
+
+/**
+ * 购买/获取智能体（保存到本地前调用）：校验可见性 + 扣费。
+ * - 未登录：needLogin
+ * - 无权限（受限且不在白名单）：forbidden
+ * - 余额不足：needRecharge + needed/current/balanceType
+ * - 成功 / 已拥有：ok
+ */
+export async function acquireAgent(id: number): Promise<AcquireResult> {
+  const apiBase = getCloudApiBase()
+  if (!apiBase) return { ok: false, error: '云控端未配置' }
+  if (!getCloudToken()) return { ok: false, needLogin: true }
   try {
-    const apiBase = getCloudApiBase()
-    if (!apiBase) return
-    await fetch(`${apiBase}/public/agents/${id}/download`, { method: 'POST' })
-  } catch {
-    /* ignore */
+    const res = await fetchWithCloudAuth(
+      `${apiBase}/client/agents/${id}/acquire`,
+      { method: 'POST' },
+      '智能体购买 401',
+    )
+    const data: any = await res.json().catch(() => ({}))
+    if (res.ok) {
+      return {
+        ok: true,
+        alreadyOwned: !!data.already_owned,
+        price: Number(data.price) || 0,
+        balanceType: data.balance_type === 'token' ? 'token' : 'credit',
+        agent: data.agent || null,
+      }
+    }
+    if (res.status === 401) return { ok: false, needLogin: true }
+    if (res.status === 403) return { ok: false, forbidden: true, error: data.message || '无权获取该智能体' }
+    if (res.status === 402) {
+      return {
+        ok: false,
+        needRecharge: true,
+        needed: Number(data.needed) || 0,
+        current: Number(data.current) || 0,
+        balanceType: data.balance_type === 'token' ? 'token' : 'credit',
+        error: data.error || '余额不足',
+      }
+    }
+    return { ok: false, error: data.message || data.error || `请求失败(${res.status})` }
+  } catch (e: any) {
+    return { ok: false, error: e?.message || '购买失败' }
   }
 }
 
@@ -158,12 +219,19 @@ export interface ImportAgentResult {
   ok: boolean
   bot?: Bot
   alreadyExists?: boolean
+  // 购买相关失败态（透传给渲染层做引导）
+  needLogin?: boolean
+  needRecharge?: boolean
+  forbidden?: boolean
+  needed?: number
+  current?: number
+  balanceType?: 'token' | 'credit'
   error?: string
 }
 
 /**
- * 从市场「保存到本地」：建人格（承载 system_prompt）→ 建本地 bot（绑 6 工具）→ 下载形象图落盘。
- * 已保存过（cloud_agent_id 命中）则直接返回现有 bot，不重复创建。
+ * 从市场「保存到本地」：先购买/获取（可见性 + 扣费）→ 建人格（承载 system_prompt）→ 建本地 bot（绑 6 工具）→ 下载形象图落盘。
+ * 已保存过（cloud_agent_id 命中）则直接返回现有 bot，不重复创建、不再扣费。
  */
 export async function importAgentAsLocal(cloudAgentInput: CloudAgent): Promise<ImportAgentResult> {
   try {
@@ -173,38 +241,62 @@ export async function importAgentAsLocal(cloudAgentInput: CloudAgent): Promise<I
     const existing = getBotByCloudAgentId(cloud.id)
     if (existing) return { ok: true, bot: existing, alreadyExists: true }
 
+    // 购买/获取校验（可见性 + 扣费）。成功后才建本地 bot；服务端记录拥有，删本地后重存不重复扣费。
+    const acq = await acquireAgent(cloud.id)
+    if (!acq.ok) {
+      return {
+        ok: false,
+        needLogin: acq.needLogin,
+        needRecharge: acq.needRecharge,
+        forbidden: acq.forbidden,
+        needed: acq.needed,
+        current: acq.current,
+        balanceType: acq.balanceType,
+        error: acq.error,
+      }
+    }
+
+    // 购买后服务端下发完整数据（含收费智能体购买前在公开接口被隐藏的 system_prompt），回退到列表数据
+    const full: any = acq.agent || {}
+    const name = String(full.name || cloud.name || '未命名智能体')
+    const description = String(full.description ?? cloud.description ?? '')
+    const systemPrompt = String(full.system_prompt ?? cloud.system_prompt ?? '').trim()
+    const toolApproval = normalizeApproval(full.tool_approval ?? cloud.tool_approval)
+    const enableImageGen = (full.enable_image_gen ?? cloud.enable_image_gen) ? 1 : 0
+    const avatarUrl = String(full.avatar || cloud.avatar || '')
+    const rawToolIds: string[] = Array.isArray(full.tool_skill_ids) && full.tool_skill_ids.length
+      ? full.tool_skill_ids.map((x: unknown) => String(x))
+      : (cloud.tool_skill_ids || [])
+
     // 系统提示词经「人格」承载（决定行为）
     let personaId: string | null = null
-    const systemPrompt = (cloud.system_prompt || '').trim()
     if (systemPrompt) {
-      const persona = createPersona({ name: cloud.name || '市场智能体', system_prompt: systemPrompt })
+      const persona = createPersona({ name: name || '市场智能体', system_prompt: systemPrompt })
       personaId = persona.id
     }
 
-    const toolIds = (cloud.tool_skill_ids || []).filter((x) => BUILTIN_TOOL_IDS.has(x))
+    const toolIds = rawToolIds.filter((x) => BUILTIN_TOOL_IDS.has(x))
 
     const bot = createBot({
-      name: cloud.name || '未命名智能体',
-      description: cloud.description || '',
+      name,
+      description,
       persona_id: personaId || undefined,
       skill_ids: toolIds,
-      tool_approval: normalizeApproval(cloud.tool_approval),
-      enable_image_gen: cloud.enable_image_gen ? 1 : 0,
+      tool_approval: toolApproval,
+      enable_image_gen: enableImageGen,
       source: 'market',
       cloud_agent_id: cloud.id,
     })
 
     // 形象图下载落盘（失败降级：bot 仍可用，卡片回退首字母）
-    if (cloud.avatar) {
+    if (avatarUrl) {
       try {
-        const localPath = await downloadAvatarFromUrl(cloud.avatar)
+        const localPath = await downloadAvatarFromUrl(avatarUrl)
         if (localPath) updateBot(bot.id, { avatar: localPath })
       } catch {
         /* ignore download failure */
       }
     }
-
-    void incrementDownload(cloud.id)
 
     return { ok: true, bot: getBot(bot.id) || bot, alreadyExists: false }
   } catch (e: any) {

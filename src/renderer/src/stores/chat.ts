@@ -49,6 +49,21 @@ export interface ChatDraft {
   tempPromptSkillDirs: string[]
 }
 
+/**
+ * 进行中的流式回复状态（per-conversation）。
+ * 提升为 store 级持久态：切走会话 / 切走页面再回来仍可继续逐字渲染。
+ * 由 app 级常驻 onStream 监听更新，sendMessage 在 IPC resolve（本轮落库）后删除。
+ */
+export interface StreamingState {
+  requestId: string
+  content: string
+  reasoning: string
+  reasoningActive: boolean
+  toolLogs: string[]
+  toolActive: boolean
+  collapsed: boolean
+}
+
 function emptyChatDraft(): ChatDraft {
   return {
     inputText: '',
@@ -71,6 +86,10 @@ export const useChatStore = defineStore('chat', () => {
   const streamContent = ref('')
   /** 会话级草稿 Map：切走页面 / 切换对话不丢。重启 app 后重置。 */
   const drafts = ref<Record<string, ChatDraft>>({})
+  /** 进行中的流式回复（per-conversation）。切走会话/页面再回来不丢，本轮完成后删除。 */
+  const streamingStates = ref<Record<string, StreamingState>>({})
+  /** app 级常驻流式监听只装一次的幂等标志（store 单例，setup 仅执行一次）。 */
+  let streamListenerReady = false
 
   const streaming = computed(() =>
     currentConversationId.value ? streamingConvIds.value.has(currentConversationId.value) : false
@@ -163,6 +182,12 @@ export const useChatStore = defineStore('chat', () => {
       delete next[id]
       drafts.value = next
     }
+    // 同步清理进行中的流式态
+    if (streamingStates.value[id]) {
+      const next = { ...streamingStates.value }
+      delete next[id]
+      streamingStates.value = next
+    }
   }
 
   /**
@@ -234,6 +259,82 @@ export const useChatStore = defineStore('chat', () => {
     window.api.chat.offAppendMessage()
   }
 
+  /** image_gen 等工具 tool_start 的日志行（与旧逻辑保持一致）。 */
+  function buildToolStartLogs(tools: unknown): string[] {
+    const list = (tools as string[]) || []
+    if (!list.length) return []
+    const logs: string[] = []
+    const others = list.filter((t) => t !== 'image_gen')
+    if (list.includes('image_gen')) {
+      logs.push('> 提交生图任务…（约 30-90 秒后图片会自动出现在对话和右上角）')
+    }
+    if (others.length) logs.push(`> calling: ${others.join(', ')}`)
+    return logs
+  }
+
+  function getStreamingState(convId: string): StreamingState | undefined {
+    return streamingStates.value[convId]
+  }
+
+  /**
+   * App 级常驻流式监听：只装一次，永不随组件卸载退订。
+   * 按 conversationId 路由到 streamingStates，使「切走会话/页面再回来」仍能继续逐字渲染。
+   * - requestId 不匹配的旧流自动忽略（同会话连发时旧轮被覆盖）。
+   * - 取消后仅放行 aborted（与旧逻辑一致）。
+   * - 'done' 不在此处理：清理统一在 sendMessage 的 IPC resolve 之后做。
+   */
+  function initStreamListener() {
+    if (streamListenerReady) return
+    streamListenerReady = true
+    window.api.chat.onStream((data: any) => {
+      const convId = data?.conversationId
+      if (!convId) return
+      const st = streamingStates.value[convId]
+      if (!st) return
+      if (data.requestId && st.requestId !== data.requestId) return
+      if (canceledRequestIds.value.has(st.requestId) && data.type !== 'aborted') return
+
+      switch (data.type) {
+        case 'content':
+          // 首个正文 token 到达 = 思考阶段结束，折叠思维链面板
+          if (st.reasoningActive) st.reasoningActive = false
+          st.content += data.content || ''
+          break
+        case 'reasoning':
+          st.reasoning += data.content || ''
+          st.reasoningActive = true
+          break
+        case 'tool_start':
+          st.content = ''
+          if (st.reasoningActive) st.reasoningActive = false
+          st.toolActive = true
+          st.collapsed = false
+          st.toolLogs.push(...buildToolStartLogs(data.tools))
+          break
+        case 'tool_result':
+          st.toolLogs.push(`  ${data.tool}: ${data.summary || 'done'}`)
+          break
+        case 'tool_done':
+          st.content = ''
+          break
+        case 'aborted': {
+          if (st.reasoningActive) st.reasoningActive = false
+          const marker = data.content || '[\u5df2\u4e2d\u65ad]'
+          st.content = st.content ? `${st.content}\n\n${marker}` : marker
+          break
+        }
+        case 'error': {
+          if (st.reasoningActive) st.reasoningActive = false
+          const errLine = `[Error] ${translateError(data.error)}`
+          st.content = st.content ? `${st.content}\n\n${errLine}` : errLine
+          break
+        }
+      }
+      // 当前停在该会话时镜像给 streamContent，沿用现有 scrollToBottom 的 watch
+      if (currentConversationId.value === convId) streamContent.value = st.content
+    })
+  }
+
   async function sendMessage(content: string, attachments?: any[], overrides?: {
     kbCategoryIds?: string[]
     skillIds?: string[]
@@ -256,10 +357,10 @@ export const useChatStore = defineStore('chat', () => {
     streamingConvIds.value = new Set(streamingConvIds.value)
     streamContent.value = ''
 
-    // Add user message locally
+    // 乐观插入用户消息（主进程也会立即落库；切走切回靠 getMessages 拿回）
     messages.value.push({
       id: 'temp-user-' + Date.now(),
-      conversation_id: currentConversationId.value,
+      conversation_id: convId,
       role: 'user',
       content,
       attachments: attachments || [],
@@ -267,95 +368,19 @@ export const useChatStore = defineStore('chat', () => {
       created_at: new Date().toISOString()
     })
 
-    // Add placeholder assistant message
-    const tempId = 'temp-assistant-' + Date.now()
-    messages.value.push({
-      id: tempId,
-      conversation_id: currentConversationId.value,
-      role: 'assistant',
+    // 进行中的流式态提升为 store 级（per-conversation），由 app 级常驻 onStream 监听更新。
+    // 不再 push 临时 assistant 占位、不再注册闭包监听：切走会话/页面再回来仍能继续逐字渲染。
+    streamingStates.value[convId] = {
+      requestId,
       content: '',
-      attachments: [],
-      tool_calls: [],
-      created_at: new Date().toISOString()
-    })
+      reasoning: '',
+      reasoningActive: false,
+      toolLogs: [],
+      toolActive: true,
+      collapsed: false,
+    }
 
-    // Listen for stream events
-    const toolLogs: string[] = []
-    let localStreamContent = ''
-    let localReasoning = ''
-    let shouldRefreshMessages = false
-    const unsubscribeStream = window.api.chat.onStream((data: any) => {
-      if (data?.conversationId !== convId) return
-      if (data?.requestId && data.requestId !== requestId) return
-      if (canceledRequestIds.value.has(requestId) && data?.type !== 'aborted') return
-      if (data.type === 'content') {
-        localStreamContent += data.content
-        if (currentConversationId.value === convId) streamContent.value = localStreamContent
-        const msg = messages.value.find((m) => m.id === tempId)
-        if (msg) {
-          // 首个正文 token 到达 = 思考阶段结束，折叠思维链面板
-          if (msg._reasoningActive) { msg._reasoningActive = false; msg._reasoningCollapsed = true }
-          msg.content = localStreamContent
-        }
-      } else if (data.type === 'reasoning') {
-        // 推理模型思维链：累积并实时展示「思考中」可折叠面板
-        localReasoning += data.content || ''
-        const msg = messages.value.find((m) => m.id === tempId)
-        if (msg) {
-          msg._reasoning = localReasoning
-          msg._reasoningActive = true
-          msg._reasoningCollapsed = false
-        }
-      } else if (data.type === 'tool_start') {
-        localStreamContent = ''
-        if (currentConversationId.value === convId) streamContent.value = ''
-        const tools = (data.tools as string[]) || []
-        if (tools.length) {
-          // image_gen 是异步 fire-and-forget：tool_start 几乎立即被 tool_result 的 pending 摘要覆盖，
-          // 真正的等待发生在后台。用户感知顺序：提交 → 立即解锁 → 后台生成 → 图片自动追加进对话。
-          const others = tools.filter((t) => t !== 'image_gen')
-          if (tools.includes('image_gen')) {
-            toolLogs.push('> 提交生图任务…（约 30-90 秒后图片会自动出现在对话和右上角）')
-          }
-          if (others.length) toolLogs.push(`> calling: ${others.join(', ')}`)
-        }
-        const msg = messages.value.find((m) => m.id === tempId)
-        if (msg) {
-          if (msg._reasoningActive) { msg._reasoningActive = false; msg._reasoningCollapsed = true }
-          msg.content = ''
-          msg._toolLogs = [...toolLogs]
-          msg._toolActive = true
-          msg._collapsed = false
-        }
-      } else if (data.type === 'tool_result') {
-        const line = `  ${data.tool}: ${data.summary || 'done'}`
-        toolLogs.push(line)
-        const msg = messages.value.find((m) => m.id === tempId)
-        if (msg) msg._toolLogs = [...toolLogs]
-      } else if (data.type === 'tool_done') {
-        localStreamContent = ''
-        if (currentConversationId.value === convId) streamContent.value = ''
-        const msg = messages.value.find((m) => m.id === tempId)
-        if (msg) msg.content = ''
-      } else if (data.type === 'aborted') {
-        // 保留已流式产出的半截内容，仅在尾部追加中断标记（主进程也会把 partial+标记落库）
-        const msg = messages.value.find((m) => m.id === tempId)
-        if (msg) {
-          if (msg._reasoningActive) { msg._reasoningActive = false; msg._reasoningCollapsed = true }
-          const marker = data.content || '[\u5df2\u4e2d\u65ad]'
-          msg.content = msg.content ? `${msg.content}\n\n${marker}` : marker
-        }
-      } else if (data.type === 'error') {
-        const msg = messages.value.find((m) => m.id === tempId)
-        if (msg) {
-          if (msg._reasoningActive) { msg._reasoningActive = false; msg._reasoningCollapsed = true }
-          const errLine = `[Error] ${translateError(data.error)}`
-          msg.content = msg.content ? `${msg.content}\n\n${errLine}` : errLine
-        }
-      }
-      // Don't handle 'done' here - cleanup after IPC resolves
-    })
-
+    let invokeErrorMsg = ''
     try {
       await window.api.chat.invoke('sendMessage', {
         conversationId: convId,
@@ -369,55 +394,68 @@ export const useChatStore = defineStore('chat', () => {
         ...(overrides?.promptSkillDirs?.length ? { overridePromptSkillDirs: overrides.promptSkillDirs } : {})
       })
     } catch (err: any) {
-      const msg = messages.value.find((m) => m.id === tempId)
-      if (msg && !msg.content) msg.content = `[Error] ${translateError(err.message || '')}`
+      // 主进程通常已 catch 并把 error/aborted 落库；此处仅兜底 IPC 通道级失败。
+      invokeErrorMsg = translateError(err?.message || '')
+      const st = streamingStates.value[convId]
+      if (st) st.content = st.content ? `${st.content}\n\n[Error] ${invokeErrorMsg}` : `[Error] ${invokeErrorMsg}`
     } finally {
       const isLatestRequest = activeRequestIds.value[convId] === requestId
-      // Collapse tool logs after response completes
-      const msg = messages.value.find((m) => m.id === tempId)
-      if (msg) {
-        msg._toolActive = false
-        msg._collapsed = true
-        msg._reasoningActive = false
-        if (msg._reasoning) msg._reasoningCollapsed = true
-      }
       if (isLatestRequest) {
+        const st = streamingStates.value[convId]
+        const localContent = st?.content || ''
+        const localReasoning = st?.reasoning || ''
+
+        // 仅当仍停留在该会话时，从 DB 拉真实消息并与 live 气泡做 seamless swap。
+        // 用 try/catch 包住：即便 getMessages 失败也要继续往下清理，避免会话卡在 streaming 状态。
+        if (currentConversationId.value === convId) {
+          try {
+            const dbMessages = (await window.api.chat.invoke('getMessages', convId)) as Message[]
+            if (dbMessages.length > 0) {
+              const lastDb = dbMessages[dbMessages.length - 1]
+              if (lastDb.role === 'assistant' && !lastDb.content && localContent) {
+                lastDb.content = localContent
+              }
+              if (lastDb.role === 'assistant' && lastDb.content?.startsWith('[Error]')) {
+                lastDb.content = `[Error] ${translateError(lastDb.content.slice(8))}`
+              }
+              // 思维链不入库：把本轮累积 reasoning 贴回最后一条 assistant（切走再回来才会消失）
+              if (lastDb.role === 'assistant' && localReasoning) {
+                lastDb._reasoning = localReasoning
+                lastDb._reasoningCollapsed = true
+                lastDb._reasoningActive = false
+              }
+            }
+            // 兜底：IPC 级失败导致主进程未落库本轮 assistant 时补一条本地错误消息，避免错误丢失
+            const lastDb = dbMessages[dbMessages.length - 1]
+            if (invokeErrorMsg && (!lastDb || lastDb.role !== 'assistant' || !lastDb.content)) {
+              dbMessages.push({
+                id: 'temp-error-' + Date.now(),
+                conversation_id: convId,
+                role: 'assistant',
+                content: `[Error] ${invokeErrorMsg}`,
+                attachments: [],
+                tool_calls: [],
+                created_at: new Date().toISOString()
+              })
+            }
+            // await 期间用户可能已切走：二次确认仍在该会话才覆盖 messages，避免覆盖别的会话
+            if (currentConversationId.value === convId) {
+              messages.value = dbMessages
+            }
+          } catch {
+            // 拉取失败不致命：下次 selectConversation 会重新从 DB 拉
+          }
+        }
+
+        // 清理流式态（始终执行，避免卡在 streaming 状态；live 气泡随之消失，已被真实消息替换）
+        delete streamingStates.value[convId]
         const next = { ...activeRequestIds.value }
         delete next[convId]
         activeRequestIds.value = next
         streamingConvIds.value.delete(convId)
         streamingConvIds.value = new Set(streamingConvIds.value)
-        shouldRefreshMessages = true
+        refreshCloudBalances()
       }
-      const unsubscribe = unsubscribeStream as unknown as (() => void) | undefined
-      if (typeof unsubscribe === 'function') unsubscribe()
-      else window.api.chat.offStream()
-      if (isLatestRequest) refreshCloudBalances()
-    }
-
-    // Refresh messages from DB - preserve streamed content to avoid flash
-    if (shouldRefreshMessages && currentConversationId.value === convId) {
-      const lastContent = localStreamContent
-      const dbMessages = (await window.api.chat.invoke('getMessages', convId)) as Message[]
-      // If the last DB assistant message matches streamed content, swap seamlessly
-      if (dbMessages.length > 0) {
-        const lastDb = dbMessages[dbMessages.length - 1]
-        if (lastDb.role === 'assistant' && !lastDb.content && lastContent) {
-          lastDb.content = lastContent
-        }
-        // Translate error messages from DB
-        if (lastDb.role === 'assistant' && lastDb.content?.startsWith('[Error]')) {
-          lastDb.content = `[Error] ${translateError(lastDb.content.slice(8))}`
-        }
-        // 思维链不入库：刷新后把本轮累积的 reasoning 贴回最后一条 assistant，
-        // 让「已深度思考」折叠面板在本轮结束后仍可展开（切走会话再回来才会消失）
-        if (lastDb.role === 'assistant' && localReasoning) {
-          lastDb._reasoning = localReasoning
-          lastDb._reasoningCollapsed = true
-          lastDb._reasoningActive = false
-        }
-      }
-      messages.value = dbMessages
     }
   }
 
@@ -431,6 +469,7 @@ export const useChatStore = defineStore('chat', () => {
     canceledRequestIds.value = new Set()
     streamContent.value = ''
     drafts.value = {}
+    streamingStates.value = {}
   }
 
   function isConversationStreaming(convId: string): boolean {
@@ -463,6 +502,9 @@ export const useChatStore = defineStore('chat', () => {
     isRequestCanceled,
     currentConversation,
     drafts,
+    streamingStates,
+    getStreamingState,
+    initStreamListener,
     fetchConversations,
     createConversation,
     updateConversationModel,

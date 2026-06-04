@@ -309,6 +309,23 @@ function runMigrations(): void {
     )
   }
 
+  // 精细抠图系统「我的精细抠图」分类：精细抠图（抠抠图）产图自动归档
+  const sysFineMattingExists = db
+    .prepare("SELECT id FROM gallery_categories WHERE id = ?")
+    .get('__sys_fine_matting__') as any
+  if (!sysFineMattingExists) {
+    db.prepare(
+      "INSERT INTO gallery_categories (id, name, description, is_system, sort_order, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+    ).run(
+      '__sys_fine_matting__',
+      '我的精细抠图',
+      '精细抠图（抠抠图）自动归档（透明 PNG）',
+      1,
+      -998,
+      new Date().toISOString()
+    )
+  }
+
   // v0.7.7+ creative_templates / creative_template_categories 表幂等建表（旧库升级路径）
   // 完整字段语义见 resources/schema.sql 顶部注释
   db.exec(`
@@ -413,6 +430,26 @@ function runMigrations(): void {
     CREATE INDEX IF NOT EXISTS idx_matting_tasks_status ON matting_tasks(status);
     CREATE INDEX IF NOT EXISTS idx_matting_tasks_created ON matting_tasks(created_at);
     CREATE INDEX IF NOT EXISTS idx_matting_tasks_canvas ON matting_tasks(canvas_project_id);
+  `)
+
+  // 精细抠图本地任务表幂等建表（旧库升级路径）。完整字段语义见 resources/schema.sql。
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS fine_matting_tasks (
+      id TEXT PRIMARY KEY,
+      source_image_path TEXT NOT NULL DEFAULT '',
+      result_path TEXT NOT NULL DEFAULT '',
+      result_url TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'pending',
+      error TEXT NOT NULL DEFAULT '',
+      request_id TEXT NOT NULL DEFAULT '',
+      provider_task_id TEXT NOT NULL DEFAULT '',
+      elapsed_ms INTEGER NOT NULL DEFAULT 0,
+      tier INTEGER NOT NULL DEFAULT 0,
+      cost REAL NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_fine_matting_tasks_status ON fine_matting_tasks(status);
+    CREATE INDEX IF NOT EXISTS idx_fine_matting_tasks_created ON fine_matting_tasks(created_at);
   `)
 }
 

@@ -51,7 +51,24 @@ export interface MarketAgent {
   rating_avg: number
   rating_count: number
   author_nickname: string
+  // 定价：price=0 免费；>0 需购买。price_balance_type：token=金币 / credit=积分
+  price: number
+  price_balance_type: 'token' | 'credit'
+  // 当前用户是否已拥有
+  is_owned: boolean
   created_at?: string
+}
+
+export interface ImportFromMarketResult {
+  ok: boolean
+  alreadyExists?: boolean
+  needLogin?: boolean
+  needRecharge?: boolean
+  forbidden?: boolean
+  needed?: number
+  current?: number
+  balanceType?: 'token' | 'credit'
+  error?: string
 }
 
 export const useBotStore = defineStore('bots', () => {
@@ -109,15 +126,31 @@ export const useBotStore = defineStore('bots', () => {
     }
   }
 
-  async function importFromMarket(agent: MarketAgent): Promise<{ ok: boolean; alreadyExists?: boolean; error?: string }> {
+  async function importFromMarket(agent: MarketAgent): Promise<ImportFromMarketResult> {
     const res = (await window.api.bot.invoke('importFromMarket', plain(agent))) as {
       ok: boolean
       bot?: Bot
       alreadyExists?: boolean
+      needLogin?: boolean
+      needRecharge?: boolean
+      forbidden?: boolean
+      needed?: number
+      current?: number
+      balanceType?: 'token' | 'credit'
       error?: string
     }
     if (res.ok && res.bot && !res.alreadyExists) bots.value.unshift(res.bot)
-    return { ok: res.ok, alreadyExists: res.alreadyExists, error: res.error }
+    return {
+      ok: res.ok,
+      alreadyExists: res.alreadyExists,
+      needLogin: res.needLogin,
+      needRecharge: res.needRecharge,
+      forbidden: res.forbidden,
+      needed: res.needed,
+      current: res.current,
+      balanceType: res.balanceType,
+      error: res.error,
+    }
   }
 
   async function submitToMarket(localBotId: string) {
