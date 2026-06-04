@@ -314,7 +314,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
 import { useModelStore, type ModelProvider } from '@/stores/models'
-import { normalizeApiBase } from '@shared/api-base-normalize'
 
 const store = useModelStore()
 const showStats = ref(false)
@@ -415,8 +414,6 @@ const selectedModels = ref<string[]>([])
 const modelSearch = ref('')
 const fetchingModels = ref(false)
 const fetchError = ref('')
-
-const normalizedApiBasePreview = computed(() => normalizeApiBase(form.value.api_base))
 
 const showModelsQuery = ref(false)
 const queryProviderName = ref('')

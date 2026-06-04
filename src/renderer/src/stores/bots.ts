@@ -22,8 +22,36 @@ export interface Bot {
   tool_approval: ToolApproval
   /** 是否启用 AI 生图能力（image_gen tool）。0=关、1=开。默认关，避免对无图需求的智能体浪费 prompt 与 LLM 误调。 */
   enable_image_gen: number
+  /** 2:3 形象图本地绝对路径（空=用首字母占位） */
+  avatar: string
+  /** 来源：'local' 本地创建 / 'market' 从市场保存 */
+  source: string
+  /** 市场来源云端 agent id（去重 / 评分用）。0=非市场来源 */
+  cloud_agent_id: number
+  /** 投稿到市场的审核态：'' 未投稿 / pending / approved / rejected / withdrawn */
+  submission_status: string
+  submission_reject_reason: string
+  submission_reviewed_at: string
+  submission_synced_at: string
   created_at: string
   updated_at: string
+}
+
+export interface MarketAgent {
+  id: number
+  name: string
+  description: string
+  avatar: string
+  system_prompt: string
+  tool_skill_ids: string[]
+  tool_approval: ToolApproval
+  enable_image_gen: number
+  tags: string[]
+  download_count: number
+  rating_avg: number
+  rating_count: number
+  author_nickname: string
+  created_at?: string
 }
 
 export const useBotStore = defineStore('bots', () => {
@@ -57,5 +85,60 @@ export const useBotStore = defineStore('bots', () => {
     bots.value = bots.value.filter((b) => b.id !== id)
   }
 
-  return { bots, loading, fetchBots, createBot, updateBot, deleteBot }
+  // 渲染端选图（data:URL）落盘，返回本地绝对路径，写入 bot.avatar
+  async function saveAvatar(dataUrl: string): Promise<string> {
+    return (await window.api.bot.invoke('saveAvatar', dataUrl)) as string
+  }
+
+  // ===== 智能体市场 =====
+  const marketAgents = ref<MarketAgent[]>([])
+  const marketLoading = ref(false)
+  const marketTotal = ref(0)
+
+  async function fetchMarket(options?: { page?: number; pageSize?: number; search?: string }) {
+    marketLoading.value = true
+    try {
+      const res = (await window.api.bot.invoke('listMarket', plain(options || {}))) as {
+        items: MarketAgent[]
+        total: number
+      }
+      marketAgents.value = res.items || []
+      marketTotal.value = res.total || 0
+    } finally {
+      marketLoading.value = false
+    }
+  }
+
+  async function importFromMarket(agent: MarketAgent): Promise<{ ok: boolean; alreadyExists?: boolean; error?: string }> {
+    const res = (await window.api.bot.invoke('importFromMarket', plain(agent))) as {
+      ok: boolean
+      bot?: Bot
+      alreadyExists?: boolean
+      error?: string
+    }
+    if (res.ok && res.bot && !res.alreadyExists) bots.value.unshift(res.bot)
+    return { ok: res.ok, alreadyExists: res.alreadyExists, error: res.error }
+  }
+
+  async function submitToMarket(localBotId: string) {
+    return (await window.api.bot.invoke('submitToMarket', localBotId)) as { ok: boolean; error?: string; data?: any }
+  }
+
+  async function withdrawSubmission(localBotId: string) {
+    return (await window.api.bot.invoke('withdrawSubmission', localBotId)) as { ok: boolean; error?: string }
+  }
+
+  async function syncSubmissionStatus(localBotIds: string[]) {
+    return (await window.api.bot.invoke('syncSubmissionStatus', plain(localBotIds))) as { ok: boolean; items?: any[]; error?: string }
+  }
+
+  async function rateAgent(cloudAgentId: number, score: number, comment?: string) {
+    return (await window.api.bot.invoke('rate', cloudAgentId, score, comment)) as { ok: boolean; error?: string; data?: any }
+  }
+
+  return {
+    bots, loading, fetchBots, createBot, updateBot, deleteBot, saveAvatar,
+    marketAgents, marketLoading, marketTotal,
+    fetchMarket, importFromMarket, submitToMarket, withdrawSubmission, syncSubmissionStatus, rateAgent,
+  }
 })

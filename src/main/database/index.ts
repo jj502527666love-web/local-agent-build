@@ -73,6 +73,28 @@ function runMigrations(): void {
   if (!botColNames.includes('enable_image_gen')) {
     db.exec("ALTER TABLE bots ADD COLUMN enable_image_gen INTEGER NOT NULL DEFAULT 0")
   }
+  // 智能体市场（云端创建/投稿 → 桌面保存到本地）：旧库幂等加列
+  if (!botColNames.includes('avatar')) {
+    db.exec("ALTER TABLE bots ADD COLUMN avatar TEXT NOT NULL DEFAULT ''")
+  }
+  if (!botColNames.includes('source')) {
+    db.exec("ALTER TABLE bots ADD COLUMN source TEXT NOT NULL DEFAULT 'local'")
+  }
+  if (!botColNames.includes('cloud_agent_id')) {
+    db.exec("ALTER TABLE bots ADD COLUMN cloud_agent_id INTEGER NOT NULL DEFAULT 0")
+  }
+  if (!botColNames.includes('submission_status')) {
+    db.exec("ALTER TABLE bots ADD COLUMN submission_status TEXT NOT NULL DEFAULT ''")
+  }
+  if (!botColNames.includes('submission_reject_reason')) {
+    db.exec("ALTER TABLE bots ADD COLUMN submission_reject_reason TEXT NOT NULL DEFAULT ''")
+  }
+  if (!botColNames.includes('submission_reviewed_at')) {
+    db.exec("ALTER TABLE bots ADD COLUMN submission_reviewed_at TEXT NOT NULL DEFAULT ''")
+  }
+  if (!botColNames.includes('submission_synced_at')) {
+    db.exec("ALTER TABLE bots ADD COLUMN submission_synced_at TEXT NOT NULL DEFAULT ''")
+  }
   // messages: persist tool_call_id so OpenAI tool_calls/tool pairs replay correctly
   const msgCols = db.prepare("PRAGMA table_info(messages)").all() as any[]
   const msgColNames = msgCols.map((c: any) => c.name)

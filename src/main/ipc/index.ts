@@ -25,6 +25,9 @@ import * as inspirationService from '../services/inspiration'
 import * as creativeTemplateService from '../services/creative-template'
 import * as cloudCreativeTemplateService from '../services/cloud-creative-template'
 import * as cloudCreativeTemplateSubmitService from '../services/cloud-creative-template-submit'
+import * as cloudAgentMarketService from '../services/cloud-agent-market'
+import * as cloudAgentSubmitService from '../services/cloud-agent-submit'
+import * as botAvatarService from '../services/bot-avatar'
 import * as promptPresetService from '../services/prompt-preset'
 import * as backupService from '../services/backup'
 import * as canvasService from '../services/canvas'
@@ -108,7 +111,23 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('bot:get', (_, id: string) => botService.getBot(id))
   ipcMain.handle('bot:create', (_, data) => botService.createBot(data))
   ipcMain.handle('bot:update', (_, id: string, data) => botService.updateBot(id, data))
-  ipcMain.handle('bot:delete', (_, id: string) => botService.deleteBot(id))
+  ipcMain.handle('bot:delete', (_, id: string) => {
+    const bot = botService.getBot(id)
+    const ok = botService.deleteBot(id)
+    if (ok && bot?.avatar) botAvatarService.deleteAvatarFile(bot.avatar)
+    return ok
+  })
+  // 本地形象图：渲染端选图 data:URL → 落盘返回绝对路径
+  ipcMain.handle('bot:saveAvatar', (_, dataUrl: string) => botAvatarService.saveAvatarFromDataUrl(dataUrl))
+  // 智能体市场：公开拉取 + 保存到本地
+  ipcMain.handle('bot:listMarket', (_, options?) => cloudAgentMarketService.fetchMarketAgents(options))
+  ipcMain.handle('bot:getMarket', (_, id: number) => cloudAgentMarketService.fetchMarketAgent(id))
+  ipcMain.handle('bot:importFromMarket', (_, cloudAgent) => cloudAgentMarketService.importAgentAsLocal(cloudAgent))
+  // 投稿 / 状态轮询 / 撤回 / 评分
+  ipcMain.handle('bot:submitToMarket', (_, localBotId: string) => cloudAgentSubmitService.submitAgentToMarket(localBotId))
+  ipcMain.handle('bot:syncSubmissionStatus', (_, localBotIds: string[]) => cloudAgentSubmitService.syncAgentSubmissionStatus(localBotIds))
+  ipcMain.handle('bot:withdrawSubmission', (_, localBotId: string) => cloudAgentSubmitService.withdrawAgentSubmission(localBotId))
+  ipcMain.handle('bot:rate', (_, cloudAgentId: number, score: number, comment?: string) => cloudAgentSubmitService.rateAgent(cloudAgentId, score, comment))
 
   // === Conversations ===
   ipcMain.handle('chat:listConversations', (_, botId: string) =>

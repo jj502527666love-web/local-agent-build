@@ -6,6 +6,32 @@
 
 ---
 
+## [0.7.16] - 2026-06-04
+
+> **智能体市场（桌面端）**：智能体页重构为「我的智能体 / 智能体市场」双 Tab，可从云控端上架的市场拉取智能体并「保存到本地」（自动建人格承载系统提示词、下载 2:3 形象图落盘、绑定 6 个内置小工具，并按 `cloud_agent_id` 去重）；本地智能体支持设置 2:3 形象图、发布到市场（投稿）+ 审核状态徽标 + 撤回、对市场智能体评分。需配合云控端 1.5.31。
+>
+> **修复对话内生图进度卡片潜在崩溃**：`ChatImageGenProgress.vue` 误用未 import 的 `watchEffect`，组件挂载时会抛 `ReferenceError`，已修复。
+
+### 新增
+
+- **智能体市场（云端创建 → 桌面端保存到本地）**：
+  - `renderer/views/bots/BotListView.vue`：双 Tab（我的智能体 / 智能体市场）；本地卡片渲染 2:3 形象图（`local-file://`，无图回退首字母）+ 投稿状态徽标 +「发布到市场 / 撤回」；市场卡片展示形象 / 标签 / 评分 / 下载量 +「添加（保存到本地）」+ 评分弹窗（仅阴影无遮罩）；编辑表单新增 2:3 形象图上传（前端比例校验）。
+  - `main/services/cloud-agent-market.ts`（新）：匿名拉取 `/public/agents` 列表 / 详情；`importAgentAsLocal` 保存到本地（建人格写 `system_prompt` → 建 bot 绑 6 个内置小工具 → 下载形象图落盘 → 下载量 +1 → 按 `cloud_agent_id` 去重）。
+  - `main/services/cloud-agent-submit.ts`（新）：投稿 `submit` / 状态轮询 `status-batch` / 撤回 / 评分 `rate`（JWT）。
+  - `main/services/bot-avatar.ts`（新）：2:3 形象图落盘 `{dataDir}/bot-avatars/`、远程下载、`data:URL` 落盘、删除清理。
+  - `main/services/bot.ts` + `resources/schema.sql` + `main/database/index.ts`：`bots` 表加列 `avatar` / `source` / `cloud_agent_id` / `submission_*`（幂等迁移）；新增 `getBotByCloudAgentId` / `setBotSubmissionState`。
+  - `main/ipc/index.ts`：新增 `bot:saveAvatar` / `bot:listMarket` / `bot:getMarket` / `bot:importFromMarket` / `bot:submitToMarket` / `bot:syncSubmissionStatus` / `bot:withdrawSubmission` / `bot:rate`；`bot:delete` 同步清理形象图文件。
+  - `renderer/stores/bots.ts`：`Bot` 接口加市场字段，新增 `MarketAgent` 类型与市场 / 投稿 / 评分 actions。
+  - 需配合云控端 1.5.31（智能体管理后台 + `/api/public|client|admin/agents` 接口）。
+
+### 修复
+
+- **对话内生图进度卡片潜在崩溃**：`renderer/components/ChatImageGenProgress.vue` 使用了未 import 的 `watchEffect`（且 `watch` 导入未用），组件挂载即抛 `ReferenceError`；改为正确 import `watchEffect`。
+
+### 其他
+
+- 清理两处既有未使用变量告警：`views/canvas/composables/useWorkflowEngine.ts`（`projectId` → `_projectId`）、`views/models/ModelView.vue`（移除未使用的 `normalizedApiBasePreview`）。
+
 ## [0.7.15] - 2026-06-04
 
 > **知识库向量化失败不再「假就绪」**：整批向量化全部失败时（如云端向量服务返回异常），知识库不再被错误标记为 `ready`，改为如实置 `error` 并中断，避免到对话检索时才暴露；同时把上游 HTML 错误页归纳为可读提示。纯桌面端改动，后端零改动。

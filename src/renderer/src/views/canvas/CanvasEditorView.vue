@@ -1488,11 +1488,20 @@ onBeforeRouteLeave(() => {
 
 <style>
 .vue-flow {
-  background: #fafbfc;
+  /* 画布底色跟随主题变量：浅色 ≈ 原 #fafbfc，深色自动转深底，避免深色模式下背景刺眼 */
+  background: var(--surface-1);
+}
+/* MiniMap 默认白底，深色模式下在深色画布上会突兀，改用 surface-2 深底 */
+.dark .canvas-minimap {
+  background-color: var(--surface-2);
 }
 .vue-flow__node {
   border-radius: 12px;
   box-shadow: 0 1px 4px rgba(0,0,0,0.06), 0 0 0 1px rgba(0,0,0,0.04);
+}
+/* 深色模式：黑色投影在深底上几乎不可见，改用「更深投影 + 半透明白描边」让节点从画布浮起 */
+.dark .vue-flow__node {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.06);
 }
 /* Handle visual: slightly larger than before for easier targeting. */
 .vue-flow__handle {

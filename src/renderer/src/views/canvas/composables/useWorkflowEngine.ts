@@ -1815,7 +1815,7 @@ export function useWorkflowEngine() {
   }
 
   /** 智能分镜：小说/剧情文本 → LLM 拆镜头 → shots（每镜头一个 text 动态输出）。 */
-  async function executeStoryboardNode(node: any, nodeId: string, projectId: string, upstream: UpstreamData): Promise<void> {
+  async function executeStoryboardNode(node: any, nodeId: string, _projectId: string, upstream: UpstreamData): Promise<void> {
     const canvasStore = useCanvasStore()
     const project = canvasStore.currentProject
     if (!project?.text_provider_id || !project?.text_model_id) {

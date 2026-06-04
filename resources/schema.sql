@@ -65,6 +65,15 @@ CREATE TABLE IF NOT EXISTS bots (
   mcp_ids TEXT NOT NULL DEFAULT '[]',
   prompt_skill_dirs TEXT NOT NULL DEFAULT '[]',
   tool_approval TEXT NOT NULL DEFAULT 'destructive',
+  -- 智能体市场相关：avatar 本地形象图（2:3，落盘绝对路径）；source 'local'|'market'；
+  -- cloud_agent_id 市场来源云端 id（去重）；submission_* 投稿到市场的审核态
+  avatar TEXT NOT NULL DEFAULT '',
+  source TEXT NOT NULL DEFAULT 'local',
+  cloud_agent_id INTEGER NOT NULL DEFAULT 0,
+  submission_status TEXT NOT NULL DEFAULT '',
+  submission_reject_reason TEXT NOT NULL DEFAULT '',
+  submission_reviewed_at TEXT NOT NULL DEFAULT '',
+  submission_synced_at TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (model_provider_id) REFERENCES model_providers(id) ON DELETE SET NULL,
