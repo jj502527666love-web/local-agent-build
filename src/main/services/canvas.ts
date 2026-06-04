@@ -372,6 +372,101 @@ export function listNodes(projectId: string): CanvasNode[] {
   return rows.map(parseNode)
 }
 
+// === 按序导出画布图片 ===
+// 把画布里「出图节点」当前展示的图片，按画布上的 #N 序号复制到用户选定目录，
+// 文件名 = {类型名}-{NN}.{ext}（如 文生图-01.png），方便用户在目录里按顺序取用
+// （做视频 / PPT / 连环画 / 交付等）。
+//
+// 序号规则与渲染端 CanvasEditorView 的 nodeIndexMap 完全一致：
+//   按节点类型分桶、按 created_at 升序、从 1 开始计数，且「含无图节点」——
+//   即每个该类型节点都占一个序号，缺图的节点对应序号会被跳过，
+//   保证导出文件名里的序号与画布上看到的节点徽章 #N 逐一对应。
+const EXPORT_TYPE_LABELS: Record<string, string> = {
+  text2img: '文生图',
+  img2img: '图生图',
+  imageResult: '图片结果',
+}
+
+export interface ProjectImageExportItem {
+  srcAbsPath: string
+  exportName: string
+  type: string
+  nodeIndex: number
+}
+
+/** 数据目录相对路径 → 绝对路径；已是绝对路径（盘符 / 斜杠开头）则原样返回 */
+function resolveDataPath(relOrAbs: string): string {
+  const isAbs = /^[A-Za-z]:|^\//.test(relOrAbs)
+  return isAbs ? relOrAbs : join(getDataDir(), relOrAbs)
+}
+
+/**
+ * 收集某画布可按序导出的图片清单。仅纳入出图节点（文生图 / 图生图 / 图片结果），
+ * 且该节点当前 result_path 指向一个存在的本地文件（dataURL / 远程 URL 无本地文件，跳过）。
+ */
+export function collectProjectImageExports(projectId: string): ProjectImageExportItem[] {
+  const nodes = listNodes(projectId) // 已 ORDER BY created_at ASC
+  const perTypeIndex: Record<string, number> = {}
+  const out: ProjectImageExportItem[] = []
+  // 去重：「图片结果」节点的 result_path 直接复用上游生成图（同一物理文件），
+  // 不去重会导出多份内容相同、仅文件名不同的图。按规范化绝对路径去重，
+  // 保留按 created_at 最先出现的节点（通常是真正产图的文生图 / 图生图节点）。
+  const seenFiles = new Set<string>()
+  for (const n of nodes) {
+    const label = EXPORT_TYPE_LABELS[n.type]
+    if (!label) continue
+    // 每个该类型节点都占一个序号（无论是否有图），与画布 #N 徽章对应
+    perTypeIndex[n.type] = (perTypeIndex[n.type] || 0) + 1
+    const nodeIndex = perTypeIndex[n.type]
+    const relPath = typeof n.data?.result_path === 'string' ? n.data.result_path.trim() : ''
+    if (!relPath || relPath.startsWith('data:') || relPath.startsWith('http')) continue
+    const abs = resolveDataPath(relPath)
+    if (!existsSync(abs)) continue
+    const dedupKey = abs.replace(/\\/g, '/').toLowerCase() // Windows 路径大小写 / 斜杠归一
+    if (seenFiles.has(dedupKey)) continue
+    seenFiles.add(dedupKey)
+    const ext = extname(abs).replace('.', '').toLowerCase() || 'png'
+    const seq = String(nodeIndex).padStart(2, '0')
+    out.push({ srcAbsPath: abs, exportName: `${label}-${seq}.${ext}`, type: n.type, nodeIndex })
+  }
+  return out
+}
+
+/**
+ * 把画布出图节点的图片按 #N 序号复制到 targetDir。
+ * 返回 { exported（实际复制数）, total（清单数）, files（导出文件名列表） }。
+ * 文件名理论上由 类型+序号 唯一，极端重名时追加 (2) (3) 兜底。
+ */
+export function exportProjectImagesTo(
+  projectId: string,
+  targetDir: string
+): { exported: number; total: number; files: string[] } {
+  const plan = collectProjectImageExports(projectId)
+  if (!existsSync(targetDir)) mkdirSync(targetDir, { recursive: true })
+  const used = new Set<string>()
+  const files: string[] = []
+  let exported = 0
+  for (const it of plan) {
+    let name = it.exportName
+    if (used.has(name)) {
+      const ext = extname(name)
+      const base = name.slice(0, name.length - ext.length)
+      let k = 2
+      while (used.has(`${base}(${k})${ext}`)) k++
+      name = `${base}(${k})${ext}`
+    }
+    used.add(name)
+    try {
+      copyFileSync(it.srcAbsPath, join(targetDir, name))
+      files.push(name)
+      exported++
+    } catch (e) {
+      console.error('[canvas] exportProjectImagesTo copy failed:', it.srcAbsPath, '→', name, e)
+    }
+  }
+  return { exported, total: plan.length, files }
+}
+
 export function getNode(id: string): CanvasNode | null {
   const db = getDatabase()
   const row = db.prepare('SELECT * FROM canvas_nodes WHERE id = ?').get(id) as any

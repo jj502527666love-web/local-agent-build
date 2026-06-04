@@ -139,6 +139,34 @@
           </div>
         </section>
 
+        <!-- File Read Security -->
+        <section>
+          <div class="flex items-center gap-2.5 mb-4">
+            <div class="w-8 h-8 rounded-lg bg-surface-2 flex items-center justify-center">
+              <svg class="w-4 h-4 text-text-secondary" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12.75 11.25 15 15 9.75m-3-7.036A11.959 11.959 0 0 1 3.598 6 11.99 11.99 0 0 0 3 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285Z" /></svg>
+            </div>
+            <h2 class="text-sm font-semibold text-text-primary">文件读取安全</h2>
+          </div>
+          <div class="form-card">
+            <div>
+              <label class="form-label">可信目录白名单</label>
+              <p class="text-[11px] text-text-tertiary mt-1 mb-2.5 leading-relaxed">AI 读取「工作区之外」的文件时，默认需要你逐次确认。将常用目录加入白名单后，其中的文件 AI 可直接读取，无需确认。工作区内文件始终免确认。</p>
+              <div v-if="trustedReadDirs.length" class="space-y-1.5 mb-2.5">
+                <div v-for="(dir, i) in trustedReadDirs" :key="dir" class="flex items-center gap-2 px-3 py-2 rounded-lg bg-surface-2 border border-surface-3">
+                  <svg class="w-3.5 h-3.5 text-text-tertiary flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M2.25 12.75V12A2.25 2.25 0 0 1 4.5 9.75h15A2.25 2.25 0 0 1 21.75 12v.75m-8.69-6.44-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9a2.25 2.25 0 0 0-2.25-2.25h-5.379a1.5 1.5 0 0 1-1.06-.44Z" /></svg>
+                  <code class="font-mono text-[11px] text-text-secondary flex-1 truncate" :title="dir">{{ dir }}</code>
+                  <button @click="removeTrustedDir(i)" class="text-[11px] text-text-tertiary hover:text-red-500 flex-shrink-0">移除</button>
+                </div>
+              </div>
+              <p v-else class="text-[11px] text-text-tertiary mb-2.5">尚未添加可信目录</p>
+              <div class="flex items-center gap-3 pt-1">
+                <button @click="addTrustedDir" class="btn-secondary">添加目录</button>
+                <span v-if="trustedSaved" class="text-xs text-emerald-600 dark:text-emerald-400 font-medium animate-pulse">已保存</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
         <!-- Data Directory -->
         <section>
           <div class="flex items-center gap-2.5 mb-4">
@@ -524,6 +552,8 @@ const vectorTesting = ref(false)
 const vectorTestResult = ref('')
 const vectorTestOk = ref(false)
 const generalSaved = ref(false)
+const trustedReadDirs = ref<string[]>([])
+const trustedSaved = ref(false)
 const dataDir = ref('')
 const dataDirChanged = ref(false)
 const dataDirError = ref('')
@@ -866,17 +896,27 @@ async function loadSettings() {
     // 默认：cloud-locked / 已登录强制云端，否则 local
     vectorSource.value = vectorMode.value === 'cloud-locked' ? 'cloud' : 'local'
   }
-  // 强制纠正：cloud-locked 模式必须 cloud；local-only 模式必须 local
-  if (vectorMode.value === 'cloud-locked' && vectorSource.value !== 'cloud') {
+  // 仅按当前模式纠正【UI 显示】，不持久化覆盖用户主动选择的偏好：
+  // cloud-locked（无自定义权限）/ local-only（未登录）下 Tabs 不可见，这里只决定显示哪个表单；
+  // 运行时 getEmbeddingConfig 已按登录态/权限兜底（未登录→本地、无自定义权限→云端）。
+  // 这样可避免「token 过期后重启打开设置页，cloud 偏好被悄悄改成 local 且重新登录也回不来」。
+  if (vectorMode.value === 'cloud-locked') {
     vectorSource.value = 'cloud'
-    await window.api.settings.invoke('set', 'vector_source', 'cloud')
-  }
-  if (vectorMode.value === 'local-only' && vectorSource.value !== 'local') {
+  } else if (vectorMode.value === 'local-only') {
     vectorSource.value = 'local'
-    await window.api.settings.invoke('set', 'vector_source', 'local')
   }
 
   dataDir.value = await (window as any).api.dataDir.get() as string
+
+  try {
+    const raw = all['trusted_read_dirs']
+    if (raw) {
+      const arr = JSON.parse(raw)
+      if (Array.isArray(arr)) trustedReadDirs.value = arr.filter((x: any) => typeof x === 'string')
+    }
+  } catch {
+    trustedReadDirs.value = []
+  }
 }
 
 async function saveVectorSettings() {
@@ -938,17 +978,20 @@ async function applySwitchSource(target: 'cloud' | 'local') {
   await window.api.settings.invoke('set', 'vector_source', target)
 }
 
-// 监听权限变化：管理员把 allow_custom_embedding 关掉后，若用户当前在 local 上，强制切到 cloud
+// 监听模式变化（管理员调整权限 / 登录态变化），仅纠正【UI 显示】，不持久化覆盖用户偏好。
+// 运行时 getEmbeddingConfig 已按登录态/权限兜底；vector_source 始终保留用户主动选择，
+// 使「权限恢复 / 重新登录」后能自动回到用户原本选择的源。
 watch(
   () => vectorMode.value,
   async (mode) => {
-    if (mode === 'cloud-locked' && vectorSource.value !== 'cloud') {
+    if (mode === 'cloud-locked') {
       vectorSource.value = 'cloud'
-      await window.api.settings.invoke('set', 'vector_source', 'cloud')
-    }
-    if (mode === 'local-only' && vectorSource.value !== 'local') {
+    } else if (mode === 'local-only') {
       vectorSource.value = 'local'
-      await window.api.settings.invoke('set', 'vector_source', 'local')
+    } else {
+      // 回到 dual：从持久化恢复用户真实偏好用于显示（默认自定义）
+      const stored = ((await window.api.settings.invoke('get', 'vector_source')) as string || '').trim()
+      vectorSource.value = stored === 'cloud' ? 'cloud' : 'local'
     }
   },
 )
@@ -975,6 +1018,25 @@ async function saveGeneralSettings() {
   await window.api.settings.invoke('set', 'window_close_behavior', generalForm.value.windowCloseBehavior)
   generalSaved.value = true
   setTimeout(() => { generalSaved.value = false }, 2000)
+}
+
+async function persistTrustedDirs() {
+  await window.api.settings.invoke('set', 'trusted_read_dirs', JSON.stringify(trustedReadDirs.value))
+  trustedSaved.value = true
+  setTimeout(() => { trustedSaved.value = false }, 2000)
+}
+async function addTrustedDir() {
+  const result = (await window.api.dialog.openFile({ title: '选择可信目录', properties: ['openDirectory'] })) as { canceled: boolean; filePaths: string[] }
+  if (result.canceled || !result.filePaths.length) return
+  const dir = result.filePaths[0]
+  if (!trustedReadDirs.value.includes(dir)) {
+    trustedReadDirs.value.push(dir)
+    await persistTrustedDirs()
+  }
+}
+function removeTrustedDir(index: number) {
+  trustedReadDirs.value.splice(index, 1)
+  persistTrustedDirs()
 }
 
 function handleBackupProgress(data: ProgressData): void {

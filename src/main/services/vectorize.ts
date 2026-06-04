@@ -121,6 +121,8 @@ export async function vectorizeDocument(
 
     // 终止性错误：余额不足 / 未配置 / 未授权 → 立即停止后续批次（避免 N 次 402 噪声）
     let fatalError: EmbeddingUnavailableError | null = null
+    // 非致命批次错误（云端 404 / 5xx / 网络抖动等）：记录最后一次，用于「全批失败」时上报原因
+    let lastBatchError: any = null
 
     for (let i = 0; i < chunks.length; i += BATCH_SIZE) {
       if (fatalError) {
@@ -156,6 +158,7 @@ export async function vectorizeDocument(
         // EmbeddingUnavailableError 视为 fatal，普通 5xx/网络错误降级为单批失败
         const isFatal = err instanceof EmbeddingUnavailableError
         if (isFatal) fatalError = err
+        else lastBatchError = err
 
         for (const chunk of batch) {
           allChunkData.push({
@@ -209,6 +212,18 @@ export async function vectorizeDocument(
         errorCode: fatalError.code,
       })
       throw fatalError
+    }
+
+    // 全批失败（如云端向量端点 404 / 网络全程失败）：绝不能伪装成「就绪」，
+    // 否则知识库看似可用、实则零有效向量，直到对话检索时才暴露。置 error 让用户即时感知并重试。
+    if (embeddedCount === 0) {
+      db.prepare('UPDATE knowledge_bases SET status = ?, chunk_count = ? WHERE id = ?').run(
+        'error',
+        allChunkData.length,
+        knowledgeBaseId,
+      )
+      const detail = lastBatchError?.message ? `（${String(lastBatchError.message).slice(0, 160)}）` : ''
+      throw new Error(`所有分块均未成功向量化，请检查向量服务是否可用${detail}`)
     }
 
     // Update knowledge base status

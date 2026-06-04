@@ -21,7 +21,7 @@
               <div class="flex items-center gap-2 mb-1">
                 <span class="text-sm font-semibold text-text-primary truncate">{{ p.plan_name }}</span>
               </div>
-              <p v-if="p.description" class="text-xs text-text-secondary line-clamp-1">{{ p.description }}</p>
+              <ExpandableText v-if="p.description" :text="p.description" :lines="1" />
             </div>
             <span :class="['text-[10px] px-2 py-0.5 rounded-full whitespace-nowrap', statusClass(p.status)]">
               {{ statusLabel(p.status) }}
@@ -113,6 +113,7 @@ import { useCloudAuthStore } from '@/stores/cloud-auth'
 import { useSiteConfigStore } from '@/stores/site-config'
 import QuotaProgressBar from '@/components/QuotaProgressBar.vue'
 import PolicyBadgeList from '@/components/PolicyBadgeList.vue'
+import ExpandableText from '@/components/ExpandableText.vue'
 import type { MyPlan } from '@/stores/cloud-auth'
 
 const store = useCloudAuthStore()

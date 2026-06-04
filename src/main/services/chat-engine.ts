@@ -1,5 +1,5 @@
 import { BrowserWindow } from 'electron'
-import { join } from 'path'
+import { join, resolve, isAbsolute, relative } from 'path'
 import { existsSync, mkdirSync } from 'fs'
 import { v4 as uuid } from 'uuid'
 import { getDataDir } from './data-path'
@@ -13,10 +13,11 @@ import { getSummary, upsertSummary } from './conversation-summary'
 import { embedText, embedBatch, cosineSimilarity } from './embedding'
 import { searchHybrid } from './vector-store'
 import { listKnowledgeBases, listCategories, type KnowledgeBase } from './knowledge'
-import { executeSkillSandbox } from './skill-sandbox'
+import { executeSkillSandbox, resolveInWorkspace } from './skill-sandbox'
+import { getSetting } from './settings'
 import { callMcpTool } from './mcp-server'
 import { listPromptSkills, getPromptSkillByName } from './prompt-skill'
-import { coreToolDefs, executeCoreToolCall, CORE_TOOL_NAMES, KB_TOOL_NAMES, previewFileWrite, type FileWritePreview } from './core-tools'
+import { coreToolDefs, executeCoreToolCall, CORE_TOOL_NAMES, KB_TOOL_NAMES, previewFileWrite, previewFileRead, type FileWritePreview, type FileReadPreview } from './core-tools'
 
 // Per-model context-window table. Values are the *total* model context (prompt + completion).
 // We reserve ~25% for the response and pass the rest as the prompt budget.
@@ -139,6 +140,9 @@ interface PendingApproval {
 const pendingApprovals = new Map<string, PendingApproval>()
 
 const DESTRUCTIVE_FILE_OPS = new Set(['write', 'append', 'mkdir', 'delete', 'copy', 'rename', 'write_json'])
+// 会读到文件内容或枚举目录条目的读类操作：工作区外读取需用户确认，防静默外泄。
+// stat/exists 仅探测元数据、信息量低，不纳入以减少摩擦。
+const READ_FILE_OPS = new Set(['read', 'read_json', 'list', 'glob', 'find_latest', 'tree'])
 
 function isDestructiveTool(name: string, args: any): boolean {
   if (name === 'run_command') return true
@@ -148,10 +152,49 @@ function isDestructiveTool(name: string, args: any): boolean {
   return false
 }
 
-function needsApproval(mode: ToolApproval, name: string, args: any): boolean {
+// 读取「可信目录白名单」：用户在设置里预授权的目录，其内文件 AI 可免确认读取。
+function getTrustedReadDirs(): string[] {
+  try {
+    const raw = getSetting('trusted_read_dirs')
+    if (!raw) return []
+    const arr = JSON.parse(raw)
+    if (!Array.isArray(arr)) return []
+    return arr.filter((x: any) => typeof x === 'string' && x.trim()).map((x: string) => resolve(x))
+  } catch {
+    return []
+  }
+}
+
+// 跨平台判断 child 是否位于 parent 目录内（Windows 大小写不敏感）。
+function isWithinDir(child: string, parent: string): boolean {
+  if (!child || !parent) return false
+  const c = process.platform === 'win32' ? child.toLowerCase() : child
+  const p = process.platform === 'win32' ? parent.toLowerCase() : parent
+  const rel = relative(p, c)
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+}
+
+// 模型直接发起的 file_ops 读类操作，其目标是否落在「工作区 ∪ 可信白名单」之外。
+// 仅判定读类操作；写类已由 isDestructiveTool 覆盖。无路径或相对路径默认在工作区内。
+function isFileOpReadOutsideTrusted(args: any, sandboxDir: string): boolean {
+  if (!args || !READ_FILE_OPS.has(args.action)) return false
+  const p = args.path
+  if (typeof p !== 'string' || !p) return false
+  const resolved = resolveInWorkspace(p, sandboxDir)
+  if (isWithinDir(resolved, resolve(sandboxDir))) return false
+  for (const dir of getTrustedReadDirs()) {
+    if (isWithinDir(resolved, dir)) return false
+  }
+  return true
+}
+
+function needsApproval(mode: ToolApproval, name: string, args: any, sandboxDir?: string): boolean {
   if (mode === 'off') return false
   if (mode === 'all') return true
-  return isDestructiveTool(name, args)
+  if (isDestructiveTool(name, args)) return true
+  // destructive 模式下：file_ops 读取工作区外（且非白名单）文件也需确认，防静默外泄。
+  if (name === 'file_ops' && sandboxDir) return isFileOpReadOutsideTrusted(args, sandboxDir)
+  return false
 }
 
 function requestToolApproval(
@@ -159,7 +202,7 @@ function requestToolApproval(
   conversationId: string,
   toolCall: any,
   parsedArgs: any,
-  preview: FileWritePreview | null,
+  preview: FileWritePreview | FileReadPreview | null,
   signal: AbortSignal
 ): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
@@ -259,6 +302,9 @@ function repairHistoryHead(msgs: ChatMessage[]): ChatMessage[] {
 }
 
 const RECENT_ROUNDS = 6
+// 历史多模态图片保留轮数：仅最近 N 条「带图」user 消息的图片进上下文，更早的转占位文本。
+// 避免长对话里历史图片无上限累积撑爆 token / 成本（当前轮新图必然在最近 N 内，不受影响）。
+const IMAGE_HISTORY_KEEP_ROUNDS = 3
 const DOC_CHUNK_SIZE = 500
 const DOC_CHUNK_OVERLAP = 50
 const DOC_TOP_K = 8
@@ -309,18 +355,29 @@ function estimateTokens(text: string): number {
   return Math.ceil(cjk * 1.5 + rest / 4)
 }
 
+// 多模态图片 token 估算：固定 300 会严重低估（一张 1024px 图在多数视觉模型约 1000-1600 token），
+// 低估会让滑窗误判「未超预算」、最终请求体撑爆模型上下文（上游 400 或被静默截断）。
+// 这里按 data URI 体积保守分档（偏高）——宁可少放历史，也不要溢出。
+function estimateImageTokens(url: string): number {
+  const len = (url || '').length
+  if (len > 200_000) return 1600
+  if (len > 80_000) return 1100
+  if (len > 20_000) return 700
+  return 300
+}
+
 function estimateMessagesTokens(msgs: ChatMessage[]): number {
   return msgs.reduce((sum, m) => {
     if (typeof m.content === 'string') {
       return sum + estimateTokens(m.content) + 4
     }
-    // Multimodal content array: estimate text parts normally, images as fixed cost
+    // Multimodal content array: estimate text parts normally, images by data URI size
     let tokens = 4
     for (const part of m.content as any[]) {
       if (part.type === 'text') {
         tokens += estimateTokens(part.text || '')
       } else if (part.type === 'image_url') {
-        tokens += 300 // fixed estimate per image
+        tokens += estimateImageTokens(part.image_url?.url || '')
       }
     }
     return sum + tokens
@@ -723,6 +780,20 @@ export async function sendMessage(
     })
   }
 
+  // 历史图片衰减：仅保留最近 IMAGE_HISTORY_KEEP_ROUNDS 条「带图」user 消息的图片进上下文，
+  // 更早的以占位文本替代（生图参考图另走 imageAttachmentRefs，不受此影响）。
+  const imageKeepMsgIds = new Set<string>()
+  {
+    let keptImageRounds = 0
+    for (let i = history.length - 1; i >= 0 && keptImageRounds < IMAGE_HISTORY_KEEP_ROUNDS; i--) {
+      const m = history[i]
+      if (m.role === 'user' && Array.isArray(m.attachments) && m.attachments.some((a: any) => a.type === 'image')) {
+        imageKeepMsgIds.add(m.id)
+        keptImageRounds++
+      }
+    }
+  }
+
   // Convert history to ChatMessage array
   const historyMessages: ChatMessage[] = []
   for (const msg of history) {
@@ -731,10 +802,14 @@ export async function sendMessage(
         const contentParts: any[] = [{ type: 'text', text: msg.content }]
         for (const att of msg.attachments) {
           if (att.type === 'image') {
-            contentParts.push({
-              type: 'image_url',
-              image_url: { url: att.data }
-            })
+            if (imageKeepMsgIds.has(msg.id)) {
+              contentParts.push({
+                type: 'image_url',
+                image_url: { url: att.data }
+              })
+            } else {
+              contentParts.push({ type: 'text', text: `[历史图片已省略：${att.name || 'image'}]` })
+            }
           } else if (att.type === 'document' && att.data) {
             const MAX_DOC_CHARS = 8000
             if (att.data.length <= MAX_DOC_CHARS) {
@@ -895,8 +970,10 @@ export async function sendMessage(
           }
         }
 
-        if (needsApproval(bot.tool_approval, fnName, parsedArgs)) {
-          const preview = fnName === 'file_ops' ? previewFileWrite(parsedArgs, sandboxDir) : null
+        if (needsApproval(bot.tool_approval, fnName, parsedArgs, sandboxDir)) {
+          const preview = fnName === 'file_ops'
+            ? (previewFileWrite(parsedArgs, sandboxDir) || previewFileRead(parsedArgs, sandboxDir))
+            : null
           const approved = await requestToolApproval(window, options.conversationId, toolCall, parsedArgs, preview, signal)
           if (signal.aborted) throw new AbortedError()
           if (!approved) {
@@ -1009,29 +1086,34 @@ export async function sendMessage(
     // Auto-summarize if history exceeds threshold
     maybeGenerateSummary(options.conversationId, effectiveProviderId, effectiveModelId)
   } catch (error: any) {
+    // 取出 llm 层透传的「已流式产出的部分内容」，连同中断/报错标记一起落库，
+    // 避免用户已经看到的半截回答在刷新后被覆盖丢失。前端流式已展示过 partial，
+    // 故 emitStream 只下发标记，由 renderer 追加到已有内容尾部（见 chat store）。
+    const partial = typeof (error as any)?.__partialContent === 'string' ? (error as any).__partialContent : ''
+    const withPartial = (marker: string): string => (partial ? `${partial}\n\n${marker}` : marker)
     if (agentTurnTimedOut) {
       const message = '本轮 Agent 执行已超过 30 分钟硬上限，已自动中断'
       emitStream({ type: 'error', error: message })
       addMessage({
         conversation_id: options.conversationId,
         role: 'assistant',
-        content: `[Error] ${message}`
+        content: withPartial(`[Error] ${message}`)
       })
     } else if (isAbortedError(error)) {
       const reason = canceledRequestReasons.get(requestId)
-      const content = reason === 'replaced' ? '[上一轮已被新消息中断]' : '[已中断]'
-      emitStream({ type: 'aborted', content })
+      const marker = reason === 'replaced' ? '[上一轮已被新消息中断]' : '[已中断]'
+      emitStream({ type: 'aborted', content: marker })
       addMessage({
         conversation_id: options.conversationId,
         role: 'assistant',
-        content
+        content: withPartial(marker)
       })
     } else {
       emitStream({ type: 'error', error: error.message })
       addMessage({
         conversation_id: options.conversationId,
         role: 'assistant',
-        content: `[Error] ${error.message}`
+        content: withPartial(`[Error] ${error.message}`)
       })
     }
   } finally {
@@ -1107,23 +1189,31 @@ async function maybeGenerateSummary(
     if (userAssistantMsgs.length < SUMMARY_THRESHOLD) return
 
     const existing = getSummary(conversationId)
+    const coveredCount = existing?.covered_count || 0
+    // 增量摘要：只压缩「已覆盖水位线(coveredCount)之后、滑动窗口(windowStart)之前」的新增段落，
+    // 不再每轮把全部历史重喂给摘要模型（旧逻辑成本/延迟随对话长度线性增长）。
+    // 把 covered_count 写到 windowStart，使摘要覆盖范围始终紧贴最近窗口，消除记忆空洞。
+    const windowStart = Math.max(0, userAssistantMsgs.length - RECENT_ROUNDS * 2)
+    if (windowStart <= coveredCount) return // 没有新的、已滑出窗口的消息需要补摘要
+
     const messagesToSummarize = userAssistantMsgs
-      .slice(0, -RECENT_ROUNDS * 2)
-      .map((m) => `${m.role === 'user' ? '用户' : 'AI'}: ${m.content}`)
+      .slice(coveredCount, windowStart)
+      .map((m) => `${m.role === 'user' ? '用户' : 'AI'}: ${typeof m.content === 'string' ? m.content : '[附件]'}`)
       .join('\n')
 
     if (!messagesToSummarize) return
 
-    const previousSummary = existing?.summary ? `之前的摘要：${existing.summary}\n\n` : ''
+    const previousSummary = existing?.summary ? `已有摘要：${existing.summary}\n\n` : ''
     const summaryMessages: ChatMessage[] = [
       {
         role: 'system',
         content:
-          '你是一个对话摘要助手。请将以下对话内容压缩为简洁的摘要，保留关键信息、用户偏好和重要决策。摘要控制在 200 字以内。'
+          '你是一个对话摘要助手。请把「已有摘要」与「新增对话」合并压缩为一份连贯的累积摘要，' +
+          '保留关键信息、用户偏好和重要决策。摘要控制在 250 字以内。'
       },
       {
         role: 'user',
-        content: `${previousSummary}需要摘要的对话：\n${messagesToSummarize}`
+        content: `${previousSummary}新增对话：\n${messagesToSummarize}`
       }
     ]
 
@@ -1134,7 +1224,7 @@ async function maybeGenerateSummary(
     })
 
     if (result.content) {
-      upsertSummary(conversationId, result.content, estimateTokens(result.content))
+      upsertSummary(conversationId, result.content, estimateTokens(result.content), windowStart)
     }
   } catch {
     // Summary generation is non-critical, silently ignore errors

@@ -3,7 +3,7 @@ import { v4 as uuid } from 'uuid'
 import { getModelProvider, type ModelProvider } from './model-provider'
 import { createImageSession } from './image-session'
 import { getDataDir } from './data-path'
-import { getCloudToken, getCloudGatewayUrl, resolveCloudModelId, refreshCloudToken, notifyCloudAuthExpired, wasLastCloudTokenRefreshAuthFailure } from './cloud-token'
+import { getCloudToken, getCloudApiBase, getCloudGatewayUrl, resolveCloudModelId, refreshCloudToken, notifyCloudAuthExpired, wasLastCloudTokenRefreshAuthFailure } from './cloud-token'
 import { join } from 'path'
 import { mkdirSync, writeFileSync, unlinkSync, existsSync } from 'fs'
 import { BrowserWindow, nativeImage } from 'electron'
@@ -1110,6 +1110,51 @@ async function prepareRefImageForUpload(input: string, fallbackMime: string): Pr
 }
 
 /**
+ * 把参考图字节上传到云控端临时存储，换取公网 https URL。
+ *
+ * 多米图片 API 只可靠接受图片 URL，本地直连路径无法直接送 base64/dataUri（上游会拒收或
+ * 静默忽略参考图）。云控端 /client/images/reference-assets 落对象存储后返回 URL，素材
+ * 6h 过期由 video:purge-reference-assets 自动清理。依赖桌面端整体已登录云控端。
+ */
+async function uploadRefImageToCloud(buffer: Buffer, mimeType: string): Promise<string> {
+  const token = getCloudToken()
+  if (!token) {
+    throw new Error('多米参考图需先上传云端换取 URL，但云端登录已失效，请重新登录后重试')
+  }
+
+  const ext = mimeType.includes('jpeg') || mimeType.includes('jpg')
+    ? 'jpg'
+    : mimeType.includes('webp')
+      ? 'webp'
+      : mimeType.includes('gif')
+        ? 'gif'
+        : 'png'
+
+  const form = new FormData()
+  // Buffer 作为 Uint8Array 子类运行时可作 BlobPart，编译期类型不互通故 as unknown 断言（同 multipart 路径）。
+  const blob = new Blob([buffer as unknown as BlobPart], { type: mimeType })
+  form.append('file', blob, `ref.${ext}`)
+
+  const uploadUrl = `${getCloudApiBase()}/client/images/reference-assets`
+  const res = await fetchWithTimeout(uploadUrl, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${token}` },
+    body: form
+  }, 60_000)
+
+  if (!res.ok) {
+    throw new Error(`多米参考图上传失败 HTTP ${res.status}: ${await readResponseError(res)}`)
+  }
+
+  const data: any = await res.json().catch(() => null)
+  const url = data?.url || data?.asset?.storage_url
+  if (!url || typeof url !== 'string') {
+    throw new Error('多米参考图上传响应缺少 url 字段')
+  }
+  return url
+}
+
+/**
  * 多米 API（duomiapi.com）图片生成 — 官方文档 https://duomiapi.com/doc/55。
  *
  * 官方当前**仅支持 gpt-image-2 一个模型**。请求 body 仅 4 个字段：model / prompt / size / image。
@@ -1120,9 +1165,9 @@ async function prepareRefImageForUpload(input: string, fallbackMime: string): Pr
  *   3. size 字段接受标准 gpt-image-2 规则的任意 WxH 像素串（上限 3840×2160 = 8.29M 像素）以及
  *      比例字符串 / 'auto'。UI 档位（1k/2k/4k）生效，由 resolvePixels 按 capability 计算真实像素。
  *   4. 不支持 n>1。
- *   5. 参考图：用单数 `image` 字段（schema 允许 string 或 string[]），元素是 https URL 或
- *      `data:image/...;base64,...` dataUri（2026-05-13 实测 dataUri 数组 succeeded）。
- *      不走 OpenAI 协议的 /images/edits + multipart 路径，仍是 /generations + JSON。
+ *   5. 参考图：用单数 `image` 字段（schema 允许 string 或 string[]），元素必须是 https URL。
+ *      多米上游不可靠接受 dataUri / 裸 base64（会拒收或静默忽略参考图），故本地参考图先
+ *      上传到云控端 /client/images/reference-assets 换成 URL 再提交。仍走 /generations + JSON。
  *
  * model_id 防护：本地 provider.models 如果不是 gpt-image-2（例如老数据 / 手工编辑），
  * submit 前自动覆盖为 gpt-image-2，与 Adapter 层 cleanseDuoMiBody 一致。
@@ -1160,17 +1205,16 @@ async function callDuoMiImageAPI(
   const submitUrl = `${apiBase}/images/generations?async=true`
   const submitBody: Record<string, any> = { model: 'gpt-image-2', prompt, size: duomiSize }
 
-  // 参考图处理（1）拆出 mime + 纯 base64；无 dataUri 前缀默认按 png。
-  //         （2）不再 stripBase64：同 custom / cloud 路径，裸 JPEG 反而可能被上游
-  //             中间层拒收；多米是直连服务商 API，不走 WAF 网关，原始字节透传更稳。
-  //         （3）不再 50K chars 阈值：之前阈值是对 fail_to_submit_task 的错判，
-  //             多米实际能接受更大字节；体积兜底统一用 shrinkRefImageIfTooLarge（2MB）。
+  // 参考图处理：多米图片 API 只可靠接受图片 URL —— dataUri / 裸 base64 会被上游拒收
+  // （fail_to_submit_task）或静默忽略参考图。因此先把参考图（经 shrinkRefImageIfTooLarge
+  // 压缩到 ≤2MB）上传到云控端临时存储换成 https URL，再交给多米；临时图 6h 后由云控端
+  // video:purge-reference-assets 定时清理，不会堆积。
   if (refImages && refImages.length > 0) {
     submitBody.image = await Promise.all(refImages.map(async (img) => {
-      const match = img.match(/^data:([^;]+);base64,/)
-      const { buffer, mimeType } = await prepareRefImageForUpload(img, match?.[1] || 'image/png')
-      // 多米 image 字段接受 dataUri 数组（上游实测格式），拼回完整 dataUri。
-      return `data:${mimeType};base64,${buffer.toString('base64')}`
+      // 已是 http(s) URL：直接透传，不重复上传
+      if (/^https?:\/\//i.test(img.trim())) return img.trim()
+      const { buffer, mimeType } = await prepareRefImageForUpload(img, (img.match(/^data:([^;]+);base64,/)?.[1]) || 'image/png')
+      return await uploadRefImageToCloud(buffer, mimeType)
     }))
   }
 

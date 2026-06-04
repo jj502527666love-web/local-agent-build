@@ -79,6 +79,12 @@ function runMigrations(): void {
   if (!msgColNames.includes('tool_call_id')) {
     db.exec("ALTER TABLE messages ADD COLUMN tool_call_id TEXT NOT NULL DEFAULT ''")
   }
+  // conversation_summaries: 增量摘要水位线列（旧库幂等加列）
+  const csCols = db.prepare("PRAGMA table_info(conversation_summaries)").all() as any[]
+  const csColNames = csCols.map((c: any) => c.name)
+  if (csCols.length > 0 && !csColNames.includes('covered_count')) {
+    db.exec("ALTER TABLE conversation_summaries ADD COLUMN covered_count INTEGER NOT NULL DEFAULT 0")
+  }
   // canvas_projects: add model provider columns
   const canvasCols = db.prepare("PRAGMA table_info(canvas_projects)").all() as any[]
   const canvasColNames = canvasCols.map((c: any) => c.name)

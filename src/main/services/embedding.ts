@@ -63,6 +63,19 @@ export class EmbeddingUnavailableError extends Error {
 }
 
 /**
+ * 归纳上游/网关返回的错误体：
+ * - 命中 HTML/XML 错误页（如 404 网关页）时给出可操作提示，而非把整页 HTML 塞进错误信息
+ * - 否则截断返回前 300 字符，避免超长错误刷屏
+ */
+function summarizeUpstreamErrorBody(body: string): string {
+  const trimmed = (body || '').trim()
+  if (/^<(?:!doctype|html|\?xml)/i.test(trimmed)) {
+    return '服务端返回 HTML 错误页而非 JSON（通常是网关/反向代理未把该接口转发到后端，或服务地址/路径配置有误）'
+  }
+  return trimmed.slice(0, 300)
+}
+
+/**
  * 解析当前应使用的 embedding 配置。
  * 优先级（与「模型服务」allow_custom_provider 双层校验保持一致）：
  *   1. 已登录 且 allow_custom_embedding === false → 强制走云端 gateway
@@ -161,7 +174,7 @@ async function localEmbedBatch(
 
   if (!response.ok) {
     const errorText = await response.text()
-    throw new Error(`Embedding API 请求失败 (${response.status}): ${errorText}`)
+    throw new Error(`Embedding API 请求失败 (${response.status}): ${summarizeUpstreamErrorBody(errorText)}`)
   }
 
   const data = (await response.json()) as {
@@ -239,7 +252,7 @@ async function cloudEmbedBatch(texts: string[], model: string, options?: Embeddi
   }
   if (!response.ok) {
     const errorText = await response.text()
-    throw new Error(`云端向量请求失败 (${response.status}): ${errorText}`)
+    throw new Error(`云端向量请求失败 (${response.status}): ${summarizeUpstreamErrorBody(errorText)}`)
   }
 
   const data = (await response.json()) as {

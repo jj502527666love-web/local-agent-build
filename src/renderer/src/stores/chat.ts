@@ -30,6 +30,10 @@ export interface Message {
   _toolLogs?: string[]
   _toolActive?: boolean
   _collapsed?: boolean
+  // 推理模型思维链（仅本会话内存态，不入库；刷新后丢失属预期）
+  _reasoning?: string
+  _reasoningActive?: boolean
+  _reasoningCollapsed?: boolean
 }
 
 /**
@@ -278,6 +282,7 @@ export const useChatStore = defineStore('chat', () => {
     // Listen for stream events
     const toolLogs: string[] = []
     let localStreamContent = ''
+    let localReasoning = ''
     let shouldRefreshMessages = false
     const unsubscribeStream = window.api.chat.onStream((data: any) => {
       if (data?.conversationId !== convId) return
@@ -287,7 +292,20 @@ export const useChatStore = defineStore('chat', () => {
         localStreamContent += data.content
         if (currentConversationId.value === convId) streamContent.value = localStreamContent
         const msg = messages.value.find((m) => m.id === tempId)
-        if (msg) msg.content = localStreamContent
+        if (msg) {
+          // 首个正文 token 到达 = 思考阶段结束，折叠思维链面板
+          if (msg._reasoningActive) { msg._reasoningActive = false; msg._reasoningCollapsed = true }
+          msg.content = localStreamContent
+        }
+      } else if (data.type === 'reasoning') {
+        // 推理模型思维链：累积并实时展示「思考中」可折叠面板
+        localReasoning += data.content || ''
+        const msg = messages.value.find((m) => m.id === tempId)
+        if (msg) {
+          msg._reasoning = localReasoning
+          msg._reasoningActive = true
+          msg._reasoningCollapsed = false
+        }
       } else if (data.type === 'tool_start') {
         localStreamContent = ''
         if (currentConversationId.value === convId) streamContent.value = ''
@@ -303,6 +321,7 @@ export const useChatStore = defineStore('chat', () => {
         }
         const msg = messages.value.find((m) => m.id === tempId)
         if (msg) {
+          if (msg._reasoningActive) { msg._reasoningActive = false; msg._reasoningCollapsed = true }
           msg.content = ''
           msg._toolLogs = [...toolLogs]
           msg._toolActive = true
@@ -319,11 +338,20 @@ export const useChatStore = defineStore('chat', () => {
         const msg = messages.value.find((m) => m.id === tempId)
         if (msg) msg.content = ''
       } else if (data.type === 'aborted') {
+        // 保留已流式产出的半截内容，仅在尾部追加中断标记（主进程也会把 partial+标记落库）
         const msg = messages.value.find((m) => m.id === tempId)
-        if (msg && !msg.content) msg.content = data.content || '[\u5df2\u4e2d\u65ad]'
+        if (msg) {
+          if (msg._reasoningActive) { msg._reasoningActive = false; msg._reasoningCollapsed = true }
+          const marker = data.content || '[\u5df2\u4e2d\u65ad]'
+          msg.content = msg.content ? `${msg.content}\n\n${marker}` : marker
+        }
       } else if (data.type === 'error') {
         const msg = messages.value.find((m) => m.id === tempId)
-        if (msg) msg.content = `[Error] ${translateError(data.error)}`
+        if (msg) {
+          if (msg._reasoningActive) { msg._reasoningActive = false; msg._reasoningCollapsed = true }
+          const errLine = `[Error] ${translateError(data.error)}`
+          msg.content = msg.content ? `${msg.content}\n\n${errLine}` : errLine
+        }
       }
       // Don't handle 'done' here - cleanup after IPC resolves
     })
@@ -350,6 +378,8 @@ export const useChatStore = defineStore('chat', () => {
       if (msg) {
         msg._toolActive = false
         msg._collapsed = true
+        msg._reasoningActive = false
+        if (msg._reasoning) msg._reasoningCollapsed = true
       }
       if (isLatestRequest) {
         const next = { ...activeRequestIds.value }
@@ -378,6 +408,13 @@ export const useChatStore = defineStore('chat', () => {
         // Translate error messages from DB
         if (lastDb.role === 'assistant' && lastDb.content?.startsWith('[Error]')) {
           lastDb.content = `[Error] ${translateError(lastDb.content.slice(8))}`
+        }
+        // 思维链不入库：刷新后把本轮累积的 reasoning 贴回最后一条 assistant，
+        // 让「已深度思考」折叠面板在本轮结束后仍可展开（切走会话再回来才会消失）
+        if (lastDb.role === 'assistant' && localReasoning) {
+          lastDb._reasoning = localReasoning
+          lastDb._reasoningCollapsed = true
+          lastDb._reasoningActive = false
         }
       }
       messages.value = dbMessages

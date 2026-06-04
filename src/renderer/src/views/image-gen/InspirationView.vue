@@ -9,7 +9,7 @@
           <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-tertiary" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z" /></svg>
           <input
             v-model="search"
-            placeholder="搜索当前列表..."
+            placeholder="搜索灵感..."
             class="pl-9 pr-3 py-2 text-xs border border-surface-3 rounded-lg bg-surface-0 outline-none focus:ring-2 focus:ring-primary-500 w-56"
           />
         </div>
@@ -19,13 +19,13 @@
       <!-- Category tabs -->
       <div class="flex flex-wrap gap-1.5 mb-5">
         <button
-          @click="selectedCategory = ''"
+          @click="selectCategory('')"
           :class="['px-3 py-1.5 text-xs rounded-lg transition-colors', !selectedCategory ? 'bg-primary-600 text-white' : 'bg-surface-2 text-text-secondary hover:bg-surface-3']"
         >全部</button>
         <button
           v-for="cat in displayCategories"
           :key="cat"
-          @click="selectedCategory = selectedCategory === cat ? '' : cat"
+          @click="selectCategory(selectedCategory === cat ? '' : cat)"
           :class="['px-3 py-1.5 text-xs rounded-lg transition-colors', selectedCategory === cat ? 'bg-primary-600 text-white' : 'bg-surface-2 text-text-secondary hover:bg-surface-3']"
         >{{ cat }}</button>
       </div>
@@ -178,11 +178,13 @@ let _cachedItems: Inspiration[] = []
 let _cachedCategories: string[] = []
 let _cachedPage = 1
 let _cachedTotal = 0
+let _cachedCategory = ''
+let _cachedSearch = ''
 let _hasLoaded = false
 </script>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useHandoffStore } from '@/stores/handoff'
 
@@ -191,8 +193,8 @@ const handoff = useHandoffStore()
 const api = () => (window as any).api
 
 const allItems = ref<Inspiration[]>(_cachedItems)
-const selectedCategory = ref('')
-const search = ref('')
+const selectedCategory = ref(_cachedCategory)
+const search = ref(_cachedSearch)
 const loading = ref(false)
 const detailItem = ref<Inspiration | null>(null)
 const detailRefImages = computed(() => {
@@ -211,21 +213,8 @@ const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.v
 
 const displayCategories = computed(() => dynamicCategories.value)
 
-const filteredItems = computed(() => {
-  let list = allItems.value
-  if (selectedCategory.value) {
-    list = list.filter(i => i.category === selectedCategory.value)
-  }
-  if (search.value) {
-    const q = search.value.toLowerCase()
-    list = list.filter(i =>
-      i.title.toLowerCase().includes(q) ||
-      i.prompt_cn.toLowerCase().includes(q) ||
-      i.tags.some(t => t.toLowerCase().includes(q))
-    )
-  }
-  return list
-})
+// 列表直接用后端按「分类 + 搜索 + 分页」返回的结果，不再在当前页前端过滤
+const filteredItems = computed(() => allItems.value)
 
 async function fetchOnline(targetPage?: number) {
   loading.value = true
@@ -234,6 +223,8 @@ async function fetchOnline(targetPage?: number) {
     const result = await api().imageGen.invoke('fetchOnlineInspirations', {
       page: wantedPage,
       pageSize: pageSize.value,
+      category: selectedCategory.value || undefined,
+      search: search.value.trim() || undefined,
     })
     const items = Array.isArray(result.items) ? result.items : []
     const categories = Array.isArray(result.categories) ? result.categories.filter(Boolean) : []
@@ -245,6 +236,8 @@ async function fetchOnline(targetPage?: number) {
     _cachedTotal = total.value
     page.value = wantedPage
     _cachedPage = wantedPage
+    _cachedCategory = selectedCategory.value
+    _cachedSearch = search.value
     _hasLoaded = true
   } catch (e) {
     console.error('Failed to fetch inspirations:', e)
@@ -253,15 +246,28 @@ async function fetchOnline(targetPage?: number) {
   }
 }
 
-/** 翻页：切换页时滚到顶 + 清空当前的搜索过滤避免误以为「这页没数据」 */
+/** 翻页：保留当前分类/搜索条件，仅切页并滚到顶 */
 function goToPage(p: number) {
   if (p < 1 || p > totalPages.value || loading.value) return
-  search.value = ''
   fetchOnline(p)
   try {
     document.querySelector('.page-body')?.scrollTo({ top: 0, behavior: 'smooth' })
   } catch { /* ignore */ }
 }
+
+/** 切换分类：回到第 1 页并重新向后端查询该分类的全部记录 */
+function selectCategory(cat: string) {
+  if (cat === selectedCategory.value) return
+  selectedCategory.value = cat
+  fetchOnline(1)
+}
+
+/** 搜索：防抖后回到第 1 页向后端查询（搜全部灵感，而非仅当前页） */
+let searchTimer: ReturnType<typeof setTimeout> | null = null
+watch(search, () => {
+  if (searchTimer) clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => fetchOnline(1), 350)
+})
 
 function openDetail(item: Inspiration) {
   detailItem.value = item

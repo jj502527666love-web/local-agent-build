@@ -938,6 +938,40 @@ export function registerIpcHandlers(): void {
     }
   })
 
+  // 按序导出画布图片：弹选目录对话框 → 把出图节点当前图片按 #N 序号复制为 {类型名}-{NN}.{ext}。
+  // 序号与画布节点徽章一致，方便用户在目录里按顺序取用（做视频 / PPT / 交付等）。
+  ipcMain.handle('canvas:exportImages', async (event, projectId: string) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (!win) return { success: false, error: '窗口不可用' }
+    if (!projectId) return { success: false, error: '画布 ID 为空' }
+
+    // 先收集清单：没有可导出的图就别弹对话框，直接提示
+    let plan: ReturnType<typeof canvasService.collectProjectImageExports>
+    try {
+      plan = canvasService.collectProjectImageExports(projectId)
+    } catch (e: any) {
+      return { success: false, error: e?.message || '读取画布失败' }
+    }
+    if (!plan.length) {
+      return { success: false, error: '该画布没有可导出的生成图片' }
+    }
+
+    const picked = await dialog.showOpenDialog(win, {
+      title: '选择导出目录',
+      properties: ['openDirectory', 'createDirectory'],
+    })
+    if (picked.canceled || !picked.filePaths?.[0]) {
+      return { success: false, canceled: true }
+    }
+
+    try {
+      const result = canvasService.exportProjectImagesTo(projectId, picked.filePaths[0])
+      return { success: true, dir: picked.filePaths[0], ...result }
+    } catch (e: any) {
+      return { success: false, error: e?.message || '导出失败' }
+    }
+  })
+
   // 流式画布导出：弹保存对话框 → 写 .lacanvas.json 文件
   // 仅 prompt + 节点结构，不打包图片字节，跨设备分享用
   ipcMain.handle('canvas:exportProjects', async (event, ids: string[]) => {

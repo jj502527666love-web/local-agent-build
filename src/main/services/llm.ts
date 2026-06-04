@@ -69,6 +69,8 @@ export interface LLMResponse {
   tool_calls?: any[]
   finish_reason: string
   usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number }
+  /** 推理模型(DeepSeek-R1/QwQ/o 系列等)的思维链；仅用于 UI 展示，不回传模型、不入库 */
+  reasoning?: string
 }
 
 function getProviderConfig(providerId: string) {
@@ -334,8 +336,11 @@ async function streamLLM(
   // 重试耗尽或本身就不可重试。对连接中断类错误抠成中文友好提示，
   // 避免上层把裸 `terminated` 写进 DB 让用户摸不着头脑。
   if (isStreamTerminatedError(lastErr) || isTransientFetchError(lastErr)) {
-    const friendly = new Error('与模型服务的连接被中断，请稍后重试（terminated）')
-    ;(friendly as any).cause = lastErr
+    const friendly: any = new Error('与模型服务的连接被中断，请稍后重试（terminated）')
+    friendly.cause = lastErr
+    // 透传部分内容，让 chat-engine 把已生成的半截回答连同中断标记一起落库
+    if (lastErr?.__partialContent) friendly.__partialContent = lastErr.__partialContent
+    if (lastErr?.__partialToolCalls) friendly.__partialToolCalls = lastErr.__partialToolCalls
     throw friendly
   }
   throw lastErr
@@ -381,6 +386,7 @@ async function streamLLMOnce(
 
   const decoder = new TextDecoder()
   let fullContent = ''
+  let reasoningContent = ''
   let toolCalls: any[] = []
   let finishReason = 'stop'
   let buffer = ''
@@ -433,6 +439,22 @@ async function streamLLMOnce(
           usage = parsed.usage
         }
 
+        // 推理模型思维链：DeepSeek 系用 reasoning_content，部分上游用 reasoning。
+        // 实时单独推给 renderer 展示（折叠「思考中」面板）；思维链 chunk 也会触发下方 armIdle，
+        // 故长时间思考不会被 60s 静默超时误杀。不并入 content、不回传模型、不入库。
+        const reasoningPiece = delta?.reasoning_content ?? delta?.reasoning
+        if (reasoningPiece) {
+          reasoningContent += reasoningPiece
+          if (window && notifyStream) {
+            window.webContents.send('chat:stream', {
+              type: 'reasoning',
+              content: reasoningPiece,
+              conversationId: streamContext?.conversationId,
+              requestId: streamContext?.requestId
+            })
+          }
+        }
+
         if (delta?.content) {
           fullContent += delta.content
           if (window && notifyStream) {
@@ -463,22 +485,24 @@ async function streamLLMOnce(
   }
   } catch (err: any) {
     disarmIdle()
+    // 把已流式产出的部分内容 / 工具调用附到 error 上，供外层(chat-engine)在中断或报错时落库，
+    // 避免用户已经看到的半截回答在刷新后被 [已中断]/[Error] 覆盖丢失。
+    // __streamHadOutput 仍用于「是否可整条重试」判定（已有输出则不能重发，否则 UI 会拼出重复内容）。
+    const hadOutput = fullContent.length > 0 || toolCalls.length > 0
+    const attachPartial = (e: any): any => {
+      if (fullContent) e.__partialContent = fullContent
+      if (toolCalls.length > 0) e.__partialToolCalls = toolCalls
+      if (hadOutput) e.__streamHadOutput = true
+      return e
+    }
     if (idleTimedOut) {
       const idleErr: any = new Error('与模型服务连接静默超过 60 秒，已断开')
       idleErr.cause = err
       idleErr.__streamIdleTimeout = true
-      if (fullContent.length > 0 || toolCalls.length > 0) {
-        idleErr.__streamHadOutput = true
-      }
-      throw idleErr
+      throw attachPartial(idleErr)
     }
-    if (signal?.aborted || isAbortedError(err)) throw new AbortedError()
-    // 给外层重试判定打标记：已经推送过任何 content/tool_call 就不能再重发整条请求，
-    // 否则 renderer 会拼出重复内容。
-    if (fullContent.length > 0 || toolCalls.length > 0) {
-      ;(err as any).__streamHadOutput = true
-    }
-    throw err
+    if (signal?.aborted || isAbortedError(err)) throw attachPartial(new AbortedError())
+    throw attachPartial(err)
   } finally {
     disarmIdle()
     if (signal) signal.removeEventListener('abort', onAbort)
@@ -504,6 +528,7 @@ async function streamLLMOnce(
     content: fullContent,
     tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
     finish_reason: finishReason,
-    usage
+    usage,
+    reasoning: reasoningContent || undefined
   }
 }

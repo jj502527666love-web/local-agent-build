@@ -131,8 +131,12 @@ export function deleteConversation(id: string): boolean {
 
 export function getMessages(conversationId: string): Message[] {
   const db = getDatabase()
+  // 排序兜底 rowid：一轮 agent 调用里 assistant(tool_calls)→tool→tool 是同步连续插入，
+  // created_at（ISO 毫秒）常完全相同。仅按 created_at 排序时 SQLite 不保证同值行的顺序，
+  // 会导致重建历史时 tool_calls 配对错乱 / 显示乱序。rowid 是隐式自增插入序（等效 seq 列），
+  // 作为第二排序键即可稳定复原真实写入顺序，且无需加列、无迁移与并发赋值风险。
   const rows = db
-    .prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC')
+    .prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, rowid ASC')
     .all(conversationId) as any[]
   return rows.map((r) => ({
     ...r,

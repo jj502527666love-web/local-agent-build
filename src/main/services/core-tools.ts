@@ -3,7 +3,7 @@ import { generateImages } from './image-generation'
 import { listModelProviders } from './model-provider'
 import { getDataDir } from './data-path'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync } from 'fs'
-import { join, basename } from 'path'
+import { join, basename, resolve, isAbsolute, relative } from 'path'
 import { listCategories, listKnowledgeBases, type KnowledgeBase } from './knowledge'
 import { embedText, EmbeddingUnavailableError } from './embedding'
 import { searchHybrid } from './vector-store'
@@ -76,6 +76,34 @@ export function previewFileWrite(args: any, sandboxDir?: string): FileWritePrevi
     currentContent,
     newContent
   }
+}
+
+// 读类 file_ops 操作集合：会读到文件内容或枚举目录条目，外泄风险高。
+// stat/exists 仅探测元数据，仍纳入展示但不强制拦截（拦截策略在 chat-engine 决定）。
+const READ_FILE_OPS_ACTIONS = ['read', 'read_json', 'list', 'glob', 'find_latest', 'tree', 'stat', 'exists']
+
+export interface FileReadPreview {
+  type: 'file_read'
+  action: string
+  path: string
+  outsideWorkspace: boolean
+}
+
+// 为读类 file_ops 生成审批弹窗预览：展示真实解析后的绝对路径，并标记是否在工作区之外，
+// 让用户在「允许 AI 读取」前能清楚看到目标，拦下被诱导读取敏感文件的情况。
+export function previewFileRead(args: any, sandboxDir?: string): FileReadPreview | null {
+  if (!args || typeof args !== 'object' || !READ_FILE_OPS_ACTIONS.includes(args.action)) return null
+  const resolved = sandboxDir ? resolveInWorkspace(args.path || '', sandboxDir) : String(args.path || '')
+  let outsideWorkspace = false
+  if (sandboxDir) {
+    try {
+      const rel = relative(resolve(sandboxDir), resolved)
+      outsideWorkspace = rel !== '' && (rel.startsWith('..') || isAbsolute(rel))
+    } catch {
+      outsideWorkspace = false
+    }
+  }
+  return { type: 'file_read', action: args.action, path: resolved, outsideWorkspace }
 }
 
 function backupBeforeWrite(args: any, sandboxDir?: string): void {
@@ -271,7 +299,7 @@ const FILE_OPS_IMPL = `try {
 
 const RUN_COMMAND_IMPL = `try {
   const timeout = args.timeout || 180000
-  const result = shell.execStructured(args.command, { cwd: args.cwd, timeout })
+  const result = await shell.execStructured(args.command, { cwd: args.cwd, timeout })
   return result
 } catch (e) {
   return { exit_code: e.status ?? 1, stdout: e.stdout?.toString()?.slice(0, 8000) || '', stderr: e.stderr?.toString()?.slice(0, 4000) || e.message, ok: false }

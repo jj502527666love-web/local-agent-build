@@ -81,6 +81,17 @@
                     {{ msg.content }}
                   </div>
                   <template v-else>
+                    <div v-if="msg._reasoning" class="mb-1.5">
+                      <button
+                        @click="msg._reasoningActive ? (msg._reasoningActive = false) : (msg._reasoningCollapsed = !msg._reasoningCollapsed)"
+                        class="flex items-center gap-1.5 text-[11px] text-text-tertiary hover:text-text-secondary transition-colors px-2 py-1 rounded-lg hover:bg-surface-2"
+                      >
+                        <svg :class="['w-3 h-3 transition-transform', (msg._reasoningActive || !msg._reasoningCollapsed) ? 'rotate-90' : '']" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m9 5 7 7-7 7" /></svg>
+                        <svg v-if="msg._reasoningActive" class="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                        {{ msg._reasoningActive ? '思考中…' : '已深度思考' }}
+                      </button>
+                      <div v-if="msg._reasoningActive || !msg._reasoningCollapsed" class="mt-1 max-h-48 overflow-y-auto rounded-lg bg-surface-2/40 border-l-2 border-surface-4 px-3 py-2 text-[11px] text-text-tertiary leading-relaxed whitespace-pre-wrap">{{ msg._reasoning }}</div>
+                    </div>
                     <div v-if="msg._toolLogs?.length" class="mb-1.5">
                       <button
                         @click="msg._toolActive ? (msg._toolActive = false) : (msg._collapsed = !msg._collapsed)"
@@ -404,6 +415,15 @@
           <div v-if="pendingApproval.args.cwd" class="text-[11px] text-text-tertiary">工作目录：<code class="font-mono">{{ pendingApproval.args.cwd }}</code></div>
         </template>
 
+        <!-- file_ops read preview -->
+        <template v-else-if="approvalReadPreview">
+          <div class="flex items-center gap-2 text-[11px]">
+            <span :class="['px-1.5 py-0.5 rounded font-medium whitespace-nowrap', approvalReadPreview.outsideWorkspace ? 'bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300' : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300']">{{ approvalReadPreview.outsideWorkspace ? '读取工作区外文件' : '读取文件' }}</span>
+            <code class="font-mono text-text-secondary truncate flex-1" :title="approvalReadPreview.path">{{ approvalReadPreview.path }}</code>
+          </div>
+          <div v-if="approvalReadPreview.outsideWorkspace" class="text-[11px] text-text-tertiary leading-relaxed">该路径在工作区之外，读取后内容会发送给 AI。请确认其中无敏感信息再允许。可在「设置 → 文件读取安全」将常用目录加入白名单，免去重复确认。</div>
+        </template>
+
         <!-- Generic args fallback -->
         <pre v-else class="text-[11px] font-mono leading-relaxed bg-surface-2 rounded-lg p-3 max-h-48 overflow-y-auto whitespace-pre-wrap break-words text-text-secondary">{{ formattedApprovalArgs }}</pre>
       </div>
@@ -503,7 +523,13 @@ interface FileWritePreview {
   currentContent?: string
   newContent: string
 }
-const pendingApproval = ref<{ request_id: string; conversation_id: string; tool: string; args: any; preview?: FileWritePreview } | null>(null)
+interface FileReadPreview {
+  type: 'file_read'
+  action: string
+  path: string
+  outsideWorkspace: boolean
+}
+const pendingApproval = ref<{ request_id: string; conversation_id: string; tool: string; args: any; preview?: FileWritePreview | FileReadPreview } | null>(null)
 const formattedApprovalArgs = computed(() => {
   const args = pendingApproval.value?.args
   if (args == null) return ''
@@ -513,7 +539,14 @@ const formattedApprovalArgs = computed(() => {
     return String(args)
   }
 })
-const approvalPreview = computed<FileWritePreview | null>(() => pendingApproval.value?.preview || null)
+const approvalPreview = computed<FileWritePreview | null>(() => {
+  const p = pendingApproval.value?.preview
+  return p && p.type === 'file_write' ? (p as FileWritePreview) : null
+})
+const approvalReadPreview = computed<FileReadPreview | null>(() => {
+  const p = pendingApproval.value?.preview
+  return p && p.type === 'file_read' ? (p as FileReadPreview) : null
+})
 
 const DIFF_MAX_LINES = 1200
 const DIFF_RENDER_CAP = 600

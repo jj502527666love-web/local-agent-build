@@ -92,6 +92,10 @@ CREATE TABLE IF NOT EXISTS conversation_summaries (
   conversation_id TEXT NOT NULL,
   summary TEXT NOT NULL,
   token_count INTEGER NOT NULL DEFAULT 0,
+  -- 已被摘要覆盖的 user/assistant 消息数（增量摘要水位线）：
+  -- 下次摘要只压缩 covered_count 之后、滑动窗口之前的新增段落，避免每轮全量重压，
+  -- 同时让摘要覆盖范围紧贴最近窗口，消除「滑出窗口但未被摘要覆盖」的记忆空洞。
+  covered_count INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE

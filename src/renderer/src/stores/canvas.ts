@@ -98,6 +98,22 @@ export const useCanvasStore = defineStore('canvas', () => {
     return await api().canvas.invoke('openProjectImageDir', id)
   }
 
+  /**
+   * 按序导出画布图片到用户选定目录：出图节点（文生图 / 图生图 / 图片结果）按画布 #N
+   * 序号复制为 {类型名}-{NN}.{ext}。主进程负责弹目录对话框并执行复制。
+   * 返回 { success, canceled?, exported?, total?, dir?, error? }。
+   */
+  async function exportProjectImages(id: string): Promise<{
+    success: boolean
+    canceled?: boolean
+    exported?: number
+    total?: number
+    dir?: string
+    error?: string
+  }> {
+    return await api().canvas.invoke('exportImages', id)
+  }
+
   async function deleteProject(id: string) {
     await api().canvas.invoke('deleteProject', id)
     projects.value = projects.value.filter((p) => p.id !== id)
@@ -441,6 +457,7 @@ export const useCanvasStore = defineStore('canvas', () => {
     duplicateProject,
     loadProject,
     openProjectImageDir,
+    exportProjectImages,
     addNode,
     updateNode,
     updateNodePositions,

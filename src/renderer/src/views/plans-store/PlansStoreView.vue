@@ -98,10 +98,12 @@
                 >{{ p.duration_days }} 天</span>
               </div>
 
-              <p
+              <ExpandableText
                 v-if="p.description"
-                class="text-xs text-text-secondary line-clamp-2 mb-3"
-              >{{ p.description }}</p>
+                :text="p.description"
+                :lines="2"
+                class="mb-3"
+              />
 
               <div class="flex items-baseline gap-1 mb-3">
                 <span class="text-2xl font-bold text-primary-600">{{ formatPrice(p.price) }}</span>
@@ -225,6 +227,7 @@ import { cloudClient } from '@/utils/cloud-api'
 import { useCloudAuthStore } from '@/stores/cloud-auth'
 import { useSiteConfigStore } from '@/stores/site-config'
 import PaymentDialog from '@/components/PaymentDialog.vue'
+import ExpandableText from '@/components/ExpandableText.vue'
 
 const siteConfig = useSiteConfigStore()
 const cloudAuth = useCloudAuthStore()
