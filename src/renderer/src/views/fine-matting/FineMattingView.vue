@@ -6,8 +6,8 @@
         <p class="page-desc">
           精细抠图（抠抠图），按图片尺寸三档计费，输出透明 PNG。
           <span v-if="store.cloudQuota" class="ml-2">
-            4K 以下 <strong class="text-text-primary">{{ fmt(store.cloudQuota.tier1_credit) }}</strong> /
-            4K-8K <strong class="text-text-primary">{{ fmt(store.cloudQuota.tier2_credit) }}</strong> /
+            4K 以下 <strong class="text-text-primary">{{ fmt(store.cloudQuota.tier1_credit) }}</strong> {{ creditLabel }} /
+            4K-8K <strong class="text-text-primary">{{ fmt(store.cloudQuota.tier2_credit) }}</strong> {{ creditLabel }} /
             8K 以上 <strong class="text-text-primary">{{ fmt(store.cloudQuota.tier3_credit) }}</strong>
             {{ creditLabel }} 每张（一次最多提交 {{ MAX_QUEUE }} 张）。
           </span>

@@ -28,6 +28,7 @@ export interface CloudAgent {
   name: string
   description: string
   avatar: string
+  avatar_thumb: string
   system_prompt: string
   tool_skill_ids: string[]
   tool_approval: ToolApproval
@@ -42,6 +43,10 @@ export interface CloudAgent {
   price_balance_type: 'token' | 'credit'
   // 当前登录用户是否已拥有（已购买 / 免费已领取）
   is_owned: boolean
+  // 云端知识库绑定（acquire 后下发；桌面端对话时在线检索）
+  cloud_kb_ids: number[]
+  cloud_kb_only: number
+  cloud_kb_top_k: number
   created_at?: string
 }
 
@@ -101,6 +106,7 @@ function mapAgent(raw: any, origin: string): CloudAgent {
     name: String(raw.name || ''),
     description: String(raw.description || ''),
     avatar: resolveUrl(raw.avatar, origin),
+    avatar_thumb: resolveUrl(raw.avatar_thumb, origin),
     system_prompt: String(raw.system_prompt || ''),
     tool_skill_ids: toolIds,
     tool_approval: normalizeApproval(raw.tool_approval),
@@ -113,6 +119,11 @@ function mapAgent(raw: any, origin: string): CloudAgent {
     price: Number(raw.price || 0),
     price_balance_type: raw.price_balance_type === 'token' ? 'token' : 'credit',
     is_owned: !!raw.is_owned,
+    cloud_kb_ids: Array.isArray(raw.cloud_kb_ids)
+      ? raw.cloud_kb_ids.map((x: unknown) => Number(x)).filter((n: number) => n > 0)
+      : [],
+    cloud_kb_only: raw.cloud_kb_only ? 1 : 0,
+    cloud_kb_top_k: Number(raw.cloud_kb_top_k || 5),
     created_at: raw.created_at || undefined,
   }
 }
@@ -277,6 +288,13 @@ export async function importAgentAsLocal(cloudAgentInput: CloudAgent): Promise<I
 
     const toolIds = rawToolIds.filter((x) => BUILTIN_TOOL_IDS.has(x))
 
+    // 云端知识库绑定（acquire 下发；权限随智能体授权传递，对话时在线检索）
+    const cloudKbIds: number[] = Array.isArray(full.cloud_kb_ids) && full.cloud_kb_ids.length
+      ? full.cloud_kb_ids.map((x: unknown) => Number(x)).filter((n: number) => n > 0)
+      : (cloud.cloud_kb_ids || [])
+    const cloudKbOnly = (full.cloud_kb_only ?? cloud.cloud_kb_only) ? 1 : 0
+    const cloudKbTopK = Number(full.cloud_kb_top_k ?? cloud.cloud_kb_top_k ?? 5) || 5
+
     const bot = createBot({
       name,
       description,
@@ -284,6 +302,9 @@ export async function importAgentAsLocal(cloudAgentInput: CloudAgent): Promise<I
       skill_ids: toolIds,
       tool_approval: toolApproval,
       enable_image_gen: enableImageGen,
+      cloud_kb_ids: cloudKbIds,
+      cloud_kb_only: cloudKbOnly,
+      cloud_kb_top_k: cloudKbTopK,
       source: 'market',
       cloud_agent_id: cloud.id,
     })

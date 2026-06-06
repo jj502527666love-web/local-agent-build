@@ -3,6 +3,7 @@ import { extname } from 'path'
 import { nativeImage } from 'electron'
 import { fetchWithCloudAuth, getCloudApiBase, getCloudToken } from './cloud-token'
 import { getTemplate, updateTemplateSubmissionState } from './creative-template'
+import { makeUploadThumbnailBlob } from './thumbnail-upload'
 
 const MAX_BYTES = 8 * 1024 * 1024
 const ALLOWED_EXTS = new Set(['png', 'jpg', 'jpeg', 'webp'])
@@ -178,6 +179,11 @@ export async function submitCreativeTemplate(params: SubmitCreativeTemplateParam
     if (loaded.error) return { ok: false, error: '封面图：' + loaded.error }
     compressed = compressed || loaded.compressed
     appendImage(fd, 'cover_image', loaded, 'cover')
+    // 附带封面缩略图（网格列表用），失败则跳过、云端回退原图
+    const coverThumb = makeUploadThumbnailBlob(loaded.buf, 720)
+    if (coverThumb) {
+      fd.append('cover_thumb', coverThumb.blob, coverThumb.filename)
+    }
   }
 
   if (template.source_image) {

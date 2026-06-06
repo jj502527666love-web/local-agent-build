@@ -16,6 +16,8 @@ export interface Inspiration {
   ref_images?: string[]
   generation_size?: string
   cover_image?: string
+  // 网格列表用的封面缩略图 URL（云端可能为空，前端回退 cover_image）
+  cover_thumb?: string
   // 云控端自定义灵感中，用户上传的会带上传者昵称；后台手动录入的为空
   uploader_nickname?: string
 }
@@ -157,6 +159,7 @@ async function fetchCustomInspirations(options?: {
   const rawItems: any[] = json.items || []
   const items: Inspiration[] = rawItems.map((item) => {
     const coverImage = resolveImageUrl(item.cover_image || '', origin)
+    const coverThumb = resolveImageUrl(item.cover_thumb || '', origin)
     const refImages = Array.isArray(item.ref_images)
       ? item.ref_images.map((url: string) => resolveImageUrl(url, origin)).filter(Boolean).slice(0, 8)
       : []
@@ -171,6 +174,7 @@ async function fetchCustomInspirations(options?: {
       ref_images: refImages,
       generation_size: item.generation_size || '',
       cover_image: coverImage || undefined,
+      cover_thumb: coverThumb || undefined,
       uploader_nickname: item.uploader_nickname || ''
     }
   })

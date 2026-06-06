@@ -23,7 +23,12 @@ const MIGRATION_EXCLUDE_NAMES = new Set([CONFIG_FILE])
 // 文件数过多时不静默放弃，而是要求 UI 二次确认。
 const MIGRATION_FILE_LIMIT = 10000
 
-let cachedDataDir: string | null = null
+// 数据根目录缓存（root = 用户可配置的数据根，承载 accounts/、device-id.txt、
+// data-path.json、account-map.json、device-settings.json）。
+let cachedRootDir: string | null = null
+// 当前账号数据子目录（绝对路径）。由 account-context 在启动早期 / 切换账号时注入。
+// 为 null 时 getDataDir() 回退到 root（兼容 account-context 尚未初始化的极早期调用）。
+let accountSubdir: string | null = null
 
 function getConfigPath(): string {
   return join(app.getPath('userData'), CONFIG_FILE)
@@ -64,17 +69,38 @@ function writeMarker(dir: string): void {
   } catch {}
 }
 
-export function getDataDir(): string {
-  if (cachedDataDir) return cachedDataDir
+/**
+ * 数据根目录：用户可配置的数据根（config.dataDir）或默认 userData。
+ * 承载 accounts/ 子目录、device-id.txt、data-path.json、account-map.json、device-settings.json。
+ * 「更换数据目录 / 迁移」等设备级操作都锚定此目录，与具体登录账号无关。
+ */
+export function getRootDir(): string {
+  if (cachedRootDir) return cachedRootDir
 
   const config = readConfig()
   if (config.dataDir && existsSync(config.dataDir)) {
-    cachedDataDir = config.dataDir
-    return cachedDataDir!
+    cachedRootDir = config.dataDir
+    return cachedRootDir!
   }
 
-  cachedDataDir = getDefaultDataDir()
-  return cachedDataDir!
+  cachedRootDir = getDefaultDataDir()
+  return cachedRootDir!
+}
+
+/**
+ * 由 account-context 注入「当前账号数据子目录」绝对路径。
+ * 传 null 表示回退到 root（未初始化 / 测试场景）。
+ */
+export function setAccountSubdir(absDir: string | null): void {
+  accountSubdir = absDir
+}
+
+/**
+ * 当前账号的数据目录（业务库 local-agent.db、images/videos/canvas/backups 等全部落此）。
+ * = account-context 注入的账号子目录；未注入时回退 root（兼容极早期调用）。
+ */
+export function getDataDir(): string {
+  return accountSubdir || getRootDir()
 }
 
 function isRootDir(dir: string): boolean {
@@ -188,7 +214,7 @@ export interface SetDataDirResult {
  * 写入数据目录配置。
  *
  * @param dir 新的数据目录绝对路径
- * @param options.activate 是否立即把当前进程的 cachedDataDir 切换到新路径。
+ * @param options.activate 是否立即把当前进程的 cachedRootDir 切换到新路径。
  *   默认 false——只写 config，等下次启动重读；让调用方负责触发重启。
  *   首次启动场景下，如果用户选了与默认不同的目录，也应保持默认 false 由 renderer
  *   决定是否 relaunch，避免本次会话产生数据切割（DB 在旧目录、文件在新目录）。
@@ -209,7 +235,7 @@ export function setDataDir(dir: string, options?: { activate?: boolean }): SetDa
 
   const activate = options?.activate === true
   const config = readConfig()
-  const currentDir = getDataDir()
+  const currentDir = getRootDir()
   if (currentDir !== dir && !isRootDir(currentDir)) {
     config.oldDataDir = currentDir
   }
@@ -217,7 +243,7 @@ export function setDataDir(dir: string, options?: { activate?: boolean }): SetDa
   writeConfig(config)
   writeMarker(dir)
   if (activate) {
-    cachedDataDir = dir
+    cachedRootDir = dir
   }
   return { ok: true }
 }
@@ -250,7 +276,7 @@ export function initDataDir(dir?: string, options?: { activate?: boolean }): Set
 export function isDataDirActivated(): boolean {
   const config = readConfig()
   if (!config.dataDir) return true
-  return cachedDataDir === config.dataDir
+  return cachedRootDir === config.dataDir
 }
 
 // --- Migration ---

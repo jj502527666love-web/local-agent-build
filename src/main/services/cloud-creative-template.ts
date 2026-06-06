@@ -24,6 +24,7 @@ export interface CloudCreativeTemplate {
   title: string
   description: string
   cover_image: string
+  cover_thumb: string
   example_ref_images: string[]
   requires_ref_image: number
   default_size: string
@@ -100,6 +101,7 @@ function mapTemplate(raw: any, origin: string): CloudCreativeTemplate {
     title: String(raw.title || ''),
     description: String(raw.description || ''),
     cover_image: resolveUrl(raw.cover_image, origin),
+    cover_thumb: resolveUrl(raw.cover_thumb, origin),
     example_ref_images: normalizeArrayUrls(raw.example_ref_images, origin),
     requires_ref_image: raw.requires_ref_image ? 1 : 0,
     default_size: String(raw.default_size || ''),

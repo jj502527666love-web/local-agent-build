@@ -11,10 +11,14 @@ import { cleanupStaleGenerations } from './services/image-generation'
 import { getThumbnailBytes, getThumbnailPlaceholderBytes, queueThumbnail } from './services/thumbnail'
 import { stopAllMcpServers } from './services/mcp-server'
 import { getDataDir } from './services/data-path'
-import { runStartupTasks as runBackupStartupTasks } from './services/backup'
+import { runStartupTasks as runBackupStartupTasks, recoverInterruptedRestore } from './services/backup'
 import { getRuntimeConfig } from './services/runtime-config'
 import { getSetting } from './services/settings'
 import { startAutoDownloadScheduler, stopAutoDownloadScheduler } from './services/video-generation'
+import { ensureIntegrityOrPrompt } from './services/integrity-check'
+import { initAccountContext, isAccountReady } from './services/account-context'
+import { runInEpoch } from './services/account-epoch'
+import { getDeviceSetting } from './services/device-settings'
 
 if (is.dev) {
   process.env['ELECTRON_DISABLE_SECURITY_WARNINGS'] = 'true'
@@ -94,7 +98,13 @@ if (!gotSingleInstanceLock) {
 
 function getWindowCloseBehavior(): WindowCloseBehavior {
   try {
-    return getSetting('window_close_behavior') === 'minimize' ? 'minimize' : 'close-window'
+    // 设备级优先；老用户首次回退账号库旧值（迁移兼容），避免设置丢失。
+    // 仅在账号已就绪时才回退读库——否则未登录关闭登录窗会触发 getDatabase()，凭空建出空库。
+    let v = getDeviceSetting('window_close_behavior')
+    if (v == null && isAccountReady()) {
+      try { v = getSetting('window_close_behavior') } catch {}
+    }
+    return v === 'minimize' ? 'minimize' : 'close-window'
   } catch {
     return 'close-window'
   }
@@ -216,6 +226,13 @@ if (gotSingleInstanceLock) {
   app.whenReady().then(async () => {
     electronApp.setAppUserModelId(getRuntimeConfig().appId)
 
+    // 核心运行时组件完整性自检：ffmpeg.dll 等缺失/损坏时弹窗引导修复并终止，
+    // 避免后续创建窗口加载媒体栈时白屏/崩溃（详见 services/integrity-check.ts）。
+    if (!ensureIntegrityOrPrompt()) {
+      app.quit()
+      return
+    }
+
   protocol.handle('local-file', (request) => {
     try {
       const url = new URL(request.url)
@@ -269,33 +286,60 @@ if (gotSingleInstanceLock) {
     callback({ responseHeaders: headers })
   })
 
-  // Initialize database
-  getDatabase()
-
-  // 一次性回填：将已存在的 image_generations.result_path 归入图库「创作」分类
-  // 通过 settings.gallery_backfill_done 标记幂等，仅首次启动跑
+  // 账号数据隔离：在恢复自愈与打开数据库【之前】先确定当前账号目录并注入 data-path。
+  // 时序硬约束——否则 recoverInterruptedRestore() / getDatabase() 会落到错误目录。
   try {
-    const result = backfillCreationGallery()
-    if (result.total > 0) {
-      console.log(`[Gallery] Backfill creation: added ${result.added}, skipped ${result.skipped}, total ${result.total}`)
+    initAccountContext()
+  } catch (e) {
+    console.error('[account] initAccountContext failed:', e)
+  }
+
+  // 桌面端必须登录才能使用：仅当账号已确定（已登录用户读 account-map / 老用户原地继承）时
+  // 才打开数据库并跑依赖 db 的启动任务。全新且从未登录时不建任何库（无 guest），停在登录页；
+  // 用户登录后 setActiveAccount 触发热切换（关旧库开新库 + reload 渲染层），渲染层重载后即进入此就绪分支。
+  if (isAccountReady()) {
+    // 崩溃自愈：上次"恢复"中途被中断时，回滚到恢复前数据。
+    // 必须在打开数据库【之前】同步执行，避免新/半成品 db 被打开后产生文件锁导致回滚失败。
+    try {
+      recoverInterruptedRestore()
+    } catch (e) {
+      console.error('[backup] restore self-heal failed:', e)
     }
-  } catch (e) {
-    console.error('[Gallery] Backfill failed:', e)
+
+    // 启动期 db 任务统一绑定当前账号代次（epoch=启动时的 0）：若用户在这些任务（尤其异步的自动备份）
+    // 进行中登录切到别的账号（热切换会 bumpEpoch），任务 await 后的 getDatabase() 将因代次不符被
+    // assertEpoch 拒绝，避免把旧账号的回填/清理/备份数据写进新账号库。
+    // （relaunch 版靠进程重启天然规避此问题，热切换不重启进程，需显式用 runInEpoch 绑定。）
+    runInEpoch(() => {
+      // Initialize database
+      getDatabase()
+
+      // 一次性回填：将已存在的 image_generations.result_path 归入图库「创作」分类
+      // 通过 settings.gallery_backfill_done 标记幂等，仅首次启动跑
+      try {
+        const result = backfillCreationGallery()
+        if (result.total > 0) {
+          console.log(`[Gallery] Backfill creation: added ${result.added}, skipped ${result.skipped}, total ${result.total}`)
+        }
+      } catch (e) {
+        console.error('[Gallery] Backfill failed:', e)
+      }
+
+      // 启动时清理上次崩溃残留的"生成中"图片任务（避免 UI 永久转圈）
+      try {
+        cleanupStaleGenerations()
+      } catch (e) {
+        console.error('[ImageGen] cleanupStaleGenerations failed:', e)
+      }
+
+      // Backup startup tasks: 清理上次崩溃残骸 + 异步触发自动备份（如配置）
+      runBackupStartupTasks().catch((e) => console.error('Backup startup error:', e))
+      startAutoDownloadScheduler()
+    })
   }
 
-  // Register all IPC handlers
+  // Register all IPC handlers（不依赖 db，始终注册：登录页也要用 cloud/dataDir 等 IPC）
   registerIpcHandlers()
-
-  // 启动时清理上次崩溃残留的"生成中"图片任务（避免 UI 永久转圈）
-  try {
-    cleanupStaleGenerations()
-  } catch (e) {
-    console.error('[ImageGen] cleanupStaleGenerations failed:', e)
-  }
-
-  // Backup startup tasks: 清理上次崩溃残骸 + 异步触发自动备份（如配置）
-  runBackupStartupTasks().catch((e) => console.error('Backup startup error:', e))
-  startAutoDownloadScheduler()
 
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)

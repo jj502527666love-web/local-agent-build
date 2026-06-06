@@ -187,6 +187,9 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
       syncTokenState()
       user.value = data.user
       localStorage.setItem('cloud_user', JSON.stringify(data.user))
+      // 账号隔离：切到该账号数据目录；目录变化时主进程热切换（关旧库开新库 + reload），由 reload 后的 init 接管
+      const sw = await window.api?.cloud?.setActiveAccount?.(data.user.id)
+      if (sw?.switched) return data.user
       await fetchCloudData()
       return data.user
     } finally {
@@ -203,9 +206,14 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
       user.value = data.user
       localStorage.setItem('cloud_user', JSON.stringify(data.user))
       // Capture register bonus for UI to display on next page
+      // 持久化到 localStorage：注册会触发账号切换 relaunch，避免奖励提示在重启后丢失
       if (data.bonus) {
         pendingBonus.value = data.bonus as RegisterBonus
+        try { localStorage.setItem('pending_register_bonus', JSON.stringify(data.bonus)) } catch {}
       }
+      // 账号隔离：切到新账号数据目录；目录变化时主进程热切换（关旧库开新库 + reload），由 reload 后的 init 接管
+      const sw = await window.api?.cloud?.setActiveAccount?.(data.user.id)
+      if (sw?.switched) return data.user
       await fetchCloudData()
       return data.user
     } finally {
@@ -216,6 +224,7 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
   function consumeBonus(): RegisterBonus | null {
     const b = pendingBonus.value
     pendingBonus.value = null
+    try { localStorage.removeItem('pending_register_bonus') } catch {}
     return b
   }
 
@@ -441,12 +450,19 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
   async function init() {
     loadCachedUser()
     syncTokenState()
+    // 注册奖励跨 relaunch 存活：从 localStorage 恢复待展示奖励（触发 RegisterBonusToast 的 watch）
+    try {
+      const rawBonus = localStorage.getItem('pending_register_bonus')
+      if (rawBonus) pendingBonus.value = JSON.parse(rawBonus)
+    } catch {}
     const token = getCloudToken()
     if (token) {
       // Sync token to main process for cloud LLM routing
       window.api?.cloud?.setToken(token)
       try {
         await fetchMe()
+        // 账号隔离：确认/认领当前账号目录（已登录账号；老用户首次升级在此原地认领历史数据）
+        await window.api?.cloud?.setActiveAccount?.(user.value?.id ?? null)
         await fetchCloudData()
       } catch {
         // Token 失效或网络异常：cloud-api.ts 已自动尝试 refresh，失败时已通过事件 + 同步兜底完成 logout，

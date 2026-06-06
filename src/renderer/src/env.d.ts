@@ -65,6 +65,10 @@ interface Window {
     mcp: { invoke: (channel: string, ...args: unknown[]) => Promise<unknown> }
     promptSkill: { invoke: (channel: string, ...args: unknown[]) => Promise<unknown> }
     settings: { invoke: (channel: string, ...args: unknown[]) => Promise<unknown> }
+    deviceSettings: {
+      get: (key: string) => Promise<string | null>
+      set: (key: string, value: string) => Promise<void>
+    }
     llm: { invoke: (channel: string, ...args: unknown[]) => Promise<unknown> }
     usage: { invoke: (channel: string, ...args: unknown[]) => Promise<unknown> }
     imageGen: {
@@ -92,6 +96,7 @@ interface Window {
       onAuthExpired: (callback: (data: { reason?: string }) => void) => () => void
       setPermissions: (perms: Record<string, any>) => Promise<void>
       getDeviceId: () => Promise<string>
+      setActiveAccount: (id: number | string | null) => Promise<{ switched: boolean }>
       setEmbeddingModels: (models: Array<{ id: number; model_id: string; name: string }>) => Promise<void>
       setModels: (
         models: Array<{
@@ -159,6 +164,10 @@ interface Window {
       offProgress: () => void
     }
     dialog: { openFile: (options?: unknown) => Promise<unknown> }
+    nativeDialog: {
+      alert: (message?: unknown) => void
+      confirm: (message?: unknown) => boolean
+    }
     shell: {
       openPath: (path: string) => Promise<string>
       showItemInFolder: (path: string) => Promise<{ success: boolean; path?: string; fallback?: string; error?: string }>

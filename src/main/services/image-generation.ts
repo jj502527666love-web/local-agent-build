@@ -102,6 +102,17 @@ export function cancelGenerations(genIds: string[]): number {
   return hit
 }
 
+/** 中止所有进行中的生成项（账号热切换前清场用）。返回命中数。 */
+export function cancelAllGenerations(): number {
+  let hit = 0
+  for (const [, controller] of inflightAbortControllers) {
+    try { controller.abort() } catch {}
+    hit++
+  }
+  inflightAbortControllers.clear()
+  return hit
+}
+
 /** 可被 AbortSignal 打断的 sleep：中止时立即 reject(GenerationCanceledError)，不必等满间隔 */
 function interruptibleSleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise<void>((resolve, reject) => {

@@ -3,6 +3,7 @@ import { join, extname } from 'path'
 import { nativeImage } from 'electron'
 import { getDataDir } from './data-path'
 import { getCloudApiBase, getCloudToken, fetchWithCloudAuth } from './cloud-token'
+import { makeUploadThumbnailBlob } from './thumbnail-upload'
 
 /**
  * 桌面端用户「上传创作到灵感广场」服务（主进程侧）。
@@ -218,6 +219,12 @@ export async function uploadInspiration(params: UploadInspirationParams): Promis
     fd.append('generation_size', generationSize.trim())
   }
   fd.append('cover_image', blob, filename)
+
+  // 附带封面缩略图（网格列表用），失败则跳过、云端回退原图
+  const coverThumb = makeUploadThumbnailBlob(finalBuf, 720)
+  if (coverThumb) {
+    fd.append('cover_thumb', coverThumb.blob, coverThumb.filename)
+  }
 
   let refCompressed = false
   for (const [index, refImage] of refImages.slice(0, 8).entries()) {

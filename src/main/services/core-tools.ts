@@ -7,6 +7,7 @@ import { join, basename, resolve, isAbsolute, relative } from 'path'
 import { listCategories, listKnowledgeBases, type KnowledgeBase } from './knowledge'
 import { embedText, EmbeddingUnavailableError } from './embedding'
 import { searchHybrid } from './vector-store'
+import { searchCloudKnowledgeBases } from './cloud-kb-search'
 import { getVectorStatsForUI } from './vectorize'
 import { addMessage, getConversation } from './conversation'
 import type { BrowserWindow } from 'electron'
@@ -125,8 +126,14 @@ export const CORE_TOOL_NAMES = ['file_ops', 'run_command', 'image_gen', 'kb_list
 export const KB_TOOL_NAMES = ['kb_list', 'kb_search', 'kb_stats']
 
 export interface KbToolContext {
-  /** 当前对话启用的 KB 分类 id 列表（已 resolve 过 override） */
+  /** 当前对话启用的本地 KB 分类 id 列表（已 resolve 过 override） */
   kbCategoryIds: string[]
+  /** 绑定的云端知识库 id 列表（来自智能体预设） */
+  cloudKbIds?: number[]
+  /** 云端检索鉴权用的市场 agent id */
+  cloudAgentId?: number
+  /** 云端检索 Top K */
+  cloudKbTopK?: number
 }
 
 export const coreToolDefs = [
@@ -424,8 +431,11 @@ async function executeKbTool(
   signal?: AbortSignal
 ): Promise<any> {
   const enabledIds = kbContext?.kbCategoryIds || []
-  if (enabledIds.length === 0) {
-    return { error: '当前对话未启用任何知识库分类，无法使用知识库工具。请用户在 bot 设置中绑定分类，或在对话工具栏临时勾选。' }
+  const cloudKbIds = (kbContext?.cloudKbIds || []).filter((n) => n > 0)
+  const cloudAgentId = kbContext?.cloudAgentId || 0
+  const hasCloud = cloudKbIds.length > 0 && cloudAgentId > 0
+  if (enabledIds.length === 0 && !hasCloud) {
+    return { error: '当前对话未启用任何知识库（本地分类或云端知识库），无法使用知识库工具。请用户在 bot 设置中绑定，或在对话工具栏临时勾选。' }
   }
 
   if (functionName === 'kb_list') {
@@ -455,7 +465,13 @@ async function executeKbTool(
         }
       })
 
-      return { categories, scope: filterId ? 'single_category' : 'all_enabled' }
+      return {
+        categories,
+        scope: filterId ? 'single_category' : 'all_enabled',
+        cloud: hasCloud
+          ? { bound: cloudKbIds.length, note: '该智能体还绑定了云端线上知识库，无法列出云端文档清单，但可用 kb_search 检索其内容' }
+          : undefined
+      }
     } catch (e: any) {
       return { error: `读取知识库失败: ${e.message || String(e)}` }
     }
@@ -467,62 +483,86 @@ async function executeKbTool(
     const requestedTopK = Number(args?.top_k) || KB_SEARCH_DEFAULT_TOP_K
     const topK = Math.max(1, Math.min(KB_SEARCH_MAX_TOP_K, requestedTopK))
 
-    // Resolve target category ids: explicit > all enabled
-    let targetCategoryIds = enabledIds
-    if (Array.isArray(args?.category_ids) && args.category_ids.length > 0) {
-      const requested = args.category_ids.map(String)
-      const allowed = requested.filter((id: string) => enabledIds.includes(id))
-      if (allowed.length === 0) {
-        return { error: `指定的 category_ids 均未启用。已启用分类: ${enabledIds.join(', ')}` }
-      }
-      targetCategoryIds = allowed
-    }
+    const merged: Array<{ score: number; source: string; content: string; origin: 'local' | 'cloud' }> = []
+    const errors: string[] = []
+    let scannedLocal = 0
 
-    // Collect ready KB ids in scope
-    const kbIds: string[] = []
-    const kbNameMap = new Map<string, string>()
-    for (const catId of targetCategoryIds) {
-      const kbs = listKnowledgeBases(catId)
-      for (const kb of kbs) {
-        if (kb.status === 'ready') {
-          kbIds.push(kb.id)
-          kbNameMap.set(kb.id, kb.name)
+    // ===== 本地知识库检索 =====
+    if (enabledIds.length > 0) {
+      let targetCategoryIds = enabledIds
+      if (Array.isArray(args?.category_ids) && args.category_ids.length > 0) {
+        const requested = args.category_ids.map(String)
+        const allowed = requested.filter((id: string) => enabledIds.includes(id))
+        if (allowed.length > 0) targetCategoryIds = allowed
+      }
+      const kbIds: string[] = []
+      const kbNameMap = new Map<string, string>()
+      for (const catId of targetCategoryIds) {
+        for (const kb of listKnowledgeBases(catId)) {
+          if (kb.status === 'ready') {
+            kbIds.push(kb.id)
+            kbNameMap.set(kb.id, kb.name)
+          }
+        }
+      }
+      scannedLocal = kbIds.length
+      if (kbIds.length > 0) {
+        try {
+          const queryEmbed = await embedText(query, { signal })
+          const hits = searchHybrid(queryEmbed.embedding, query, kbIds, topK, KB_SEARCH_THRESHOLD)
+          for (const h of hits) {
+            const content = h.chunk.content || ''
+            merged.push({
+              score: Math.round(h.score * 1000) / 1000,
+              source: kbNameMap.get(h.chunk.knowledge_base_id) || '本地文档',
+              content,
+              origin: 'local'
+            })
+          }
+        } catch (e: any) {
+          if (e instanceof EmbeddingUnavailableError) errors.push(`本地向量服务不可用 (${e.code})`)
+          else errors.push(`本地检索失败: ${e.message || String(e)}`)
         }
       }
     }
-    if (kbIds.length === 0) {
-      return { results: [], total: 0, message: '当前启用的分类下没有已就绪（ready）的文档，请先完成向量化' }
-    }
 
-    let queryEmbed: { embedding: number[] }
-    try {
-      queryEmbed = await embedText(query, { signal })
-    } catch (e: any) {
-      if (e instanceof EmbeddingUnavailableError) {
-        return { error: `向量服务不可用 (${e.code}): ${e.message}` }
+    // ===== 云端知识库检索（hybrid：云端为主 + 缓存降级）=====
+    if (hasCloud) {
+      try {
+        const cloudRes = await searchCloudKnowledgeBases({ agentId: cloudAgentId, query, kbIds: cloudKbIds, topK, signal })
+        const offline = cloudRes.source === 'cache' ? '（离线缓存）' : ''
+        for (const h of cloudRes.hits) {
+          const src = [h.kb_name, h.source_doc].filter(Boolean).join(' / ') || '云端知识库'
+          merged.push({ score: Math.round(h.score * 1000) / 1000, source: src + offline, content: h.content || '', origin: 'cloud' })
+        }
+      } catch (e: any) {
+        errors.push(`云端检索失败: ${e.message || String(e)}`)
       }
-      return { error: `向量化 query 失败: ${e.message || String(e)}` }
     }
 
-    let hits: ReturnType<typeof searchHybrid>
-    try {
-      hits = searchHybrid(queryEmbed.embedding, query, kbIds, topK, KB_SEARCH_THRESHOLD)
-    } catch (e: any) {
-      return { error: `检索失败: ${e.message || String(e)}` }
+    if (merged.length === 0) {
+      return {
+        results: [],
+        total: 0,
+        query,
+        top_k: topK,
+        message: errors.length ? errors.join('；') : '未检索到相关内容（可能尚未向量化或相关度过低）'
+      }
     }
 
-    const results = hits.map((h, i) => {
-      const content = h.chunk.content || ''
-      const truncated = content.length > KB_SNIPPET_MAX_CHARS
+    merged.sort((a, b) => b.score - a.score)
+    const results = merged.slice(0, topK).map((m, i) => {
+      const truncated = m.content.length > KB_SNIPPET_MAX_CHARS
       return {
         rank: i + 1,
-        score: Math.round(h.score * 1000) / 1000,
-        source: kbNameMap.get(h.chunk.knowledge_base_id) || '未知文档',
-        content: truncated ? content.slice(0, KB_SNIPPET_MAX_CHARS) + '...' : content,
+        score: m.score,
+        source: m.source,
+        origin: m.origin,
+        content: truncated ? m.content.slice(0, KB_SNIPPET_MAX_CHARS) + '...' : m.content,
         truncated
       }
     })
-    return { results, total: results.length, query, top_k: topK, scanned_documents: kbIds.length }
+    return { results, total: results.length, query, top_k: topK, scanned_documents: scannedLocal, partial_errors: errors.length ? errors : undefined }
   }
 
   if (functionName === 'kb_stats') {

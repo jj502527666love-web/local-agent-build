@@ -62,6 +62,10 @@ const api = {
     invoke: (channel: string, ...args: unknown[]) =>
       ipcRenderer.invoke(`settings:${channel}`, ...args)
   },
+  deviceSettings: {
+    get: (key: string) => ipcRenderer.invoke('deviceSettings:get', key) as Promise<string | null>,
+    set: (key: string, value: string) => ipcRenderer.invoke('deviceSettings:set', key, value)
+  },
   llm: {
     invoke: (channel: string, ...args: unknown[]) =>
       ipcRenderer.invoke(`llm:${channel}`, ...args)
@@ -166,6 +170,9 @@ const api = {
     },
     setPermissions: (perms: Record<string, any>) => ipcRenderer.invoke('cloud:setPermissions', perms),
     getDeviceId: () => ipcRenderer.invoke('cloud:getDeviceId') as Promise<string>,
+    // 切换/登出账号：写账号目录映射；目录变化时主进程会自动 relaunch（进程重启后以新账号目录启动）
+    setActiveAccount: (id: number | string | null) =>
+      ipcRenderer.invoke('cloud:setActiveAccount', id) as Promise<{ switched: boolean }>,
     setEmbeddingModels: (models: Array<{ id: number; model_id: string; name: string }>) =>
       ipcRenderer.invoke('cloud:setEmbeddingModels', models),
     // 同步全量云端模型（含 chat/image/embedding）到主进程，发起请求前用于反查 cloud_model_id
@@ -276,6 +283,14 @@ const api = {
   },
   dialog: {
     openFile: (options?: unknown) => ipcRenderer.invoke('dialog:openFile', options)
+  },
+  // 同步桥接主进程原生对话框，用于覆盖 window.alert/confirm（规避 Electron Windows 焦点 bug）
+  nativeDialog: {
+    alert: (message?: unknown): void => {
+      ipcRenderer.sendSync('dialog:alert', String(message ?? ''))
+    },
+    confirm: (message?: unknown): boolean =>
+      Boolean(ipcRenderer.sendSync('dialog:confirm', String(message ?? '')))
   },
   shell: {
     openPath: (path: string) => ipcRenderer.invoke('shell:openPath', path),

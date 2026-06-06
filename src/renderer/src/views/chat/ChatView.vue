@@ -157,6 +157,9 @@
                     <span class="truncate">{{ cat.name }}</span>
                   </label>
                   <div v-if="!kbStore.categories.length" class="text-[10px] text-text-disabled px-3 py-2">无可用分类</div>
+                  <div v-if="currentBot?.cloud_kb_ids?.length" class="text-[10px] text-teal-600 dark:text-teal-300 px-3 py-2 border-t border-border-subtle">
+                    已绑定 {{ currentBot.cloud_kb_ids.length }} 个云端知识库（随智能体下发，对话时自动在线检索）
+                  </div>
                 </div>
               </div>
               <!-- 小工具 -->

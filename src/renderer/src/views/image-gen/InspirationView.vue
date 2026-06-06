@@ -53,7 +53,7 @@
           class="cursor-pointer rounded-xl overflow-hidden border border-surface-3 bg-surface-0 shadow-sm hover:shadow-md transition-shadow group"
         >
           <div class="aspect-[4/3] bg-surface-2 overflow-hidden">
-            <img v-if="item.cover_image" :src="item.cover_image" class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" @error="($event.target as HTMLImageElement).style.display='none'" />
+            <img v-if="item.cover_image" :src="item.cover_thumb || item.cover_image" class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" @error="($event.target as HTMLImageElement).style.display='none'" />
             <div v-else class="w-full h-full flex items-center justify-center">
               <svg class="w-10 h-10 text-text-disabled" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909M3.75 21h16.5A2.25 2.25 0 0 0 22.5 18.75V5.25A2.25 2.25 0 0 0 20.25 3H3.75A2.25 2.25 0 0 0 1.5 5.25v13.5A2.25 2.25 0 0 0 3.75 21Z" /></svg>
             </div>
@@ -170,6 +170,8 @@ interface Inspiration {
   ref_images?: string[]
   generation_size?: string
   cover_image?: string
+  // 网格列表用的封面缩略图（云端可能为空，回退 cover_image）
+  cover_thumb?: string
   // 云控端自定义灵感中用户上传的会带上传者昵称；后台手动录入的为空
   uploader_nickname?: string
 }

@@ -9,6 +9,17 @@ import { useCloudAuthStore } from './stores/cloud-auth'
 import { useSiteConfigStore } from './stores/site-config'
 import './assets/main.css'
 
+// 用主进程原生对话框替换浏览器 alert/confirm：规避 Electron(Windows) 弹窗关闭后输入框
+// 失焦无法输入的已知 bug；nativeDialog 走 sendSync 同步桥接，保留原生同步返回值，
+// 因此所有现有 alert()/confirm() 调用点无需改动即可全局生效。
+const nativeDialog = window.api?.nativeDialog
+if (nativeDialog) {
+  window.alert = (message?: any): void => {
+    nativeDialog.alert(message)
+  }
+  window.confirm = (message?: string): boolean => nativeDialog.confirm(message)
+}
+
 // 启动时根据 runtimeConfig.appName 设置 document.title（覆盖 index.html 默认 'LocalAgent'）
 const _cfg = (window as unknown as { runtimeConfig?: { appName?: string } }).runtimeConfig
 if (_cfg?.appName) document.title = _cfg.appName

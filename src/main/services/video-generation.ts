@@ -5,6 +5,7 @@ import { Readable } from 'stream'
 import { pipeline } from 'stream/promises'
 import { getDatabase } from '../database'
 import { getDataDir } from './data-path'
+import { runInEpoch } from './account-epoch'
 
 export type VideoDownloadStatus = 'pending' | 'downloading' | 'downloaded' | 'failed' | 'expired' | 'skipped'
 
@@ -89,6 +90,10 @@ export interface SyncVideoTaskInput {
 const downloadingIds = new Set<string>()
 const queuedDownloadIds = new Set<string>()
 let schedulerTimer: ReturnType<typeof setInterval> | null = null
+// 首次启动延迟下载定时器 + 所有 queueAutoDownload 排队定时器：账号热切换时需一并清理，
+// 避免切库后旧账号的下载任务继续触发写库（配合 epoch 守卫双保险）。
+let firstDownloadTimer: ReturnType<typeof setTimeout> | null = null
+const queuedTimers = new Set<ReturnType<typeof setTimeout>>()
 
 function nowIso(): string {
   return new Date().toISOString()
@@ -426,12 +431,18 @@ function queueAutoDownload(id: string, delayMs = 1000): void {
   if (downloadingIds.has(id) || queuedDownloadIds.has(id)) return
   queuedDownloadIds.add(id)
   const timer = setTimeout(() => {
+    queuedTimers.delete(timer)
     queuedDownloadIds.delete(id)
-    saveGenerationVideo(id, { automatic: true }).catch((e) => {
-      console.error('[VideoGen] auto download failed:', e)
+    // runInEpoch：把本次自动下载（含内部 getDatabase 写库）绑定到当前账号代次，
+    // 账号热切换后旧任务写库会被 assertEpoch 拒绝。
+    runInEpoch(() => {
+      saveGenerationVideo(id, { automatic: true }).catch((e) => {
+        console.error('[VideoGen] auto download failed:', e)
+      })
     })
   }, delayMs)
   timer.unref?.()
+  queuedTimers.add(timer)
 }
 
 export function listGenerations(options: VideoGenerationListOptions = {}): { items: VideoGeneration[]; total: number } {
@@ -740,17 +751,26 @@ export async function runPendingDownloads(limit = 2): Promise<{ attempted: numbe
 
 export function startAutoDownloadScheduler(intervalMs = 5 * 60 * 1000): void {
   if (schedulerTimer) return
-  const firstTimer = setTimeout(() => {
-    runPendingDownloads().catch((e) => console.error('[VideoGen] startup pending download failed:', e))
+  firstDownloadTimer = setTimeout(() => {
+    firstDownloadTimer = null
+    runInEpoch(() => runPendingDownloads().catch((e) => console.error('[VideoGen] startup pending download failed:', e)))
   }, 10000)
-  firstTimer.unref?.()
+  firstDownloadTimer.unref?.()
   schedulerTimer = setInterval(() => {
-    runPendingDownloads().catch((e) => console.error('[VideoGen] scheduled pending download failed:', e))
+    runInEpoch(() => runPendingDownloads().catch((e) => console.error('[VideoGen] scheduled pending download failed:', e)))
   }, intervalMs)
   schedulerTimer.unref?.()
 }
 
+// 完整停止：清调度 setInterval、首次 setTimeout、所有排队下载 setTimeout，并清空 inflight id 集合。
+// 账号热切换前调用，确保旧账号的视频下载任务不会在切库后继续触发写库。
 export function stopAutoDownloadScheduler(): void {
   if (schedulerTimer) clearInterval(schedulerTimer)
   schedulerTimer = null
+  if (firstDownloadTimer) clearTimeout(firstDownloadTimer)
+  firstDownloadTimer = null
+  for (const t of queuedTimers) clearTimeout(t)
+  queuedTimers.clear()
+  downloadingIds.clear()
+  queuedDownloadIds.clear()
 }

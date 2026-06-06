@@ -61,6 +61,10 @@ CREATE TABLE IF NOT EXISTS bots (
   persona_id TEXT,
   kb_only INTEGER NOT NULL DEFAULT 0,
   kb_category_ids TEXT NOT NULL DEFAULT '[]',
+  -- 云端知识库绑定（来自云控端智能体预设，acquire 时下发；对话时在线检索）
+  cloud_kb_ids TEXT NOT NULL DEFAULT '[]',
+  cloud_kb_only INTEGER NOT NULL DEFAULT 0,
+  cloud_kb_top_k INTEGER NOT NULL DEFAULT 5,
   skill_ids TEXT NOT NULL DEFAULT '[]',
   mcp_ids TEXT NOT NULL DEFAULT '[]',
   prompt_skill_dirs TEXT NOT NULL DEFAULT '[]',
@@ -487,3 +491,19 @@ CREATE TABLE IF NOT EXISTS creative_templates (
 CREATE INDEX IF NOT EXISTS idx_creative_templates_category ON creative_templates(category_id);
 CREATE INDEX IF NOT EXISTS idx_creative_templates_source ON creative_templates(source_type);
 CREATE INDEX IF NOT EXISTS idx_creative_templates_created ON creative_templates(created_at);
+
+-- 云端知识库检索结果离线缓存（hybrid 降级用）：云端不可达/超时时回退命中过的片段
+CREATE TABLE IF NOT EXISTS cloud_kb_cache (
+  id TEXT PRIMARY KEY,
+  query_hash TEXT NOT NULL,           -- sha256(normalized_query + sorted_kb_ids + top_k)
+  cloud_kb_id INTEGER NOT NULL DEFAULT 0,
+  chunk_id INTEGER NOT NULL DEFAULT 0,
+  source_doc TEXT NOT NULL DEFAULT '',
+  kb_name TEXT NOT NULL DEFAULT '',
+  content TEXT NOT NULL DEFAULT '',
+  score REAL NOT NULL DEFAULT 0,
+  rank INTEGER NOT NULL DEFAULT 0,
+  cached_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_cloud_kb_cache_query ON cloud_kb_cache(query_hash);
+CREATE INDEX IF NOT EXISTS idx_cloud_kb_cache_cached ON cloud_kb_cache(cached_at);

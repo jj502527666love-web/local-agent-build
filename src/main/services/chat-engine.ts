@@ -12,6 +12,7 @@ import { getMcpServer } from './mcp-server'
 import { getSummary, upsertSummary } from './conversation-summary'
 import { embedText, embedBatch, cosineSimilarity } from './embedding'
 import { searchHybrid } from './vector-store'
+import { searchCloudKnowledgeBases } from './cloud-kb-search'
 import { listKnowledgeBases, listCategories, type KnowledgeBase } from './knowledge'
 import { executeSkillSandbox, resolveInWorkspace } from './skill-sandbox'
 import { getSetting } from './settings'
@@ -134,6 +135,21 @@ export function cancelChat(conversationId: string, requestId?: string): boolean 
 
 export function isChatActive(conversationId: string): boolean {
   return activeControllers.has(conversationId)
+}
+
+/** 中止所有进行中的对话流 + 解除工具审批（账号热切换前清场用）。返回命中数。 */
+export function cancelAllChats(): number {
+  let hit = 0
+  for (const [, active] of activeControllers) {
+    markChatRequestCanceled(active.requestId, 'user')
+    try { active.controller.abort() } catch {}
+    hit++
+  }
+  activeControllers.clear()
+  for (const [, ctx] of pendingApprovals) {
+    try { ctx.cleanup(); ctx.resolve(false) } catch {}
+  }
+  return hit
 }
 
 // === Tool approval ===
@@ -646,6 +662,9 @@ export async function sendMessage(
   const effectiveSkillIds = options.overrideSkillIds ?? bot.skill_ids
   const effectiveMcpIds = options.overrideMcpIds ?? bot.mcp_ids
   const effectivePromptSkillDirs = options.overridePromptSkillDirs ?? (bot.prompt_skill_dirs || [])
+  // 云端知识库绑定（由云控端智能体预设下发，市场导入写入 bot.cloud_kb_ids；对话时在线检索）
+  const effectiveCloudKbIds = (bot.cloud_kb_ids || []).filter((n) => n > 0)
+  const hasCloudKb = effectiveCloudKbIds.length > 0 && bot.cloud_agent_id > 0
 
   // 预读启用分类下的全部 KB 数据，供 system prompt 清单 + RAG 检索 + 召回片段来源标注三处复用，避免重复 IO
   const kbDataByCategory = new Map<string, KnowledgeBase[]>()
@@ -666,6 +685,9 @@ export async function sendMessage(
   capSummary.push(`模型: ${effectiveModelId}`)
   if (effectiveKbCategoryIds.length > 0) {
     capSummary.push(buildKbInventorySummary(effectiveKbCategoryIds, kbDataByCategory))
+  }
+  if (hasCloudKb) {
+    capSummary.push(`云端知识库: 已绑定 ${effectiveCloudKbIds.length} 个线上知识库（对话时自动在线检索；可用 kb_search 工具补充检索）`)
   }
   if (effectiveSkillIds.length > 0) {
     const allSkills = listSkills()
@@ -841,6 +863,66 @@ export async function sendMessage(
     }
   }
 
+  // Cloud KB RAG: 在线检索云控端线上知识库（hybrid：云端为主 + 本地缓存降级），与本地 RAG 并列注入
+  if (hasCloudKb) {
+    try {
+      const cloudRes = await searchCloudKnowledgeBases({
+        agentId: bot.cloud_agent_id,
+        query: options.content,
+        kbIds: effectiveCloudKbIds,
+        topK: bot.cloud_kb_top_k || 5,
+        signal
+      })
+      if (signal.aborted) throw new AbortedError()
+
+      if (cloudRes.hits.length > 0) {
+        const offlineTag = cloudRes.source === 'cache' ? '（离线缓存，可能非最新）' : ''
+        const context = cloudRes.hits
+          .map((h, i) => {
+            const score = Math.round(h.score * 1000) / 1000
+            const source = [h.kb_name, h.source_doc].filter(Boolean).join(' / ') || '云端知识库'
+            return `[${i + 1}] (相关度 ${score}, 来源: ${source})\n${h.content}`
+          })
+          .join('\n\n')
+        messages.push({
+          role: 'system',
+          content:
+            `以下是从云端线上知识库检索到的 ${cloudRes.hits.length} 个片段${offlineTag}（按相关性降序）：\n\n${context}\n\n` +
+            '使用规则：\n' +
+            '- 若片段已能回答用户问题，请基于片段直接回答，并在结尾用「来源：xxx」标注被引用的文档；\n' +
+            '- 若片段相关度偏低或方向不符，可调用 kb_search 用重写过的 query 重新检索（会同时检索云端知识库）。'
+        })
+        console.log(`[chat] Cloud KB RAG: ${cloudRes.hits.length} hits (source=${cloudRes.source})`)
+      } else {
+        messages.push({
+          role: 'system',
+          content:
+            '本次云端知识库初次检索未命中（或云端暂不可用）。\n' +
+            '如果用户问题与知识库相关，请调用 kb_search 用重写过的 query 重新检索。'
+        })
+        console.log('[chat] Cloud KB RAG: 0 hits')
+      }
+    } catch (e: any) {
+      if (signal.aborted) throw new AbortedError()
+      console.log(`[chat] Cloud KB RAG failed: ${e.message}`)
+      messages.push({
+        role: 'system',
+        content:
+          `本次云端知识库检索失败（原因：${e.message || '未知错误'}）。\n` +
+          '如果用户问题与知识库相关，请调用 kb_search 重试；若仍失败请如实告知用户"线上知识库暂时不可用"，不要编造内容。'
+      })
+    }
+
+    // 云端知识库 kb_only 约束
+    if (bot.cloud_kb_only) {
+      messages.push({
+        role: 'system',
+        content:
+          '重要约束：你应优先依据云端线上知识库内容回答；召回不足时先调用 kb_search 重新检索，多次无果才回答"知识库中未找到相关信息"，不要凭常识编造。'
+      })
+    }
+  }
+
   // Inject prompt skill guidance
   const allPromptSkills = listPromptSkills().filter((s) => s.enabled)
   const botPromptSkills = effectivePromptSkillDirs.length > 0
@@ -959,7 +1041,7 @@ export async function sendMessage(
   messages.push(...included)
 
   // Build tools list from skills and MCP (KB tools auto-included when KB enabled)
-  const tools = buildToolsList(effectiveSkillIds, effectiveMcpIds, effectivePromptSkillDirs, effectiveKbCategoryIds, !!bot.enable_image_gen)
+  const tools = buildToolsList(effectiveSkillIds, effectiveMcpIds, effectivePromptSkillDirs, effectiveKbCategoryIds, !!bot.enable_image_gen, effectiveCloudKbIds)
 
   const systemCount = messages.length - included.length
   console.log(`[chat] context: ${systemCount} system + ${included.length} history msgs, ~${estimateMessagesTokens([...messages])} tokens, ${tools.length} tools`)
@@ -1087,7 +1169,8 @@ export async function sendMessage(
           window,
           signal,
           requestId,
-          undefined
+          undefined,
+          hasCloudKb ? { kbIds: effectiveCloudKbIds, agentId: bot.cloud_agent_id, topK: bot.cloud_kb_top_k || 5 } : undefined
         )
         // 工具已经返回字符串（如 use_skill 返回的 markdown skill 正文）就直接用；
         // 再 JSON.stringify 会在原文外面再裹一层引号 + 转义全部 \n 和 "，
@@ -1373,15 +1456,16 @@ function buildToolsList(
   mcpIds: string[],
   promptSkillDirs: string[] = [],
   kbCategoryIds: string[] = [],
-  enableImageGen: boolean = false
+  enableImageGen: boolean = false,
+  cloudKbIds: number[] = []
 ): any[] {
   // Core tools 默认全量加入；但会进一步过滤:
-  // - 未启用知识库时剔除 kb_* 工具，避免给模型展示无意义入口
+  // - 未启用知识库时剔除 kb_* 工具，避免给模型展示无意义入口（本地分类 或 云端知识库 任一启用即保留）
   // - 智能体未开启「调用生图能力」时剔除 image_gen，避免 LLM 误调、节省 prompt
   const filteredCore = coreToolDefs.filter((t: any) => {
     const name = t?.function?.name
     if (!enableImageGen && name === 'image_gen') return false
-    if (kbCategoryIds.length === 0 && KB_TOOL_NAMES.includes(name)) return false
+    if (kbCategoryIds.length === 0 && cloudKbIds.length === 0 && KB_TOOL_NAMES.includes(name)) return false
     return true
   })
   const tools: any[] = filteredCore.map((t: any) => ({
@@ -1480,7 +1564,8 @@ async function executeToolCall(
   window?: BrowserWindow | null,
   signal?: AbortSignal,
   requestId?: string,
-  timeoutMs?: number
+  timeoutMs?: number,
+  cloudKb?: { kbIds: number[]; agentId: number; topK: number }
 ): Promise<any> {
   const functionName = toolCall.function?.name
   let args: any = {}
@@ -1505,7 +1590,12 @@ async function executeToolCall(
 
   // Try core tools first
   const sandboxDir = conversationId ? getWorkspaceDir(conversationId) : undefined
-  const kbContext = { kbCategoryIds }
+  const kbContext = {
+    kbCategoryIds,
+    cloudKbIds: cloudKb?.kbIds || [],
+    cloudAgentId: cloudKb?.agentId || 0,
+    cloudKbTopK: cloudKb?.topK || 5
+  }
   const execContext = { conversationId, requestId, window: window || null, signal, timeoutMs, isCanceled: isChatRequestCanceled }
   const coreResult = await executeCoreToolCall(functionName, args, sandboxDir, kbContext, execContext)
   if (coreResult.handled) return coreResult.result

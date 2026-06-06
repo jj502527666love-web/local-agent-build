@@ -1,19 +1,28 @@
 import Database from 'better-sqlite3'
 import { app } from 'electron'
 import { join } from 'path'
-import { readFileSync } from 'fs'
+import { readFileSync, mkdirSync } from 'fs'
 import { getDataDir } from '../services/data-path'
 import { seedPresetPersonas } from '../services/persona'
 import { seedBuiltinPresets } from '../services/prompt-preset'
 import { seedBuiltinSkillPresets } from '../services/skill'
 import { seedCreativeTemplatePresets } from '../services/creative-template'
+import { assertEpoch } from '../services/account-epoch'
 
 let db: Database.Database | null = null
 
 export function getDatabase(): Database.Database {
+  // 账号热切换守卫：旧账号的 inflight 任务在切库后调用本函数，会因账号代次不符抛错，
+  // 从而拒绝拿到新库写入（防串数据，详见 services/account-epoch.ts）。
+  // 必须在 `if (db) return db` 之前，否则旧任务会直接返回已切换的新库实例。
+  assertEpoch()
   if (db) return db
 
-  const dbPath = join(getDataDir(), 'local-agent.db')
+  // 账号子目录（accounts/...）首次使用前可能尚不存在；better-sqlite3 不会自动建目录，
+  // 必须先 mkdir，否则 new Database() 抛 "unable to open database file"。
+  const dir = getDataDir()
+  mkdirSync(dir, { recursive: true })
+  const dbPath = join(dir, 'local-agent.db')
   db = new Database(dbPath)
 
   db.pragma('journal_mode = WAL')
@@ -94,6 +103,16 @@ function runMigrations(): void {
   }
   if (!botColNames.includes('submission_synced_at')) {
     db.exec("ALTER TABLE bots ADD COLUMN submission_synced_at TEXT NOT NULL DEFAULT ''")
+  }
+  // 云端知识库绑定（云控端智能体预设下发；对话时在线检索 + 离线缓存降级）：旧库幂等加列
+  if (!botColNames.includes('cloud_kb_ids')) {
+    db.exec("ALTER TABLE bots ADD COLUMN cloud_kb_ids TEXT NOT NULL DEFAULT '[]'")
+  }
+  if (!botColNames.includes('cloud_kb_only')) {
+    db.exec("ALTER TABLE bots ADD COLUMN cloud_kb_only INTEGER NOT NULL DEFAULT 0")
+  }
+  if (!botColNames.includes('cloud_kb_top_k')) {
+    db.exec("ALTER TABLE bots ADD COLUMN cloud_kb_top_k INTEGER NOT NULL DEFAULT 5")
   }
   // messages: persist tool_call_id so OpenAI tool_calls/tool pairs replay correctly
   const msgCols = db.prepare("PRAGMA table_info(messages)").all() as any[]

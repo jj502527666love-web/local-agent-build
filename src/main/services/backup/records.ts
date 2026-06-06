@@ -68,9 +68,11 @@ export function removeRecord(fileName: string): void {
   writeRecords(next)
 }
 
-/** 列表给 UI：过滤已不存在的文件，最新在前。 */
+/** 列表给 UI：过滤已不存在的文件，按 createdAt 倒序（最新在前）。 */
 export function listValidRecords(): BackupInfo[] {
   const records = readRecords()
   const dir = getBackupDir()
-  return records.filter((r) => existsSync(join(dir, r.fileName))).reverse()
+  return records
+    .filter((r) => existsSync(join(dir, r.fileName)))
+    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0))
 }

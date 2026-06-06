@@ -15,7 +15,7 @@ import * as yauzl from 'yauzl'
 import { getDataDir } from '../data-path'
 import { getDatabase } from '../../database'
 import { sha256File } from './checksum'
-import { getBackupDir, getStagingDir, timestamp, safeRemove } from './staging'
+import { getBackupDir, getStagingDir, timestamp, safeRemove, ensureFreeSpace } from './staging'
 import type {
   AbortToken,
   BackupInfo,
@@ -38,7 +38,18 @@ import type {
  */
 
 // 备份时跳过的根级条目（防止把 backups/ 自己塞进备份，data-path.json 不该跨机迁移）
-const EXCLUDE_ROOT_ENTRIES = new Set(['backups', 'node_modules', 'data-path.json'])
+// 账号隔离：legacy 原地账号（getDataDir=root）的 full 备份必须排除其他账号目录与设备级文件，
+// 否则会把别的账号数据打进本账号备份（隐私泄漏 + 体积膨胀）。与 staging.RESTORE_PRESERVE_ROOTS 对称。
+// 新账号目录（accounts/acc-id）内本就无这些条目，排除无副作用。
+const EXCLUDE_ROOT_ENTRIES = new Set([
+  'backups',
+  'node_modules',
+  'data-path.json',
+  'accounts',
+  'account-map.json',
+  'device-settings.json',
+  'device-id.txt'
+])
 // 备份时跳过的文件扩展名（SQLite WAL/SHM 是临时文件，含未 checkpoint 的脏页，备份后无意义且会污染恢复）
 const EXCLUDE_EXTS = new Set(['.db-wal', '.db-shm', '.db-journal'])
 // zip 内部前缀，恢复时 strip 掉得到 dataDir 内的相对路径
@@ -135,6 +146,11 @@ export async function packV1(
   try {
     abortToken.throwIfAborted()
 
+    // 0. 磁盘空间预检（快照需要 ~db 大小的空间，先于 db.backup 早失败）
+    const dbPathForSize = join(dataDir, 'local-agent.db')
+    const dbSizeForCheck = existsSync(dbPathForSize) ? statSync(dbPathForSize).size : 0
+    ensureFreeSpace(stagingDir, dbSizeForCheck)
+
     // 1. SQLite 一致性快照（无论 auto 还是 full 都走 db.backup，保证 db 一致性）
     onProgress?.({ phase: 'snapshot', current: 0, total: 1, fileName: 'local-agent.db' })
     const db = getDatabase()
@@ -185,8 +201,9 @@ export async function packV1(
       totalSize
     }
 
-    // 4. 写 zip
+    // 4. 写 zip（预检：worst-case 未压缩 totalSize 的空间）
     abortToken.throwIfAborted()
+    ensureFreeSpace(stagingDir, totalSize)
     await writeZip(partialPath, manifest, files, abortToken, onProgress)
     partialCreated = true
 

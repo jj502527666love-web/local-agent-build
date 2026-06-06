@@ -523,6 +523,9 @@ async function onUseImportToLocal(item: CloudCreativeTemplate): Promise<void> {
 }
 
 function resolveCover(item: CreativeTemplate | CloudCreativeTemplate): string {
+  // 网格优先用云端缩略图；本地模板无 cover_thumb 时回退原图
+  const thumb = (item as Partial<CloudCreativeTemplate>).cover_thumb
+  if (thumb) return resolveImagePath(thumb)
   if (item.cover_image) return resolveImagePath(item.cover_image)
   const refs = (item.example_ref_images || []) as string[]
   return refs[0] ? resolveImagePath(refs[0]) : ''

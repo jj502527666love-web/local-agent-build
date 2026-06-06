@@ -12,9 +12,12 @@ import {
   removeSqliteSidecars,
   cleanupExpiredPreviousDirs,
   cleanupOrphanedPartials,
+  ensureFreeSpace,
+  writeRestoreMarker,
+  clearRestoreMarker,
   timestamp
 } from './staging'
-import { appendRecord, listValidRecords, removeRecord } from './records'
+import { appendRecord, listValidRecords, removeRecord, readRecords } from './records'
 import {
   cleanupOldBackups,
   getAutoBackupInterval,
@@ -41,6 +44,7 @@ import type {
   AbortToken,
   BackupInfo,
   BackupSettings,
+  BackupType,
   ManifestV1,
   ProgressEvent,
   RestoreResult
@@ -57,6 +61,8 @@ export {
   setMaxBackupCount
 } from './retention'
 export { shouldAutoBackup } from './scheduler'
+// 崩溃自愈：主进程在打开数据库前同步调用，回滚被中断的恢复
+export { recoverInterruptedRestore } from './staging'
 
 // === 取消令牌 ===
 //
@@ -191,6 +197,11 @@ async function doRestoreV1(
   const verify = await verifyBackup(fileName)
   if (!verify.ok) throw new Error(verify.error || '备份文件不可用')
 
+  // 1b. 磁盘空间预检：解压到 staging 需要 ~totalSize 空间（previous/swap 是 rename 不额外占用）
+  if (verify.manifest) {
+    ensureFreeSpace(getBackupDir(), verify.manifest.totalSize)
+  }
+
   // 2. 恢复前先做一份 db 快照（type='auto'），给用户反悔窗口
   //    用 packV1 而非 backupDatabase 避免占用 token（doRestoreV1 已持有 token）
   if (!skipPreSnapshot) {
@@ -229,7 +240,15 @@ async function doRestoreV1(
 
   const previousDir = newRestorePreviousDir(ts)
   const dataDir = getDataDir()
-  const rootEntries = listRootEntriesForRestore()
+  // P0：按备份类型缩小替换范围。
+  //   - 数据库备份(auto)：只替换 local-agent.db，其余根目录（技能/图片/知识库文件等）原样保留，
+  //     与 UI「技能文件和图片不受影响」一致；
+  //   - 完整备份(full)：替换全部根级条目（精确镜像）。
+  const dbOnly = manifest.type === 'auto'
+  const rootEntries = dbOnly ? ['local-agent.db'] : listRootEntriesForRestore()
+
+  // P1：写"恢复中断"标记（必须在移动前）。崩溃后下次启动据此回滚到恢复前数据。
+  writeRestoreMarker({ ts, previousDir, stagingDir, entries: rootEntries })
 
   // 4a. 把当前 dataDir 中的根级条目搬到 previous（保险）
   const movedToPrev: string[] = []
@@ -256,6 +275,7 @@ async function doRestoreV1(
         console.error('[backup] rollback move failed:', name, rollbackErr)
       }
     }
+    clearRestoreMarker()
     safeRemove(previousDir)
     safeRemove(stagingDir)
     throw e
@@ -291,16 +311,17 @@ async function doRestoreV1(
         moveAtomic(join(previousDir, name), join(dataDir, name))
       } catch {}
     }
+    clearRestoreMarker()
     safeRemove(previousDir)
     safeRemove(stagingDir)
     throw e
   }
 
-  // 5. 清理 staging（应该已经空了，安全删一次）
+  // 5. 替换成功：清"恢复中断"标记 + 清 staging
+  clearRestoreMarker()
   safeRemove(stagingDir)
 
   // previous 保留 7 天供用户反悔，由 cleanupExpiredPreviousDirs 异步清理
-  void manifest // 暂未使用，保留语义
 }
 
 /** 从已有备份记录恢复（UI 列表上的"恢复"按钮）。 */
@@ -391,7 +412,8 @@ export async function restoreFromExternal(
     fileName,
     type: manifest.type,
     size: stat.size,
-    createdAt: manifest.createdAt,
+    // 用"导入时间"而非原始 createdAt：否则按原始（可能很旧）时间会被 retention 提前清理、列表排序也错位
+    createdAt: new Date().toISOString(),
     appVersion: manifest.appVersion,
     format: 'v1'
   }
@@ -445,13 +467,75 @@ export function setSettings(s: Partial<BackupSettings>): void {
   if (s.maxCount !== undefined) setMaxBackupCount(s.maxCount)
 }
 
+// === 孤儿备份回补 ===
+
+/**
+ * 扫描 backups/ 下的备份文件，把"存在于磁盘但不在 records.json"的回补进 records。
+ *
+ * 触发场景：records.json 曾损坏被隔离（.corrupt-*），导致旧 zip 变成孤儿——
+ * 既不在 UI 显示、也不被 retention 清理，永久占空间。回补后即可正常展示与清理。
+ * 注意：deleteBackup 会同时删文件+记录，被删的备份无文件 → 不会被错误回补。
+ */
+async function reconcileOrphanBackups(): Promise<void> {
+  const dir = getBackupDir()
+  let names: string[]
+  try {
+    names = readdirSync(dir)
+  } catch {
+    return
+  }
+  const tracked = new Set(readRecords().map((r) => r.fileName))
+  for (const name of names) {
+    const isBackupFile = /\.zip$/i.test(name) || /\.sqlite$/i.test(name) || /\.bak$/i.test(name)
+    if (!isBackupFile || tracked.has(name)) continue
+    const full = join(dir, name)
+    let stat
+    try {
+      stat = statSync(full)
+      if (!stat.isFile()) continue
+    } catch {
+      continue
+    }
+    try {
+      if (/\.zip$/i.test(name)) {
+        const m = await readManifestV1(full)
+        appendRecord({
+          fileName: name,
+          type: m.type,
+          size: stat.size,
+          createdAt: m.createdAt,
+          appVersion: m.appVersion,
+          format: 'v1'
+        })
+      } else {
+        const type: BackupType = /\.bak$/i.test(name) ? 'full' : 'auto'
+        appendRecord({
+          fileName: name,
+          type,
+          size: stat.size,
+          createdAt: new Date(stat.mtimeMs).toISOString(),
+          format: 'legacy'
+        })
+      }
+      console.warn('[backup] 回补孤儿备份到 records:', name)
+    } catch (e) {
+      // 不是合法备份（损坏 / 非本系统 zip）→ 跳过，不污染 records
+      console.warn('[backup] 跳过无法识别的备份文件:', name, e)
+    }
+  }
+}
+
 // === 启动钩子 ===
 
 /**
  * 主进程启动时调用：
  *   1. 清理上次崩溃留下的 .partial / .restore-staging-* 残骸
  *   2. 异步清理过期的 .restore-previous-*
- *   3. 如果配置了自动备份且时间到了，跑一次（不阻塞 UI）
+ *   3. 回补 records.json 丢失的孤儿备份
+ *   4. 如果配置了自动备份且时间到了，跑一次（不阻塞 UI）
+ *
+ * 注意：恢复中断自愈（recoverInterruptedRestore）由主进程在【打开数据库前】单独同步调用，
+ * 不放这里——本函数运行时 DB 可能已打开，会与回滚的文件移动冲突。
  */
 export async function runStartupTasks(): Promise<void> {
   try {
@@ -463,6 +547,11 @@ export async function runStartupTasks(): Promise<void> {
     cleanupExpiredPreviousDirs()
   } catch (e) {
     console.error('[backup] cleanup previous dirs failed:', e)
+  }
+  try {
+    await reconcileOrphanBackups()
+  } catch (e) {
+    console.error('[backup] reconcile orphan backups failed:', e)
   }
 
   if (shouldAutoBackup()) {

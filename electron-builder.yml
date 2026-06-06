@@ -1,5 +1,8 @@
 appId: com.local-agent.app
 productName: LocalAgent
+# afterPack：打包后生成 resources/integrity-manifest.json（ffmpeg.dll 等关键运行时文件的
+# size+sha256 基线），供桌面端启动自检（src/main/services/integrity-check.ts）校验杀软误删 / 下载损坏。
+afterPack: build/after-pack.js
 directories:
   buildResources: build
 files:

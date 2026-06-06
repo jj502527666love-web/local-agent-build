@@ -16,6 +16,10 @@ export interface Bot {
   persona_id: string | null
   kb_only: number
   kb_category_ids: string[]
+  /** 绑定的云端知识库 id 列表（云控端智能体预设下发；对话时在线检索） */
+  cloud_kb_ids: number[]
+  cloud_kb_only: number
+  cloud_kb_top_k: number
   skill_ids: string[]
   mcp_ids: string[]
   prompt_skill_dirs: string[]
@@ -42,6 +46,8 @@ export interface MarketAgent {
   name: string
   description: string
   avatar: string
+  // 市场网格用的形象图缩略图（云端可能为空，回退 avatar）
+  avatar_thumb?: string
   system_prompt: string
   tool_skill_ids: string[]
   tool_approval: ToolApproval

@@ -6,6 +6,38 @@
 
 ---
 
+## [0.7.18] - 2026-06-06
+
+> **灵感广场 / 创意模板 / 智能体市场列表改用缩略图**：三处网格列表改为「缩略图优先、原图回退」，详情与灯箱仍用原图，显著降低列表加载流量。缩略图由上传端生成、云控端原样存为独立文件，对存储后端（local / COS / OSS）零特性要求；旧记录无缩略图时自动回退原图，不影响显示。需配合云控端 1.5.35。
+
+### 新增
+
+- **云端知识库在线检索（hybrid，需配合云控端 1.5.36）**：智能体可在云控端绑定知识库；用户从市场获取该智能体后，对话时桌面端在线检索其绑定的云端知识库并注入上下文，权限随智能体授权传递，知识内容留在云端。
+  - `bots` 表新增 `cloud_kb_ids` / `cloud_kb_only` / `cloud_kb_top_k`；新增 `cloud_kb_cache` 表（schema.sql + `database/index.ts` 幂等迁移）；`main/services/bot.ts` 同步类型与 CRUD。
+  - 新增 `main/services/cloud-kb-search.ts`（调云控端 `POST /api/client/knowledge-bases/search`，`fetchWithCloudAuth`）+ `cloud-kb-cache.ts`（queryHash + 7 天 TTL 的命中片段缓存，断网/超时降级）。
+  - `chat-engine.ts` 在本地 RAG 之外并列注入云端检索结果（命中标注来源 / 离线），`buildToolsList` / `executeToolCall` 透传 `cloudKbIds`，`kb_only` 约束扩展到云端库。
+  - `core-tools.ts` 的 `kb_search` 改为同时检索本地与云端知识库并按分数合并；`cloud-agent-market.ts` 的 `importAgentAsLocal` 在 acquire 时写入 kb 绑定。
+  - `renderer/stores/bots.ts` 同步类型；`BotListView.vue` 卡片加「云端知识库 N」徽标，`ChatView.vue` 工具栏只读提示已绑定云端知识库。
+- **三大云端页面网格缩略图（上传端生成，零服务器依赖）**：
+  - `main/services/thumbnail-upload.ts`（新）：用 Electron `nativeImage` 把原图等比缩放为 JPEG 缩略图（封面长边 720 / 头像 512，只缩不放），失败返回 null 由调用方跳过，云端与客户端均回退原图。
+  - 三处投稿路径在发原图的同时附带缩略图：`cloud-inspiration.ts`（`cover_thumb`）、`cloud-creative-template-submit.ts`（`cover_thumb`）、`cloud-agent-submit.ts`（`avatar_thumb`，`loadAvatarBlob` 顺带回传 buffer）。
+  - 三处 mapper 透传缩略字段：`main/services/inspiration.ts`（`fetchOnlineInspirations`）、`cloud-creative-template.ts`（`mapTemplate`）、`cloud-agent-market.ts`（`mapAgent`）；`renderer/stores/bots.ts` 的 `MarketAgent` 加 `avatar_thumb`。
+
+### 改进
+
+- **网格缩略优先、原图回退**：`renderer/views/image-gen/InspirationView.vue`（网格 `cover_thumb || cover_image`，详情大图不变）、`renderer/views/creative-templates/CreativeTemplatesView.vue`（`resolveCover` 云端项优先缩略图，本地模板无缩略则回退原图）、`renderer/views/bots/BotListView.vue`（市场卡片 `avatar_thumb || avatar`）。
+
+### 修复
+
+- **恢复「数据库备份」会误删非 DB 文件（数据安全）**：`backup/index.ts` 的 `doRestoreV1` 原先无差别归档 dataDir 全部根目录、只搬回 db → 恢复 db-only 备份后技能 / 图片 / 知识库源文件等被移入 `.restore-previous-*`（7 天后清理），与 UI「技能文件和图片不受影响」相反。现按 `manifest.type` 缩小范围：`auto` 仅替换 `local-agent.db`，`full` 仍精确镜像全部根条目。
+
+### 增强（备份/恢复健壮性）
+
+- **恢复中断自愈**：替换 dataDir 前写 `backups/.restore-in-progress.json` 标记（previous / staging / 受影响条目），成功或回滚后清除；主进程在 `getDatabase()` 之前同步调用 `recoverInterruptedRestore()`，崩溃 / 断电中断后下次启动自动把 previous 归档的恢复前数据搬回，闭合"半成品 dataDir"窗口（`backup/staging.ts` + `main/index.ts`）。
+- **磁盘空间预检**：`backup/staging.ts` 新增 `getFreeSpace`/`ensureFreeSpace`（`statfsSync`，不支持则跳过）；`packV1` 在快照前（~db 大小）与写 zip 前（~totalSize）预检，`doRestoreV1` 解压前预检（~totalSize），空间不足提前给中文报错而非中途 ENOSPC。
+- **孤儿备份回补**：`records.json` 损坏被隔离后磁盘上的 `*.zip/.sqlite/.bak` 会成孤儿（不显示、不清理）；启动 `reconcileOrphanBackups` 扫描回补（v1 读 manifest，legacy 用 mtime），重新纳入列表与 retention。
+- **列表 / 保留排序按 createdAt**：`listValidRecords` 改为按 `createdAt` 倒序（原为 append 顺序 reverse）；外部「从文件恢复」导入的备份 `createdAt` 改用导入时间，避免按原始旧时间被 retention 提前清理或在列表错位。
+
 ## [0.7.17] - 2026-06-04
 
 > **智能体市场：付费购买 + 定向可见**：从市场「保存到本地」前先经云控端 `acquire` 校验——收费智能体扣金币 / 积分（余额不足弹「前往充值」引导）、定向智能体仅被授权的用户 / 用户组可见可存；收费智能体购买后才下发系统提示词，删本地后重存不重复扣费。需配合云控端 1.5.34。

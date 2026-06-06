@@ -1,4 +1,4 @@
-import { ipcMain, BrowserWindow, dialog, clipboard, nativeImage, app } from 'electron'
+import { ipcMain as electronIpcMain, BrowserWindow, dialog, clipboard, nativeImage, app } from 'electron'
 import { closeDatabase } from '../database'
 import { stopAllMcpServers } from '../services/mcp-server'
 import * as modelProviderService from '../services/model-provider'
@@ -53,9 +53,28 @@ import {
   setCloudModels,
 } from '../services/cloud-token'
 import { getDeviceId } from '../services/device-id'
+import { setActiveAccount } from '../services/account-context'
+import * as deviceSettingsService from '../services/device-settings'
 import { uploadInspiration as uploadInspirationToCloud } from '../services/cloud-inspiration'
+import { runInEpoch } from '../services/account-epoch'
+
+// 用账号代次（epoch）包裹每个 IPC handler 的执行：handler 及其 await / fire-and-forget 子任务
+// 都运行在「当前账号代次」的 AsyncLocalStorage 上下文中。账号热切换后，旧 handler 触发的残留
+// 异步任务写库时，getDatabase() 的 assertEpoch() 会因代次不符拒绝写入（防止串账号数据）。
+function wrapWithEpoch(real: Electron.IpcMain) {
+  return {
+    handle: (channel: string, listener: (event: Electron.IpcMainInvokeEvent, ...args: any[]) => any) =>
+      real.handle(channel, (event, ...args) => runInEpoch(() => listener(event, ...args))),
+    on: (channel: string, listener: (event: Electron.IpcMainEvent, ...args: any[]) => void) =>
+      real.on(channel, (event, ...args) => runInEpoch(() => listener(event, ...args)))
+  }
+}
 
 export function registerIpcHandlers(): void {
+  // 统一为所有 IPC handler 注入账号代次上下文（见 wrapWithEpoch）。
+  // 例外：cloud:setActiveAccount 用未包裹的 electronIpcMain 注册（它本身是切换编排，
+  // bumpEpoch 后需以新代次开库，不能停留在旧代次上下文）。
+  const ipcMain = wrapWithEpoch(electronIpcMain)
   // === Model Providers ===
   ipcMain.handle('model:list', () => modelProviderService.listModelProviders())
   ipcMain.handle('model:get', (_, id: string) => modelProviderService.getModelProvider(id))
@@ -428,6 +447,8 @@ export function registerIpcHandlers(): void {
   // 触发应用重启。用于：首次配置/设置页修改数据目录后，让 cachedDataDir 与 db 实例同步。
   ipcMain.handle('app:relaunch', () => {
     try { closeDatabase() } catch {}
+    // 释放单实例锁，避免新实例抢锁失败而闪退（详见 account-context.performAccountSwitchRelaunch 注释）
+    try { app.releaseSingleInstanceLock() } catch {}
     app.relaunch()
     app.exit(0)
   })
@@ -438,6 +459,12 @@ export function registerIpcHandlers(): void {
     settingsService.setSetting(key, value)
   )
   ipcMain.handle('settings:getAll', () => settingsService.getAllSettings())
+
+  // === Device Settings（设备级：root 级 device-settings.json，独立于按账号隔离的 settings 表）===
+  ipcMain.handle('deviceSettings:get', (_, key: string) => deviceSettingsService.getDeviceSetting(key))
+  ipcMain.handle('deviceSettings:set', (_, key: string, value: string) =>
+    deviceSettingsService.setDeviceSetting(key, value)
+  )
 
   // === Vector Connection Test ===
   ipcMain.handle('settings:testVector', async (_, apiBase: string, apiKey: string, model: string) => {
@@ -513,6 +540,37 @@ export function registerIpcHandlers(): void {
       console.error('[dialog:openFile] failed:', e?.message || e)
       return { canceled: true, filePaths: [], error: e?.message || String(e) }
     }
+  })
+
+  // === 原生提示框：替代渲染层 window.alert/confirm ===
+  // Electron 在 Windows 上有已知 bug：renderer 调用原生 alert/confirm 关闭后，父窗口收不回
+  // 键盘焦点，导致随后点击输入框有光标却无法输入（智能体编辑、模板保存等表单均受影响）。
+  // 改用主进程 dialog.showMessageBoxSync（不触发该 bug）+ sendSync 保持同步语义，渲染层零改动。
+  ipcMain.on('dialog:alert', (event, message: string) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    const options = {
+      type: 'info' as const,
+      buttons: ['确定'],
+      defaultId: 0,
+      noLink: true,
+      message: String(message ?? '')
+    }
+    if (win) dialog.showMessageBoxSync(win, options)
+    else dialog.showMessageBoxSync(options)
+    event.returnValue = true
+  })
+  ipcMain.on('dialog:confirm', (event, message: string) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    const options = {
+      type: 'question' as const,
+      buttons: ['确定', '取消'],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+      message: String(message ?? '')
+    }
+    const index = win ? dialog.showMessageBoxSync(win, options) : dialog.showMessageBoxSync(options)
+    event.returnValue = index === 0
   })
 
   // === Shell ===
@@ -785,6 +843,8 @@ export function registerIpcHandlers(): void {
   function relaunchAfterRestore(): void {
     try { stopAllMcpServers() } catch (e) { console.error('[restore] stopAllMcpServers failed:', e) }
     try { closeDatabase() } catch (e) { console.error('[restore] closeDatabase failed:', e) }
+    // 释放单实例锁，避免新实例抢锁失败而闪退
+    try { app.releaseSingleInstanceLock() } catch (e) { console.error('[restore] release lock failed:', e) }
     app.relaunch()
     app.exit(0)
   }
@@ -820,6 +880,8 @@ export function registerIpcHandlers(): void {
     if (result.success) {
       setTimeout(() => {
         try { closeDatabase() } catch {}
+        // 释放单实例锁，避免新实例抢锁失败而闪退
+        try { app.releaseSingleInstanceLock() } catch {}
         app.relaunch()
         app.exit(0)
       }, 200)
@@ -1139,6 +1201,10 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('cloud:getToken', () => getCloudToken())
   ipcMain.handle('cloud:setPermissions', (_, perms: Record<string, any>) => setCloudPermissions(perms))
   ipcMain.handle('cloud:getDeviceId', () => getDeviceId())
+  // 账号切换：写账号目录映射；目录变化时主进程运行中热切换（关旧库开新库 + reload 渲染层，不重启进程）。
+  // 用未包裹的 electronIpcMain 注册：本 handler 是切换编排本身，bumpEpoch 后需以新代次开库，不能停在旧代次上下文。
+  // （renderer 拿到 { switched:true } 即停下当前登录流程，等 reload 后由 init 接管按新账号加载数据）
+  electronIpcMain.handle('cloud:setActiveAccount', (_, id: number | string | null) => setActiveAccount(id))
 
   // === Cloud Models（全量 chat/image/embedding；用于 callLLM/image/embedding 出 body 前反查 cloud_model_id） ===
   // 解决多家服务商提供同名 model_id 时云控端 first() 错位路由的 bug：

@@ -12,6 +12,12 @@ export interface Bot {
   persona_id: string | null
   kb_only: number
   kb_category_ids: string[]
+  /** 绑定的云端知识库 id 列表（来自云控端智能体预设，市场导入时写入；对话时在线检索） */
+  cloud_kb_ids: number[]
+  /** 是否仅依据云端知识库回答。0=否、1=是。默认否 */
+  cloud_kb_only: number
+  /** 云端知识库检索 Top K。默认 5 */
+  cloud_kb_top_k: number
   skill_ids: string[]
   mcp_ids: string[]
   prompt_skill_dirs: string[]
@@ -37,6 +43,9 @@ function parseBot(row: any): Bot {
   return {
     ...row,
     kb_category_ids: JSON.parse(row.kb_category_ids || '[]'),
+    cloud_kb_ids: (JSON.parse(row.cloud_kb_ids || '[]') as any[]).map(Number).filter((n) => n > 0),
+    cloud_kb_only: row.cloud_kb_only ? 1 : 0,
+    cloud_kb_top_k: Number(row.cloud_kb_top_k || 5),
     skill_ids: JSON.parse(row.skill_ids || '[]'),
     mcp_ids: JSON.parse(row.mcp_ids || '[]'),
     prompt_skill_dirs: JSON.parse(row.prompt_skill_dirs || '[]'),
@@ -73,6 +82,9 @@ export function createBot(data: {
   persona_id?: string
   kb_only?: number
   kb_category_ids?: string[]
+  cloud_kb_ids?: number[]
+  cloud_kb_only?: number
+  cloud_kb_top_k?: number
   skill_ids?: string[]
   mcp_ids?: string[]
   prompt_skill_dirs?: string[]
@@ -86,7 +98,7 @@ export function createBot(data: {
   const id = uuid()
   const now = new Date().toISOString()
   db.prepare(
-    'INSERT INTO bots (id, name, description, model_provider_id, model_id, persona_id, kb_only, kb_category_ids, skill_ids, mcp_ids, prompt_skill_dirs, tool_approval, enable_image_gen, avatar, source, cloud_agent_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    'INSERT INTO bots (id, name, description, model_provider_id, model_id, persona_id, kb_only, kb_category_ids, cloud_kb_ids, cloud_kb_only, cloud_kb_top_k, skill_ids, mcp_ids, prompt_skill_dirs, tool_approval, enable_image_gen, avatar, source, cloud_agent_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
   ).run(
     id,
     data.name,
@@ -96,6 +108,9 @@ export function createBot(data: {
     data.persona_id || null,
     data.kb_only || 0,
     JSON.stringify(data.kb_category_ids || []),
+    JSON.stringify((data.cloud_kb_ids || []).map(Number).filter((n) => n > 0)),
+    data.cloud_kb_only ? 1 : 0,
+    data.cloud_kb_top_k || 5,
     JSON.stringify(data.skill_ids || []),
     JSON.stringify(data.mcp_ids || []),
     JSON.stringify(data.prompt_skill_dirs || []),
@@ -120,6 +135,9 @@ export function updateBot(
     persona_id: string | null
     kb_only: number
     kb_category_ids: string[]
+    cloud_kb_ids: number[]
+    cloud_kb_only: number
+    cloud_kb_top_k: number
     skill_ids: string[]
     mcp_ids: string[]
     prompt_skill_dirs: string[]
@@ -134,7 +152,7 @@ export function updateBot(
 
   const now = new Date().toISOString()
   db.prepare(
-    'UPDATE bots SET name=?, description=?, model_provider_id=?, model_id=?, persona_id=?, kb_only=?, kb_category_ids=?, skill_ids=?, mcp_ids=?, prompt_skill_dirs=?, tool_approval=?, enable_image_gen=?, avatar=?, updated_at=? WHERE id=?'
+    'UPDATE bots SET name=?, description=?, model_provider_id=?, model_id=?, persona_id=?, kb_only=?, kb_category_ids=?, cloud_kb_ids=?, cloud_kb_only=?, cloud_kb_top_k=?, skill_ids=?, mcp_ids=?, prompt_skill_dirs=?, tool_approval=?, enable_image_gen=?, avatar=?, updated_at=? WHERE id=?'
   ).run(
     data.name ?? existing.name,
     data.description ?? existing.description,
@@ -143,6 +161,9 @@ export function updateBot(
     data.persona_id !== undefined ? data.persona_id : existing.persona_id,
     data.kb_only !== undefined ? data.kb_only : existing.kb_only,
     JSON.stringify(data.kb_category_ids ?? existing.kb_category_ids),
+    JSON.stringify((data.cloud_kb_ids ?? existing.cloud_kb_ids).map(Number).filter((n) => n > 0)),
+    data.cloud_kb_only !== undefined ? (data.cloud_kb_only ? 1 : 0) : existing.cloud_kb_only,
+    data.cloud_kb_top_k !== undefined ? data.cloud_kb_top_k : existing.cloud_kb_top_k,
     JSON.stringify(data.skill_ids ?? existing.skill_ids),
     JSON.stringify(data.mcp_ids ?? existing.mcp_ids),
     JSON.stringify(data.prompt_skill_dirs ?? existing.prompt_skill_dirs),

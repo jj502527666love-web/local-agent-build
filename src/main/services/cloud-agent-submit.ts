@@ -3,6 +3,7 @@ import { extname } from 'path'
 import { fetchWithCloudAuth, getCloudApiBase, getCloudToken } from './cloud-token'
 import { getBot, setBotSubmissionState } from './bot'
 import { getPersona } from './persona'
+import { makeUploadThumbnailBlob } from './thumbnail-upload'
 
 const BUILTIN_TOOL_IDS = new Set([
   'builtin_current_time',
@@ -25,13 +26,13 @@ export interface AgentSyncResult {
   items?: any[]
 }
 
-function loadAvatarBlob(path: string): { blob: Blob; filename: string } | null {
+function loadAvatarBlob(path: string): { blob: Blob; filename: string; buf: Buffer } | null {
   if (!path || !existsSync(path)) return null
   const raw = extname(path).slice(1).toLowerCase()
   const ext = raw === 'jpeg' ? 'jpg' : raw
   const mime = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg'
   const buf = readFileSync(path)
-  return { blob: new Blob([new Uint8Array(buf)], { type: mime }), filename: `avatar.${ext}` }
+  return { blob: new Blob([new Uint8Array(buf)], { type: mime }), filename: `avatar.${ext}`, buf }
 }
 
 /** 把本地 bot 发布（投稿）到智能体市场 */
@@ -61,6 +62,11 @@ export async function submitAgentToMarket(localBotId: string): Promise<AgentSubm
   fd.append('tool_approval', bot.tool_approval || 'destructive')
   fd.append('enable_image_gen', bot.enable_image_gen ? '1' : '0')
   fd.append('avatar', avatar.blob, avatar.filename)
+  // 附带形象图缩略图（市场网格用），失败则跳过、云端回退原图
+  const avatarThumb = makeUploadThumbnailBlob(avatar.buf, 512)
+  if (avatarThumb) {
+    fd.append('avatar_thumb', avatarThumb.blob, avatarThumb.filename)
+  }
 
   const url = `${getCloudApiBase()}/client/agents/submit`
   let resp: Response

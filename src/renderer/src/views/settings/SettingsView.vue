@@ -871,6 +871,13 @@ async function loadSettings() {
   if (all['window_close_behavior'] === 'minimize' || all['window_close_behavior'] === 'close-window') {
     generalForm.value.windowCloseBehavior = all['window_close_behavior']
   }
+  // 设备级覆盖（优先）：窗口关闭行为为设备级设置，独立于账号
+  try {
+    const dcb = await window.api.deviceSettings.get('window_close_behavior')
+    if (dcb === 'minimize' || dcb === 'close-window') {
+      generalForm.value.windowCloseBehavior = dcb
+    }
+  } catch {}
 
   // 加载云端 embedding 状态：包括用户偏好模型 + 当前可用模型列表
   try {
@@ -1015,7 +1022,8 @@ async function testVectorConnection() {
 
 async function saveGeneralSettings() {
   await window.api.settings.invoke('set', 'temperature', generalForm.value.temperature)
-  await window.api.settings.invoke('set', 'window_close_behavior', generalForm.value.windowCloseBehavior)
+  // 窗口关闭行为为设备级设置，写入 device-settings.json（独立于按账号隔离的 settings 表）
+  await window.api.deviceSettings.set('window_close_behavior', generalForm.value.windowCloseBehavior)
   generalSaved.value = true
   setTimeout(() => { generalSaved.value = false }, 2000)
 }

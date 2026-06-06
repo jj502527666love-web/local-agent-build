@@ -158,6 +158,7 @@
               <div class="text-[11px] text-text-tertiary mt-0.5 truncate">{{ bot.source === 'market' ? '来自市场' : '本地创建' }}</div>
               <div class="flex flex-wrap gap-1 mt-2">
                 <span v-if="bot.kb_category_ids.length" class="status-badge bg-teal-50 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300">知识库 {{ bot.kb_category_ids.length }}</span>
+                <span v-if="bot.cloud_kb_ids && bot.cloud_kb_ids.length" class="status-badge bg-teal-50 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300">云端知识库 {{ bot.cloud_kb_ids.length }}</span>
                 <span v-if="bot.skill_ids.filter(id => userSkills.some(s => s.id === id)).length" class="status-badge bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">小工具 {{ bot.skill_ids.filter(id => userSkills.some(s => s.id === id)).length }}</span>
                 <span v-if="bot.prompt_skill_dirs && bot.prompt_skill_dirs.length" class="status-badge bg-purple-50 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300">Skills {{ bot.prompt_skill_dirs.length }}</span>
                 <span v-if="bot.mcp_ids.length" class="status-badge bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">MCP {{ bot.mcp_ids.length }}</span>
@@ -196,7 +197,7 @@
         <div v-else class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 max-w-6xl">
           <div v-for="a in botStore.marketAgents" :key="a.id" class="card p-4 flex flex-col">
             <div class="rounded-lg overflow-hidden bg-surface-2 mb-3" style="aspect-ratio: 2/3;">
-              <img v-if="a.avatar" :src="a.avatar" loading="lazy" class="w-full h-full object-cover" />
+              <img v-if="a.avatar" :src="a.avatar_thumb || a.avatar" loading="lazy" class="w-full h-full object-cover" />
               <div v-else class="w-full h-full flex items-center justify-center text-text-tertiary text-4xl font-bold">{{ a.name.charAt(0) }}</div>
             </div>
             <div class="font-semibold text-sm text-text-primary truncate">{{ a.name }}</div>
