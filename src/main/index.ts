@@ -15,7 +15,6 @@ import { runStartupTasks as runBackupStartupTasks, recoverInterruptedRestore } f
 import { getRuntimeConfig } from './services/runtime-config'
 import { getSetting } from './services/settings'
 import { startAutoDownloadScheduler, stopAutoDownloadScheduler } from './services/video-generation'
-import { ensureIntegrityOrPrompt } from './services/integrity-check'
 import { initAccountContext, isAccountReady } from './services/account-context'
 import { runInEpoch } from './services/account-epoch'
 import { getDeviceSetting } from './services/device-settings'
@@ -225,13 +224,6 @@ if (gotSingleInstanceLock) {
 
   app.whenReady().then(async () => {
     electronApp.setAppUserModelId(getRuntimeConfig().appId)
-
-    // 核心运行时组件完整性自检：ffmpeg.dll 等缺失/损坏时弹窗引导修复并终止，
-    // 避免后续创建窗口加载媒体栈时白屏/崩溃（详见 services/integrity-check.ts）。
-    if (!ensureIntegrityOrPrompt()) {
-      app.quit()
-      return
-    }
 
   protocol.handle('local-file', (request) => {
     try {
