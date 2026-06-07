@@ -6,6 +6,36 @@
 
 ---
 
+## [0.7.21] - 2026-06-07
+
+> **对话引擎完整加固（不降级 / 一次性交付）**：根治「会话失败或余额不足后卡死、需重开会话才正常」与「多页 PPT 等长任务被中途打断」两类可用性问题；借鉴成熟 Agent 实现补齐发送前消息净化、工具失败熔断、中断自愈；新增消息编辑 / 重新生成 / 删除、思维链持久化；知识库向量检索引入 sqlite-vec 加速；自定义小工具改为受限沙箱执行。所有新增路径均带 fallback，现有能力（工具审批、大结果转存、并行执行、增量摘要、双通道 RAG、生图异步、会话级模型）全部保留。
+
+### 修复
+
+- **会话被「毒消息」污染导致持续失败（根治）**：某轮模型返回空内容、余额不足时网关 silent-200、或中断遗留孤立 tool_calls，会在历史中留下非法消息，导致之后每轮 replay 持续 400 / 空响应，只有重开会话才正常。
+  - 新增 `main/services/message-sanitizer.ts`：每轮 callLLM 前对「发给模型的副本」做净化（删空 assistant / user、修复 tool_calls / tool 配对、合并连续 user），数据库仍全量落库。
+  - `chat-engine.ts` 无 tool_calls 分支加空响应防护：空则重试一次，仍空落友好提示（绝不落空消息）。
+  - `llm.ts` `streamLLMOnce` 加 silent-200 / 空流识别（无正文 + 无工具 + 无思维链 + 无 usage 时抛友好错误），避免空内容落库。
+- **多页 PPT 等长任务被中途打断**：`MAX_TOOL_ROUNDS` 默认提至 40 并支持按智能体配置；到达上限不再静默截断，而是追加「回复『继续』可接续」提示（ppt-master 自带断点，天然可续）。
+
+### 新增
+
+- **消息编辑 / 重新生成 / 删除**：新增 `chat:editMessage` / `chat:regenerate` / `chat:deleteMessage` IPC 与 `conversation.deleteMessagesFrom`、`chat-engine.regenerateLastResponse` / `editAndResend`；前端气泡加对应操作并带乐观更新；编辑 / 重生成截断历史后复用 `sendMessage` 重发，保留附件。
+- **思维链（reasoning）持久化**：`messages` 表加 `reasoning` 列，落库最终回复的思维链；`getMessages` 读回并在前端折叠面板渲染，刷新 / 切回会话不丢；历史重建只取 content，思维链不回传模型。
+- **智能体「单轮最大工具步数」配置**：`bots.max_tool_rounds`（0 = 默认 40）+ `BotListView.vue` 表单输入，长任务型智能体可调高。
+- **手机号验证码注册 / 找回密码**（需云控端 1.5.45）：登录页扩展为登录 / 注册 / 找回密码三态；注册可由云控端开关要求「手机号 + 短信验证码」，新增「忘记密码」入口（手机号 + 验证码重置），验证码输入带 60 秒倒计时。`cloud-api.ts` / `cloud-auth.ts` 新增 `sendSmsCode` / `resetPassword`，`site-config.ts` 解析 `register.sms_verify_enabled` / `forgot_password.enabled` 开关。
+
+### 增强
+
+- **工具失败熔断 / 循环检测**（借鉴 CowAgent）：新增 `main/services/tool-circuit-breaker.ts`——同参连续失败 ≥3、同工具连续失败 ≥6/≥8、同参重复调用 ≥5/≥10 分级熔断（≥8 失败或 ≥10 重复升级 critical 中止本轮），避免死循环烧满轮数与大量 token。
+- **中断自愈**：abort / error 时 `healDanglingToolCalls` 为悬空 `assistant.tool_calls` 补合成 tool 结果落库，与发送前净化形成双保险，保证下一轮历史配对合法。
+- **自定义小工具受限沙箱**：`skill-sandbox.ts` 用 Node `vm` 受限上下文替代 `new Function`，隔离 process / require / module（逃逸只能到达受限 global），同步死循环可被 timeout 中断；读路径收口到「数据目录 ∪ 工作区 ∪ 可信白名单」，与对话层审批白名单统一。
+
+### 优化
+
+- **知识库向量检索加速**：引入 `sqlite-vec`（`database/index.ts` 加载检测 + `electron-builder.yml` asarUnpack），`vector-store.ts` 用 `vec0` 虚拟表做 cosine KNN（按维度建表 + 双写 + 懒同步）；加载失败 / 维度不符 / 查询异常任一环节自动回退到（已优化的）JS cosine，零降级。
+- **chat-engine 解耦**：拆出 `message-sanitizer.ts`、`tool-circuit-breaker.ts` 两个纯函数模块，降低主文件体积、便于测试。
+
 ## [0.7.19] - 2026-06-07
 
 > **配合云控端 1.5.39：AI 视频可使用云端新接入的服务商（桌面端无代码改动）**：云控端 1.5.39 预置了一个 OpenAI 兼容的视频服务商（New API 中转）。云控端管理员填写自己的接口密钥并启用后，桌面端「AI 视频」即可直接使用其提供的 Seedance 2.0 等模型，无需桌面端升级。本版桌面端无功能代码改动，仅记录该云端联动变化。

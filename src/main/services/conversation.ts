@@ -32,6 +32,8 @@ export interface Message {
   attachments: any[]
   tool_calls: any[]
   tool_call_id: string
+  /** 推理模型思维链(仅 UI 展示，不回传模型)。 */
+  reasoning: string
   created_at: string
 }
 
@@ -142,7 +144,8 @@ export function getMessages(conversationId: string): Message[] {
     ...r,
     attachments: JSON.parse(r.attachments || '[]'),
     tool_calls: JSON.parse(r.tool_calls || '[]'),
-    tool_call_id: r.tool_call_id || ''
+    tool_call_id: r.tool_call_id || '',
+    reasoning: r.reasoning || ''
   }))
 }
 
@@ -153,12 +156,13 @@ export function addMessage(data: {
   attachments?: any[]
   tool_calls?: any[]
   tool_call_id?: string
+  reasoning?: string
 }): Message {
   const db = getDatabase()
   const id = uuid()
   const now = new Date().toISOString()
   db.prepare(
-    'INSERT INTO messages (id, conversation_id, role, content, attachments, tool_calls, tool_call_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+    'INSERT INTO messages (id, conversation_id, role, content, attachments, tool_calls, tool_call_id, reasoning, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
   ).run(
     id,
     data.conversation_id,
@@ -167,6 +171,7 @@ export function addMessage(data: {
     JSON.stringify(data.attachments || []),
     JSON.stringify(data.tool_calls || []),
     data.tool_call_id || '',
+    data.reasoning || '',
     now
   )
   db.prepare('UPDATE conversations SET updated_at=? WHERE id=?').run(now, data.conversation_id)
@@ -178,6 +183,7 @@ export function addMessage(data: {
     attachments: data.attachments || [],
     tool_calls: data.tool_calls || [],
     tool_call_id: data.tool_call_id || '',
+    reasoning: data.reasoning || '',
     created_at: now
   }
 }
@@ -186,4 +192,19 @@ export function deleteMessage(id: string): boolean {
   const db = getDatabase()
   const result = db.prepare('DELETE FROM messages WHERE id = ?').run(id)
   return result.changes > 0
+}
+
+// 删除指定消息及其之后的所有消息(用于编辑/重新生成时截断历史)。返回删除数量。
+export function deleteMessagesFrom(conversationId: string, fromMessageId: string): number {
+  const db = getDatabase()
+  const msgs = getMessages(conversationId)
+  const idx = msgs.findIndex((m) => m.id === fromMessageId)
+  if (idx === -1) return 0
+  const idsToDelete = msgs.slice(idx).map((m) => m.id)
+  const stmt = db.prepare('DELETE FROM messages WHERE id = ?')
+  const tx = db.transaction(() => {
+    for (const mid of idsToDelete) stmt.run(mid)
+  })
+  tx()
+  return idsToDelete.length
 }

@@ -617,6 +617,17 @@ export function syncCloudTasks(inputs: SyncVideoTaskInput[]): VideoGeneration[] 
   return inputs.filter((input) => input?.task).map(syncCloudTask).filter((item): item is VideoGeneration => Boolean(item))
 }
 
+/**
+ * 返回视频记录的本地绝对路径（仅当文件确实存在）；否则返回空串。
+ * 供流式画布「视频输入」节点复用已保存到本地的视频（saveNodeVideo 需要绝对路径）。
+ */
+export function resolveLocalAbsolutePath(id: string): string {
+  const row = getGeneration(id)
+  if (!row || !row.local_path) return ''
+  const abs = absoluteLocalPath(row.local_path)
+  return abs && existsSync(abs) ? abs : ''
+}
+
 export async function saveGenerationVideo(id: string, options: { automatic?: boolean } = {}): Promise<{ success: boolean; item?: VideoGeneration; path?: string; error?: string }> {
   const row = getGeneration(id)
   if (!row) return { success: false, error: '视频记录不存在' }

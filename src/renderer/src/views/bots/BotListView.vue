@@ -124,6 +124,11 @@
               </label>
             </div>
           </div>
+          <div>
+            <label class="form-label">单轮最大工具步数</label>
+            <input type="number" v-model.number="form.max_tool_rounds" min="0" max="200" placeholder="0 = 默认（40）" class="w-full px-3 py-2 text-xs rounded-lg border border-surface-3 bg-surface-0 text-text-primary" />
+            <p class="text-[11px] text-text-tertiary mt-1 leading-snug">单次回复内允许的最大工具调用步数。0 表示默认 40；多页 PPT 等长任务可调高（如 80）。</p>
+          </div>
           <div class="flex gap-3 pt-2">
             <button @click="saveBot" class="btn-primary">{{ editingId ? '更新' : '创建' }}</button>
             <button @click="showForm = false" class="btn-secondary">取消</button>
@@ -322,11 +327,12 @@ const form = ref({
   prompt_skill_dirs: [] as string[],
   tool_approval: 'destructive' as ToolApproval,
   enable_image_gen: 0 as number,
+  max_tool_rounds: 0 as number,
   avatar: ''
 })
 
 function resetForm() {
-  form.value = { name: '', description: '', persona_id: '', kb_only: 0, kb_category_ids: [], skill_ids: [], mcp_ids: [], prompt_skill_dirs: [], tool_approval: 'destructive', enable_image_gen: 0, avatar: '' }
+  form.value = { name: '', description: '', persona_id: '', kb_only: 0, kb_category_ids: [], skill_ids: [], mcp_ids: [], prompt_skill_dirs: [], tool_approval: 'destructive', enable_image_gen: 0, max_tool_rounds: 0, avatar: '' }
 }
 
 function openCreate() {
@@ -348,6 +354,7 @@ function editBot(bot: Bot) {
     prompt_skill_dirs: [...(bot.prompt_skill_dirs || [])],
     tool_approval: bot.tool_approval || 'destructive',
     enable_image_gen: bot.enable_image_gen || 0,
+    max_tool_rounds: bot.max_tool_rounds || 0,
     avatar: bot.avatar || ''
   }
   showForm.value = true

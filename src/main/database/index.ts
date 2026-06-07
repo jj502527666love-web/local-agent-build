@@ -28,9 +28,29 @@ export function getDatabase(): Database.Database {
   db.pragma('journal_mode = WAL')
   db.pragma('foreign_keys = ON')
 
+  tryLoadSqliteVec(db)
+
   initSchema()
 
   return db
+}
+
+// sqlite-vec 原生扩展:可用时为向量检索提供 vec0 KNN 加速;不可用时静默回退 JS cosine(零降级)。
+let sqliteVecAvailable = false
+export function isSqliteVecAvailable(): boolean {
+  return sqliteVecAvailable
+}
+function tryLoadSqliteVec(database: Database.Database): void {
+  try {
+    // 延迟 require:未安装 / 原生未随 Electron 版本 rebuild 时不影响应用启动
+    const sqliteVec = require('sqlite-vec')
+    sqliteVec.load(database)
+    sqliteVecAvailable = true
+    console.log('[db] sqlite-vec extension loaded (vector KNN enabled)')
+  } catch (e: any) {
+    sqliteVecAvailable = false
+    console.warn('[db] sqlite-vec unavailable, using JS cosine fallback:', e?.message || e)
+  }
 }
 
 function initSchema(): void {
@@ -114,11 +134,19 @@ function runMigrations(): void {
   if (!botColNames.includes('cloud_kb_top_k')) {
     db.exec("ALTER TABLE bots ADD COLUMN cloud_kb_top_k INTEGER NOT NULL DEFAULT 5")
   }
+  // 单轮对话最大工具调用步数(0=用默认)。长任务(如多页 PPT)可调高，避免被步数上限中断 bug1
+  if (!botColNames.includes('max_tool_rounds')) {
+    db.exec("ALTER TABLE bots ADD COLUMN max_tool_rounds INTEGER NOT NULL DEFAULT 0")
+  }
   // messages: persist tool_call_id so OpenAI tool_calls/tool pairs replay correctly
   const msgCols = db.prepare("PRAGMA table_info(messages)").all() as any[]
   const msgColNames = msgCols.map((c: any) => c.name)
   if (!msgColNames.includes('tool_call_id')) {
     db.exec("ALTER TABLE messages ADD COLUMN tool_call_id TEXT NOT NULL DEFAULT ''")
+  }
+  // reasoning 思维链持久化(仅 UI 展示用，不回传模型)：旧库幂等加列
+  if (!msgColNames.includes('reasoning')) {
+    db.exec("ALTER TABLE messages ADD COLUMN reasoning TEXT NOT NULL DEFAULT ''")
   }
   // conversation_summaries: 增量摘要水位线列（旧库幂等加列）
   const csCols = db.prepare("PRAGMA table_info(conversation_summaries)").all() as any[]

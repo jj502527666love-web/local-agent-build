@@ -5,7 +5,7 @@ import { v4 as uuid } from 'uuid'
 import { getDataDir } from './data-path'
 import { getBot, type ToolApproval } from './bot'
 import { getPersona } from './persona'
-import { getMessages, addMessage, getConversation, updateConversationTitle } from './conversation'
+import { getMessages, addMessage, getConversation, updateConversationTitle, deleteMessagesFrom } from './conversation'
 import { callLLM, ChatMessage, AbortedError, isAbortedError } from './llm'
 import { listSkills } from './skill'
 import { getMcpServer } from './mcp-server'
@@ -19,6 +19,8 @@ import { getSetting } from './settings'
 import { callMcpTool } from './mcp-server'
 import { listPromptSkills, getPromptSkillByName } from './prompt-skill'
 import { coreToolDefs, executeCoreToolCall, CORE_TOOL_NAMES, KB_TOOL_NAMES, previewFileWrite, previewFileRead, type FileWritePreview, type FileReadPreview } from './core-tools'
+import { sanitizeOpenAIMessages } from './message-sanitizer'
+import { type ToolHistoryEntry, hashToolArgs, isToolFailure, checkToolCircuitBreaker } from './tool-circuit-breaker'
 
 // Per-model context-window table. Values are the *total* model context (prompt + completion).
 // We reserve ~25% for the response and pass the rest as the prompt budget.
@@ -394,6 +396,34 @@ function offloadOrLimitToolResult(resultStr: string, toolName: string, sandboxDi
   } catch {
     // offload 失败（磁盘 / 权限等）回退到原截断逻辑，保证工具链不被阻塞
     return limitToolResult(resultStr)
+  }
+}
+
+// 中断/异常自愈:若会话最后一条 assistant 带 tool_calls 但缺配对的 tool 结果,
+// 补合成 tool 结果落库,保证 DB 历史 tool_call 配对合法(与发送前 sanitize 形成双保险)。
+function healDanglingToolCalls(conversationId: string): void {
+  try {
+    const msgs = getMessages(conversationId)
+    if (msgs.length === 0) return
+    const last = msgs[msgs.length - 1]
+    if (last.role !== 'assistant' || !Array.isArray(last.tool_calls) || last.tool_calls.length === 0) return
+    const answered = new Set<string>()
+    for (const m of msgs) {
+      if (m.role === 'tool' && m.tool_call_id) answered.add(m.tool_call_id)
+    }
+    for (const tc of last.tool_calls) {
+      const id = tc?.id
+      if (id && !answered.has(id)) {
+        addMessage({
+          conversation_id: conversationId,
+          role: 'tool',
+          content: 'Error: 工具调用因对话中断未完成。',
+          tool_call_id: id
+        })
+      }
+    }
+  } catch (e: any) {
+    console.warn('[chat] healDanglingToolCalls failed:', e?.message)
   }
 }
 
@@ -1049,14 +1079,22 @@ export async function sendMessage(
   // Call LLM with multi-round tool call loop (agent mode)
   // 25 轮上限对齐主流 AI 编辑器（Cursor agent ~25）。整轮真正卡死由
   // stream idle timeout（llm.ts）+ 30 分钟 hard deadline 兜底检测。
-  const MAX_TOOL_ROUNDS = 25
+  // 单轮工具调用步数上限:默认 40(对长任务更友好)，bot 可通过 max_tool_rounds 覆盖(0=用默认)。
+  // 到顶不静默丢弃，而是追加"可续跑"提示(见下方 round >= MAX_TOOL_ROUNDS 分支)，配合修复 bug1。
+  const DEFAULT_MAX_TOOL_ROUNDS = 40
+  const MAX_TOOL_ROUNDS = bot.max_tool_rounds && bot.max_tool_rounds > 0 ? bot.max_tool_rounds : DEFAULT_MAX_TOOL_ROUNDS
     let currentMessages: ChatMessage[] = [...messages]
     let round = 0
+    // 工具失败熔断历史(贯穿本次 sendMessage 的整个工具循环)
+    const toolHistory: ToolHistoryEntry[] = []
+    let criticalBreakerReason: string | null = null
 
     while (round <= MAX_TOOL_ROUNDS) {
       if (signal.aborted) throw new AbortedError()
       // 每轮调用前压缩 loop 内累积的上下文（先压旧工具结果，仍超预算再硬裁），防止逼近上限 → terminated。
       currentMessages = compactAgentContext(currentMessages, systemCount, budget)
+      // 发送前净化:删空消息 / 修 tool 配对 / 合并连续 user，防止脏历史导致 replay 持续失败(bug2/bug3)
+      currentMessages = sanitizeOpenAIMessages(currentMessages)
       const t0 = Date.now()
       const response = await callLLM(
         effectiveProviderId,
@@ -1075,10 +1113,41 @@ export async function sendMessage(
 
       // No tool calls → final response, save and break
       if (!response.tool_calls || response.tool_calls.length === 0) {
+        let finalContent = response.content
+        let finalReasoning = response.reasoning || ''
+        // 空响应防护:绝不落空 assistant（空消息会毒化历史，导致后续每轮 replay 持续失败，
+        // 即 bug2/bug3 的根因之一）。先重试一次强制出文本，仍空则落一条友好提示（非空合法消息）。
+        if (!finalContent || !finalContent.trim()) {
+          console.warn('[chat] empty assistant response, retrying once')
+          try {
+            if (signal.aborted) throw new AbortedError()
+            const retry = await callLLM(
+              effectiveProviderId,
+              {
+                modelId: effectiveModelId,
+                messages: currentMessages,
+                stream: true,
+                signal,
+                streamContext: { conversationId: options.conversationId, requestId }
+              },
+              window
+            )
+            finalContent = retry.content
+            finalReasoning = retry.reasoning || finalReasoning
+          } catch (e: any) {
+            if (isAbortedError(e)) throw e
+            console.warn('[chat] empty-response retry failed:', e?.message)
+          }
+          if (!finalContent || !finalContent.trim()) {
+            finalContent = '抱歉，我暂时无法生成回复。请换一种方式描述你的需求，或稍后再试。'
+            emitStream({ type: 'content', content: finalContent })
+          }
+        }
         addMessage({
           conversation_id: options.conversationId,
           role: 'assistant',
-          content: response.content
+          content: finalContent,
+          reasoning: finalReasoning
         })
         break
       }
@@ -1103,7 +1172,7 @@ export async function sendMessage(
       emitStream({ type: 'tool_start', tools: toolNames })
 
       // Pass 1 (serial): approval gate, collect rejections eagerly so the user sees them paired with the right call.
-      type Plan = { toolCall: any; fnName: string; result?: any; resultStr?: string }
+      type Plan = { toolCall: any; fnName: string; argsHash?: string; noRecord?: boolean; result?: any; resultStr?: string }
       const plans: Plan[] = []
       const sandboxDir = getWorkspaceDir(options.conversationId)
       for (const toolCall of response.tool_calls) {
@@ -1137,6 +1206,25 @@ export async function sendMessage(
           }
         }
 
+        // 工具失败熔断 / 循环检测:同参反复失败或重复调用时提前止损，避免烧满轮数与大量 token
+        const argsHash = hashToolArgs(parsedArgs)
+        const breaker = checkToolCircuitBreaker(toolHistory, fnName, argsHash)
+        if (breaker.stop) {
+          console.warn(`[chat] tool circuit breaker: ${breaker.reason}`)
+          // 记录为失败:使持续的重复/失败调用累积升级到 critical 中止，而非每轮一次 LLM 调用烧满轮数
+          toolHistory.push({ name: fnName, argsHash, success: false })
+          plans.push({
+            toolCall,
+            fnName,
+            argsHash,
+            noRecord: true,
+            resultStr: JSON.stringify({ error: breaker.reason, tool: fnName })
+          })
+          emitStream({ type: 'tool_result', tool: fnName, summary: '[已熔断]' })
+          if (breaker.critical) criticalBreakerReason = breaker.reason
+          continue
+        }
+
         if (needsApproval(bot.tool_approval, fnName, parsedArgs, sandboxDir)) {
           const preview = fnName === 'file_ops'
             ? (previewFileWrite(parsedArgs, sandboxDir) || previewFileRead(parsedArgs, sandboxDir))
@@ -1147,13 +1235,15 @@ export async function sendMessage(
             plans.push({
               toolCall,
               fnName,
+              argsHash,
+              noRecord: true,
               resultStr: JSON.stringify({ error: '用户拒绝了该工具调用', tool: fnName })
             })
             emitStream({ type: 'tool_result', tool: fnName, summary: '[已拒绝]' })
             continue
           }
         }
-        plans.push({ toolCall, fnName })
+        plans.push({ toolCall, fnName, argsHash })
       }
 
       // Pass 2 (parallel): execute all approved tools concurrently while preserving call order.
@@ -1200,6 +1290,14 @@ export async function sendMessage(
           content: resultStr,
           tool_call_id: p.toolCall.id || ''
         })
+        // 记录实际执行的工具结果用于熔断(熔断/拒绝的 plan 标记 noRecord，不计入)
+        if (!p.noRecord) {
+          toolHistory.push({
+            name: p.fnName,
+            argsHash: p.argsHash || '',
+            success: !isToolFailure(p.result)
+          })
+        }
       }
 
       const hasPendingImageGen = completed.some((p) =>
@@ -1220,6 +1318,18 @@ export async function sendMessage(
         break
       }
 
+      // 工具熔断 critical(同一工具连续失败过多):中止本轮并友好收尾
+      if (criticalBreakerReason) {
+        emitStream({ type: 'tool_done' })
+        emitStream({ type: 'content', content: criticalBreakerReason })
+        addMessage({
+          conversation_id: options.conversationId,
+          role: 'assistant',
+          content: criticalBreakerReason
+        })
+        break
+      }
+
       round++
 
       // Safety: if max rounds reached, do one final call without tools
@@ -1228,6 +1338,7 @@ export async function sendMessage(
         emitStream({ type: 'tool_done' })
         if (signal.aborted) throw new AbortedError()
         currentMessages = compactAgentContext(currentMessages, systemCount, budget)
+        currentMessages = sanitizeOpenAIMessages(currentMessages)
         const finalResponse = await callLLM(
           effectiveProviderId,
           {
@@ -1239,10 +1350,19 @@ export async function sendMessage(
           },
           window
         )
+        let finalContent = finalResponse.content
+        if (!finalContent || !finalContent.trim()) {
+          finalContent = `已执行 ${round} 步工具操作，达到单轮步数上限。`
+        }
+        // 到顶不静默丢弃:追加“可续跑”提示，用户回复“继续”即可接续(长任务如多页 PPT 不丢进度)
+        const continueHint = '\n\n（已达单轮步数上限，任务可能尚未完成。回复“继续”我会接着往下做。）'
+        finalContent += continueHint
+        emitStream({ type: 'content', content: continueHint })
         addMessage({
           conversation_id: options.conversationId,
           role: 'assistant',
-          content: finalResponse.content
+          content: finalContent,
+          reasoning: finalResponse.reasoning || ''
         })
         break
       }
@@ -1255,6 +1375,8 @@ export async function sendMessage(
     // Auto-summarize if history exceeds threshold
     maybeGenerateSummary(options.conversationId, effectiveProviderId, effectiveModelId)
   } catch (error: any) {
+    // 中断自愈:先补全悬空的 assistant.tool_calls 的配对 tool 结果，避免下次 replay 历史非法
+    healDanglingToolCalls(options.conversationId)
     // 取出 llm 层透传的「已流式产出的部分内容」，连同中断/报错标记一起落库，
     // 避免用户已经看到的半截回答在刷新后被覆盖丢失。前端流式已展示过 partial，
     // 故 emitStream 只下发标记，由 renderer 追加到已有内容尾部（见 chat store）。
@@ -1292,6 +1414,53 @@ export async function sendMessage(
       activeControllers.delete(options.conversationId)
     }
   }
+}
+
+// 重新生成最后一轮回复:删除最后一条 user 及其后所有消息，用相同内容重新发送。
+export async function regenerateLastResponse(
+  conversationId: string,
+  window: BrowserWindow | null,
+  requestId?: string
+): Promise<void> {
+  const msgs = getMessages(conversationId)
+  let lastUserIdx = -1
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i].role === 'user') {
+      lastUserIdx = i
+      break
+    }
+  }
+  if (lastUserIdx === -1) throw new Error('没有可重新生成的消息')
+  const lastUser = msgs[lastUserIdx]
+  const conv = getConversation(conversationId)
+  if (!conv) throw new Error('Conversation not found')
+  deleteMessagesFrom(conversationId, lastUser.id)
+  await sendMessage(
+    { conversationId, botId: conv.bot_id, content: lastUser.content, attachments: lastUser.attachments, requestId },
+    window
+  )
+}
+
+// 编辑某条用户消息并重发:删除该消息及其后所有消息，用新内容重新发送。
+export async function editAndResend(
+  conversationId: string,
+  messageId: string,
+  newContent: string,
+  window: BrowserWindow | null,
+  requestId?: string
+): Promise<void> {
+  const msgs = getMessages(conversationId)
+  const target = msgs.find((m) => m.id === messageId)
+  if (!target) throw new Error('消息不存在')
+  if (target.role !== 'user') throw new Error('只能编辑用户消息')
+  const conv = getConversation(conversationId)
+  if (!conv) throw new Error('Conversation not found')
+  const attachments = target.attachments
+  deleteMessagesFrom(conversationId, messageId)
+  await sendMessage(
+    { conversationId, botId: conv.bot_id, content: newContent, attachments, requestId },
+    window
+  )
 }
 
 async function maybeGenerateTitle(

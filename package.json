@@ -1,6 +1,6 @@
 {
   "name": "local-agent",
-  "version": "0.7.20",
+  "version": "0.7.21",
   "description": "Local AI Agent Platform",
   "main": "./out/main/index.js",
   "scripts": {
@@ -24,6 +24,7 @@
     "gifenc": "^1.0.3",
     "mammoth": "^1.12.0",
     "pdf-parse": "^2.4.5",
+    "sqlite-vec": "^0.1.9",
     "uuid": "^10.0.0",
     "word-extractor": "^1.0.4",
     "xlsx": "^0.18.5",

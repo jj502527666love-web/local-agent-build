@@ -27,6 +27,16 @@ export interface PaymentAvailability {
 
 export interface RegisterAvailability {
   enabled: boolean
+  // 注册短信验证开关：开启后注册需手机号 + 短信验证码
+  sms_verify_enabled: boolean
+}
+
+/**
+ * 找回密码开关。云控后台「系统设置 → 短信验证」开启「短信服务」+「允许找回密码」后生效，
+ * 桌面端登录页才显示「忘记密码」入口。默认 false（保留原有行为：无找回密码）。
+ */
+export interface ForgotPasswordAvailability {
+  enabled: boolean
 }
 
 /**
@@ -80,7 +90,8 @@ export interface CustomerServiceInfo {
 
 const DEFAULT_LABELS: CurrencyLabels = { token: '金币', credit: '积分' }
 const DEFAULT_PAYMENT: PaymentAvailability = { wechat: true, tianque: true }
-const DEFAULT_REGISTER: RegisterAvailability = { enabled: true }
+const DEFAULT_REGISTER: RegisterAvailability = { enabled: true, sms_verify_enabled: false }
+const DEFAULT_FORGOT_PASSWORD: ForgotPasswordAvailability = { enabled: false }
 const DEFAULT_PLANS_STORE: PlansStoreAvailability = { enabled: true }
 const DEFAULT_RECHARGE: RechargeAvailability = { token: true, credit: true }
 const DEFAULT_AGREEMENTS: Agreements = {
@@ -93,6 +104,7 @@ const DEFAULT_CUSTOMER_SERVICE: CustomerServiceInfo | null = null
 const STORAGE_KEY = 'site_config_currency'
 const PAYMENT_STORAGE_KEY = 'site_config_payment'
 const REGISTER_STORAGE_KEY = 'site_config_register'
+const FORGOT_PASSWORD_STORAGE_KEY = 'site_config_forgot_password'
 const PLANS_STORE_STORAGE_KEY = 'site_config_plans_store'
 const RECHARGE_STORAGE_KEY = 'site_config_recharge'
 const AGREEMENTS_STORAGE_KEY = 'site_config_agreements'
@@ -150,6 +162,7 @@ function readRegisterCache(): RegisterAvailability {
     const parsed = JSON.parse(raw)
     return {
       enabled: typeof parsed?.enabled === 'boolean' ? parsed.enabled : DEFAULT_REGISTER.enabled,
+      sms_verify_enabled: typeof parsed?.sms_verify_enabled === 'boolean' ? parsed.sms_verify_enabled : DEFAULT_REGISTER.sms_verify_enabled,
     }
   } catch {
     return { ...DEFAULT_REGISTER }
@@ -159,6 +172,27 @@ function readRegisterCache(): RegisterAvailability {
 function writeRegisterCache(r: RegisterAvailability) {
   try {
     localStorage.setItem(REGISTER_STORAGE_KEY, JSON.stringify(r))
+  } catch {
+    // 静默失败
+  }
+}
+
+function readForgotPasswordCache(): ForgotPasswordAvailability {
+  try {
+    const raw = localStorage.getItem(FORGOT_PASSWORD_STORAGE_KEY)
+    if (!raw) return { ...DEFAULT_FORGOT_PASSWORD }
+    const parsed = JSON.parse(raw)
+    return {
+      enabled: typeof parsed?.enabled === 'boolean' ? parsed.enabled : DEFAULT_FORGOT_PASSWORD.enabled,
+    }
+  } catch {
+    return { ...DEFAULT_FORGOT_PASSWORD }
+  }
+}
+
+function writeForgotPasswordCache(f: ForgotPasswordAvailability) {
+  try {
+    localStorage.setItem(FORGOT_PASSWORD_STORAGE_KEY, JSON.stringify(f))
   } catch {
     // 静默失败
   }
@@ -293,6 +327,7 @@ export const useSiteConfigStore = defineStore('siteConfig', () => {
   const labels = ref<CurrencyLabels>(readCache())
   const payment = ref<PaymentAvailability>(readPaymentCache())
   const register = ref<RegisterAvailability>(readRegisterCache())
+  const forgotPassword = ref<ForgotPasswordAvailability>(readForgotPasswordCache())
   const plansStore = ref<PlansStoreAvailability>(readPlansStoreCache())
   const recharge = ref<RechargeAvailability>(readRechargeCache())
   const agreements = ref<Agreements>(readAgreementsCache())
@@ -339,9 +374,19 @@ export const useSiteConfigStore = defineStore('siteConfig', () => {
       if (data?.register && typeof data.register === 'object') {
         const nextRegister: RegisterAvailability = {
           enabled: typeof data.register.enabled === 'boolean' ? data.register.enabled : DEFAULT_REGISTER.enabled,
+          sms_verify_enabled: typeof data.register.sms_verify_enabled === 'boolean' ? data.register.sms_verify_enabled : DEFAULT_REGISTER.sms_verify_enabled,
         }
         register.value = nextRegister
         writeRegisterCache(nextRegister)
+      }
+
+      // forgot_password 字段为后加，老后端不带时保持当前值（缓存或默认 false，不误显示找回密码入口）
+      if (data?.forgot_password && typeof data.forgot_password === 'object') {
+        const nextForgot: ForgotPasswordAvailability = {
+          enabled: typeof data.forgot_password.enabled === 'boolean' ? data.forgot_password.enabled : DEFAULT_FORGOT_PASSWORD.enabled,
+        }
+        forgotPassword.value = nextForgot
+        writeForgotPasswordCache(nextForgot)
       }
 
       // plans_store / recharge 字段为后加，老后端不带时保持当前值（缓存或默认 true，不误隐藏入口）
@@ -409,5 +454,5 @@ export const useSiteConfigStore = defineStore('siteConfig', () => {
     fetch()
   }
 
-  return { labels, payment, register, plansStore, recharge, agreements, chatDefaultModel, customerService, hasAnyPayment, hasAnyRecharge, loading, lastFetchedAt, labelOf, fetch, init }
+  return { labels, payment, register, forgotPassword, plansStore, recharge, agreements, chatDefaultModel, customerService, hasAnyPayment, hasAnyRecharge, loading, lastFetchedAt, labelOf, fetch, init }
 })

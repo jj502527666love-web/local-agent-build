@@ -508,6 +508,14 @@ async function streamLLMOnce(
     if (signal) signal.removeEventListener('abort', onAbort)
   }
 
+  // silent-200 / 空流识别:HTTP 200 但整条流无任何有效产出(无正文 / 工具调用 / 思维链 / 用量)。
+  // 多见于余额不足、限流或网关静默失败。抛友好错误，避免上层把空内容落库毒化会话历史(bug3)。
+  if (!fullContent && toolCalls.length === 0 && !reasoningContent && !usage) {
+    const e: any = new Error('模型无响应（可能余额不足、被限流或服务暂不可用），请稍后重试')
+    e.__emptyStream = true
+    throw e
+  }
+
   if (window && notifyStream) {
     window.webContents.send('chat:stream', { type: 'done', conversationId: streamContext?.conversationId, requestId: streamContext?.requestId })
   }

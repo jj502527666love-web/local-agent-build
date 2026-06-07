@@ -197,10 +197,10 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
     }
   }
 
-  async function register(username: string, password: string, nickname?: string, phone?: string) {
+  async function register(username: string, password: string, nickname?: string, phone?: string, code?: string) {
     loading.value = true
     try {
-      const data = await cloudAuth.register({ username, password, nickname, phone })
+      const data = await cloudAuth.register({ username, password, nickname, phone, code })
       setCloudToken(data.token)
       syncTokenState()
       user.value = data.user
@@ -433,6 +433,16 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
     await cloudAuth.changePassword(oldPwd, newPwd)
   }
 
+  // 发送短信验证码（scene: 'register' 注册 | 'reset_password' 找回密码）。失败抛错由调用方提示。
+  async function sendSmsCode(scene: 'register' | 'reset_password', mobile: string) {
+    return cloudAuth.sendSmsCode(scene, mobile)
+  }
+
+  // 找回密码：凭手机号 + 验证码重置；成功后不自动登录，由调用方引导用户用新密码登录。
+  async function resetPassword(mobile: string, code: string, newPwd: string) {
+    return cloudAuth.resetPassword(mobile, code, newPwd)
+  }
+
   async function refreshToken() {
     try {
       const data = await cloudAuth.refresh()
@@ -475,6 +485,6 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
     user, models, permissions, balances, quotas, billingRules, plans, announcement,
     isLoggedIn, loading, pendingBonus,
     login, register, logout, fetchMe, fetchCloudData, refreshBalances, refreshBalancesThrottled, syncTokenState,
-    changePassword, refreshToken, init, consumeBonus,
+    changePassword, sendSmsCode, resetPassword, refreshToken, init, consumeBonus,
   }
 })

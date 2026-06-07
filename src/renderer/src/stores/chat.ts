@@ -26,6 +26,8 @@ export interface Message {
   content: string
   attachments: any[]
   tool_calls: any[]
+  /** DB 持久化的思维链(加载后注入 _reasoning 渲染;不回传模型) */
+  reasoning?: string
   created_at: string
   _toolLogs?: string[]
   _toolActive?: boolean
@@ -107,6 +109,18 @@ export const useChatStore = defineStore('chat', () => {
     return `chat-${convId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   }
 
+  // 把 DB 持久化的 reasoning 注入 _reasoning(渲染态)，默认折叠。仅当 _reasoning 尚未设置时。
+  function hydrateReasoning(msgs: Message[]): Message[] {
+    for (const m of msgs) {
+      if (m.role === 'assistant' && m.reasoning && !m._reasoning) {
+        m._reasoning = m.reasoning
+        m._reasoningCollapsed = true
+        m._reasoningActive = false
+      }
+    }
+    return msgs
+  }
+
   async function fetchConversations(botId: string) {
     currentBotId.value = botId
     conversations.value = (await window.api.chat.invoke('listConversations', botId)) as Conversation[]
@@ -166,7 +180,7 @@ export const useChatStore = defineStore('chat', () => {
 
   async function selectConversation(id: string) {
     currentConversationId.value = id
-    messages.value = (await window.api.chat.invoke('getMessages', id)) as Message[]
+    messages.value = hydrateReasoning((await window.api.chat.invoke('getMessages', id)) as Message[])
   }
 
   async function deleteConversation(id: string) {
@@ -335,16 +349,12 @@ export const useChatStore = defineStore('chat', () => {
     })
   }
 
-  async function sendMessage(content: string, attachments?: any[], overrides?: {
-    kbCategoryIds?: string[]
-    skillIds?: string[]
-    mcpIds?: string[]
-    promptSkillDirs?: string[]
-  }) {
-    if (!currentConversationId.value || !currentBotId.value) return
-
-    const convId = currentConversationId.value!
-    const botId = currentBotId.value!
+  // 统一的流式请求执行器:管理 per-conversation 流式态、调用主进程、结束后与 DB seamless swap。
+  // 被 sendMessage / regenerate / editMessage 复用(invoke 回调决定具体调用哪个 IPC)。
+  async function runStreamedRequest(
+    convId: string,
+    invoke: (requestId: string) => Promise<any>
+  ) {
     const requestId = createRequestId(convId)
     const previousRequestId = activeRequestIds.value[convId]
     if (previousRequestId && previousRequestId !== requestId) {
@@ -357,19 +367,7 @@ export const useChatStore = defineStore('chat', () => {
     streamingConvIds.value = new Set(streamingConvIds.value)
     streamContent.value = ''
 
-    // 乐观插入用户消息（主进程也会立即落库；切走切回靠 getMessages 拿回）
-    messages.value.push({
-      id: 'temp-user-' + Date.now(),
-      conversation_id: convId,
-      role: 'user',
-      content,
-      attachments: attachments || [],
-      tool_calls: [],
-      created_at: new Date().toISOString()
-    })
-
     // 进行中的流式态提升为 store 级（per-conversation），由 app 级常驻 onStream 监听更新。
-    // 不再 push 临时 assistant 占位、不再注册闭包监听：切走会话/页面再回来仍能继续逐字渲染。
     streamingStates.value[convId] = {
       requestId,
       content: '',
@@ -382,17 +380,7 @@ export const useChatStore = defineStore('chat', () => {
 
     let invokeErrorMsg = ''
     try {
-      await window.api.chat.invoke('sendMessage', {
-        conversationId: convId,
-        requestId,
-        botId,
-        content,
-        attachments,
-        ...(overrides?.kbCategoryIds?.length ? { overrideKbCategoryIds: overrides.kbCategoryIds } : {}),
-        ...(overrides?.skillIds?.length ? { overrideSkillIds: overrides.skillIds } : {}),
-        ...(overrides?.mcpIds?.length ? { overrideMcpIds: overrides.mcpIds } : {}),
-        ...(overrides?.promptSkillDirs?.length ? { overridePromptSkillDirs: overrides.promptSkillDirs } : {})
-      })
+      await invoke(requestId)
     } catch (err: any) {
       // 主进程通常已 catch 并把 error/aborted 落库；此处仅兜底 IPC 通道级失败。
       invokeErrorMsg = translateError(err?.message || '')
@@ -406,10 +394,9 @@ export const useChatStore = defineStore('chat', () => {
         const localReasoning = st?.reasoning || ''
 
         // 仅当仍停留在该会话时，从 DB 拉真实消息并与 live 气泡做 seamless swap。
-        // 用 try/catch 包住：即便 getMessages 失败也要继续往下清理，避免会话卡在 streaming 状态。
         if (currentConversationId.value === convId) {
           try {
-            const dbMessages = (await window.api.chat.invoke('getMessages', convId)) as Message[]
+            const dbMessages = hydrateReasoning((await window.api.chat.invoke('getMessages', convId)) as Message[])
             if (dbMessages.length > 0) {
               const lastDb = dbMessages[dbMessages.length - 1]
               if (lastDb.role === 'assistant' && !lastDb.content && localContent) {
@@ -457,6 +444,85 @@ export const useChatStore = defineStore('chat', () => {
         refreshCloudBalances()
       }
     }
+  }
+
+  async function sendMessage(content: string, attachments?: any[], overrides?: {
+    kbCategoryIds?: string[]
+    skillIds?: string[]
+    mcpIds?: string[]
+    promptSkillDirs?: string[]
+  }) {
+    if (!currentConversationId.value || !currentBotId.value) return
+
+    const convId = currentConversationId.value!
+    const botId = currentBotId.value!
+
+    // 乐观插入用户消息（主进程也会立即落库；切走切回靠 getMessages 拿回）
+    messages.value.push({
+      id: 'temp-user-' + Date.now(),
+      conversation_id: convId,
+      role: 'user',
+      content,
+      attachments: attachments || [],
+      tool_calls: [],
+      created_at: new Date().toISOString()
+    })
+
+    await runStreamedRequest(convId, (requestId) =>
+      window.api.chat.invoke('sendMessage', {
+        conversationId: convId,
+        requestId,
+        botId,
+        content,
+        attachments,
+        ...(overrides?.kbCategoryIds?.length ? { overrideKbCategoryIds: overrides.kbCategoryIds } : {}),
+        ...(overrides?.skillIds?.length ? { overrideSkillIds: overrides.skillIds } : {}),
+        ...(overrides?.mcpIds?.length ? { overrideMcpIds: overrides.mcpIds } : {}),
+        ...(overrides?.promptSkillDirs?.length ? { overridePromptSkillDirs: overrides.promptSkillDirs } : {})
+      })
+    )
+  }
+
+  // 重新生成最后一轮回复(删除最后一条 user 及其后消息，用相同内容重发)
+  async function regenerate() {
+    const convId = currentConversationId.value
+    if (!convId || streamingConvIds.value.has(convId)) return
+    // 乐观:移除本地最后一条 user 之后的旧回答(保留到该 user 含)，立即反映"重新生成";完成后由 DB seamless swap
+    const list = messages.value
+    for (let i = list.length - 1; i >= 0; i--) {
+      if (list[i].role === 'user') {
+        messages.value = list.slice(0, i + 1)
+        break
+      }
+    }
+    await runStreamedRequest(convId, (requestId) =>
+      window.api.chat.invoke('regenerate', convId, requestId)
+    )
+  }
+
+  // 编辑某条用户消息并重发(删除该消息及其后消息，用新内容重发)
+  async function editMessage(messageId: string, newContent: string) {
+    const convId = currentConversationId.value
+    if (!convId || streamingConvIds.value.has(convId)) return
+    if (!newContent || !newContent.trim()) return
+    // 乐观:截断到该消息之前 + 插入编辑后的 user，立即显示新问题;完成后由 DB seamless swap
+    const idx = messages.value.findIndex((m) => m.id === messageId)
+    if (idx !== -1) {
+      const original = messages.value[idx]
+      messages.value = [
+        ...messages.value.slice(0, idx),
+        { ...original, id: 'temp-user-' + Date.now(), content: newContent }
+      ]
+    }
+    await runStreamedRequest(convId, (requestId) =>
+      window.api.chat.invoke('editMessage', convId, messageId, newContent, requestId)
+    )
+  }
+
+  // 删除单条消息
+  async function deleteMessage(messageId: string) {
+    await window.api.chat.invoke('deleteMessage', messageId)
+    messages.value = messages.value.filter((m) => m.id !== messageId)
   }
 
   function reset() {
@@ -517,6 +583,9 @@ export const useChatStore = defineStore('chat', () => {
     listenAppendMessage,
     stopListenAppendMessage,
     sendMessage,
+    regenerate,
+    editMessage,
+    deleteMessage,
     cancel,
     getDraft,
     setDraft,

@@ -24,6 +24,12 @@
           <svg class="w-6 h-6 mx-auto mb-1.5 text-text-disabled" fill="none" viewBox="0 0 24 24" stroke="currentColor"><rect x="3" y="4" width="18" height="16" rx="2" stroke-width="1.5"/><path d="m10 9 5 3-5 3V9Z" stroke-width="1.5" stroke-linejoin="round"/></svg>
           <p class="text-[10px] text-text-tertiary">点击或拖入视频</p>
         </div>
+        <button
+          type="button"
+          :disabled="data.locked"
+          class="w-full py-1.5 text-[10px] text-sky-600 border border-sky-200 rounded-lg hover:bg-sky-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors dark:text-sky-300 dark:border-sky-800 dark:hover:bg-sky-900/20"
+          @click="!data.locked && (showPicker = true)"
+        >从视频创作选择</button>
       </div>
       <p v-if="errorMsg" class="text-[10px] text-red-500 break-words">{{ errorMsg }}</p>
     </div>
@@ -34,6 +40,8 @@
       class="handle-video"
       @click="(e: MouseEvent) => onHandleClick?.(e, data.nodeId, 'output', 'video')"
     />
+
+    <VideoCreationPickerDialog v-model:visible="showPicker" @select="onPickFromCreations" />
   </div>
 </template>
 
@@ -41,6 +49,7 @@
 import { ref, computed, inject } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
 import { useCanvasStore } from '@/stores/canvas'
+import VideoCreationPickerDialog from '../components/VideoCreationPickerDialog.vue'
 
 type HandleClickHandler = (e: MouseEvent, nodeId: string, handleId: string, dataType: 'text' | 'image' | 'video') => void
 
@@ -49,6 +58,7 @@ const canvasStore = useCanvasStore()
 const api = () => (window as any).api
 const onHandleClick = inject<HandleClickHandler | null>('onHandleClick', null)
 const errorMsg = ref('')
+const showPicker = ref(false)
 
 const videoSrc = computed(() => {
   const path = props.data.video_path
@@ -78,6 +88,21 @@ async function pickVideo() {
   })
   if (result.canceled || !result.filePaths?.length) return
   await persistVideo(result.filePaths[0])
+}
+
+/** 从「视频创作」选择已保存到本地的视频：取绝对路径后复用 persistVideo 复制进节点。 */
+async function onPickFromCreations(item: { id: string }) {
+  errorMsg.value = ''
+  try {
+    const abs = (await api().videoGen.invoke('resolveLocalPath', item.id)) as string
+    if (!abs) {
+      errorMsg.value = '该视频未保存到本地，请先在「视频创作」中保存'
+      return
+    }
+    await persistVideo(abs)
+  } catch (e: any) {
+    errorMsg.value = e?.message || '选择视频失败'
+  }
 }
 
 function onDrop(e: DragEvent) {

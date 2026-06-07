@@ -24,6 +24,8 @@ export interface Bot {
   tool_approval: ToolApproval
   /** 是否启用 AI 生图能力（image_gen tool + 「生图：」切换条）。0=关、1=开。默认关。 */
   enable_image_gen: number
+  /** 单轮对话最大工具调用步数(0=用默认 40)。长任务(多页 PPT 等)可调高，避免被步数上限中断。 */
+  max_tool_rounds: number
   /** 2:3 形象图本地绝对路径（市场导入时下载落盘；本地创建时也可上传）。空=用首字母占位 */
   avatar: string
   /** 来源：'local' 本地创建 / 'market' 从智能体市场保存 */
@@ -51,6 +53,7 @@ function parseBot(row: any): Bot {
     prompt_skill_dirs: JSON.parse(row.prompt_skill_dirs || '[]'),
     tool_approval: (row.tool_approval || 'destructive') as ToolApproval,
     enable_image_gen: row.enable_image_gen ? 1 : 0,
+    max_tool_rounds: Number(row.max_tool_rounds || 0),
     avatar: row.avatar || '',
     source: row.source || 'local',
     cloud_agent_id: Number(row.cloud_agent_id || 0),
@@ -90,6 +93,7 @@ export function createBot(data: {
   prompt_skill_dirs?: string[]
   tool_approval?: ToolApproval
   enable_image_gen?: number
+  max_tool_rounds?: number
   avatar?: string
   source?: string
   cloud_agent_id?: number
@@ -98,7 +102,7 @@ export function createBot(data: {
   const id = uuid()
   const now = new Date().toISOString()
   db.prepare(
-    'INSERT INTO bots (id, name, description, model_provider_id, model_id, persona_id, kb_only, kb_category_ids, cloud_kb_ids, cloud_kb_only, cloud_kb_top_k, skill_ids, mcp_ids, prompt_skill_dirs, tool_approval, enable_image_gen, avatar, source, cloud_agent_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    'INSERT INTO bots (id, name, description, model_provider_id, model_id, persona_id, kb_only, kb_category_ids, cloud_kb_ids, cloud_kb_only, cloud_kb_top_k, skill_ids, mcp_ids, prompt_skill_dirs, tool_approval, enable_image_gen, max_tool_rounds, avatar, source, cloud_agent_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
   ).run(
     id,
     data.name,
@@ -116,6 +120,7 @@ export function createBot(data: {
     JSON.stringify(data.prompt_skill_dirs || []),
     data.tool_approval || 'destructive',
     data.enable_image_gen ? 1 : 0,
+    data.max_tool_rounds || 0,
     data.avatar || '',
     data.source || 'local',
     data.cloud_agent_id || 0,
@@ -143,6 +148,7 @@ export function updateBot(
     prompt_skill_dirs: string[]
     tool_approval: ToolApproval
     enable_image_gen: number
+    max_tool_rounds: number
     avatar: string
   }>
 ): Bot | null {
@@ -152,7 +158,7 @@ export function updateBot(
 
   const now = new Date().toISOString()
   db.prepare(
-    'UPDATE bots SET name=?, description=?, model_provider_id=?, model_id=?, persona_id=?, kb_only=?, kb_category_ids=?, cloud_kb_ids=?, cloud_kb_only=?, cloud_kb_top_k=?, skill_ids=?, mcp_ids=?, prompt_skill_dirs=?, tool_approval=?, enable_image_gen=?, avatar=?, updated_at=? WHERE id=?'
+    'UPDATE bots SET name=?, description=?, model_provider_id=?, model_id=?, persona_id=?, kb_only=?, kb_category_ids=?, cloud_kb_ids=?, cloud_kb_only=?, cloud_kb_top_k=?, skill_ids=?, mcp_ids=?, prompt_skill_dirs=?, tool_approval=?, enable_image_gen=?, max_tool_rounds=?, avatar=?, updated_at=? WHERE id=?'
   ).run(
     data.name ?? existing.name,
     data.description ?? existing.description,
@@ -169,6 +175,7 @@ export function updateBot(
     JSON.stringify(data.prompt_skill_dirs ?? existing.prompt_skill_dirs),
     data.tool_approval ?? existing.tool_approval,
     data.enable_image_gen !== undefined ? (data.enable_image_gen ? 1 : 0) : existing.enable_image_gen,
+    data.max_tool_rounds !== undefined ? data.max_tool_rounds : existing.max_tool_rounds,
     data.avatar ?? existing.avatar,
     now,
     id

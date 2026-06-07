@@ -11,7 +11,7 @@ import * as mcpServerService from '../services/mcp-server'
 import * as settingsService from '../services/settings'
 import * as dataPathService from '../services/data-path'
 import * as usageStatsService from '../services/usage-stats'
-import { sendMessage, cancelChat, isChatActive, respondToolApproval } from '../services/chat-engine'
+import { sendMessage, cancelChat, isChatActive, respondToolApproval, regenerateLastResponse, editAndResend } from '../services/chat-engine'
 import { callLLM } from '../services/llm'
 import { skillPresets } from '../services/skill-presets'
 import { executeSkillSandbox } from '../services/skill-sandbox'
@@ -199,6 +199,17 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('chat:respondToolApproval', (_, requestId: string, approved: boolean) =>
     respondToolApproval(requestId, approved)
   )
+  ipcMain.handle('chat:deleteMessage', (_, id: string) =>
+    conversationService.deleteMessage(id)
+  )
+  ipcMain.handle('chat:regenerate', (event, conversationId: string, requestId?: string) => {
+    const window = BrowserWindow.fromWebContents(event.sender)
+    return regenerateLastResponse(conversationId, window, requestId)
+  })
+  ipcMain.handle('chat:editMessage', (event, conversationId: string, messageId: string, newContent: string, requestId?: string) => {
+    const window = BrowserWindow.fromWebContents(event.sender)
+    return editAndResend(conversationId, messageId, newContent, window, requestId)
+  })
 
   // === File Reading ===
   ipcMain.handle('chat:readFileBase64', async (_, filePath: string) => {
@@ -1231,6 +1242,7 @@ export function registerIpcHandlers(): void {
     videoGenerationService.listGenerations(options || {})
   )
   ipcMain.handle('videoGen:get', (_, id: string) => videoGenerationService.getGeneration(id))
+  ipcMain.handle('videoGen:resolveLocalPath', (_, id: string) => videoGenerationService.resolveLocalAbsolutePath(id))
   ipcMain.handle('videoGen:getDeletedIds', (_, ids: string[]) =>
     videoGenerationService.getDeletedGenerationIds(Array.isArray(ids) ? ids : [])
   )

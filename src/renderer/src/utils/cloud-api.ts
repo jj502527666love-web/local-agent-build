@@ -133,7 +133,7 @@ function isRefreshableErrorMessage(msg: string): boolean {
 // 不允许触发自动 refresh 的端点：
 // 1. /auth/login、/auth/register 的 401 是业务错误（"用户名或密码错误"），不该触发登出
 // 2. /auth/refresh 自身 401 不能再 refresh，否则无限循环
-const NO_AUTO_REFRESH_PATHS = new Set(['/auth/login', '/auth/register', '/auth/refresh'])
+const NO_AUTO_REFRESH_PATHS = new Set(['/auth/login', '/auth/register', '/auth/refresh', '/auth/sms/send', '/auth/password/reset'])
 
 // 派发全局 auth 失效事件，由 main.ts 统一监听 → store.logout() + router.replace('/login')
 function dispatchAuthExpired(reason: string): void {
@@ -227,10 +227,14 @@ async function request(
 
 export const cloudAuth = {
   login: (username: string, password: string) => request('POST', '/auth/login', { username, password }, { withDeviceId: true }),
-  register: (data: { username: string; password: string; nickname?: string; phone?: string }) => request('POST', '/auth/register', data, { withDeviceId: true }),
+  register: (data: { username: string; password: string; nickname?: string; phone?: string; code?: string }) => request('POST', '/auth/register', data, { withDeviceId: true }),
   me: () => request('GET', '/auth/me'),
   changePassword: (old_password: string, new_password: string) => request('POST', '/auth/password', { old_password, new_password }),
   refresh: () => request('POST', '/auth/refresh'),
+  // 发送短信验证码（scene: 'register' 注册 | 'reset_password' 找回密码）
+  sendSmsCode: (scene: 'register' | 'reset_password', mobile: string) => request('POST', '/auth/sms/send', { scene, mobile }, { withDeviceId: true }),
+  // 凭手机号 + 验证码重置密码（找回密码，成功后不自动登录）
+  resetPassword: (mobile: string, code: string, new_password: string) => request('POST', '/auth/password/reset', { mobile, code, new_password }),
 }
 
 // 公开端点（无需登录）

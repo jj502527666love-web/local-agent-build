@@ -47,6 +47,11 @@ files:
   # Chromium 三方许可 HTML（~9.5MB）。运行时不读，仅用于法律披露；
   # 如果分发要求合规可以单独存档，无需打入安装包。
   - '!**/LICENSES.chromium.html'
+# sqlite-vec 原生扩展(vec0.dll/.so/.dylib)+ 原生 .node 模块必须解包到 asar 外，
+# 否则 loadExtension 无法按文件路径加载(运行时会回退 JS cosine，解包后才能真正启用 KNN 加速)。
+asarUnpack:
+  - '**/node_modules/sqlite-vec*/**'
+  - '**/*.node'
 electronLanguages:
   - en-US
   - zh-CN

@@ -1,6 +1,5 @@
-import { getDatabase } from '../database'
+import { getDatabase, isSqliteVecAvailable } from '../database'
 import { v4 as uuid } from 'uuid'
-import { cosineSimilarity } from './embedding'
 
 export interface VectorChunk {
   id: string
@@ -36,6 +35,102 @@ function embeddingToBuffer(embedding: number[]): Buffer {
 function bufferToEmbedding(buf: Buffer): number[] {
   const float32 = new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4)
   return Array.from(float32)
+}
+
+// 直接在 Float32 BLOB 上计算余弦,避免 Array.from 转换开销(JS fallback 提速)。
+function cosineSimilarityF32(query: Float32Array, buf: Buffer): number {
+  const v = new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4)
+  if (v.length !== query.length) return 0
+  let dot = 0
+  let nq = 0
+  let nv = 0
+  for (let i = 0; i < query.length; i++) {
+    dot += query[i] * v[i]
+    nq += query[i] * query[i]
+    nv += v[i] * v[i]
+  }
+  const denom = Math.sqrt(nq) * Math.sqrt(nv)
+  return denom === 0 ? 0 : dot / denom
+}
+
+// ── sqlite-vec(vec0)KNN 加速;任何环节失败都回退 JS cosine(零降级)──
+const _vecReadyDims = new Set<number>()
+const _vecBrokenDims = new Set<number>()
+
+function vecTableName(dim: number): string {
+  return `vec_chunks_${dim}`
+}
+
+// 确保某维度 vec0 表存在;首次建表时懒灌入 vector_chunks 中该维度的全部向量。
+// 返回 true 表示该维度 KNN 可用。任何失败标记 broken 并返回 false(回退 JS)。
+function ensureVecTable(dim: number): boolean {
+  if (!isSqliteVecAvailable() || !dim || dim <= 0) return false
+  if (_vecBrokenDims.has(dim)) return false
+  if (_vecReadyDims.has(dim)) return true
+  const db = getDatabase()
+  try {
+    const name = vecTableName(dim)
+    db.exec(
+      `CREATE VIRTUAL TABLE IF NOT EXISTS ${name} USING vec0(chunk_id TEXT PRIMARY KEY, kb_id TEXT, embedding float[${dim}] distance_metric=cosine)`
+    )
+    const cnt = (db.prepare(`SELECT COUNT(*) AS c FROM ${name}`).get() as any).c
+    if (cnt === 0) {
+      const rows = db
+        .prepare('SELECT id, knowledge_base_id, embedding FROM vector_chunks WHERE embedding IS NOT NULL AND embedding_dim = ?')
+        .all(dim) as any[]
+      if (rows.length > 0) {
+        const ins = db.prepare(`INSERT OR REPLACE INTO ${name}(chunk_id, kb_id, embedding) VALUES (?, ?, ?)`)
+        const tx = db.transaction(() => {
+          for (const r of rows) ins.run(r.id, r.knowledge_base_id, r.embedding)
+        })
+        tx()
+        console.log(`[vec] synced ${rows.length} chunks into ${name}`)
+      }
+    }
+    _vecReadyDims.add(dim)
+    return true
+  } catch (e: any) {
+    console.warn(`[vec] ensureVecTable(${dim}) failed, fallback JS cosine:`, e?.message || e)
+    _vecBrokenDims.add(dim)
+    return false
+  }
+}
+
+// 用 sqlite-vec KNN 检索;返回 null 表示不可用(交由 JS fallback)。
+function searchVec(
+  queryEmbedding: number[],
+  knowledgeBaseIds: string[],
+  topK: number,
+  threshold: number
+): SearchResult[] | null {
+  const dim = queryEmbedding.length
+  if (!ensureVecTable(dim)) return null
+  const db = getDatabase()
+  const name = vecTableName(dim)
+  const placeholders = knowledgeBaseIds.map(() => '?').join(',')
+  try {
+    const queryBuf = embeddingToBuffer(queryEmbedding)
+    const rows = db
+      .prepare(
+        `SELECT chunk_id, kb_id, distance FROM ${name}
+         WHERE embedding MATCH ? AND k = ? AND kb_id IN (${placeholders})
+         ORDER BY distance`
+      )
+      .all(queryBuf, topK, ...knowledgeBaseIds) as any[]
+    const results: SearchResult[] = []
+    for (const r of rows) {
+      const score = 1 - r.distance // cosine distance → similarity
+      if (score < threshold) continue
+      const chunkRow = db.prepare('SELECT * FROM vector_chunks WHERE id = ?').get(r.chunk_id) as any
+      if (!chunkRow) continue
+      results.push({ chunk: { ...chunkRow, embedding: null }, score })
+    }
+    return results
+  } catch (e: any) {
+    console.warn(`[vec] KNN query failed on ${name}, fallback JS cosine:`, e?.message || e)
+    _vecBrokenDims.add(dim)
+    return null
+  }
 }
 
 export function insertChunks(
@@ -74,6 +169,21 @@ export function insertChunks(
     }
   })
   insertMany()
+  // 双写 sqlite-vec(best-effort):失败不影响主流程,searchSimilar 会回退 JS
+  try {
+    const db2 = getDatabase()
+    for (let i = 0; i < chunks.length; i++) {
+      const c = chunks[i]
+      if (!c.embedding) continue
+      const dim = c.embeddingDim || c.embedding.length
+      if (!ensureVecTable(dim)) continue
+      db2
+        .prepare(`INSERT OR REPLACE INTO ${vecTableName(dim)}(chunk_id, kb_id, embedding) VALUES (?, ?, ?)`)
+        .run(ids[i], knowledgeBaseId, embeddingToBuffer(c.embedding))
+    }
+  } catch (e: any) {
+    console.warn('[vec] dual-write skipped:', e?.message || e)
+  }
   return ids
 }
 
@@ -130,6 +240,14 @@ export function deleteChunksByKnowledgeBaseId(knowledgeBaseId: string): number {
   const result = db
     .prepare('DELETE FROM vector_chunks WHERE knowledge_base_id = ?')
     .run(knowledgeBaseId)
+  // 同步从已建的 vec0 表删除(best-effort)
+  for (const dim of _vecReadyDims) {
+    try {
+      db.prepare(`DELETE FROM ${vecTableName(dim)} WHERE kb_id = ?`).run(knowledgeBaseId)
+    } catch {
+      /* ignore: 下次 ensureVecTable 懒同步会重建一致性 */
+    }
+  }
   return result.changes
 }
 
@@ -269,6 +387,10 @@ export function searchSimilar(
 
   if (knowledgeBaseIds.length === 0) return []
 
+  // 优先 sqlite-vec KNN(可用时);返回 null 表示不可用，回退 JS cosine。
+  const vecResults = searchVec(queryEmbedding, knowledgeBaseIds, topK, threshold)
+  if (vecResults !== null) return vecResults
+
   const placeholders = knowledgeBaseIds.map(() => '?').join(',')
   // 维度过滤：仅与 query 相同维度的 chunks 参与相似度计算，避免跨模型脏召回
   const dim = options?.embeddingDim || queryEmbedding.length
@@ -278,18 +400,14 @@ export function searchSimilar(
     )
     .all(...knowledgeBaseIds, dim) as any[]
 
+  const queryF32 = new Float32Array(queryEmbedding)
   const results: SearchResult[] = []
   for (const row of rows) {
-    const embedding = bufferToEmbedding(row.embedding)
-    // 老数据 embedding_dim=0 时仍走运行时长度校验，跨维向量直接跳过
-    if (embedding.length !== queryEmbedding.length) continue
-    const score = cosineSimilarity(queryEmbedding, embedding)
+    // 直接在 Float32 BLOB 上算余弦,跨维(长度不符)返回 0 被 threshold 过滤
+    const score = cosineSimilarityF32(queryF32, row.embedding)
     if (score >= threshold) {
       results.push({
-        chunk: {
-          ...row,
-          embedding
-        },
+        chunk: { ...row, embedding: bufferToEmbedding(row.embedding) },
         score
       })
     }
