@@ -702,6 +702,58 @@ export function registerIpcHandlers(): void {
     imageGenService.getAbsolutePath(relPath)
   )
 
+  // 通用「按顺序导出」：把内存态结果图（电商工具等非画布 project）按列表顺序复制到
+  // 用户选定目录，文件名 = {NN}-{label}.{ext}，序号前缀保证资源管理器内顺序稳定。
+  // items: [{ path: result_path（相对/绝对均可）, name: 语义标签 }]
+  ipcMain.handle(
+    'imageGen:exportImages',
+    async (event, items: { path: string; name: string }[]) => {
+      const win = BrowserWindow.fromWebContents(event.sender)
+      if (!win) return { success: false, error: '窗口不可用' }
+      const list = (Array.isArray(items) ? items : []).filter((it) => it && it.path)
+      if (!list.length) return { success: false, error: '没有可导出的图片' }
+
+      const picked = await dialog.showOpenDialog(win, {
+        title: '选择导出目录',
+        properties: ['openDirectory', 'createDirectory']
+      })
+      if (picked.canceled || !picked.filePaths?.[0]) return { success: false, canceled: true }
+
+      const targetDir = picked.filePaths[0]
+      const { copyFileSync, existsSync, mkdirSync } = require('fs') as typeof import('fs')
+      const { join, extname } = require('path') as typeof import('path')
+      if (!existsSync(targetDir)) mkdirSync(targetDir, { recursive: true })
+
+      const sanitize = (s: string): string =>
+        ((s || '').replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim() || 'image').slice(0, 80)
+      const used = new Set<string>()
+      const files: string[] = []
+      let exported = 0
+      list.forEach((it, i) => {
+        const abs = imageGenService.getAbsolutePath(it.path)
+        if (!existsSync(abs)) return
+        const ext = extname(abs).replace('.', '').toLowerCase() || 'png'
+        const seq = String(i + 1).padStart(2, '0')
+        let name = `${seq}-${sanitize(it.name)}.${ext}`
+        if (used.has(name)) {
+          const base = name.slice(0, name.length - ext.length - 1)
+          let k = 2
+          while (used.has(`${base}(${k}).${ext}`)) k++
+          name = `${base}(${k}).${ext}`
+        }
+        used.add(name)
+        try {
+          copyFileSync(abs, join(targetDir, name))
+          files.push(name)
+          exported++
+        } catch (e) {
+          console.error('[imageGen:exportImages] copy failed:', abs, '→', name, e)
+        }
+      })
+      return { success: true, dir: targetDir, exported, total: list.length, files }
+    }
+  )
+
   // === Creative Templates（v0.7.7+：本地分类/模板 CRUD + 云端模板拉取） ===
   // 本地模板存在 dataDir 的 sqlite；云端模板走云控端 /public/creative-templates/*
   ipcMain.handle('creativeTemplate:listCategories', () =>

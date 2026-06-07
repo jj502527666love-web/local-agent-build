@@ -120,12 +120,19 @@ export const DEFAULT_TIER_ID = '2k'
 /** 默认画质 id，所有未注册 qualities 或模型切换后的回退值 */
 export const DEFAULT_QUALITY_ID = 'auto'
 
-/** 默认能力：未注册模型都按 1K + 2K 走；不注册画质，UI 默认不显示 */
+/**
+ * 默认能力：未注册模型支持 1K / 2K / 4K（覆盖电商作图等需要高清出图的场景）。
+ * 加 maxTotalPixels 上限，避免 4K 方形（约 14.7M 像素）这类请求被上游静默降级。
+ * 不注册画质，UI 默认不显示。
+ */
 const DEFAULT_CAPABILITY: ModelImageCapability = {
   tiers: [
-    { id: '2k', label: '2K', longSide: 2048 }
+    { id: '1k', label: '1K', longSide: 1024 },
+    { id: '2k', label: '2K', longSide: 2048 },
+    { id: '4k', label: '4K', longSide: 3840, note: '较慢' }
   ],
-  maxRatio: CUSTOM_ASPECT_RATIO_MAX
+  maxRatio: CUSTOM_ASPECT_RATIO_MAX,
+  maxTotalPixels: 8_294_400
 }
 
 /** gpt-image 系列的标准画质档位（官方 API 支持 auto/low/medium/high） */

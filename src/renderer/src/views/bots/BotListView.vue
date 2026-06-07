@@ -171,7 +171,7 @@
                 <div class="flex items-center justify-center gap-2.5 mt-2 text-xs">
                   <button @click="editBot(bot)" class="text-text-tertiary hover:text-text-primary transition-colors">编辑</button>
                   <span class="text-surface-3">|</span>
-                  <button @click="botStore.deleteBot(bot.id)" class="text-text-tertiary hover:text-red-500 transition-colors">删除</button>
+                  <button @click="deleteTarget = bot" class="text-text-tertiary hover:text-red-500 transition-colors">删除</button>
                   <span class="text-surface-3">|</span>
                   <button v-if="canPublish(bot)" @click="publish(bot)" :disabled="publishingId === bot.id" class="text-primary-600 hover:text-primary-700 transition-colors disabled:opacity-50">{{ publishingId === bot.id ? '发布中...' : '发布到市场' }}</button>
                   <button v-else-if="bot.submission_status === 'pending' || bot.submission_status === 'approved'" @click="withdraw(bot)" class="text-text-tertiary hover:text-text-primary transition-colors">撤回发布</button>
@@ -258,6 +258,15 @@
       :required="lowBalance.required"
       :available="lowBalance.available"
     />
+
+    <ConfirmDialog
+      :visible="!!deleteTarget"
+      title="删除智能体"
+      :message="deleteTarget ? `确定删除智能体「${deleteTarget.name}」吗？删除后不可恢复。` : ''"
+      confirm-text="删除"
+      @confirm="confirmDelete"
+      @cancel="deleteTarget = null"
+    />
   </div>
 </template>
 
@@ -274,6 +283,7 @@ import { useCloudAuthStore } from '@/stores/cloud-auth'
 import { useSiteConfigStore } from '@/stores/site-config'
 import GalleryPicker from '@/components/GalleryPicker.vue'
 import LowBalanceModal from '@/components/LowBalanceModal.vue'
+import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import { loadAsDataUri } from '@/utils/image-source'
 
 const botStore = useBotStore()
@@ -356,6 +366,19 @@ async function saveBot() {
   } catch (e: any) {
     console.error('saveBot error:', e)
     alert('保存失败: ' + (e?.message || e))
+  }
+}
+
+// ===== 删除（带确认弹窗）=====
+const deleteTarget = ref<Bot | null>(null)
+async function confirmDelete() {
+  const bot = deleteTarget.value
+  if (!bot) return
+  deleteTarget.value = null
+  try {
+    await botStore.deleteBot(bot.id)
+  } catch (e: any) {
+    alert('删除失败：' + (e?.message || e))
   }
 }
 

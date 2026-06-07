@@ -191,7 +191,7 @@ const handoff = useHandoffStore()
 
 // ---- UI 状态 ----
 const search = ref('')
-const activeCat = ref<typeof CATEGORY_TABS[number]['id']>('recommend')
+const activeCat = ref<typeof CATEGORY_TABS[number]['id']>('ecommerce')
 const toast = ref('')
 const processing = ref(false)
 const processingText = ref('')
@@ -205,8 +205,7 @@ const displayCards = computed<ToolCard[]>(() => {
       c.label.toLowerCase().includes(q) || (c.desc?.toLowerCase().includes(q) ?? false)
     )
   }
-  // "推荐" 标签默认展示全部 TOOL_CARDS（含各分类），其他 tab 按 category 筛选
-  if (activeCat.value === 'recommend') return TOOL_CARDS
+  // 按当前分类筛选卡片（电商作图 / AI 处理 / 高效办公）
   return TOOL_CARDS.filter(c => c.category === activeCat.value)
 })
 

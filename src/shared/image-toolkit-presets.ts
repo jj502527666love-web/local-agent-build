@@ -71,19 +71,56 @@ export const HERO_CARDS: ToolCard[] = [
 
 /** 通用工具（含原"常用 AI"4 张，统一并入推荐区，去除橙色高亮） */
 export const TOOL_CARDS: ToolCard[] = [
+  // ===== 电商作图：5 个一键电商功能（点击进入各自独立功能页 /ecom/*）=====
+  {
+    id: 'ecom-batch-sku',
+    label: 'AI 批量SKU生成',
+    iconPath: 'M3.75 6A2.25 2.25 0 0 1 6 3.75h2.25A2.25 2.25 0 0 1 10.5 6v2.25a2.25 2.25 0 0 1-2.25 2.25H6a2.25 2.25 0 0 1-2.25-2.25V6ZM3.75 15.75A2.25 2.25 0 0 1 6 13.5h2.25a2.25 2.25 0 0 1 2.25 2.25V18a2.25 2.25 0 0 1-2.25 2.25H6A2.25 2.25 0 0 1 3.75 18v-2.25ZM13.5 6a2.25 2.25 0 0 1 2.25-2.25H18A2.25 2.25 0 0 1 20.25 6v2.25A2.25 2.25 0 0 1 18 10.5h-2.25a2.25 2.25 0 0 1-2.25-2.25V6ZM13.5 15.75a2.25 2.25 0 0 1 2.25-2.25H18a2.25 2.25 0 0 1 2.25 2.25V18A2.25 2.25 0 0 1 18 20.25h-2.25A2.25 2.25 0 0 1 13.5 18v-2.25Z',
+    category: 'ecommerce',
+    badge: '可批量',
+    action: { type: 'direct-route', path: '/ecom/batch-sku' }
+  },
+  {
+    id: 'ecom-clone',
+    label: 'AI 电商图复刻',
+    iconPath: 'M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 0 1-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 0 1 1.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 0 0-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.375H9.375a1.125 1.125 0 0 1-1.125-1.125v-9.25m11.25 5.5H16.5a1.125 1.125 0 0 1-1.125-1.125v-3.5',
+    category: 'ecommerce',
+    action: { type: 'direct-route', path: '/ecom/clone' }
+  },
+  {
+    id: 'ecom-main',
+    label: 'AI 生成主图',
+    iconPath: 'm2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909m-18 3.75h16.5a1.5 1.5 0 0 0 1.5-1.5V6a1.5 1.5 0 0 0-1.5-1.5H3.75A1.5 1.5 0 0 0 2.25 6v12a1.5 1.5 0 0 0 1.5 1.5Zm10.5-11.25h.008v.008h-.008V8.25Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z',
+    category: 'ecommerce',
+    action: { type: 'direct-route', path: '/ecom/main' }
+  },
+  {
+    id: 'ecom-detail',
+    label: 'AI 生成详情页',
+    iconPath: 'M8.25 6.75h12M8.25 12h12m-12 5.25h12M3.75 6.75h.007v.008H3.75V6.75Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0ZM3.75 12h.007v.008H3.75V12Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm-.375 5.25h.007v.008H3.75v-.008Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z',
+    category: 'ecommerce',
+    action: { type: 'direct-route', path: '/ecom/detail' }
+  },
+  {
+    id: 'ecom-poster',
+    label: 'AI 海报生成',
+    iconPath: 'M6 6.878V6a2.25 2.25 0 0 1 2.25-2.25h7.5A2.25 2.25 0 0 1 18 6v.878m-12 0c.235-.083.487-.128.75-.128h10.5c.263 0 .515.045.75.128m-12 0A2.25 2.25 0 0 0 4.5 9v.878m13.5-3A2.25 2.25 0 0 1 19.5 9v.878m0 0a2.246 2.246 0 0 0-.75-.128H5.25c-.263 0-.515.045-.75.128m15 0A2.25 2.25 0 0 1 21 12v6a2.25 2.25 0 0 1-2.25 2.25H5.25A2.25 2.25 0 0 1 3 18v-6c0-.98.626-1.813 1.5-2.122',
+    category: 'ecommerce',
+    action: { type: 'direct-route', path: '/ecom/poster' }
+  },
   // 原"常用 AI"四张：合并进推荐区头部，降级为白底普通卡
   {
     id: 'ai-erase',
     label: 'AI 消除',
     iconPath: 'm15 5 4 4M13 7l6 6-7.5 7.5a3 3 0 0 1-2.121.879H4.5A1.5 1.5 0 0 1 3 19.879v-2.379a3 3 0 0 1 .879-2.121L13 7Z',
-    category: 'recommend',
+    category: 'ai-enhance',
     action: { type: 'pick-then-edit', tool: 'inpaint', template: 'remove' }
   },
   {
     id: 'ai-clear',
     label: 'AI 变清晰',
     iconPath: 'M9.879 7.519c1.171-1.025 3.071-1.025 4.242 0 1.172 1.025 1.172 2.687 0 3.712-.203.179-.43.326-.67.442-.745.361-1.45.999-1.45 1.827v.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 5.25h.008v.008H12v-.008Z',
-    category: 'recommend',
+    category: 'ai-enhance',
     action: {
       type: 'pick-then-gen',
       needRef: true,
@@ -95,7 +132,7 @@ export const TOOL_CARDS: ToolCard[] = [
     id: 'id-photo',
     label: 'AI 证件照',
     iconPath: 'M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.501 20.118a7.5 7.5 0 0 1 14.998 0A17.933 17.933 0 0 1 12 21.75c-2.676 0-5.216-.584-7.499-1.632Z',
-    category: 'recommend',
+    category: 'ai-enhance',
     action: {
       type: 'pick-then-gen',
       needRef: true,
@@ -108,7 +145,7 @@ export const TOOL_CARDS: ToolCard[] = [
     label: 'AI 换装',
     // lucide 「shirt」图标 path，表示上衣轮廓
     iconPath: 'M20.38 3.46 16 2a4 4 0 0 1-8 0L3.62 3.46a2 2 0 0 0-1.34 2.23l.58 3.47a1 1 0 0 0 .99.84H6v10c0 1.1.9 2 2 2h8a2 2 0 0 0 2-2V10h2.15a1 1 0 0 0 .99-.84l.58-3.47a2 2 0 0 0-1.34-2.23z',
-    category: 'recommend',
+    category: 'ai-enhance',
     action: {
       type: 'pick-then-gen',
       needRef: true,
@@ -123,7 +160,7 @@ export const TOOL_CARDS: ToolCard[] = [
     // lucide 「person-standing」多 subpath：圆头 + 躯干竖线 + 双臂横展 + 双腿 V 字
     // 关键改良：双腿在 (12,14) 与躯干底部连接，整体连贯
     iconPath: 'M12 5a2 2 0 1 0 0-4 2 2 0 0 0 0 4ZM12 7v7M6 10l6 2 6-2M9 22l3-8 3 8',
-    category: 'recommend',
+    category: 'ai-enhance',
     action: {
       type: 'pick-then-gen',
       needRef: true,
@@ -136,7 +173,7 @@ export const TOOL_CARDS: ToolCard[] = [
     id: 'style-transfer',
     label: '风格迁移',
     iconPath: 'M4.5 5.25h6.75v6.75H4.5V5.25Zm8.25 0h6.75v6.75h-6.75V5.25ZM4.5 14.25h6.75v4.5H4.5v-4.5Zm8.25 0h6.75v4.5h-6.75v-4.5Z',
-    category: 'recommend',
+    category: 'ai-enhance',
     action: {
       type: 'pick-then-gen',
       needRef: true,
@@ -148,7 +185,7 @@ export const TOOL_CARDS: ToolCard[] = [
     id: 'product-shot',
     label: '电商白底图',
     iconPath: 'm21 7.5-9-5.25L3 7.5m18 0-9 5.25m9-5.25v9l-9 5.25M3 7.5l9 5.25M3 7.5v9l9 5.25m0-9v9',
-    category: 'recommend',
+    category: 'ecommerce',
     action: {
       type: 'pick-then-gen',
       needRef: true,
@@ -161,21 +198,21 @@ export const TOOL_CARDS: ToolCard[] = [
     id: 'collage',
     label: '拼图拼接',
     iconPath: 'M3.75 3v18M3.75 12h16.5M20.25 3v18M3.75 7.5h16.5M3.75 16.5h16.5',
-    category: 'recommend',
+    category: 'tool',
     action: { type: 'pick-then-tool', toolRoute: '/image-toolkit/collage', multiple: true, minImages: 2, maxImages: 9 }
   },
   {
     id: 'replace-text',
     label: '无痕改字',
     iconPath: 'M2.25 12.76c0 1.6 1.123 2.994 2.707 3.227 1.087.16 2.185.283 3.293.369V21l4.184-4.183a1.14 1.14 0 0 1 .778-.332 48.294 48.294 0 0 0 5.83-.498c1.585-.233 2.708-1.626 2.708-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0 0 12 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018Z',
-    category: 'recommend',
+    category: 'ai-enhance',
     action: { type: 'pick-then-edit', tool: 'inpaint', template: 'replace', presetPrompt: '' }
   },
   {
     id: 'remove-watermark',
     label: '图片去水印',
     iconPath: 'M2.036 12.322a1.012 1.012 0 0 1 0-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178Z M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z',
-    category: 'recommend',
+    category: 'ai-enhance',
     action: { type: 'pick-then-edit', tool: 'inpaint', template: 'remove' }
   },
   {
@@ -183,14 +220,14 @@ export const TOOL_CARDS: ToolCard[] = [
     label: '贴图',
     // heroicons 24-outline face-smile，贴近贴纸/表情语义
     iconPath: 'M15.182 15.182a4.5 4.5 0 0 1-6.364 0M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0ZM9.75 9.75h.008v.008H9.75V9.75Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm4.875 0h.008v.008h-.008V9.75Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z',
-    category: 'recommend',
+    category: 'tool',
     action: { type: 'pick-then-edit', tool: 'sticker' }
   },
   {
     id: 'add-watermark',
     label: '加水印',
     iconPath: 'M16.5 8.25V6a2.25 2.25 0 0 0-2.25-2.25H6A2.25 2.25 0 0 0 3.75 6v8.25A2.25 2.25 0 0 0 6 16.5h2.25m8.25-8.25H18a2.25 2.25 0 0 1 2.25 2.25V18A2.25 2.25 0 0 1 18 20.25h-7.5A2.25 2.25 0 0 1 8.25 18v-1.5m8.25-8.25h-6a2.25 2.25 0 0 0-2.25 2.25v6',
-    category: 'recommend',
+    category: 'tool',
     badge: '可批量',
     action: { type: 'pick-then-tool', toolRoute: '/image-toolkit/watermark', multiple: true, minImages: 1 }
   },
@@ -290,7 +327,7 @@ export const TOOL_CARDS: ToolCard[] = [
     id: 'avatar-portrait',
     label: '形象照',
     iconPath: 'M17.982 18.725A7.488 7.488 0 0 0 12 15.75a7.488 7.488 0 0 0-5.982 2.975m11.963 0a9 9 0 1 0-11.963 0m11.963 0A8.966 8.966 0 0 1 12 21a8.966 8.966 0 0 1-5.982-2.275M15 9.75a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z',
-    category: 'recommend',
+    category: 'ai-enhance',
     action: {
       type: 'pick-then-gen',
       needRef: true,
@@ -304,11 +341,10 @@ export const TOOL_CARDS: ToolCard[] = [
 /** 全部卡片（用于"推荐"页和搜索） */
 export const ALL_CARDS: ToolCard[] = [...HERO_CARDS, ...TOOL_CARDS]
 
-/** 分类 tabs 定义 */
-export const CATEGORY_TABS: Array<{ id: 'recommend' | 'ai-enhance' | 'ecommerce' | 'tool'; label: string }> = [
-  { id: 'recommend', label: '推荐' },
-  { id: 'ai-enhance', label: 'AI 增强' },
+/** 分类 tabs 定义（去掉「推荐」，默认展示「电商作图」） */
+export const CATEGORY_TABS: Array<{ id: 'ecommerce' | 'ai-enhance' | 'tool'; label: string }> = [
   { id: 'ecommerce', label: '电商作图' },
+  { id: 'ai-enhance', label: 'AI 处理' },
   { id: 'tool', label: '高效办公' }
 ]
 

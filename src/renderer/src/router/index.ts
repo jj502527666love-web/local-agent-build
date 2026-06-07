@@ -87,6 +87,36 @@ export const routes: RouteRecordRaw[] = [
         meta: { title: 'AI 生图' }
       },
       {
+        path: 'ecom/batch-sku',
+        name: 'ecomBatchSku',
+        component: () => import('@/views/ecom/BatchSkuView.vue'),
+        meta: { title: 'AI 批量SKU生成' }
+      },
+      {
+        path: 'ecom/clone',
+        name: 'ecomClone',
+        component: () => import('@/views/ecom/EcomCloneView.vue'),
+        meta: { title: 'AI 一键电商图复刻' }
+      },
+      {
+        path: 'ecom/main',
+        name: 'ecomMain',
+        component: () => import('@/views/ecom/EcomMainView.vue'),
+        meta: { title: 'AI 一键生成主图' }
+      },
+      {
+        path: 'ecom/detail',
+        name: 'ecomDetail',
+        component: () => import('@/views/ecom/EcomDetailView.vue'),
+        meta: { title: 'AI 一键生成详情页' }
+      },
+      {
+        path: 'ecom/poster',
+        name: 'ecomPoster',
+        component: () => import('@/views/ecom/PosterView.vue'),
+        meta: { title: 'AI 海报生成' }
+      },
+      {
         path: 'batch-gen',
         name: 'batchGen',
         component: () => import('@/views/image-gen/BatchGenView.vue'),
