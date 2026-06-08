@@ -9,7 +9,9 @@ import { embedText, EmbeddingUnavailableError } from './embedding'
 import { searchHybrid } from './vector-store'
 import { searchCloudKnowledgeBases } from './cloud-kb-search'
 import { getVectorStatsForUI } from './vectorize'
-import { addMessage, getConversation } from './conversation'
+import { addMessage, getConversation, updateMessageCard, type MessageCard } from './conversation'
+import { requestUserChoice } from './user-choice'
+import { v4 as uuid } from 'uuid'
 import type { BrowserWindow } from 'electron'
 
 const PREVIEW_MAX_BYTES = 200_000
@@ -121,7 +123,7 @@ function backupBeforeWrite(args: any, sandboxDir?: string): void {
   }
 }
 
-export const CORE_TOOL_NAMES = ['file_ops', 'run_command', 'image_gen', 'kb_list', 'kb_search', 'kb_stats']
+export const CORE_TOOL_NAMES = ['file_ops', 'run_command', 'image_gen', 'ask_user', 'kb_list', 'kb_search', 'kb_stats']
 
 export const KB_TOOL_NAMES = ['kb_list', 'kb_search', 'kb_stats']
 
@@ -194,12 +196,50 @@ export const coreToolDefs = [
           prompt: { type: 'string', description: '图片描述提示词（generate 时必填）' },
           model_provider_id: { type: 'string', description: '服务商ID（generate 时必填，从 list_providers 获取）' },
           model_id: { type: 'string', description: '模型ID（generate 时必填，从 list_providers 获取）' },
-          size: { type: 'string', description: '图片尺寸比例：正图 1:1；横图 2:1, 3:1, 3:2, 4:3, 5:4, 16:9, 21:9；竖图 1:2, 1:3, 2:3, 3:4, 4:5, 9:16, 9:21；也可传 1:3 到 3:1 范围内的自定义比例或像素（默认 1:1）' },
+          size: { type: 'string', description: '图片尺寸比例。重要：用户未明确说尺寸/比例时不要传此参数（留空）——系统会弹「生图参数卡」让用户选尺寸/分辨率/画质/数量；仅当用户明确指定了尺寸或比例（如“画个16:9的”）时才传。取值：正图 1:1；横图 2:1, 3:1, 3:2, 4:3, 5:4, 16:9, 21:9；竖图 1:2, 1:3, 2:3, 3:4, 4:5, 9:16, 9:21；也可传 1:3 到 3:1 范围内的自定义比例或像素' },
           output_dir: { type: 'string', description: '可选，将生成的图片复制到此目录。相对路径相对当前对话工作区;未指定时默认落在 {工作区}/images/' },
           output_filename: { type: 'string', description: '可选，自定义输出文件名（不含扩展名，如 cover_bg）' },
           ref_image_ids: { type: 'array', items: { type: 'string' }, description: '可选，参考图片附件 ID 数组。优先使用系统提示列出的最近图片附件 id，不要传 base64' }
         },
         required: ['action']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'ask_user',
+      description: '向用户弹出可点击的选项卡片，请其在选项中做出选择或澄清后再继续。支持一次提出多个问题（分步向导：用户逐题选择、可回上一题、末尾统一提交），作答后你会一次性收到所有答案。适用场景：需求有歧义、有多个合理方向、涉及需要用户拍板的取舍（风格/用途/方案/范围等）。卡片内嵌在对话里。注意：仅在确实需要用户决策时使用；可由你自行合理决定的琐碎默认值不要用它来问，避免打扰用户。',
+      parameters: {
+        type: 'object',
+        properties: {
+          questions: {
+            type: 'array',
+            description: '问题列表（一次可问多个，用户按顺序逐题作答）。需要用户在多个维度上做选择时，一次性把这些问题都放进来，而不是连续多次调用。',
+            items: {
+              type: 'object',
+              properties: {
+                question: { type: 'string', description: '向用户提出的问题（简明扼要）' },
+                options: {
+                  type: 'array',
+                  description: '该问题的选项列表，每项为 {id?, label, desc?}；也可直接传字符串数组',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      id: { type: 'string', description: '选项唯一标识（可省略，系统会自动生成）' },
+                      label: { type: 'string', description: '选项显示文本' },
+                      desc: { type: 'string', description: '可选，选项的补充说明' }
+                    }
+                  }
+                },
+                allow_multiple: { type: 'boolean', description: '该问题是否允许多选（默认 false 单选）' },
+                allow_free_input: { type: 'boolean', description: '该问题是否允许额外自由输入文本（默认 false）' }
+              },
+              required: ['question', 'options']
+            }
+          }
+        },
+        required: ['questions']
       }
     }
   },
@@ -391,6 +431,10 @@ export async function executeCoreToolCall(
     const result = await executeImageGen(args, sandboxDir, execContext)
     return { handled: true, result: withWorkspace(result, sandboxDir) }
   }
+  if (functionName === 'ask_user') {
+    const result = await executeAskUser(args, execContext)
+    return { handled: true, result }
+  }
   if (KB_TOOL_NAMES.includes(functionName)) {
     const result = await executeKbTool(functionName, args, kbContext, execContext?.signal)
     return { handled: true, result }
@@ -577,7 +621,166 @@ async function executeKbTool(
   return { error: `未知的知识库工具: ${functionName}` }
 }
 
+/**
+ * ask_user 工具：向用户弹出可点击的选项卡片，挂起工具执行等其选择，再把结果返回给 LLM。
+ *
+ * 复用 user-choice 的人在回路回环 + chat:appendMessage / chat:updateMessage 通道：
+ *  1) 落一条 pending 卡片消息并推给前端渲染交互卡
+ *  2) requestUserChoice 挂起，等用户在对话里选择（或超时/中止 → null）
+ *  3) 落 answered/canceled 留痕、通知前端更新，并把选择作为 tool result 返回
+ */
+async function executeAskUser(args: any, execContext?: ToolExecContext): Promise<any> {
+  const conversationId = execContext?.conversationId
+  const window = execContext?.window || null
+  const signal = execContext?.signal
+
+  // 规范化为 questions[]：优先 args.questions；兼容单题 args.question + args.options
+  const rawQuestions: any[] =
+    Array.isArray(args?.questions) && args.questions.length
+      ? args.questions
+      : args?.question
+        ? [{ question: args.question, options: args.options, allow_multiple: args.allow_multiple, allow_free_input: args.allow_free_input }]
+        : []
+
+  const questions = rawQuestions
+    .map((q: any, qi: number) => {
+      const rawOptions = Array.isArray(q?.options) ? q.options : []
+      const options = rawOptions
+        .map((o: any, i: number) => {
+          if (typeof o === 'string') return { id: `q${qi}_opt_${i}`, label: o.trim(), value: o }
+          const label = String(o?.label ?? o?.value ?? '').trim()
+          return {
+            id: String(o?.id ?? `q${qi}_opt_${i}`),
+            label,
+            value: o?.value ?? o?.label ?? `q${qi}_opt_${i}`,
+            desc: o?.desc ? String(o.desc) : undefined
+          }
+        })
+        .filter((o: any) => o.label)
+      return {
+        id: String(q?.id ?? `q${qi}`),
+        question: String(q?.question || '').trim(),
+        options,
+        allow_multiple: !!q?.allow_multiple,
+        allow_free_input: !!q?.allow_free_input
+      }
+    })
+    .filter((q: any) => q.question && q.options.length)
+
+  if (questions.length === 0) return { error: '缺少 questions（每个问题需含 question 与非空 options）' }
+
+  // chat 路径下一定有 conversationId + window；缺失说明非交互环境，无法弹卡。
+  if (!conversationId || !window) {
+    return { error: '当前环境不支持交互选项卡，请直接基于已知信息继续。' }
+  }
+
+  const requestId = uuid()
+  const card: MessageCard = {
+    type: 'ask_user',
+    request_id: requestId,
+    status: 'pending',
+    questions
+  }
+  const message = addMessage({ conversation_id: conversationId, role: 'assistant', content: '', card })
+  try {
+    window.webContents.send('chat:appendMessage', { conversationId, message })
+  } catch (e) {
+    console.error('[ask_user] appendMessage failed:', e)
+  }
+
+  const selection = await requestUserChoice(conversationId, requestId, signal)
+
+  // 会话可能在等待期间被删除：updateMessageCard 返回 null 时静默跳过 UI 更新。
+  if (!selection) {
+    const updated = updateMessageCard(message.id, { status: 'canceled' })
+    if (updated) {
+      try { window.webContents.send('chat:updateMessage', { conversationId, message: updated }) } catch {}
+    }
+    return {
+      status: 'canceled',
+      message: '用户未作出选择（已取消或超时）。请勿重试，等待用户进一步指示。'
+    }
+  }
+
+  const answers = (selection.answers || {}) as Record<string, { selected: string[]; free_text?: string }>
+  const updated = updateMessageCard(message.id, { status: 'answered', answers })
+  if (updated) {
+    try { window.webContents.send('chat:updateMessage', { conversationId, message: updated }) } catch {}
+  }
+
+  // 组织成对模型友好的逐题结果（值用 option.value/label，而非内部 id）
+  const resultAnswers = questions.map((q: any) => {
+    const a = answers[q.id] || { selected: [] }
+    const selIds = Array.isArray(a.selected) ? a.selected : []
+    const selOpts = q.options.filter((o: any) => selIds.includes(o.id))
+    const selVals = selOpts.map((o: any) => o.value ?? o.label)
+    return {
+      question: q.question,
+      selected: q.allow_multiple ? selVals : (selVals[0] ?? null),
+      selected_labels: selOpts.map((o: any) => o.label),
+      free_text: a.free_text || ''
+    }
+  })
+
+  return { status: 'answered', answers: resultAnswers }
+}
+
 const IMAGE_KEYWORDS = ['image', 'dall-e', 'flux', 'stable-diffusion', 'sdxl', 'cogview', 'wanx', 'kolors']
+
+/**
+ * 弹「生图参数确认卡」（image_params），挂起等用户确认尺寸/分辨率/画质/张数。
+ * 复用 user-choice 回环 + chat:appendMessage / chat:updateMessage 通道。
+ * 返回确认后的参数；用户取消 / 超时返回 null。
+ */
+async function requestImageParams(
+  conversationId: string,
+  window: BrowserWindow,
+  args: any,
+  signal?: AbortSignal
+): Promise<{ size: string; tierId: string; quality: string; batchCount: number } | null> {
+  const cardRequestId = uuid()
+  const card: MessageCard = {
+    type: 'image_params',
+    request_id: cardRequestId,
+    status: 'pending',
+    question: '请确认生图参数',
+    defaults: {
+      prompt: args.prompt || '',
+      model_id: args.model_id || '',
+      size: '1:1',
+      tierId: '2k',
+      quality: 'auto',
+      batchCount: 1
+    }
+  }
+  const message = addMessage({ conversation_id: conversationId, role: 'assistant', content: '', card })
+  try {
+    window.webContents.send('chat:appendMessage', { conversationId, message })
+  } catch (e) {
+    console.error('[image_gen] appendMessage (params card) failed:', e)
+  }
+
+  const selection = await requestUserChoice(conversationId, cardRequestId, signal)
+  if (!selection || !selection.result) {
+    const updated = updateMessageCard(message.id, { status: 'canceled' })
+    if (updated) {
+      try { window.webContents.send('chat:updateMessage', { conversationId, message: updated }) } catch {}
+    }
+    return null
+  }
+  const r = selection.result
+  const result = {
+    size: String(r.size || '1:1'),
+    tierId: String(r.tierId || '2k'),
+    quality: String(r.quality || 'auto'),
+    batchCount: Math.min(Math.max(Number(r.batchCount) || 1, 1), 10)
+  }
+  const updated = updateMessageCard(message.id, { status: 'answered', result })
+  if (updated) {
+    try { window.webContents.send('chat:updateMessage', { conversationId, message: updated }) } catch {}
+  }
+  return result
+}
 
 async function executeImageGen(args: any, sandboxDir?: string, execContext?: ToolExecContext): Promise<any> {
   try {
@@ -607,8 +810,21 @@ async function executeImageGen(args: any, sandboxDir?: string, execContext?: Too
       const requestId = execContext?.requestId
       const window = execContext?.window || null
       if (conversationId) {
+        // 用户未明确指定尺寸（args.size）时，先弹「生图参数确认卡」让其确认尺寸/分辨率/画质/张数；
+        // 已指定则直接出图（尊重用户/LLM 的显式参数，不打扰）。
+        let genArgs = args
+        if (!args.size && window) {
+          const params = await requestImageParams(conversationId, window, args, execContext?.signal)
+          if (!params) {
+            return {
+              status: 'canceled',
+              message: '用户取消了生图参数确认，未生成图片。请勿重试，等待用户进一步指示。'
+            }
+          }
+          genArgs = { ...args, ...params }
+        }
         // 后台执行（不 await）—— 任何异常都在 helper 内自我消化，避免吞掉
-        runImageGenInBackground(args, sandboxDir, conversationId, requestId, window, execContext?.isCanceled).catch((e) => {
+        runImageGenInBackground(genArgs, sandboxDir, conversationId, requestId, window, execContext?.isCanceled).catch((e) => {
           console.error('[image_gen] background task threw:', e)
         })
         return {
@@ -702,11 +918,11 @@ async function runImageGenInBackground(
         modelProviderId: args.model_provider_id,
         modelId: args.model_id,
         size: args.size || '1:1',
-        // 聊天工具不暴露分辨率档位，默认 2k（与画布节点一致）：图片按 per-call 计费，
-        // 像素档位不影响扣费，2k 让聊天里随手生图也有较清晰的结果。
-        tierId: '2k',
-        quality: 'auto',
-        batchCount: 1,
+        // 分辨率档位/画质/张数：优先用「生图参数确认卡」回传的值（args.tierId 等），
+        // 缺省回退默认（2k 档位、auto 画质、单张）——与画布节点一致；像素档位不影响 per-call 计费。
+        tierId: args.tierId || '2k',
+        quality: args.quality || 'auto',
+        batchCount: args.batchCount || 1,
         refImages: args.ref_images || undefined,
         progressContext: {
           conversationId,

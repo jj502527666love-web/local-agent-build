@@ -205,6 +205,8 @@ export const SYNC_ENTITIES: SyncEntityDef[] = [
     appendOnly: true,
     jsonFields: ['attachments', 'tool_calls'],
     blobFields: [{ field: 'attachments', kind: 'attachments', category: 'image' }],
+    // card 是对话内交互卡片（ask_user / 生图参数卡）的 UI 留痕，会话/本机相关，不跨设备同步
+    skipColumns: ['card'],
   },
 ]
 

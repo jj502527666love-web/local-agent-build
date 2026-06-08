@@ -12,6 +12,7 @@ import * as settingsService from '../services/settings'
 import * as dataPathService from '../services/data-path'
 import * as usageStatsService from '../services/usage-stats'
 import { sendMessage, cancelChat, isChatActive, respondToolApproval, regenerateLastResponse, editAndResend } from '../services/chat-engine'
+import { respondUserChoice } from '../services/user-choice'
 import { callLLM } from '../services/llm'
 import { skillPresets } from '../services/skill-presets'
 import { executeSkillSandbox } from '../services/skill-sandbox'
@@ -201,6 +202,10 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('chat:isActive', (_, conversationId: string) => isChatActive(conversationId))
   ipcMain.handle('chat:respondToolApproval', (_, requestId: string, approved: boolean) =>
     respondToolApproval(requestId, approved)
+  )
+  // 对话内交互卡片（ask_user / 生图参数确认卡）用户选择回传 → resolve 挂起的工具执行
+  ipcMain.handle('chat:respondUserChoice', (_, requestId: string, selection: any) =>
+    respondUserChoice(requestId, selection)
   )
   ipcMain.handle('chat:deleteMessage', (_, id: string) =>
     conversationService.deleteMessage(id)

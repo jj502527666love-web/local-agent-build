@@ -44,7 +44,15 @@ const api = {
      */
     onAppendMessage: (callback: (data: unknown) => void) =>
       ipcRenderer.on('chat:appendMessage', (_event, data) => callback(data)),
-    offAppendMessage: () => ipcRenderer.removeAllListeners('chat:appendMessage')
+    offAppendMessage: () => ipcRenderer.removeAllListeners('chat:appendMessage'),
+    /**
+     * 消息更新事件：交互卡片（ask_user / 生图参数卡）状态变化时由主进程发出，
+     * payload: { conversationId, message }。renderer 端 chat store 监听后
+     * 用 message 覆盖 messages.value 中的同 id 项（仅当 currentConversationId 匹配）。
+     */
+    onUpdateMessage: (callback: (data: unknown) => void) =>
+      ipcRenderer.on('chat:updateMessage', (_event, data) => callback(data)),
+    offUpdateMessage: () => ipcRenderer.removeAllListeners('chat:updateMessage')
   },
   skill: {
     invoke: (channel: string, ...args: unknown[]) =>

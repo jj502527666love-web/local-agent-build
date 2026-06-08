@@ -24,6 +24,45 @@ export interface Conversation {
   updated_at: string
 }
 
+/**
+ * 对话内交互卡片（ask_user 通用询问 / image_params 生图参数确认卡）。
+ * 仅用于 UI 渲染与留痕，不回传模型；registry skipColumns 已排除其参与云同步。
+ * - pending：等待用户操作（可交互）
+ * - answered：用户已确认（留痕，只读）
+ * - expired / canceled：超时 / 中止（留痕，只读）
+ */
+export interface MessageCardOption {
+  id: string
+  label: string
+  value?: any
+  desc?: string
+}
+
+/** ask_user 分步向导中的单个问题。 */
+export interface MessageCardQuestion {
+  id: string
+  question: string
+  options: MessageCardOption[]
+  allow_multiple?: boolean
+  allow_free_input?: boolean
+}
+
+export interface MessageCard {
+  type: 'ask_user' | 'image_params'
+  request_id: string
+  status: 'pending' | 'answered' | 'expired' | 'canceled'
+  /** ask_user：问题列表（单题也是 1 元素），前端按分步向导渲染 */
+  questions?: MessageCardQuestion[]
+  /** ask_user：用户答案，按 question id 索引（answered 时写入） */
+  answers?: Record<string, { selected: string[]; free_text?: string }>
+  /** image_params：卡片标题文案 */
+  question?: string
+  /** image_params：预填默认值（prompt / size / tierId / quality / batchCount 等） */
+  defaults?: Record<string, any>
+  /** image_params：用户最终确认的结构化结果（回传生图参数） */
+  result?: Record<string, any>
+}
+
 export interface Message {
   id: string
   conversation_id: string
@@ -34,6 +73,8 @@ export interface Message {
   tool_call_id: string
   /** 推理模型思维链(仅 UI 展示，不回传模型)。 */
   reasoning: string
+  /** 交互卡片（ask_user / image_params）；null = 普通消息。仅 UI 用，不回传模型。 */
+  card: MessageCard | null
   created_at: string
 }
 
@@ -145,7 +186,8 @@ export function getMessages(conversationId: string): Message[] {
     attachments: JSON.parse(r.attachments || '[]'),
     tool_calls: JSON.parse(r.tool_calls || '[]'),
     tool_call_id: r.tool_call_id || '',
-    reasoning: r.reasoning || ''
+    reasoning: r.reasoning || '',
+    card: r.card ? JSON.parse(r.card) : null
   }))
 }
 
@@ -157,12 +199,13 @@ export function addMessage(data: {
   tool_calls?: any[]
   tool_call_id?: string
   reasoning?: string
+  card?: MessageCard | null
 }): Message {
   const db = getDatabase()
   const id = uuid()
   const now = new Date().toISOString()
   db.prepare(
-    'INSERT INTO messages (id, conversation_id, role, content, attachments, tool_calls, tool_call_id, reasoning, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    'INSERT INTO messages (id, conversation_id, role, content, attachments, tool_calls, tool_call_id, reasoning, card, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
   ).run(
     id,
     data.conversation_id,
@@ -172,6 +215,7 @@ export function addMessage(data: {
     JSON.stringify(data.tool_calls || []),
     data.tool_call_id || '',
     data.reasoning || '',
+    data.card ? JSON.stringify(data.card) : '',
     now
   )
   db.prepare('UPDATE conversations SET updated_at=? WHERE id=?').run(now, data.conversation_id)
@@ -184,7 +228,36 @@ export function addMessage(data: {
     tool_calls: data.tool_calls || [],
     tool_call_id: data.tool_call_id || '',
     reasoning: data.reasoning || '',
+    card: data.card || null,
     created_at: now
+  }
+}
+
+/**
+ * 更新某条消息的交互卡片状态（用户确认后置 answered / 超时置 expired / 中止置 canceled）。
+ * 以浅合并方式打补丁到现有 card。card 不参与云同步（registry skipColumns），
+ * 故此 UPDATE 不污染 messages 的 append-only 同步语义。
+ * 返回更新后的 Message；消息不存在或本无 card 时返回 null。
+ */
+export function updateMessageCard(id: string, patch: Partial<MessageCard>): Message | null {
+  const db = getDatabase()
+  const row = db.prepare('SELECT * FROM messages WHERE id = ?').get(id) as any
+  if (!row) return null
+  const current: MessageCard | null = row.card ? JSON.parse(row.card) : null
+  if (!current) return null
+  const next: MessageCard = { ...current, ...patch }
+  db.prepare('UPDATE messages SET card = ? WHERE id = ?').run(JSON.stringify(next), id)
+  return {
+    id: row.id,
+    conversation_id: row.conversation_id,
+    role: row.role,
+    content: row.content,
+    attachments: JSON.parse(row.attachments || '[]'),
+    tool_calls: JSON.parse(row.tool_calls || '[]'),
+    tool_call_id: row.tool_call_id || '',
+    reasoning: row.reasoning || '',
+    card: next,
+    created_at: row.created_at
   }
 }
 

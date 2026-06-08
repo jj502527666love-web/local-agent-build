@@ -21,6 +21,16 @@ export interface ReleaseNote {
 
 export const CHANGELOG: ReleaseNote[] = [
   {
+    version: '0.8.1',
+    date: '2026-06-08',
+    notes: [
+      '对话中 AI 可弹出选项卡，支持多个问题逐步选择（可上一步 / 下一步），点选即可、不用手打字',
+      '让 AI 画图时若没说尺寸，会先弹卡片让你选尺寸 / 清晰度 / 数量再出图',
+      '已明确说了尺寸 / 比例时直接出图，不会多此一问',
+      '你在卡片上的选择会留在对话里，方便回看'
+    ]
+  },
+  {
     version: '0.8.0',
     date: '2026-06-08',
     notes: [

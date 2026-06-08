@@ -112,7 +112,17 @@
                       </button>
                       <div v-if="msg._toolActive || !msg._collapsed" class="mt-1 max-h-32 overflow-y-auto rounded-lg bg-surface-2/50 border border-surface-3 px-3 py-2 text-[11px] font-mono text-text-tertiary leading-relaxed whitespace-pre-wrap">{{ msg._toolLogs.join('\n') }}</div>
                     </div>
-                    <div class="text-sm px-4 py-3 rounded-2xl rounded-bl-md bg-surface-0 text-text-primary shadow-card prose prose-sm dark:prose-invert max-w-none select-text" v-html="renderMarkdown(msg.content || '...')"></div>
+                    <AskUserCard
+                      v-if="msg.card && msg.card.type === 'ask_user'"
+                      :card="msg.card"
+                      @submit="(payload) => onCardSubmit(msg, payload)"
+                    />
+                    <ImageParamsCard
+                      v-else-if="msg.card && msg.card.type === 'image_params'"
+                      :card="msg.card"
+                      @submit="(payload) => onCardSubmit(msg, payload)"
+                    />
+                    <div v-else class="text-sm px-4 py-3 rounded-2xl rounded-bl-md bg-surface-0 text-text-primary shadow-card prose prose-sm dark:prose-invert max-w-none select-text" v-html="renderMarkdown(msg.content || '...')"></div>
                   </template>
                   <div v-if="msg.attachments?.length" class="mt-1.5 flex gap-1.5 flex-wrap" :class="msg.role === 'user' ? 'justify-end' : ''">
                     <template v-for="(att, i) in msg.attachments" :key="i">
@@ -504,6 +514,8 @@ import ImageLightbox from '@/components/ImageLightbox.vue'
 import ChatModelSwitcher from '@/components/ChatModelSwitcher.vue'
 import LowBalanceModal from '@/components/LowBalanceModal.vue'
 import PromptTextarea from '@/components/PromptTextarea.vue'
+import AskUserCard from '@/components/AskUserCard.vue'
+import ImageParamsCard from '@/components/ImageParamsCard.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -653,6 +665,23 @@ async function respondApproval(approved: boolean) {
   pendingApproval.value = null
   await window.api.chat.invoke('respondToolApproval', ap.request_id, approved)
 }
+
+// 对话内交互卡片（ask_user / 生图参数卡）用户选择回传 → 主进程 resolve 挂起的工具执行
+async function onCardSubmit(
+  msg: any,
+  payload: { answers?: Record<string, { selected: string[]; free_text?: string }>; result?: Record<string, any> }
+) {
+  const card = msg?.card
+  if (!card || !card.request_id) return
+  try {
+    // payload.answers / result 来自组件响应式状态，含 Vue reactive proxy；
+    // 直接走 IPC structured clone 会抛 "An object could not be cloned"，故先转成纯对象。
+    const plain = JSON.parse(JSON.stringify(payload))
+    await window.api.chat.invoke('respondUserChoice', card.request_id, plain)
+  } catch (e) {
+    console.error('[chat] respondUserChoice failed:', e)
+  }
+}
 const loadingAttachment = ref(false)
 const dragging = ref(false)
 const MAX_ATTACHMENTS = 5
@@ -757,7 +786,8 @@ const visibleMessages = computed(() =>
   chatStore.messages.filter((m) => {
     if (m.role === 'tool') return false
     if (m.role === 'assistant' && m.tool_calls?.length && !m.content) return false
-    return m.role === 'user' || (m.role === 'assistant' && !!m.content)
+    // 交互卡片消息（ask_user / 生图参数卡）content 为空，但需渲染卡片，故按 card 放行
+    return m.role === 'user' || (m.role === 'assistant' && (!!m.content || !!m.card))
   })
 )
 
@@ -1388,6 +1418,7 @@ onMounted(async () => {
   chatStore.listenTitleUpdates()
   // 监听 image_gen fire-and-forget 完成后追加的图片消息（异步生图工作流）
   chatStore.listenAppendMessage()
+  chatStore.listenUpdateMessage()
   window.api.chat.onToolApproval((data: any) => {
     pendingApproval.value = data
   })
@@ -1428,6 +1459,7 @@ onUnmounted(() => {
   document.removeEventListener('click', onClickOutside)
   chatStore.stopListenTitleUpdates()
   chatStore.stopListenAppendMessage()
+  chatStore.stopListenUpdateMessage()
   window.api.chat.offToolApproval()
 })
 </script>

@@ -122,6 +122,8 @@ CREATE TABLE IF NOT EXISTS messages (
   attachments TEXT NOT NULL DEFAULT '[]',
   tool_calls TEXT NOT NULL DEFAULT '[]',
   tool_call_id TEXT NOT NULL DEFAULT '',
+  -- 对话内交互卡片（ask_user / 生图参数确认卡）的 JSON 留痕；仅 UI 用，不回传模型、不跨设备同步
+  card TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
 );

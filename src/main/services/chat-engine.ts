@@ -21,6 +21,7 @@ import { listPromptSkills, getPromptSkillByName } from './prompt-skill'
 import { coreToolDefs, executeCoreToolCall, CORE_TOOL_NAMES, KB_TOOL_NAMES, previewFileWrite, previewFileRead, type FileWritePreview, type FileReadPreview } from './core-tools'
 import { sanitizeOpenAIMessages } from './message-sanitizer'
 import { type ToolHistoryEntry, hashToolArgs, isToolFailure, checkToolCircuitBreaker } from './tool-circuit-breaker'
+import { cancelPendingChoices, cancelAllPendingChoices } from './user-choice'
 
 // Per-model context-window table. Values are the *total* model context (prompt + completion).
 // We reserve ~25% for the response and pass the rest as the prompt budget.
@@ -132,6 +133,8 @@ export function cancelChat(conversationId: string, requestId?: string): boolean 
       ctx.resolve(false)
     }
   }
+  // 同会话挂起的交互卡片选择一并取消（abort 已会触发，这里显式兜底）
+  cancelPendingChoices(conversationId)
   return true
 }
 
@@ -151,6 +154,7 @@ export function cancelAllChats(): number {
   for (const [, ctx] of pendingApprovals) {
     try { ctx.cleanup(); ctx.resolve(false) } catch {}
   }
+  cancelAllPendingChoices()
   return hit
 }
 
@@ -170,7 +174,7 @@ const READ_FILE_OPS = new Set(['read', 'read_json', 'list', 'glob', 'find_latest
 function isDestructiveTool(name: string, args: any): boolean {
   if (name === 'run_command') return true
   if (name === 'file_ops') return DESTRUCTIVE_FILE_OPS.has(args?.action)
-  if (name === 'use_skill' || name === 'image_gen' || KB_TOOL_NAMES.includes(name)) return false
+  if (name === 'use_skill' || name === 'image_gen' || name === 'ask_user' || KB_TOOL_NAMES.includes(name)) return false
   if (name) return true
   return false
 }
@@ -212,6 +216,8 @@ function isFileOpReadOutsideTrusted(args: any, sandboxDir: string): boolean {
 }
 
 function needsApproval(mode: ToolApproval, name: string, args: any, sandboxDir?: string): boolean {
+  // ask_user 本身就是向用户征询选择，不再走工具确认（避免双重弹窗）
+  if (name === 'ask_user') return false
   if (mode === 'off') return false
   if (mode === 'all') return true
   if (isDestructiveTool(name, args)) return true
@@ -750,6 +756,16 @@ export async function sendMessage(
     `- 查看工作区内容请调用 file_ops({action:'tree', path:'.'}) 或 ({action:'list', path:'.'})`
   )
 
+  // ask_user：需要用户在多个选项间拍板/澄清时，弹内嵌选项卡而非长文罗列。对所有智能体可用。
+  baseSystemParts.push(
+    `[向用户提问（ask_user 工具）]:\n` +
+    `- 当需求有歧义、有多个合理方向、或涉及需要用户决策的取舍（风格/方案/范围等）时，调用 ask_user 弹出可点击的选项卡，让用户选择后再继续\n` +
+    `- 强制：凡是要让用户在若干选项里挑选，一律用 ask_user 弹卡；绝不要在回复正文里用「1. 2. 3.」或顿号罗列选项让用户打字回答\n` +
+    `- 用法：ask_user({questions:[{question:<问题>, options:[{id?,label,desc?}], allow_multiple?:bool, allow_free_input?:bool}, ...]})——需要用户在多个维度上做选择时，一次把多个问题都放进 questions（用户会逐题作答），不要为每个问题分别多次调用\n` +
+    `- 工具会阻塞等待用户选择并把结果返回给你，据此继续；用户取消/超时会返回 canceled，此时不要重试，等待用户进一步指示\n` +
+    `- 仅在确实需要用户拍板时使用；可由你自行合理决定的琐碎默认值不要用它来问，避免打扰`
+  )
+
   // v0.6.6+ 智能体「调用生图能力」总开关：关时不给 LLM 注入任何生图相关信息（默认默认生图模型、工作流说明），
   // 避免某些小型模型看到 image_gen tool 定义后误调。同时 buildToolsList 也会过滤掉 image_gen tool，双重防护。
   if (bot.enable_image_gen) {
@@ -781,8 +797,10 @@ export async function sendMessage(
     // 工具立即返回 status:'pending'，后台异步生成；完成后系统自动追加图片消息到对话流。
     baseSystemParts.push(
       `[图片生成工作流（异步、不等图）]:\n` +
-      `- 用户请求绘图/生成图片时：把用户需求总结、补全为高质量提示词，调用 image_gen({action:'generate', prompt:<提示词>}) 一次\n` +
-      `- 不要传 quality 参数；对话生图统一由系统使用 auto\n` +
+      `- 用户请求绘图/生成图片时：只要主体明确（如"画只猫"），就直接把需求补全为高质量提示词并调用 image_gen({action:'generate', prompt:<提示词>}) 一次，不要用文字反问一堆问题\n` +
+      `- 关于尺寸：用户没明确说尺寸/比例时，务必不要传 size 参数（留空）——系统会自动弹出「生图参数确认卡」让用户选择尺寸/分辨率/画质/张数；只有用户明确指定了尺寸或比例（如"画个 16:9 的"）时才传对应 size\n` +
+      `- 不要传 quality / 分辨率 / 张数参数，也不要用文字向用户询问尺寸/清晰度/数量；这些统一由系统的参数确认卡处理\n` +
+      `- 若确需先确认创意方向（如风格、用途），用 ask_user 弹卡询问，不要用文字罗列选项\n` +
       `- 工具会**立即返回 status:'pending'**，表示任务已提交。这是正常的——不要等图、不要重试、不要再次调用\n` +
       `- 收到 pending 后用一句话简短告诉用户："已为你提交生图任务，约 30-90 秒后图片会自动出现在对话和右上角"，然后立即结束本轮回复\n` +
       `- 不要在回复里嵌入 markdown 图片：图片还没生成完，url 此刻并不存在\n` +
@@ -992,6 +1010,9 @@ export async function sendMessage(
   // Convert history to ChatMessage array
   const historyMessages: ChatMessage[] = []
   for (const msg of history) {
+    // UI-only 交互卡片消息（ask_user / 生图参数卡）不发给模型：它只承载渲染留痕，
+    // 且夹在 assistant.tool_calls 与 tool 结果之间，混入会破坏 OpenAI 的 tool 配对。
+    if (msg.card) continue
     if (msg.role === 'user') {
       if (msg.attachments && msg.attachments.length > 0) {
         const contentParts: any[] = [{ type: 'text', text: msg.content }]
@@ -1711,11 +1732,19 @@ function buildToolSummary(toolName: string, result: any, resultStr: string): str
     // chat 路径下 image_gen 是异步 fire-and-forget：立即返回 status:'pending'，
     // 实际图片在后台生成，完成后会以独立 assistant 消息追加到对话流。
     if (result.status === 'pending') return '已提交生图任务，正在后台生成…'
+    if (result.status === 'canceled') return '已取消生图'
     if (result.error) return `生成失败：${String(result.error).slice(0, 80)}`
     if (result.success) {
       const path = String(result.path || '')
       const fileName = path ? path.split(/[\\/]/).pop() : ''
       return fileName ? `图片已生成 ${fileName}` : '图片已生成'
+    }
+  }
+  if (toolName === 'ask_user' && result && typeof result === 'object') {
+    if (result.status === 'canceled') return '用户未作出选择'
+    if (result.status === 'answered') {
+      const labels = Array.isArray(result.selected_labels) ? result.selected_labels.join('、') : ''
+      return labels ? `已选择：${labels.slice(0, 80)}` : '用户已选择'
     }
   }
   if (typeof result === 'string') {

@@ -197,7 +197,8 @@
   </div>
 
   <router-view v-if="!showSetup" />
-  <ChatImageGenProgress v-if="!showSetup" class="fixed top-4 right-4 z-[8500]" />
+  <!-- top-12 让出 Windows titleBarOverlay（36px 高的最小/最大/关闭按钮）所在区域，避免浮窗与窗口控制按钮重叠 -->
+  <ChatImageGenProgress v-if="!showSetup" class="fixed top-12 right-4 z-[8500]" />
 
   <!-- Register bonus toast (non-blocking) -->
   <RegisterBonusToast />

@@ -6,6 +6,30 @@
 
 ---
 
+## [0.8.1] - 2026-06-08
+
+> **对话内交互选项卡片（ask_user）+ 生图参数确认卡**：把原「工具调用确认」的人在回路回环泛化为通用「选项卡片」——AI 可在对话中弹出可点击选项让用户选择 / 澄清（inline 嵌入消息流、选完留痕），结果作为 tool result 回传给模型继续；并以此实现生图前「未指定尺寸时」的参数确认卡（尺寸 / 分辨率 / 画质 / 张数）。复用现有 `chat:appendMessage` 通道，新增 `chat:updateMessage` 留痕更新。
+
+### 新增
+
+- `main/services/user-choice.ts`：交互卡片人在回路回环（`requestUserChoice` / `respondUserChoice` + 30 分钟超时 / abort / 会话级取消），独立成模块以避免 `core-tools` ↔ `chat-engine` 循环依赖。
+- `ask_user` 工具（`core-tools.ts`）：AI 弹出选项卡，支持一次提出多个问题（`questions[]`，前端按分步向导逐题作答：进度条 + 上一步 / 下一步 + 末尾「完成」统一提交；单题自动简化），每题可单选 / 多选 / 附自由输入；挂起等用户作答并把逐题结果作为 tool result 返回；落 pending 卡片消息 → answered 留痕，全程经 `chat:appendMessage` / `chat:updateMessage`。`isDestructiveTool` / `needsApproval` 放行，避免二次确认弹窗。
+- 生图参数确认卡（`image_params`）：chat 路径下生图若用户未指定 `size`，先弹卡确认尺寸 / 分辨率档位 / 画质 / 张数（复用 `shared/image-size.ts`），确认后再后台出图（仍 fire-and-forget）；已指定 `size` 则直连出图不打扰。
+- 前端组件 `components/AskUserCard.vue`（多问题分步向导：进度条、逐题单 / 多选、自由输入、上一步 / 下一步 / 完成、答完留痕）与 `components/ImageParamsCard.vue`（尺寸 / 档位 / 画质 / 张数一屏多组）；`ChatView` 渲染与提交回传；`chat` store `listenUpdateMessage`；IPC `chat:respondUserChoice` 与 `chat:updateMessage`、preload / `env.d.ts` 类型。
+
+### 变更
+
+- `messages` 表新增 `card` 列（JSON，仅 UI 留痕，不回传模型）；`schema.sql` + `database/index.ts` 幂等加列。
+- `sync/registry.ts`：`messages.skipColumns` 加入 `card`（卡片留痕不参与云同步）。
+- `chat-engine.ts`：历史回放跳过带 `card` 的消息（避免破坏 OpenAI `assistant.tool_calls` / `tool` 配对）；系统提示注入 `ask_user` 用法、更新生图工作流（未指定尺寸交由参数卡）。
+- `database/index.ts`：启动时把残留 `pending` 卡片标记为 `expired`（进程重启后挂起回环已失效），置于同步触发器安装前以免产生 oplog 噪音。
+
+### 修复
+
+- 卡片选择回传卡死：`onCardSubmit` 把含 Vue reactive proxy 的 `answers` / `result` 直接交给 Electron IPC，structured clone 抛 `An object could not be cloned`，导致选择从未到达主进程、`ask_user` 工具永久挂起、对话流一直转圈——回传前用 `JSON.parse(JSON.stringify())` 转为纯对象。
+- 交互卡片不渲染：`ChatView` 的 `visibleMessages` 以 `!!content` 过滤助手消息，会把 `content` 为空、仅含 `card` 的卡片消息一并滤掉——改为按 `card` 放行。
+- 末题交互：分步向导末题改为始终显示「完成」按钮由用户确认提交（不再单选即自动提交），符合「末尾有确定按钮」的预期。
+
 ## [0.8.0] - 2026-06-08
 
 > **云同步与容量计费（一次性完整交付，独立于本地备份）**：新增账号级跨设备数据同步——实体级增量同步引擎（pull→merge→push，`server_seq` 乐观并发），支持覆盖 / 智能融合（字段级三路合并 + 集合合并 + 冲突记录不丢数据）、自动 / 手动同步、按分类（纯数据 / 图片 / 视频）选择性同步；媒体走内容寻址 blob（sha256 去重、秒传、分块断点续传、流式上传下载）；接入云端存储容量计费。需云控端 1.6.0。云同步默认关闭，需在设置页手动开启。

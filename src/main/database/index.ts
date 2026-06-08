@@ -67,6 +67,7 @@ function initSchema(): void {
   const schema = readFileSync(schemaPath, 'utf-8')
   db.exec(schema)
   runMigrations()
+  expireStalePendingCards()
   seedPresetPersonas()
   seedBuiltinPresets()
   seedBuiltinSkillPresets()
@@ -75,6 +76,20 @@ function initSchema(): void {
   // 内置预设（persona/skill/prompt）不会被记入 oplog 推送到云端，
   // 新设备靠各自本地 seed 自然拥有同 id 的内置数据。
   installSyncSchema(db)
+}
+
+// 进程重启后，DB 里仍处于 pending 的交互卡片（ask_user / 生图参数卡）必然已失去其等待回环
+// （pendingChoices 是内存态，随进程消失），标记为 expired，避免重开会话时出现「可点击但点了无反应」
+// 的僵尸卡片。在 installSyncSchema 之前调用：此刻同步触发器尚未安装，不产生 oplog 噪音。
+function expireStalePendingCards(): void {
+  if (!db) return
+  try {
+    db.exec(
+      `UPDATE messages SET card = REPLACE(card, '"status":"pending"', '"status":"expired"') WHERE card LIKE '%"status":"pending"%'`
+    )
+  } catch (e) {
+    console.warn('[db] expireStalePendingCards failed:', e)
+  }
 }
 
 function runMigrations(): void {
@@ -156,6 +171,11 @@ function runMigrations(): void {
   // reasoning 思维链持久化(仅 UI 展示用，不回传模型)：旧库幂等加列
   if (!msgColNames.includes('reasoning')) {
     db.exec("ALTER TABLE messages ADD COLUMN reasoning TEXT NOT NULL DEFAULT ''")
+  }
+  // 对话内交互卡片（ask_user / 生图参数确认卡）的 JSON 留痕：仅 UI 用，不回传模型。
+  // 已在 sync/registry.ts 的 messages.skipColumns 排除，不参与云同步。
+  if (!msgColNames.includes('card')) {
+    db.exec("ALTER TABLE messages ADD COLUMN card TEXT NOT NULL DEFAULT ''")
   }
   // conversation_summaries: 增量摘要水位线列（旧库幂等加列）
   const csCols = db.prepare("PRAGMA table_info(conversation_summaries)").all() as any[]

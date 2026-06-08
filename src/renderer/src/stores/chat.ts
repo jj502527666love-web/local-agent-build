@@ -19,6 +19,43 @@ export interface Conversation {
   updated_at: string
 }
 
+/** 对话内交互卡片选项。 */
+export interface MessageCardOption {
+  id: string
+  label: string
+  value?: any
+  desc?: string
+}
+
+/** ask_user 分步向导中的单个问题。 */
+export interface MessageCardQuestion {
+  id: string
+  question: string
+  options: MessageCardOption[]
+  allow_multiple?: boolean
+  allow_free_input?: boolean
+}
+
+/**
+ * 对话内交互卡片（ask_user 通用询问 / image_params 生图参数确认卡）。
+ * 与主进程 conversation.ts 的 MessageCard 镜像，仅 UI 用。
+ */
+export interface MessageCard {
+  type: 'ask_user' | 'image_params'
+  request_id: string
+  status: 'pending' | 'answered' | 'expired' | 'canceled'
+  /** ask_user：问题列表（单题也是 1 元素），按分步向导渲染 */
+  questions?: MessageCardQuestion[]
+  /** ask_user：用户答案，按 question id 索引 */
+  answers?: Record<string, { selected: string[]; free_text?: string }>
+  /** image_params：卡片标题文案 */
+  question?: string
+  /** image_params：预填默认值 */
+  defaults?: Record<string, any>
+  /** image_params：用户确认的结构化结果 */
+  result?: Record<string, any>
+}
+
 export interface Message {
   id: string
   conversation_id: string
@@ -28,6 +65,8 @@ export interface Message {
   tool_calls: any[]
   /** DB 持久化的思维链(加载后注入 _reasoning 渲染;不回传模型) */
   reasoning?: string
+  /** 交互卡片（ask_user / image_params）；null/缺省 = 普通消息。 */
+  card?: MessageCard | null
   created_at: string
   _toolLogs?: string[]
   _toolActive?: boolean
@@ -273,6 +312,27 @@ export const useChatStore = defineStore('chat', () => {
     window.api.chat.offAppendMessage()
   }
 
+  /**
+   * 监听 chat:updateMessage：交互卡片（ask_user / 生图参数卡）状态变化时主进程发出，
+   * 用 message 覆盖 messages.value 中的同 id 项（仅当 currentConversationId 匹配）。
+   * 整体替换数组以确保 Vue 响应式更新；保留前端内存态字段（_reasoning 等）。
+   */
+  function listenUpdateMessage() {
+    window.api.chat.onUpdateMessage((data: any) => {
+      if (!data?.conversationId || !data?.message) return
+      if (currentConversationId.value !== data.conversationId) return
+      const idx = messages.value.findIndex((m) => m.id === data.message.id)
+      if (idx === -1) return
+      const next = [...messages.value]
+      next[idx] = { ...next[idx], ...data.message }
+      messages.value = next
+    })
+  }
+
+  function stopListenUpdateMessage() {
+    window.api.chat.offUpdateMessage()
+  }
+
   /** image_gen 等工具 tool_start 的日志行（与旧逻辑保持一致）。 */
   function buildToolStartLogs(tools: unknown): string[] {
     const list = (tools as string[]) || []
@@ -399,7 +459,7 @@ export const useChatStore = defineStore('chat', () => {
             const dbMessages = hydrateReasoning((await window.api.chat.invoke('getMessages', convId)) as Message[])
             if (dbMessages.length > 0) {
               const lastDb = dbMessages[dbMessages.length - 1]
-              if (lastDb.role === 'assistant' && !lastDb.content && localContent) {
+              if (lastDb.role === 'assistant' && !lastDb.content && !lastDb.card && localContent) {
                 lastDb.content = localContent
               }
               if (lastDb.role === 'assistant' && lastDb.content?.startsWith('[Error]')) {
@@ -582,6 +642,8 @@ export const useChatStore = defineStore('chat', () => {
     stopListenTitleUpdates,
     listenAppendMessage,
     stopListenAppendMessage,
+    listenUpdateMessage,
+    stopListenUpdateMessage,
     sendMessage,
     regenerate,
     editMessage,
