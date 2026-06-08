@@ -675,8 +675,8 @@ const quickPromptCategory = ref('')
 const quickDirectSend = ref(false)
 
 watch([quickPromptSearch, quickPromptCategory], () => { quickPage.value = 1 })
-const quickPromptGroups = computed(() => presetStore.visibleGrouped('chat_quick'))
-const quickCategories = computed(() => presetStore.categories.filter((c) => c.type === 'chat_quick'))
+const quickPromptGroups = computed(() => presetStore.visibleGrouped('chat'))
+const quickCategories = computed(() => presetStore.categories.filter((c) => c.type === 'chat'))
 const quickPage = ref(1)
 const QUICK_PAGE_SIZE = 20
 const filteredQuickAll = computed(() => {
@@ -1397,7 +1397,7 @@ onMounted(async () => {
     skillStore.fetchSkills(),
     mcpStore.fetchServers(),
     promptSkillStore.fetchSkills(),
-    presetStore.fetchAll('chat_quick')
+    presetStore.fetchAll('chat')
   ])
   loadQuickSendSetting()
   bots.value = botStore.bots
