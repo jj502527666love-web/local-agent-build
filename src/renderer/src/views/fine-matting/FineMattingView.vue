@@ -4,7 +4,7 @@
     <header class="page-header items-start gap-4 !py-3">
       <div class="flex-1 min-w-0">
         <p class="page-desc">
-          精细抠图（抠抠图），按图片尺寸三档计费，输出透明 PNG。
+          精细抠图，按图片尺寸三档计费，输出透明 PNG。
           <span v-if="store.cloudQuota" class="ml-2">
             4K 以下 <strong class="text-text-primary">{{ fmt(store.cloudQuota.tier1_credit) }}</strong> {{ creditLabel }} /
             4K-8K <strong class="text-text-primary">{{ fmt(store.cloudQuota.tier2_credit) }}</strong> {{ creditLabel }} /

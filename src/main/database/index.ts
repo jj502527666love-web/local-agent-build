@@ -356,7 +356,7 @@ function runMigrations(): void {
     )
   }
 
-  // 精细抠图系统「我的精细抠图」分类：精细抠图（抠抠图）产图自动归档
+  // 精细抠图系统「我的精细抠图」分类：精细抠图产图自动归档
   const sysFineMattingExists = db
     .prepare("SELECT id FROM gallery_categories WHERE id = ?")
     .get('__sys_fine_matting__') as any
@@ -366,11 +366,15 @@ function runMigrations(): void {
     ).run(
       '__sys_fine_matting__',
       '我的精细抠图',
-      '精细抠图（抠抠图）自动归档（透明 PNG）',
+      '精细抠图自动归档（透明 PNG）',
       1,
       -998,
       new Date().toISOString()
     )
+  } else {
+    db.prepare(
+      "UPDATE gallery_categories SET description = ? WHERE id = ? AND description LIKE '%抠抠图%'"
+    ).run('精细抠图自动归档（透明 PNG）', '__sys_fine_matting__')
   }
 
   // v0.7.7+ creative_templates / creative_template_categories 表幂等建表（旧库升级路径）
