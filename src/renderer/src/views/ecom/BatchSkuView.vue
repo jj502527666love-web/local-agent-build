@@ -74,7 +74,6 @@ const form = reactive<BatchSkuForm>({
   templateImage: null,
   productImages: [],
   prompt: batchSku.directTemplate,
-  aspectRatio: '1:1',
 })
 
 const params = reactive<EcomGenParams>({

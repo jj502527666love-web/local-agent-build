@@ -19,6 +19,13 @@ import { localFileUrl, parsePromptList } from './utils'
 
 const api = () => (window as any).api
 
+/** 粗判错误是否因"模型不支持图片/视觉输入"而起，用于多模态失败后去图回退。 */
+function looksLikeVisionUnsupportedError(msg?: string): boolean {
+  const s = (msg || '').toLowerCase()
+  if (!s) return false
+  return /image|vision|multimodal|modality|图片|图像|视觉|多模态/.test(s)
+}
+
 /** 单个生成任务的输入。 */
 export interface GenJob {
   id: string
@@ -52,15 +59,50 @@ export function useEcomGen(scopeKey = 'ecom:default') {
     systemPrompt: string,
     userPrompt: string,
     count: number,
+    opts: { images?: string[] } = {},
   ): Promise<string[]> {
     if (!llm.providerId || !llm.modelId) {
       throw new Error('请先选择用于生成描述词的对话模型')
     }
     const sys = systemPrompt.replace(/\{count\}/g, String(count))
-    const content = (await api().llm.invoke('call', llm.providerId, llm.modelId, [
-      { role: 'system', content: sys },
-      { role: 'user', content: userPrompt },
-    ])) as string
+    const images = (opts.images || []).filter(Boolean)
+
+    // 多模态消息：把参考图随 user 消息一并发给描述词模型（OpenAI content 数组格式），
+    // 让其据图撰写更贴合真实产品/风格的描述词。withImages=false 时退回纯文本。
+    const callOnce = async (withImages: boolean): Promise<string> => {
+      const userMsg =
+        withImages && images.length
+          ? {
+              role: 'user',
+              content: [
+                { type: 'text', text: userPrompt },
+                ...images.map((url) => ({ type: 'image_url', image_url: { url } })),
+              ],
+            }
+          : { role: 'user', content: userPrompt }
+      const raw = await api().llm.invoke('call', llm.providerId, llm.modelId, [
+        { role: 'system', content: sys },
+        userMsg,
+      ])
+      return typeof raw === 'string' ? raw : String(raw?.content ?? raw ?? '')
+    }
+
+    let content: string
+    if (images.length) {
+      // gate_retry 降级：带图调用；若失败且错误像"模型不支持图片/视觉"，自动去图重试一次（纯文本盲写）。
+      try {
+        content = await callOnce(true)
+      } catch (e: any) {
+        if (looksLikeVisionUnsupportedError(e?.message)) {
+          content = await callOnce(false)
+        } else {
+          throw e
+        }
+      }
+    } else {
+      content = await callOnce(false)
+    }
+
     const list = parsePromptList(content, count)
     if (!list.length) throw new Error('描述词生成失败，请重试')
     return list

@@ -62,6 +62,9 @@
             <MyPlansBox />
           </div>
 
+          <!-- Cloud storage -->
+          <CloudStorageCard />
+
           <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
             <!-- Billing Rules -->
             <div class="card p-5">
@@ -204,6 +207,7 @@ import { useSiteConfigStore } from '@/stores/site-config'
 import AssetSummaryCard from '@/components/AssetSummaryCard.vue'
 import RedeemBox from '@/components/RedeemBox.vue'
 import MyPlansBox from '@/components/MyPlansBox.vue'
+import CloudStorageCard from '@/components/CloudStorageCard.vue'
 import BalanceLogsDialog from '@/components/BalanceLogsDialog.vue'
 import { cloudClient } from '@/utils/cloud-api'
 

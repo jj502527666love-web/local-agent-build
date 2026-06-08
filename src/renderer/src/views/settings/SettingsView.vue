@@ -369,6 +369,9 @@
           </div>
         </section>
 
+        <!-- Cloud Sync -->
+        <CloudSyncSection />
+
         <!-- Theme -->
         <section>
           <div class="flex items-center gap-2.5 mb-4">
@@ -452,6 +455,7 @@ import { useSiteConfigStore } from '@/stores/site-config'
 import { appName, appAbbr, appIconUrl } from '@/utils/branding'
 import { normalizeApiBase } from '@shared/api-base-normalize'
 import ChangelogDialog from './ChangelogDialog.vue'
+import CloudSyncSection from './CloudSyncSection.vue'
 
 declare const __APP_VERSION__: string
 const appVersion = __APP_VERSION__

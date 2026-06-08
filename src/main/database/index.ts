@@ -8,6 +8,7 @@ import { seedBuiltinPresets } from '../services/prompt-preset'
 import { seedBuiltinSkillPresets } from '../services/skill'
 import { seedCreativeTemplatePresets } from '../services/creative-template'
 import { assertEpoch } from '../services/account-epoch'
+import { installSyncSchema } from '../services/sync/schema'
 
 let db: Database.Database | null = null
 
@@ -27,6 +28,10 @@ export function getDatabase(): Database.Database {
 
   db.pragma('journal_mode = WAL')
   db.pragma('foreign_keys = ON')
+  // 让 FK 级联删除（如删会话级联删消息）也触发子表的 AFTER DELETE 触发器，
+  // 使云同步能捕获到级联产生的子记录删除并生成对应墓碑，跨设备正确传播删除。
+  // 应用内除云同步触发器外无其它触发器，开启此项无副作用。
+  db.pragma('recursive_triggers = ON')
 
   tryLoadSqliteVec(db)
 
@@ -66,6 +71,10 @@ function initSchema(): void {
   seedBuiltinPresets()
   seedBuiltinSkillPresets()
   seedCreativeTemplatePresets()
+  // 同步基础设施放在内置数据 seed 之后安装：触发器此刻才生效，
+  // 内置预设（persona/skill/prompt）不会被记入 oplog 推送到云端，
+  // 新设备靠各自本地 seed 自然拥有同 id 的内置数据。
+  installSyncSchema(db)
 }
 
 function runMigrations(): void {

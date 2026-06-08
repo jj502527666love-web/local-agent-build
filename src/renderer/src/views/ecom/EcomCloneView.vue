@@ -98,7 +98,6 @@ const form = reactive<EcomCloneForm>({
   language: '简体中文',
   customLanguage: '',
   otherRequirements: '',
-  aspectRatio: '1:1',
 })
 
 const params = reactive<EcomGenParams>({

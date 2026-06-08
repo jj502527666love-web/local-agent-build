@@ -124,7 +124,7 @@
               title="负面提示词"
               placeholder="不希望出现的元素，可留空"
               :height="80"
-              :max-length="4000"
+              :max-length="8000"
               inline-edit
             />
 

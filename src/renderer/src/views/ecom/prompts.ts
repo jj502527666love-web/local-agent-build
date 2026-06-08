@@ -140,22 +140,29 @@ export function buildRefImageInstruction(opts: {
   const { productCount, hasStyle, hasLogo } = opts
   const total = productCount + (hasStyle ? 1 : 0) + (hasLogo ? 1 : 0)
   if (total === 0) return ''
+  // 图号严格对应调用方拼接 refImages 的顺序：产品图… → 风格参考图? → 品牌 Logo?
+  // 用「图N」显式锁定每张图的角色，避免模型把风格图当产品、或忽略 Logo。
+  const productLabel = productCount > 1 ? `图1-图${productCount}` : '图1'
+  const styleIndex = productCount + 1
+  const logoIndex = productCount + (hasStyle ? 1 : 0) + 1
   const order: string[] = []
-  if (productCount > 0) order.push(`产品图 ${productCount} 张`)
-  if (hasStyle) order.push('风格参考图 1 张')
-  if (hasLogo) order.push('品牌 Logo 1 张')
+  if (productCount > 0) order.push(`${productLabel} 为产品图`)
+  if (hasStyle) order.push(`图${styleIndex} 为风格参考图`)
+  if (hasLogo) order.push(`图${logoIndex} 为品牌 Logo`)
   const lines: string[] = [
-    `【参考图使用说明】本次随附 ${total} 张参考图，按顺序依次为：${order.join('、')}。`,
+    `【参考图使用说明】本次随附 ${total} 张参考图，请严格按图号区分用途：${order.join('、')}。`,
   ]
   if (productCount > 0)
     lines.push(
-      '· 产品图：画面主体，必须严格以产品图为准还原产品的造型、颜色、材质、比例与细节，不得改变或臆造。',
+      `· ${productLabel}（产品图）：画面主体，必须严格以产品图为准还原产品的造型、颜色、材质、比例与细节，不得改变、替换或臆造。`,
     )
   if (hasStyle)
-    lines.push('· 风格参考图：仅借鉴其整体视觉风格、色调与氛围，不要照搬其中的产品、文字或具体元素。')
+    lines.push(
+      `· 图${styleIndex}（风格参考图）：严格参考其整体视觉风格、配色、光影与构图版式，使成图风格与之高度一致；但不要照搬其中的产品、文字或具体元素。`,
+    )
   if (hasLogo)
     lines.push(
-      '· 品牌 Logo：必须原样、清晰、不变形、不改色地放置在画面中不遮挡主体的合适位置（如某一角落），尺寸适中。',
+      `· 图${logoIndex}（品牌 Logo）：必须原样、清晰、不变形、不改色地放置在画面中不遮挡主体的合适位置（如某一角落），尺寸适中。`,
     )
   return lines.join('\n')
 }
@@ -200,7 +207,7 @@ export const ecomClone = {
 // ============ 3) 主图 / 详情页：两步法 ============
 export const ecomGenerator = {
   /** 第一步 system：让 LLM 产出 N 条独立生图描述词（JSON 数组） */
-  buildSystemPrompt(form: EcomGeneratorForm): string {
+  buildSystemPrompt(form: EcomGeneratorForm, opts: { withImages?: boolean } = {}): string {
     const isDetail = form.imageType === 'detail'
     const role = isDetail
       ? '你是资深电商详情页视觉设计师与提示词工程师。'
@@ -208,12 +215,17 @@ export const ecomGenerator = {
     const focus = isDetail
       ? '每条描述对应详情页的一屏，需图文结合、信息层次清晰、阅读节奏顺畅。'
       : '每条描述聚焦一张主图，要求主体突出、3 秒抓眼球、首屏留出标题区。'
+    // withImages：第一步描述词模型支持视觉时，已随消息附上产品图/风格图，应让其据图撰写；
+    // 否则模型看不到图，沿用"不要臆造产品外观"的盲写约束。
+    const refClause = opts.withImages
+      ? '本次已随附产品图（可能还有风格参考图）供你直接观察：请准确理解产品的真实品类、外观与材质，并贴合风格参考图的调性来撰写画面描述；描述须与所附图片一致，不要写出与图片冲突的产品外观。最终出图模型也会拿到这些参考图。'
+      : '用户会另行向出图模型提供产品图（可能还有品牌 Logo）作为参考，你只需描述画面、版式、光影与氛围，不要臆造产品的具体外观（颜色、形状、文字、Logo），以免与真实产品冲突。'
     return [
       role,
       `根据用户提供的产品信息，撰写 {count} 条独立、详细、可直接用于"图生图/文生图"模型的中文画面描述。`,
       '每条描述需包含：主体与摆位、背景与场景、光影、色调、构图、镜头与氛围；',
       focus,
-      '用户会另行向出图模型提供产品图（可能还有品牌 Logo）作为参考，你只需描述画面、版式、光影与氛围，不要臆造产品的具体外观（颜色、形状、文字、Logo），以免与真实产品冲突。',
+      refClause,
       '严格围绕产品卖点，符合所选电商平台调性与画面比例；画面文字简短有力，使用指定语言。',
       '只输出 JSON 字符串数组，例如 ["描述1","描述2"]，不要任何解释或多余字符。',
     ].join('\n')
@@ -239,11 +251,30 @@ export const ecomGenerator = {
     if (form.requirements.trim()) lines.push(`特殊要求：${form.requirements.trim()}`)
     return lines.join('\n')
   },
+  /**
+   * 把"必须精确"的确定性字段拼成硬约束块，原样追加到最终生图 prompt。
+   * 这些字段（画面文字语言、CTA 文案、卖点、风格、特殊要求）在两步法里只喂给了第一步
+   * 描述词模型，若 LLM 转述不力会丢失；此处再原样注入最终 prompt，作为对出图模型的硬约束。
+   */
+  buildHardConstraints(form: EcomGeneratorForm): string {
+    const lang = resolveLanguage(form.language, form.customLanguage)
+    const lines: string[] = []
+    if (form.language === '无文字') lines.push('· 画面不出现任何文字。')
+    else lines.push(`· 画面文字一律使用${lang}。`)
+    if (form.imageType === 'main' && form.ctaText.trim())
+      lines.push(`· 必须在画面醒目位置准确无误地呈现文案：「${form.ctaText.trim()}」。`)
+    if (form.sellingPoints.trim()) lines.push(`· 重点突出卖点：${form.sellingPoints.trim()}。`)
+    const sc = styleClause(form.stylePreset)
+    if (sc) lines.push(`· ${sc}。`)
+    if (form.requirements.trim()) lines.push(`· 特殊要求：${form.requirements.trim()}。`)
+    if (!lines.length) return ''
+    return ['【画面硬性要求（务必逐条满足）】', ...lines].join('\n')
+  },
 }
 
 // ============ 4) 海报生成：两步法 ============
 export const poster = {
-  buildSystemPrompt(form: PosterForm): string {
+  buildSystemPrompt(form: PosterForm, opts: { withImages?: boolean } = {}): string {
     const base = form.hasProductImage
       ? '你是资深商业海报设计师与提示词工程师。用户会提供产品图与信息，请结合二者设计海报。'
       : '你是资深商业海报设计师与提示词工程师。用户不提供产品图，请依据文字描述创意生成整张海报。'
@@ -252,10 +283,14 @@ export const poster = {
       form.posterType === 'double'
         ? '本次需生成 2 张：第 1 张为正面（主视觉 + 主标题 + 核心信息），第 2 张为背面（详细信息 + 行动号召）。'
         : `本次需生成 ${count} 张独立海报，各有不同的视觉切入点。`
+    // withImages：描述词模型支持视觉时，已随消息附上产品图/风格图，应据图撰写；否则盲写。
+    const refClause = opts.withImages
+      ? '本次已随附产品图（可能还有风格参考图）供你直接观察：请准确理解产品的真实外观与品类，并贴合风格参考图的调性撰写海报描述；描述须与所附图片一致，不要臆造与图片冲突的产品外观或 Logo。最终出图模型也会拿到这些参考图。'
+      : '若用户提供了产品图 / 品牌 Logo，将由出图模型直接使用，你只需描述画面与版式，不要臆造产品外观或 Logo，以免与真实素材冲突。'
     return [
       base,
       dual,
-      '若用户提供了产品图 / 品牌 Logo，将由出图模型直接使用，你只需描述画面与版式，不要臆造产品外观或 Logo，以免与真实素材冲突。',
+      refClause,
       '每条描述需包含：主视觉、版式布局、配色、字体气质、文案位置与层级、氛围。',
       `海报用途：${descOf(POSTER_SCENARIOS, form.scenario) || labelOf(POSTER_SCENARIOS, form.scenario)}；`,
       `行业调性：${labelOf(POSTER_INDUSTRIES, form.industry)}。`,
@@ -276,6 +311,21 @@ export const poster = {
     if (form.ctaText.trim()) lines.push(`行动号召文案（CTA）：${form.ctaText.trim()}`)
     if (form.requirements.trim()) lines.push(`补充要求：${form.requirements.trim()}`)
     return lines.join('\n')
+  },
+  /** 同 ecomGenerator.buildHardConstraints：把确定性字段原样追加进最终生图 prompt。 */
+  buildHardConstraints(form: PosterForm): string {
+    const lang = resolveLanguage(form.language, form.customLanguage)
+    const lines: string[] = []
+    if (form.language === '无文字') lines.push('· 画面不出现任何文字。')
+    else lines.push(`· 画面文字一律使用${lang}。`)
+    if (form.ctaText.trim()) lines.push(`· 必须准确呈现行动号召文案：「${form.ctaText.trim()}」。`)
+    if (form.sellingPoints.trim()) lines.push(`· 重点突出核心信息/卖点：${form.sellingPoints.trim()}。`)
+    if (form.userDescription.trim()) lines.push(`· 画面需体现：${form.userDescription.trim()}。`)
+    const sc = styleClause(form.stylePreset)
+    if (sc) lines.push(`· ${sc}。`)
+    if (form.requirements.trim()) lines.push(`· 补充要求：${form.requirements.trim()}。`)
+    if (!lines.length) return ''
+    return ['【画面硬性要求（务必逐条满足）】', ...lines].join('\n')
   },
 }
 

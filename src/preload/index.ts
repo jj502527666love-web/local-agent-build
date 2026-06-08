@@ -258,6 +258,25 @@ const api = {
     ) => ipcRenderer.on('backup:progress', (_, data) => callback(data)),
     offProgress: () => ipcRenderer.removeAllListeners('backup:progress')
   },
+  sync: {
+    status: () => ipcRenderer.invoke('sync:status'),
+    now: () => ipcRenderer.invoke('sync:now'),
+    getConfig: () => ipcRenderer.invoke('sync:getConfig'),
+    setConfig: (patch: Record<string, unknown>) => ipcRenderer.invoke('sync:setConfig', patch),
+    getQuota: () => ipcRenderer.invoke('sync:getQuota'),
+    getConflicts: () => ipcRenderer.invoke('sync:getConflicts'),
+    getLocalStats: () => ipcRenderer.invoke('sync:getLocalStats'),
+    onProgress: (callback: (data: unknown) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, data: unknown) => callback(data)
+      ipcRenderer.on('sync:progress', handler)
+      return () => ipcRenderer.off('sync:progress', handler)
+    },
+    onStatus: (callback: (data: unknown) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, data: unknown) => callback(data)
+      ipcRenderer.on('sync:status', handler)
+      return () => ipcRenderer.off('sync:status', handler)
+    }
+  },
   dataDir: {
     get: () => ipcRenderer.invoke('dataDir:get'),
     isFirstLaunch: () => ipcRenderer.invoke('dataDir:isFirstLaunch'),

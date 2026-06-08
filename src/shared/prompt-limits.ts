@@ -1,4 +1,4 @@
-export const IMAGE_PROMPT_MAX_LENGTH = 3900
+export const IMAGE_PROMPT_MAX_LENGTH = 8000
 
 export function assertImagePromptLength(prompt: string, label = '提示词'): void {
   const length = String(prompt || '').length

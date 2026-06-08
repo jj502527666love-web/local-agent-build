@@ -125,6 +125,9 @@ import { useEcomGen, useEcomFormPersist, useEcomModelPref, type GenJob, type Llm
 import { useImageBilling } from './useImageBilling'
 import { ecomGenerator, buildRefImageInstruction, PLATFORMS, LANGUAGES, DETAIL_MODULES, STYLE_PRESETS } from './prompts'
 import { uid } from './utils'
+import { useModelStore } from '@/stores/models'
+import { hasCap } from '@/utils/model-caps'
+import { stripModelId } from '@shared/model-id'
 import { DEFAULT_TIER_ID, DEFAULT_QUALITY_ID } from '@shared/image-size'
 import type { EcomGeneratorForm, EcomGenParams, UploadedImage } from './types'
 
@@ -143,6 +146,7 @@ function defaultSizeFor(detail: boolean): string {
 }
 
 const gen = useEcomGen(props.scopeKey)
+const modelStore = useModelStore()
 
 const form = reactive<EcomGeneratorForm>({
   productImages: [],
@@ -233,6 +237,19 @@ function refImages(): string[] {
   return refs
 }
 
+/** 描述词模型是否支持视觉输入（决定第一步是否把参考图喂给它）。 */
+function llmSupportsVision(): boolean {
+  if (!llm.providerId || !llm.modelId) return false
+  return hasCap(stripModelId(llm.modelId), 'vision', modelStore.cloudTypeOf(llm.providerId, llm.modelId))
+}
+
+/** 给第一步描述词模型看的参考图（产品图 + 风格图；Logo 仅供出图模型叠加，不喂 LLM）。 */
+function visionRefs(): string[] {
+  const arr = form.productImages.map((p) => p.dataUrl)
+  if (form.styleImage) arr.push(form.styleImage.dataUrl)
+  return arr
+}
+
 async function onGenerate(): Promise<void> {
   if (!canGenerate.value) return
   if (!ensureEnoughBalance(params.modelProviderId, params.modelId, estimateCount.value)) return
@@ -241,11 +258,14 @@ async function onGenerate(): Promise<void> {
   const count = isDetail.value && form.detailModules.length ? form.detailModules.length : form.imageCount
   try {
     gen.phase.value = 'optimizing'
+    // 描述词模型支持视觉时把产品图/风格图一并喂给它（不支持则 generatePrompts 内部去图回退）
+    const visionImages = llmSupportsVision() ? visionRefs() : []
     const prompts = await gen.generatePrompts(
       { providerId: llm.providerId, modelId: llm.modelId },
-      ecomGenerator.buildSystemPrompt(form),
+      ecomGenerator.buildSystemPrompt(form, { withImages: visionImages.length > 0 }),
       ecomGenerator.buildUserPrompt(form),
       count,
+      { images: visionImages },
     )
     const refs = refImages()
     const refNote = buildRefImageInstruction({
@@ -253,12 +273,19 @@ async function onGenerate(): Promise<void> {
       hasStyle: !!form.styleImage,
       hasLogo: !!form.logoImage,
     })
-    const jobs: GenJob[] = prompts.map((p, i) => ({
-      id: uid('gen'),
-      label: isDetail.value ? form.detailModules[i] || `第 ${i + 1} 屏` : `主图 ${i + 1}`,
-      prompt: refNote ? `${p}\n\n${refNote}` : p,
-      refImages: refs,
-    }))
+    // 最终生图 prompt = LLM 描述词 + 硬约束块（确定性字段原样注入）+ 参考图使用说明
+    const hard = ecomGenerator.buildHardConstraints(form)
+    const jobs: GenJob[] = prompts.map((p, i) => {
+      const parts = [p]
+      if (hard) parts.push(hard)
+      if (refNote) parts.push(refNote)
+      return {
+        id: uid('gen'),
+        label: isDetail.value ? form.detailModules[i] || `第 ${i + 1} 屏` : `主图 ${i + 1}`,
+        prompt: parts.join('\n\n'),
+        refImages: refs,
+      }
+    })
     await gen.run(jobs, { ...params }, { concurrency: 3 })
   } catch (e: any) {
     gen.lastError.value = e?.message || '生成失败'

@@ -241,7 +241,7 @@
     <div v-if="rateTarget" class="fixed inset-0 z-50 flex items-center justify-center" @click.self="rateTarget = null">
       <div class="w-80 bg-surface-0 rounded-xl shadow-2xl border border-surface-3 p-5">
         <div class="font-semibold text-sm text-text-primary mb-1">给「{{ rateTarget.name }}」评分</div>
-        <p class="text-[11px] text-text-tertiary mb-3">需登录晓晓云账号，每人一评（可改分）</p>
+        <p class="text-[11px] text-text-tertiary mb-3">需登录云账号，每人一评（可改分）</p>
         <div class="flex gap-1 mb-3">
           <button v-for="i in 5" :key="i" type="button" @click="rateScore = i" class="p-0.5">
             <svg class="w-7 h-7" :class="i <= rateScore ? 'text-amber-400' : 'text-surface-3'" viewBox="0 0 24 24" fill="currentColor"><path d="M11.48 3.5a.56.56 0 0 1 1.04 0l2.12 5.11a.56.56 0 0 0 .48.35l5.52.44c.5.04.7.66.32.99l-4.2 3.6a.56.56 0 0 0-.18.56l1.28 5.39a.56.56 0 0 1-.84.6l-4.72-2.88a.56.56 0 0 0-.59 0l-4.72 2.88a.56.56 0 0 1-.84-.6l1.28-5.39a.56.56 0 0 0-.18-.56l-4.2-3.6a.56.56 0 0 1 .32-.99l5.52-.44a.56.56 0 0 0 .48-.35L11.48 3.5Z" /></svg>
@@ -520,7 +520,7 @@ function formatCount(n: number): string {
 async function saveToLocal(a: MarketAgent) {
   // 未登录：收费 / 受限智能体需登录才能获取，直接引导登录
   if (!cloudAuth.isLoggedIn) {
-    if (confirm('保存智能体需要先登录晓晓云账号，是否前往登录？')) router.push('/login')
+    if (confirm('保存智能体需要先登录云账号，是否前往登录？')) router.push('/login')
     return
   }
   savingId.value = a.id

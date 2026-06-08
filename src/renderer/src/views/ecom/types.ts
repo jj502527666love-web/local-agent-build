@@ -46,7 +46,6 @@ export interface BatchSkuForm {
   productImages: UploadedImage[]
   /** 内置可编辑提示词（默认取 PROMPTS.batchsku.directTemplate） */
   prompt: string
-  aspectRatio: string
 }
 
 /** 电商图复刻表单。 */
@@ -59,7 +58,6 @@ export interface EcomCloneForm {
   language: string
   customLanguage: string
   otherRequirements: string
-  aspectRatio: string
 }
 
 /** 主图 / 详情页生成表单（两步法）。 */

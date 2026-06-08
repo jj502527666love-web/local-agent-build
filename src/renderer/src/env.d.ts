@@ -163,6 +163,34 @@ interface Window {
       ) => void
       offProgress: () => void
     }
+    sync: {
+      status: () => Promise<{
+        running: boolean
+        lastSyncAt: number
+        lastError: string
+        pendingChanges: number
+        conflicts: number
+      }>
+      now: () => Promise<{ ok: boolean; error?: string }>
+      getConfig: () => Promise<{
+        mode: 'off' | 'realtime' | 'hourly' | 'daily'
+        scope: { data: boolean; image: boolean; video: boolean }
+        conflict: 'merge' | 'local' | 'cloud'
+      }>
+      setConfig: (patch: Record<string, unknown>) => Promise<unknown>
+      getQuota: () => Promise<{
+        used: number
+        base_quota: number
+        extra_quota: number
+        total: number
+        percent: number
+        error?: string
+      }>
+      getConflicts: () => Promise<any[]>
+      getLocalStats: () => Promise<{ count: number; bytes: number; uploaded: number }>
+      onProgress: (callback: (data: any) => void) => () => void
+      onStatus: (callback: (data: any) => void) => () => void
+    }
     dialog: { openFile: (options?: unknown) => Promise<unknown> }
     nativeDialog: {
       alert: (message?: unknown) => void

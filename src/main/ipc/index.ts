@@ -54,6 +54,7 @@ import {
 } from '../services/cloud-token'
 import { getDeviceId } from '../services/device-id'
 import { setActiveAccount } from '../services/account-context'
+import * as syncService from '../services/sync'
 import * as deviceSettingsService from '../services/device-settings'
 import { uploadInspiration as uploadInspirationToCloud } from '../services/cloud-inspiration'
 import { runInEpoch } from '../services/account-epoch'
@@ -75,6 +76,8 @@ export function registerIpcHandlers(): void {
   // 例外：cloud:setActiveAccount 用未包裹的 electronIpcMain 注册（它本身是切换编排，
   // bumpEpoch 后需以新代次开库，不能停留在旧代次上下文）。
   const ipcMain = wrapWithEpoch(electronIpcMain)
+  // 同步模块初始化：装好进度广播器（schema/触发器在开库时已安装）。
+  syncService.initSyncModule()
   // === Model Providers ===
   ipcMain.handle('model:list', () => modelProviderService.listModelProviders())
   ipcMain.handle('model:get', (_, id: string) => modelProviderService.getModelProvider(id))
@@ -1261,7 +1264,15 @@ export function registerIpcHandlers(): void {
   )
 
   // === Cloud Token ===
-  ipcMain.handle('cloud:setToken', (_, token: string | null) => setCloudToken(token))
+  ipcMain.handle('cloud:setToken', (_, token: string | null) => {
+    setCloudToken(token)
+    // 登录态变化联动云同步调度（登录启动并跑一次，登出停止）。
+    try {
+      syncService.onAuthChanged(!!token)
+    } catch (e) {
+      console.error('[sync] onAuthChanged failed:', e)
+    }
+  })
   ipcMain.handle('cloud:getToken', () => getCloudToken())
   ipcMain.handle('cloud:setPermissions', (_, perms: Record<string, any>) => setCloudPermissions(perms))
   ipcMain.handle('cloud:getDeviceId', () => getDeviceId())
@@ -1269,6 +1280,15 @@ export function registerIpcHandlers(): void {
   // 用未包裹的 electronIpcMain 注册：本 handler 是切换编排本身，bumpEpoch 后需以新代次开库，不能停在旧代次上下文。
   // （renderer 拿到 { switched:true } 即停下当前登录流程，等 reload 后由 init 接管按新账号加载数据）
   electronIpcMain.handle('cloud:setActiveAccount', (_, id: number | string | null) => setActiveAccount(id))
+
+  // === Cloud Sync（云同步与容量计费） ===
+  ipcMain.handle('sync:status', () => syncService.getStatus())
+  ipcMain.handle('sync:now', () => syncService.syncNow())
+  ipcMain.handle('sync:getConfig', () => syncService.getConfig())
+  ipcMain.handle('sync:setConfig', (_, patch: any) => syncService.setConfig(patch || {}))
+  ipcMain.handle('sync:getQuota', () => syncService.getQuota())
+  ipcMain.handle('sync:getConflicts', () => syncService.getConflicts())
+  ipcMain.handle('sync:getLocalStats', () => syncService.getLocalStats())
 
   // === Cloud Models（全量 chat/image/embedding；用于 callLLM/image/embedding 出 body 前反查 cloud_model_id） ===
   // 解决多家服务商提供同名 model_id 时云控端 first() 错位路由的 bug：

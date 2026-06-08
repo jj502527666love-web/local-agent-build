@@ -8,6 +8,7 @@ import { stopAutoDownloadScheduler, startAutoDownloadScheduler } from './video-g
 import { cancelAllGenerations, cleanupStaleGenerations } from './image-generation'
 import { cancelAllChats } from './chat-engine'
 import { bumpEpoch } from './account-epoch'
+import { stopSyncScheduler, onAccountReady } from './sync'
 
 // === 账号本地数据隔离：目录上下文 ===
 //
@@ -185,6 +186,13 @@ export function setActiveAccount(id: number | string | null): { switched: boolea
     legacyPending = false
     accountReady = true
     applyAccountDir(targetDir)
+    // 账号目录已就绪（无需热切换）：此刻启动云同步，确保在正确账号库上运行。
+    // 覆盖：app 启动 init、登录直挂当前目录、以及热切换 reload 后的回流确认。
+    try {
+      onAccountReady()
+    } catch (e) {
+      console.error('[account] sync onAccountReady failed:', e)
+    }
     return { switched: false }
   }
 
@@ -210,6 +218,7 @@ function performAccountSwitchHotSwap(targetKey: string, targetDir: string): void
   try { cancelAllChats() } catch (e) { console.error('[account] cancelAllChats failed:', e) }
   try { cancelAllGenerations() } catch (e) { console.error('[account] cancelAllGenerations failed:', e) }
   try { stopAutoDownloadScheduler() } catch (e) { console.error('[account] stop scheduler failed:', e) }
+  try { stopSyncScheduler() } catch (e) { console.error('[account] stop sync scheduler failed:', e) }
   try { stopAllMcpServers() } catch (e) { console.error('[account] stop mcp failed:', e) }
   try { closeDatabase() } catch (e) { console.error('[account] close db failed:', e) }
 
