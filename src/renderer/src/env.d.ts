@@ -64,7 +64,10 @@ interface Window {
       offUpdateMessage: () => void
     }
     skill: { invoke: (channel: string, ...args: unknown[]) => Promise<unknown> }
-    mcp: { invoke: (channel: string, ...args: unknown[]) => Promise<unknown> }
+    mcp: {
+      invoke: (channel: string, ...args: unknown[]) => Promise<unknown>
+      onStatus: (callback: (data: unknown) => void) => () => void
+    }
     promptSkill: { invoke: (channel: string, ...args: unknown[]) => Promise<unknown> }
     settings: { invoke: (channel: string, ...args: unknown[]) => Promise<unknown> }
     deviceSettings: {

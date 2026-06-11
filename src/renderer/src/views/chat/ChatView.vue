@@ -123,6 +123,16 @@
                       @submit="(payload) => onCardSubmit(msg, payload)"
                     />
                     <div v-else class="text-sm px-4 py-3 rounded-2xl rounded-bl-md bg-surface-0 text-text-primary shadow-card prose prose-sm dark:prose-invert max-w-none select-text" v-html="renderMarkdown(msg.content || '...')"></div>
+                    <!-- 从中断处继续生成（仅末条、被中断/报错、且当前未在流式时显示） -->
+                    <button
+                      v-if="msg.role === 'assistant' && msg.id === lastAssistantId && !chatStore.streaming && isContinuable(msg.content)"
+                      @click="chatStore.continueGenerate()"
+                      class="mt-2 inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-surface-3 bg-surface-0 text-text-secondary hover:text-text-primary hover:bg-surface-2 transition-colors"
+                      title="保留已生成的内容，让模型接着写"
+                    >
+                      <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" /></svg>
+                      继续生成
+                    </button>
                   </template>
                   <div v-if="msg.attachments?.length" class="mt-1.5 flex gap-1.5 flex-wrap" :class="msg.role === 'user' ? 'justify-end' : ''">
                     <template v-for="(att, i) in msg.attachments" :key="i">
@@ -494,7 +504,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useChatStore } from '@/stores/chat'
+import { useChatStore, isContinuable } from '@/stores/chat'
 import { useHandoffStore } from '@/stores/handoff'
 import { useBotStore } from '@/stores/bots'
 import { useKnowledgeStore } from '@/stores/knowledge'

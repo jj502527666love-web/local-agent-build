@@ -142,6 +142,29 @@ function dispatchAuthExpired(reason: string): void {
   }
 }
 
+// 云端「余额不足」结构化错误：任何 cloudClient.* 调用命中 HTTP 402 时抛出。
+// 调用方可凭 err.code === 'INSUFFICIENT_BALANCE' 精确识别并做引导，无需各自解析状态码。
+export class CloudBalanceError extends Error {
+  readonly code = 'INSUFFICIENT_BALANCE'
+  balanceType: 'token' | 'credit'
+  needed: number
+  current: number
+  constructor(message: string, opts: { balanceType?: string; needed?: number; current?: number }) {
+    super(message)
+    this.name = 'CloudBalanceError'
+    this.balanceType = opts.balanceType === 'token' ? 'token' : 'credit'
+    this.needed = Number(opts.needed || 0)
+    this.current = Number(opts.current || 0)
+  }
+}
+
+// 派发全局「余额不足」事件，由 main.ts 统一监听 → 打开常驻 LowBalanceModal 做充值引导。
+function dispatchLowBalance(detail: { balanceType: string; required: number; available: number }): void {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('cloud-low-balance', { detail }))
+  }
+}
+
 async function request(
   method: string,
   path: string,
@@ -219,6 +242,18 @@ async function request(
   } catch {
     if (!res.ok) throw new Error(`服务器错误 (${res.status})`)
     throw new Error('服务器返回了无效的响应')
+  }
+
+  // === 402 余额不足统一处理 ===
+  // 后端 402 body 约定：{ error, needed, current, balance_type }（与 acquireAgent 一致）。
+  // 派发全局事件弹充值引导，并抛结构化错误供调用方 catch 精确识别。
+  if (res.status === 402) {
+    const balanceType = data?.balance_type === 'token' ? 'token' : 'credit'
+    const needed = Number(data?.needed || 0)
+    const current = Number(data?.current || 0)
+    const msg = data?.error || data?.message || '余额不足，请充值后重试'
+    dispatchLowBalance({ balanceType, required: needed, available: current })
+    throw new CloudBalanceError(msg, { balanceType, needed, current })
   }
 
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)

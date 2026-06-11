@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, statSync } from 'fs'
 import { extname } from 'path'
 import { nativeImage } from 'electron'
-import { fetchWithCloudAuth, getCloudApiBase, getCloudToken } from './cloud-token'
+import { fetchWithCloudAuth, getCloudApiBase, getCloudToken, cloudErrorText } from './cloud-token'
 import { getTemplate, updateTemplateSubmissionState } from './creative-template'
 import { makeUploadThumbnailBlob } from './thumbnail-upload'
 
@@ -232,7 +232,7 @@ export async function submitCreativeTemplate(params: SubmitCreativeTemplateParam
     }
     return { ok: false, error: '参数校验失败' }
   }
-  if (!resp.ok) return { ok: false, error: json?.message || json?.error || `HTTP ${resp.status}` }
+  if (!resp.ok) return { ok: false, error: cloudErrorText(resp.status, json, '请求失败') }
 
   updateTemplateSubmissionState(template.id, {
     cloudTemplateId: Number(json?.cloud_template_id || 0),
@@ -265,7 +265,7 @@ export async function syncCreativeTemplateSubmissionStatus(templateIds: string[]
 
   let json: any = null
   try { json = await resp.json() } catch {}
-  if (!resp.ok) return { ok: false, error: json?.message || json?.error || `HTTP ${resp.status}` }
+  if (!resp.ok) return { ok: false, error: cloudErrorText(resp.status, json, '请求失败') }
 
   const items = Array.isArray(json?.items) ? json.items : []
   for (const item of items) {
@@ -298,7 +298,7 @@ export async function withdrawCreativeTemplateSubmission(templateId: string): Pr
 
   let json: any = null
   try { json = await resp.json() } catch {}
-  if (!resp.ok) return { ok: false, error: json?.message || json?.error || `HTTP ${resp.status}` }
+  if (!resp.ok) return { ok: false, error: cloudErrorText(resp.status, json, '请求失败') }
 
   updateTemplateSubmissionState(template.id, {
     status: 'withdrawn',

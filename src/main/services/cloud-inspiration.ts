@@ -2,7 +2,7 @@ import { readFileSync, existsSync, statSync } from 'fs'
 import { join, extname } from 'path'
 import { nativeImage } from 'electron'
 import { getDataDir } from './data-path'
-import { getCloudApiBase, getCloudToken, fetchWithCloudAuth } from './cloud-token'
+import { getCloudApiBase, getCloudToken, fetchWithCloudAuth, cloudErrorText } from './cloud-token'
 import { makeUploadThumbnailBlob } from './thumbnail-upload'
 
 /**
@@ -268,7 +268,7 @@ export async function uploadInspiration(params: UploadInspirationParams): Promis
     return { ok: false, error: '参数校验失败' }
   }
   if (!resp.ok) {
-    return { ok: false, error: json?.error || `HTTP ${resp.status}` }
+    return { ok: false, error: cloudErrorText(resp.status, json, '上传失败') }
   }
 
   return { ok: true, data: json, compressed: cmp.compressed || refCompressed }

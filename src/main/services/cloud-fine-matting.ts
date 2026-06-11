@@ -1,6 +1,6 @@
 import { readFileSync, statSync, existsSync } from 'fs'
 import { basename, extname } from 'path'
-import { getCloudToken, getCloudApiBase, fetchWithCloudAuth } from './cloud-token'
+import { getCloudToken, getCloudApiBase, fetchWithCloudAuth, throwCloudHttpError } from './cloud-token'
 
 /**
  * 精细抠图云接口模式：把本地图 multipart 上传到 /api/gateway/fine-matting/segment，
@@ -141,12 +141,7 @@ async function submit(apiBase: string, localPath: string, ext: string): Promise<
   }
 
   if (!resp.ok) {
-    let errMsg = `云控端提交失败 (HTTP ${resp.status})`
-    try {
-      const j: any = await resp.json()
-      if (j?.error) errMsg = j.error
-    } catch { /* 非 JSON 响应 */ }
-    throw new Error(errMsg)
+    await throwCloudHttpError(resp, '云控端提交失败')
   }
   const j: any = await resp.json()
   if (!j.task_id) throw new Error('云控端未返回 task_id')
@@ -167,8 +162,7 @@ async function pollStatus(apiBase: string, taskId: string): Promise<{
     '云端精细抠图轮询 401',
   )
   if (!resp.ok) {
-    const j: any = await resp.json().catch(() => ({}))
-    throw new Error(j?.error || `查询状态失败 (HTTP ${resp.status})`)
+    await throwCloudHttpError(resp, '查询状态失败')
   }
   return (await resp.json()) as any
 }

@@ -116,9 +116,11 @@ export interface RemoteChange {
 export interface PushResult {
   uid: string
   entity: string
-  status: 'applied' | 'conflict'
+  /** rejected：服务端校验未通过（如引用的 blob 不存在）；oplog 保留待下次重推 */
+  status: 'applied' | 'conflict' | 'rejected'
   server_seq?: number
   rev?: number
+  reason?: string
   /** conflict 时返回服务端当前版本，供客户端合并 */
   remote?: RemoteChange
 }

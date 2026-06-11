@@ -20,6 +20,8 @@ export interface CloudKbSearchResult {
   hits: CloudKbHit[]
   /** 'cloud' 实时命中 / 'cache' 离线缓存降级 / 'none' 无结果 */
   source: 'cloud' | 'cache' | 'none'
+  /** 云端检索不可用的原因（如余额不足）：非空时调用方应把它带给 LLM/用户，避免静默用陈旧缓存 */
+  unavailableReason?: string
 }
 
 const SEARCH_TIMEOUT_MS = 12000
@@ -62,6 +64,14 @@ export async function searchCloudKnowledgeBases(opts: CloudKbSearchOptions): Pro
     )
     if (!res.ok) {
       const cached = getCloudKbCache(queryHash)
+      // 402 余额不足：不再静默降级，带回原因让对话层告知用户（知识库已停更/欠费）
+      if (res.status === 402) {
+        return {
+          hits: cached,
+          source: cached.length ? 'cache' : 'none',
+          unavailableReason: '云端余额不足，知识库实时检索已暂停' + (cached.length ? '（当前返回离线缓存，可能非最新）' : ''),
+        }
+      }
       return { hits: cached, source: cached.length ? 'cache' : 'none' }
     }
     const json: any = await res.json()

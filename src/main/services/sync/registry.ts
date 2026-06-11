@@ -85,6 +85,8 @@ export const SYNC_ENTITIES: SyncEntityDef[] = [
     category: 'data',
     updatedField: 'created_at',
     jsonFields: ['args', 'env', 'tools'],
+    // env 通常装 API key 等敏感凭据：冲突记录里只留掩码，不存明文（与 model_providers.api_key 同策略）
+    secretFields: ['env'],
   },
   {
     entity: 'canvas_characters',

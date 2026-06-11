@@ -11,7 +11,7 @@ import * as mcpServerService from '../services/mcp-server'
 import * as settingsService from '../services/settings'
 import * as dataPathService from '../services/data-path'
 import * as usageStatsService from '../services/usage-stats'
-import { sendMessage, cancelChat, isChatActive, respondToolApproval, regenerateLastResponse, editAndResend } from '../services/chat-engine'
+import { sendMessage, cancelChat, isChatActive, respondToolApproval, regenerateLastResponse, editAndResend, continueLastResponse } from '../services/chat-engine'
 import { respondUserChoice } from '../services/user-choice'
 import { callLLM } from '../services/llm'
 import { skillPresets } from '../services/skill-presets'
@@ -214,6 +214,10 @@ export function registerIpcHandlers(): void {
     const window = BrowserWindow.fromWebContents(event.sender)
     return regenerateLastResponse(conversationId, window, requestId)
   })
+  ipcMain.handle('chat:continue', (event, conversationId: string, requestId?: string) => {
+    const window = BrowserWindow.fromWebContents(event.sender)
+    return continueLastResponse(conversationId, window, requestId)
+  })
   ipcMain.handle('chat:editMessage', (event, conversationId: string, messageId: string, newContent: string, requestId?: string) => {
     const window = BrowserWindow.fromWebContents(event.sender)
     return editAndResend(conversationId, messageId, newContent, window, requestId)
@@ -385,7 +389,8 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('mcp:delete', (_, id: string) => mcpServerService.deleteMcpServer(id))
   ipcMain.handle('mcp:start', (_, id: string) => mcpServerService.startMcpServer(id))
   ipcMain.handle('mcp:stop', (_, id: string) => mcpServerService.stopMcpServer(id))
-  ipcMain.handle('mcp:status', (_, id: string) => mcpServerService.getMcpServerStatus(id))
+  ipcMain.handle('mcp:status', (_, id: string) => mcpServerService.getMcpServerRuntime(id))
+  ipcMain.handle('mcp:refreshTools', (_, id: string) => mcpServerService.refreshMcpTools(id))
 
   // === Prompt Skills (SKILL.md) ===
   ipcMain.handle('promptSkill:list', () => promptSkillService.listPromptSkills())

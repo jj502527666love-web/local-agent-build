@@ -63,8 +63,10 @@ function isWithinDir(child: string, parent: string): boolean {
 
 // 读路径收口:技能只能读取「应用数据目录(含工作区/技能资源)∪ 工作区 ∪ 用户预授权可信目录」，
 // 越界(如系统敏感文件)直接拒绝，堵住"技能偷读任意文件"的越权风险。
-function validateReadPath(p: string, sandboxRoot?: string): string {
+// unrestricted=true(脱离沙箱白名单工具)时跳过收口，允许读取任意路径。
+function validateReadPath(p: string, sandboxRoot?: string, unrestricted?: boolean): string {
   const resolved = resolveInWorkspace(p, sandboxRoot)
+  if (unrestricted) return resolved
   const allowed: string[] = []
   try {
     allowed.push(resolve(getDataDir()))
@@ -79,8 +81,10 @@ function validateReadPath(p: string, sandboxRoot?: string): string {
   throw new Error(`Read denied: "${resolved}" 在允许目录之外（工作区/应用数据目录/可信目录）`)
 }
 
-function validateWritePath(p: string, sandboxRoot?: string): string {
+// 写路径收口:技能只能写入工作区内。unrestricted=true 时放开，允许写任意路径。
+function validateWritePath(p: string, sandboxRoot?: string, unrestricted?: boolean): string {
   const resolved = resolveInWorkspace(p, sandboxRoot)
+  if (unrestricted) return resolved
   if (sandboxRoot) {
     const normalizedRoot = resolve(sandboxRoot)
     if (!resolved.startsWith(normalizedRoot)) {
@@ -90,7 +94,8 @@ function validateWritePath(p: string, sandboxRoot?: string): string {
   return resolved
 }
 
-function validateCommand(cmd: string): void {
+function validateCommand(cmd: string, unrestricted?: boolean): void {
+  if (unrestricted) return
   for (const pattern of DANGEROUS_PATTERNS) {
     if (pattern.test(cmd)) {
       throw new Error(`Blocked dangerous command: ${cmd}`)
@@ -98,40 +103,40 @@ function validateCommand(cmd: string): void {
   }
 }
 
-function createFileOps(sandboxRoot?: string) {
+function createFileOps(sandboxRoot?: string, unrestricted?: boolean) {
   return {
-    readFile: (p: string, encoding?: string) => readFileSync(validateReadPath(p, sandboxRoot), (encoding || 'utf-8') as BufferEncoding),
+    readFile: (p: string, encoding?: string) => readFileSync(validateReadPath(p, sandboxRoot, unrestricted), (encoding || 'utf-8') as BufferEncoding),
     writeFile: (p: string, content: string, encoding?: string) => {
-      const vp = validateWritePath(p, sandboxRoot)
+      const vp = validateWritePath(p, sandboxRoot, unrestricted)
       mkdirSync(dirname(vp), { recursive: true })
       writeFileSync(vp, content, (encoding || 'utf-8') as BufferEncoding)
       return true
     },
     appendFile: (p: string, content: string) => {
-      appendFileSync(validateWritePath(p, sandboxRoot), content, 'utf-8')
+      appendFileSync(validateWritePath(p, sandboxRoot, unrestricted), content, 'utf-8')
       return true
     },
     listDir: (p: string) => {
-      const dir = validateReadPath(p, sandboxRoot)
+      const dir = validateReadPath(p, sandboxRoot, unrestricted)
       return readdirSync(dir, { withFileTypes: true }).map(e => ({
         name: e.name,
         isDirectory: e.isDirectory(),
         size: e.isDirectory() ? 0 : statSync(join(dir, e.name)).size
       }))
     },
-    mkdir: (p: string) => { mkdirSync(validateWritePath(p, sandboxRoot), { recursive: true }); return true },
-    exists: (p: string) => existsSync(validateReadPath(p, sandboxRoot)),
+    mkdir: (p: string) => { mkdirSync(validateWritePath(p, sandboxRoot, unrestricted), { recursive: true }); return true },
+    exists: (p: string) => existsSync(validateReadPath(p, sandboxRoot, unrestricted)),
     stat: (p: string) => {
-      const s = statSync(validateReadPath(p, sandboxRoot))
+      const s = statSync(validateReadPath(p, sandboxRoot, unrestricted))
       return { size: s.size, isDirectory: s.isDirectory(), isFile: s.isFile(), mtime: s.mtime.toISOString() }
     },
-    deleteFile: (p: string) => { unlinkSync(validateWritePath(p, sandboxRoot)); return true },
-    deleteDir: (p: string) => { rmdirSync(validateWritePath(p, sandboxRoot), { recursive: true } as any); return true },
-    rename: (from: string, to: string) => { renameSync(validateWritePath(from, sandboxRoot), validateWritePath(to, sandboxRoot)); return true },
+    deleteFile: (p: string) => { unlinkSync(validateWritePath(p, sandboxRoot, unrestricted)); return true },
+    deleteDir: (p: string) => { rmdirSync(validateWritePath(p, sandboxRoot, unrestricted), { recursive: true } as any); return true },
+    rename: (from: string, to: string) => { renameSync(validateWritePath(from, sandboxRoot, unrestricted), validateWritePath(to, sandboxRoot, unrestricted)); return true },
     copyFile: (from: string, to: string) => {
-      const vTo = validateWritePath(to, sandboxRoot)
+      const vTo = validateWritePath(to, sandboxRoot, unrestricted)
       mkdirSync(dirname(vTo), { recursive: true })
-      copyFileSync(validateReadPath(from, sandboxRoot), vTo)
+      copyFileSync(validateReadPath(from, sandboxRoot, unrestricted), vTo)
       return true
     },
     join: (...parts: string[]) => join(...parts),
@@ -154,11 +159,11 @@ function resolveTimeout(timeoutMs?: number): number {
     : DEFAULT_TIMEOUT_MS
 }
 
-function createShellOps(sandboxRoot?: string, timeoutMs?: number) {
+function createShellOps(sandboxRoot?: string, timeoutMs?: number, unrestricted?: boolean) {
   const defaultTimeout = resolveTimeout(timeoutMs)
   return {
     exec: (cmd: string, options?: { cwd?: string; timeout?: number }) => {
-      validateCommand(cmd)
+      validateCommand(cmd, unrestricted)
       const requestedTimeout = resolveTimeout(options?.timeout)
       const result = execSync(cmd, {
         cwd: resolveShellCwd(options?.cwd, sandboxRoot),
@@ -179,7 +184,7 @@ function createShellOps(sandboxRoot?: string, timeoutMs?: number) {
       ok: boolean
       timed_out?: boolean
     }> => {
-      validateCommand(cmd)
+      validateCommand(cmd, unrestricted)
       const requestedTimeout = resolveTimeout(options?.timeout)
       const timeout = Math.max(1, Math.min(requestedTimeout, defaultTimeout))
       return new Promise((resolve) => {
@@ -222,15 +227,16 @@ export async function executeSkillSandbox(
   implementation: string,
   args: Record<string, any>,
   sandboxRoot?: string,
-  timeoutMs?: number
+  timeoutMs?: number,
+  unrestricted?: boolean
 ): Promise<SkillExecutionResult> {
   const t0 = Date.now()
   let timer: ReturnType<typeof setTimeout> | undefined
 
   try {
-    const fileOps = createFileOps(sandboxRoot)
+    const fileOps = createFileOps(sandboxRoot, unrestricted)
     const executionTimeout = resolveTimeout(timeoutMs)
-    const shellOps = createShellOps(sandboxRoot, executionTimeout)
+    const shellOps = createShellOps(sandboxRoot, executionTimeout, unrestricted)
 
     // 在受限 vm context 中执行技能代码,隔离主进程 process / require / module / global 等,
     // 仅暴露白名单能力(args / fs / shell / fetch / crypto + 常用 Web/Node 全局)。相比 new Function:

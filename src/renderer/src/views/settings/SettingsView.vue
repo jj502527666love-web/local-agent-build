@@ -125,12 +125,17 @@
               <input v-model="generalForm.temperature" type="number" step="0.1" min="0" max="2" class="input-field max-w-xs" />
             </div>
             <div>
+              <label class="form-label">流式静默超时（秒）</label>
+              <input v-model="generalForm.streamIdleTimeoutSec" type="number" step="10" min="30" max="600" class="input-field max-w-xs" />
+              <p class="text-[11px] text-text-tertiary mt-1.5">对话时连续多少秒收不到模型返回就判定连接断开（自动重连/提示）。推理模型思考较久时可调大，默认 90 秒，范围 30–600。</p>
+            </div>
+            <div>
               <label class="form-label">点击关闭按钮时</label>
               <select v-model="generalForm.windowCloseBehavior" class="select-field max-w-xs">
                 <option value="close-window">关闭窗口，应用继续在后台运行</option>
                 <option value="minimize">最小化窗口，应用继续运行</option>
               </select>
-              <p class="text-[11px] text-text-tertiary mt-1.5">选择关闭窗口后，再次打开应用会恢复到主窗口。</p>
+              <p class="text-[11px] text-text-tertiary mt-1.5">关闭窗口后应用仍在后台运行，可从系统托盘图标重新打开；需彻底退出请右键托盘图标选择「退出」。</p>
             </div>
             <div class="flex items-center gap-3 pt-1">
               <button @click="saveGeneralSettings" class="btn-primary">保存</button>
@@ -547,9 +552,10 @@ function describeMeta(m?: { model: string; source: string; dim: number }): strin
 }
 type WindowCloseBehavior = 'close-window' | 'minimize'
 
-const generalForm = ref<{ temperature: string; windowCloseBehavior: WindowCloseBehavior }>({
+const generalForm = ref<{ temperature: string; windowCloseBehavior: WindowCloseBehavior; streamIdleTimeoutSec: string }>({
   temperature: '0.7',
-  windowCloseBehavior: 'close-window'
+  windowCloseBehavior: 'close-window',
+  streamIdleTimeoutSec: '90'
 })
 const vectorSaved = ref(false)
 const vectorTesting = ref(false)
@@ -872,6 +878,10 @@ async function loadSettings() {
   if (all['vector_api_key']) vectorForm.value.api_key = all['vector_api_key']
   if (all['vector_model']) vectorForm.value.model = all['vector_model']
   if (all['temperature']) generalForm.value.temperature = all['temperature']
+  if (all['stream_idle_timeout_ms']) {
+    const ms = parseInt(all['stream_idle_timeout_ms'], 10)
+    if (Number.isFinite(ms) && ms > 0) generalForm.value.streamIdleTimeoutSec = String(Math.round(ms / 1000))
+  }
   if (all['window_close_behavior'] === 'minimize' || all['window_close_behavior'] === 'close-window') {
     generalForm.value.windowCloseBehavior = all['window_close_behavior']
   }
@@ -1026,6 +1036,10 @@ async function testVectorConnection() {
 
 async function saveGeneralSettings() {
   await window.api.settings.invoke('set', 'temperature', generalForm.value.temperature)
+  // 流式静默超时：UI 用秒，存储用毫秒；钳制到 30~600 秒，避免误填
+  const sec = Math.max(30, Math.min(600, parseInt(generalForm.value.streamIdleTimeoutSec, 10) || 90))
+  generalForm.value.streamIdleTimeoutSec = String(sec)
+  await window.api.settings.invoke('set', 'stream_idle_timeout_ms', String(sec * 1000))
   // 窗口关闭行为为设备级设置，写入 device-settings.json（独立于按账号隔离的 settings 表）
   await window.api.deviceSettings.set('window_close_behavior', generalForm.value.windowCloseBehavior)
   generalSaved.value = true

@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, session, nativeImage, protocol, ipcMain } from 'electron'
+import { app, shell, BrowserWindow, session, nativeImage, protocol, ipcMain, Tray, Menu, Notification } from 'electron'
 import { join } from 'path'
 import { createReadStream, existsSync, statSync } from 'fs'
 import { Readable } from 'stream'
@@ -17,7 +17,7 @@ import { getSetting } from './services/settings'
 import { startAutoDownloadScheduler, stopAutoDownloadScheduler } from './services/video-generation'
 import { initAccountContext, isAccountReady } from './services/account-context'
 import { runInEpoch } from './services/account-epoch'
-import { getDeviceSetting } from './services/device-settings'
+import { getDeviceSetting, setDeviceSetting } from './services/device-settings'
 
 if (is.dev) {
   process.env['ELECTRON_DISABLE_SECURITY_WARNINGS'] = 'true'
@@ -37,6 +37,8 @@ configureStableUserDataPath()
 type WindowCloseBehavior = 'close-window' | 'minimize'
 
 let isQuitting = false
+// 系统托盘：常驻入口，让「关闭后仍在后台运行」可见、可重新唤起、可彻底退出。
+let tray: Tray | null = null
 const gotSingleInstanceLock = app.requestSingleInstanceLock()
 
 function getLocalFileMime(filePath: string): string {
@@ -164,7 +166,11 @@ function createWindow(): BrowserWindow {
     if (getWindowCloseBehavior() === 'minimize') {
       event.preventDefault()
       mainWindow.minimize()
+      return
     }
+    // close-window：窗口将被销毁、应用转入后台（托盘常驻）。首次关闭提示一次去向，
+    // 避免用户以为已退出却仍在后台运行、又找不到入口。
+    maybeNotifyCloseToTray()
   })
 
   mainWindow.on('ready-to-show', () => {
@@ -194,6 +200,43 @@ function showOrCreateMainWindow(): void {
   if (existingWindow.isMinimized()) existingWindow.restore()
   if (!existingWindow.isVisible()) existingWindow.show()
   existingWindow.focus()
+}
+
+// 创建系统托盘（仅一次）：左键/双击显示主界面，右键菜单可显示或彻底退出。
+// 关闭窗口后应用仍在后台运行，托盘是用户重新唤起 / 主动退出的可见入口。
+function createTray(): void {
+  if (tray && !tray.isDestroyed()) return
+  let icon = createAppIcon()
+  try { icon = icon.resize({ width: 16, height: 16 }) } catch {}
+  tray = new Tray(icon)
+  const appName = getRuntimeConfig().appName || 'LocalAgent'
+  tray.setToolTip(appName)
+  const menu = Menu.buildFromTemplate([
+    { label: '显示主界面', click: () => showOrCreateMainWindow() },
+    { type: 'separator' },
+    { label: '退出', click: () => { isQuitting = true; app.quit() } }
+  ])
+  tray.setContextMenu(menu)
+  tray.on('click', () => showOrCreateMainWindow())
+  tray.on('double-click', () => showOrCreateMainWindow())
+}
+
+// 首次「关闭到后台」时弹一次系统通知，说明应用去向与如何彻底退出；之后用设备级标记不再打扰。
+function maybeNotifyCloseToTray(): void {
+  try {
+    if (getDeviceSetting('close_tray_hinted') === '1') return
+    setDeviceSetting('close_tray_hinted', '1')
+    if (Notification.isSupported()) {
+      const appName = getRuntimeConfig().appName || 'LocalAgent'
+      new Notification({
+        title: `${appName} 仍在后台运行`,
+        body: '已收起到系统托盘。点击托盘图标可重新打开；如需彻底退出，请右键托盘图标选择「退出」。',
+        icon: createAppIcon()
+      }).show()
+    }
+  } catch (e) {
+    console.error('[tray] close hint failed:', e)
+  }
 }
 
 protocol.registerSchemesAsPrivileged([
@@ -339,6 +382,13 @@ if (gotSingleInstanceLock) {
 
   createWindow()
 
+  // 系统托盘：常驻后台入口（关闭窗口后应用仍在后台运行，靠托盘重新唤起 / 彻底退出）
+  try {
+    createTray()
+  } catch (e) {
+    console.error('[tray] create failed:', e)
+  }
+
   // Auto updater (production only)
   if (!is.dev) {
     setupAutoUpdater()
@@ -433,4 +483,6 @@ app.on('before-quit', () => {
   stopAutoDownloadScheduler()
   stopAllMcpServers()
   closeDatabase()
+  try { tray?.destroy() } catch {}
+  tray = null
 })

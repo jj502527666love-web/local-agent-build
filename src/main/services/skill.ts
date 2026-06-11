@@ -12,6 +12,8 @@ export interface Skill {
   version: string
   enabled: boolean
   is_builtin: boolean
+  /** 脱离沙箱：1=放开文件/命令路径限制（仍在 vm 隔离中运行）。仅自定义工具可开。 */
+  unsandboxed: boolean
   created_at: string
 }
 
@@ -42,7 +44,8 @@ function parseSkill(row: any): Skill {
     ...row,
     function_def: JSON.parse(row.function_def || '{}'),
     enabled: Boolean(row.enabled),
-    is_builtin: Boolean(row.is_builtin)
+    is_builtin: Boolean(row.is_builtin),
+    unsandboxed: Boolean(row.unsandboxed)
   }
 }
 
@@ -83,6 +86,7 @@ export function createSkill(data: {
   implementation: string
   source?: string
   version?: string
+  unsandboxed?: boolean
 }): Skill {
   const fnName = data.function_def?.name as string | undefined
   if (fnName && findSkillByFunctionName(fnName)) {
@@ -92,7 +96,7 @@ export function createSkill(data: {
   const id = uuid()
   const now = new Date().toISOString()
   db.prepare(
-    'INSERT INTO skills (id, name, description, function_def, implementation, source, version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+    'INSERT INTO skills (id, name, description, function_def, implementation, source, version, unsandboxed, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
   ).run(
     id,
     data.name,
@@ -101,6 +105,7 @@ export function createSkill(data: {
     data.implementation,
     data.source || 'local',
     data.version || '1.0.0',
+    data.unsandboxed ? 1 : 0,
     now
   )
   return getSkill(id)!
@@ -157,20 +162,29 @@ export function updateSkill(
     function_def: any
     implementation: string
     enabled: boolean
+    unsandboxed: boolean
   }>
 ): Skill | null {
   const db = getDatabase()
   const existing = getSkill(id)
   if (!existing) return null
 
+  // 安全约束：内置预设强制留在沙箱内，不允许通过本接口被改成脱离沙箱。
+  const nextUnsandboxed = existing.is_builtin
+    ? false
+    : data.unsandboxed !== undefined
+      ? data.unsandboxed
+      : existing.unsandboxed
+
   db.prepare(
-    'UPDATE skills SET name=?, description=?, function_def=?, implementation=?, enabled=? WHERE id=?'
+    'UPDATE skills SET name=?, description=?, function_def=?, implementation=?, enabled=?, unsandboxed=? WHERE id=?'
   ).run(
     data.name ?? existing.name,
     data.description ?? existing.description,
     JSON.stringify(data.function_def ?? existing.function_def),
     data.implementation ?? existing.implementation,
     data.enabled !== undefined ? (data.enabled ? 1 : 0) : existing.enabled ? 1 : 0,
+    nextUnsandboxed ? 1 : 0,
     id
   )
   return getSkill(id)

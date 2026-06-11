@@ -107,10 +107,17 @@ function copyFileStreamSync(src: string, dest: string): void {
   }
 }
 
+/** 从路径取扩展名（仅看文件名段；无扩展名回退 bin，避免把整段路径当 ext）。 */
+function extOfPath(absPath: string): string {
+  const base = absPath.split(/[\\/]/).pop() || ''
+  const dot = base.lastIndexOf('.')
+  return dot > 0 && dot < base.length - 1 ? base.slice(dot + 1).toLowerCase() : 'bin'
+}
+
 /** 把本地文件登记为 blob（流式哈希 + OS 级复制到缓存），返回 sha256 与大小。serializer 同步调用。 */
 export function ingestFile(absPath: string, category: SyncCategory): { sha256: string; size: number } {
   const { sha256: sha, size } = hashFileSync(absPath)
-  const ext = (absPath.split('.').pop() || 'bin').toLowerCase()
+  const ext = extOfPath(absPath)
   const dest = blobPath(sha, ext)
   if (!existsSync(dest)) {
     try {
@@ -147,15 +154,20 @@ function hasLocal(ref: BlobRef): boolean {
   return existsSync(blobPath(ref.sha256, ref.ext))
 }
 
-/** 上传一批被引用的 blob（秒传：先 check 云端缺失，再传缺的）。容量超限抛 QuotaExceededError。 */
+/**
+ * 上传一批被引用的 blob（秒传：先 check 云端缺失，再传缺的）。容量超限抛 QuotaExceededError。
+ * 返回「本地与云端都不存在、当前不可得」的 sha 集合，调用方应挂起引用它们的变更，
+ * 避免推送悬空引用导致其它设备永久 404 重试。
+ */
 export async function uploadReferenced(
   refs: BlobRef[],
   onProgress?: (done: number, total: number) => void,
-): Promise<void> {
+): Promise<Set<string>> {
+  const unavailable = new Set<string>()
   const uniq = new Map<string, BlobRef>()
   for (const r of refs) if (!uniq.has(r.sha256)) uniq.set(r.sha256, r)
   const list = [...uniq.values()]
-  if (list.length === 0) return
+  if (list.length === 0) return unavailable
 
   const check = await checkBlobs(list.map((r) => ({ sha256: r.sha256, size: r.size, category: r.category })))
   if (check.quota_exceeded) throw new QuotaExceededError()
@@ -169,12 +181,17 @@ export async function uploadReferenced(
         const size = ref.size > 0 ? ref.size : statSync(p).size
         const ok = await uploadBlobFromFile(ref.sha256, p, size, ref.category, ref.ext)
         if (!ok) throw new QuotaExceededError()
+        markUploaded(ref.sha256)
+      } else {
+        unavailable.add(ref.sha256)
       }
+    } else {
+      markUploaded(ref.sha256)
     }
-    markUploaded(ref.sha256)
     done++
     onProgress?.(done, list.length)
   }
+  return unavailable
 }
 
 /** 预取一批 blob 到本地缓存（apply 前调用），缺失的从云端下载。失败静默跳过留待重试。 */

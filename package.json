@@ -1,6 +1,6 @@
 {
   "name": "local-agent",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "description": "Local AI Agent Platform",
   "main": "./out/main/index.js",
   "scripts": {

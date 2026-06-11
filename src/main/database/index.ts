@@ -229,6 +229,11 @@ function runMigrations(): void {
   if (skillCols.length > 0 && !skillColNames.includes('is_builtin')) {
     db.exec("ALTER TABLE skills ADD COLUMN is_builtin INTEGER NOT NULL DEFAULT 0")
   }
+  // 小工具「脱离沙箱」白名单开关（per-skill）：1=放开路径/命令限制（仍保留 vm 隔离）。
+  // 默认 0=沙箱内运行；仅用户在小工具设置里手动开启的自定义工具可为 1。
+  if (skillCols.length > 0 && !skillColNames.includes('unsandboxed')) {
+    db.exec("ALTER TABLE skills ADD COLUMN unsandboxed INTEGER NOT NULL DEFAULT 0")
+  }
 
   // image_generations: 失败诊断用「原始请求快照」字段（v0.6.7+）
   // 每次生图调用上游 API 前抓一份脱敏后的 {url, method, headers, body} JSON，失败时写入此列

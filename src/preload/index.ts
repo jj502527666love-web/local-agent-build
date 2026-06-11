@@ -60,7 +60,17 @@ const api = {
   },
   mcp: {
     invoke: (channel: string, ...args: unknown[]) =>
-      ipcRenderer.invoke(`mcp:${channel}`, ...args)
+      ipcRenderer.invoke(`mcp:${channel}`, ...args),
+    /**
+     * MCP 服务器运行状态变化事件；payload = { id, status: 'running'|'stopped'|'error', error?, toolsUpdated? }
+     * toolsUpdated=true 表示服务器推送了工具清单变更且已写库，渲染层应重新拉取该 server。
+     * 返回 unsubscribe 函数。
+     */
+    onStatus: (callback: (data: unknown) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, data: unknown) => callback(data)
+      ipcRenderer.on('mcp:status', handler)
+      return () => ipcRenderer.off('mcp:status', handler)
+    }
   },
   promptSkill: {
     invoke: (channel: string, ...args: unknown[]) =>

@@ -1,30 +1,34 @@
 <template>
   <div class="h-full flex flex-col">
     <header class="page-header">
-      <button class="btn-primary" @click="showForm = true; editingId = null; resetForm()">+ 添加服务器</button>
+      <button class="btn-primary" @click="openCreateForm">+ 添加服务器</button>
     </header>
     <div class="page-body">
       <div v-if="showForm" class="max-w-xl mb-6 form-card">
         <div>
-          <label class="form-label">名称</label>
+          <label class="form-label">名称 <span class="text-red-500">*</span></label>
           <input v-model="form.name" class="input-field" placeholder="例如: 文件系统服务" />
         </div>
         <div>
-          <label class="form-label">命令</label>
+          <label class="form-label">命令 <span class="text-red-500">*</span></label>
           <input v-model="form.command" placeholder="npx, node, python..." class="input-field" />
+          <p class="text-xs text-text-tertiary mt-1">Windows 下 npx / uvx 等命令可直接填写，无需扩展名</p>
         </div>
         <div>
           <label class="form-label">参数（每行一个）</label>
-          <textarea v-model="argsStr" rows="3" class="textarea-field font-mono" placeholder="-y&#10;@modelcontextprotocol/server-filesystem"></textarea>
+          <textarea v-model="argsStr" rows="3" class="textarea-field font-mono" placeholder="-y&#10;@modelcontextprotocol/server-filesystem&#10;D:\workspace"></textarea>
         </div>
         <div>
           <label class="form-label">环境变量 (JSON)</label>
-          <textarea v-model="envStr" rows="3" class="textarea-field font-mono" placeholder='{"API_KEY":"..."}'></textarea>
+          <textarea v-model="envStr" rows="3" class="textarea-field font-mono" :class="envError ? 'border-red-400' : ''" placeholder='{"API_KEY":"..."}'></textarea>
+          <p v-if="envError" class="text-xs text-red-500 mt-1">{{ envError }}</p>
         </div>
+        <p v-if="formError" class="text-sm text-red-500">{{ formError }}</p>
         <div class="flex gap-3 pt-2">
-          <button @click="saveServer" class="btn-primary">{{ editingId ? '更新' : '创建' }}</button>
-          <button @click="showForm = false" class="btn-secondary">取消</button>
+          <button @click="saveServer" class="btn-primary" :disabled="saving">{{ saving ? '保存中...' : editingId ? '更新' : '创建' }}</button>
+          <button @click="closeForm" class="btn-secondary">取消</button>
         </div>
+        <p class="text-xs text-text-tertiary">保存后会自动启动服务器并获取工具列表，结果显示在卡片上</p>
       </div>
 
       <div v-if="store.servers.length === 0 && !showForm" class="empty-state">
@@ -44,21 +48,30 @@
             <div class="flex-1 min-w-0">
               <div class="flex items-center gap-2">
                 <span class="font-semibold text-sm text-text-primary truncate">{{ server.name }}</span>
-                <span :class="['status-badge', store.serverStatus[server.id] === 'running' ? 'status-active' : 'status-inactive']">
-                  {{ store.serverStatus[server.id] === 'running' ? '运行中' : '已停止' }}
-                </span>
+                <span :class="['status-badge', statusBadgeClass(server)]">{{ statusText(server) }}</span>
               </div>
-              <div class="text-xs text-text-tertiary mt-0.5 font-mono truncate">{{ server.command }} {{ server.args.join(' ') }}</div>
+              <div class="text-xs text-text-tertiary mt-0.5 font-mono truncate" :title="server.command + ' ' + server.args.join(' ')">{{ server.command }} {{ server.args.join(' ') }}</div>
             </div>
           </div>
+
+          <p v-if="statusError(server)" class="text-xs text-red-500 mb-2 break-all whitespace-pre-line max-h-16 overflow-hidden" :title="statusError(server)">{{ truncate(statusError(server), 180) }}</p>
+
           <div v-if="server.tools.length" class="flex flex-wrap gap-1 mb-3">
-            <span v-for="t in server.tools" :key="t" class="text-[10px] px-1.5 py-0.5 bg-surface-2 rounded text-text-secondary">{{ t }}</span>
+            <span v-for="t in server.tools.slice(0, 8)" :key="toolName(t)" class="text-[10px] px-1.5 py-0.5 bg-surface-2 rounded text-text-secondary" :title="toolDescription(t)">{{ toolName(t) }}</span>
+            <span v-if="server.tools.length > 8" class="text-[10px] px-1.5 py-0.5 text-text-tertiary">+{{ server.tools.length - 8 }}</span>
           </div>
-          <div class="flex gap-1 justify-end">
-            <button v-if="store.serverStatus[server.id] !== 'running'" @click="store.startServer(server.id)" class="btn-ghost text-emerald-600 dark:text-emerald-400 hover:!bg-emerald-50 dark:hover:!bg-emerald-900/30">启动</button>
-            <button v-else @click="store.stopServer(server.id)" class="btn-ghost text-amber-600 dark:text-amber-400 hover:!bg-amber-50 dark:hover:!bg-amber-900/30">停止</button>
+          <p v-else class="text-xs text-text-tertiary mb-3">未获取到工具，启动或刷新后自动获取</p>
+
+          <div class="flex items-center gap-1">
+            <label class="flex items-center gap-1.5 text-xs text-text-secondary cursor-pointer mr-auto" title="停用后该服务器的工具不会注入对话">
+              <input type="checkbox" class="rounded w-3.5 h-3.5" :checked="server.enabled" @change="onToggleEnabled(server, $event)" />
+              启用
+            </label>
+            <button v-if="isRunning(server)" @click="onStop(server)" :disabled="!!store.busy[server.id]" class="btn-ghost text-amber-600 dark:text-amber-400 hover:!bg-amber-50 dark:hover:!bg-amber-900/30">{{ store.busy[server.id] === 'stopping' ? '停止中...' : '停止' }}</button>
+            <button v-else @click="onStart(server)" :disabled="!!store.busy[server.id]" class="btn-ghost text-emerald-600 dark:text-emerald-400 hover:!bg-emerald-50 dark:hover:!bg-emerald-900/30">{{ store.busy[server.id] === 'starting' ? '启动中...' : '启动' }}</button>
+            <button @click="onRefreshTools(server)" :disabled="!!store.busy[server.id]" class="btn-ghost">{{ store.busy[server.id] === 'refreshing' ? '刷新中...' : '刷新工具' }}</button>
             <button @click="editServer(server)" class="btn-ghost">编辑</button>
-            <button @click="store.deleteServer(server.id)" class="btn-danger">删除</button>
+            <button @click="onDelete(server)" class="btn-danger">删除</button>
           </div>
         </div>
       </div>
@@ -67,20 +80,49 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import { useMcpStore, type McpServer } from '@/stores/mcps'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { useMcpStore, cleanIpcError, type McpServer } from '@/stores/mcps'
 
 const store = useMcpStore()
 const showForm = ref(false)
 const editingId = ref<string | null>(null)
+const saving = ref(false)
 const form = ref({ name: '', command: '' })
 const argsStr = ref('')
 const envStr = ref('{}')
+const formError = ref('')
+
+// 环境变量 JSON 实时校验：填错时红字提示并阻断保存，杜绝「保存成功但 env 静默变空」
+const envError = computed(() => {
+  const text = envStr.value.trim()
+  if (!text) return ''
+  try {
+    const parsed = JSON.parse(text)
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return '环境变量必须是 JSON 对象，例如 {"API_KEY":"xxx"}'
+    }
+    return ''
+  } catch {
+    return 'JSON 格式错误，请检查引号和逗号（需使用双引号）'
+  }
+})
 
 function resetForm() {
   form.value = { name: '', command: '' }
   argsStr.value = ''
   envStr.value = '{}'
+  formError.value = ''
+}
+
+function openCreateForm() {
+  editingId.value = null
+  resetForm()
+  showForm.value = true
+}
+
+function closeForm() {
+  showForm.value = false
+  resetForm()
 }
 
 function editServer(server: McpServer) {
@@ -88,31 +130,137 @@ function editServer(server: McpServer) {
   form.value = { name: server.name, command: server.command }
   argsStr.value = server.args.join('\n')
   envStr.value = JSON.stringify(server.env, null, 2)
+  formError.value = ''
   showForm.value = true
 }
 
 async function saveServer() {
+  formError.value = ''
+  if (!form.value.name.trim()) {
+    formError.value = '请填写名称'
+    return
+  }
+  if (!form.value.command.trim()) {
+    formError.value = '请填写命令'
+    return
+  }
+  if (envError.value) {
+    formError.value = '请先修正环境变量 JSON 格式'
+    return
+  }
+  saving.value = true
   try {
     const args = argsStr.value.split('\n').map((a) => a.trim()).filter(Boolean)
-    let env: Record<string, string> = {}
-    try { env = JSON.parse(envStr.value) } catch {}
+    const env: Record<string, string> = envStr.value.trim() ? JSON.parse(envStr.value) : {}
+    const payload = { name: form.value.name.trim(), command: form.value.command.trim(), args, env }
     if (editingId.value) {
-      await store.updateServer(editingId.value, { ...form.value, args, env })
+      await store.updateServerAndProbe(editingId.value, payload)
     } else {
-      await store.createServer({ ...form.value, args, env })
+      await store.createServer(payload)
     }
     showForm.value = false
     resetForm()
   } catch (e: any) {
-    console.error('saveServer error:', e)
-    alert('保存失败: ' + (e?.message || e))
+    formError.value = '保存失败: ' + cleanIpcError(e)
+  } finally {
+    saving.value = false
+  }
+}
+
+function isRunning(server: McpServer): boolean {
+  return store.serverStatus[server.id]?.status === 'running'
+}
+
+function statusError(server: McpServer): string {
+  const s = store.serverStatus[server.id]
+  return s?.status === 'error' ? s.error || '' : ''
+}
+
+function statusText(server: McpServer): string {
+  if (!server.enabled) return '已禁用'
+  const s = store.serverStatus[server.id]?.status
+  if (s === 'starting') return '启动中'
+  if (s === 'running') return '运行中'
+  if (s === 'error') return '启动失败'
+  return '已停止'
+}
+
+function statusBadgeClass(server: McpServer): string {
+  if (!server.enabled) return 'status-inactive'
+  const s = store.serverStatus[server.id]?.status
+  if (s === 'starting') return 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300'
+  if (s === 'running') return 'status-active'
+  if (s === 'error') return 'bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300'
+  return 'status-inactive'
+}
+
+function toolName(t: any): string {
+  return typeof t === 'string' ? t : String(t?.name || '')
+}
+
+function toolDescription(t: any): string {
+  return typeof t === 'object' && t ? String(t.description || '') : ''
+}
+
+function truncate(text: string, max: number): string {
+  return text.length > max ? text.slice(0, max) + '...' : text
+}
+
+async function onStart(server: McpServer) {
+  try {
+    await store.startServer(server.id)
+  } catch (e: any) {
+    window.alert(`启动「${server.name}」失败:\n${truncate(cleanIpcError(e), 600)}`)
+  }
+}
+
+async function onStop(server: McpServer) {
+  try {
+    await store.stopServer(server.id)
+  } catch (e: any) {
+    window.alert(`停止「${server.name}」失败: ${cleanIpcError(e)}`)
+  }
+}
+
+async function onRefreshTools(server: McpServer) {
+  try {
+    const updated = await store.refreshTools(server.id)
+    if (!updated.tools.length) {
+      window.alert(`「${server.name}」已连接，但未发现任何工具（该服务器可能不提供 tools 能力）`)
+    }
+  } catch (e: any) {
+    window.alert(`获取「${server.name}」工具列表失败:\n${truncate(cleanIpcError(e), 600)}`)
+  }
+}
+
+async function onToggleEnabled(server: McpServer, event: Event) {
+  const checkbox = event.target as HTMLInputElement
+  const enabled = checkbox.checked
+  try {
+    await store.toggleEnabled(server.id, enabled)
+  } catch (e: any) {
+    // 失败回拨 DOM：:checked 绑定值未变时 Vue 不会重置 checkbox，需手动复原
+    checkbox.checked = server.enabled
+    window.alert(`操作失败: ${cleanIpcError(e)}`)
+  }
+}
+
+async function onDelete(server: McpServer) {
+  if (!window.confirm(`确定删除 MCP 服务器「${server.name}」吗？\n已绑定该服务器的智能体会自动解绑。`)) return
+  try {
+    await store.deleteServer(server.id)
+  } catch (e: any) {
+    window.alert(`删除失败: ${cleanIpcError(e)}`)
   }
 }
 
 onMounted(async () => {
+  store.listenStatus()
   await store.fetchServers()
-  for (const s of store.servers) {
-    await store.checkStatus(s.id)
-  }
+  await store.fetchAllStatus()
+})
+
+onUnmounted(() => {
+  store.unlistenStatus()
 })
 </script>

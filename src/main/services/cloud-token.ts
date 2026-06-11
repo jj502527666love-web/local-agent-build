@@ -152,6 +152,59 @@ export async function fetchWithCloudAuth(url: string, init: RequestInit = {}, re
   return res
 }
 
+// 云端「余额不足」结构化错误（主进程侧）：经 IPC 回传到渲染层后只剩 message，
+// 故 message 统一用中文「余额不足…」，让渲染层 isBalanceError / friendlyMattingError 仍能识别。
+export class CloudBalanceError extends Error {
+  readonly code = 'INSUFFICIENT_BALANCE'
+  balanceType: 'token' | 'credit'
+  needed: number
+  current: number
+  constructor(message: string, opts: { balanceType?: string; needed?: number; current?: number } = {}) {
+    super(message)
+    this.name = 'CloudBalanceError'
+    this.balanceType = opts.balanceType === 'token' ? 'token' : 'credit'
+    this.needed = Number(opts.needed || 0)
+    this.current = Number(opts.current || 0)
+  }
+}
+
+/**
+ * 统一处理云端失败响应：读 body 后抛友好错误。
+ * - 402 → CloudBalanceError（中文「余额不足」，带额度类型/缺口）
+ * - 其余 → 后端 error/message，兜底用 `${fallbackPrefix}(HTTP xxx)`
+ * 供 cloud-matting / cloud-fine-matting / cloud-kb 等后端调用方替换裸 `HTTP ${status}`。
+ */
+export async function throwCloudHttpError(res: Response, fallbackPrefix = '云端请求失败'): Promise<never> {
+  let data: any = null
+  try {
+    data = await res.clone().json()
+  } catch {
+    /* 非 JSON 响应 */
+  }
+  if (res.status === 402) {
+    const balanceType = data?.balance_type === 'token' ? 'token' : 'credit'
+    const label = balanceType === 'token' ? '金币' : '积分'
+    throw new CloudBalanceError(data?.error || data?.message || `云端${label}余额不足，请充值或购买套餐后重试`, {
+      balanceType,
+      needed: Number(data?.needed || 0),
+      current: Number(data?.current || 0),
+    })
+  }
+  throw new Error(data?.error || data?.message || `${fallbackPrefix}(HTTP ${res.status})`)
+}
+
+/**
+ * 非抛出版：把云端失败响应转成中文友好错误文案（供「返回 {ok:false,error} 而非抛错」的调用方）。
+ * 402 → 余额不足；其余 → 后端 message/error，兜底 `${fallbackPrefix}(HTTP xxx)`。
+ */
+export function cloudErrorText(status: number, json: any, fallbackPrefix = '云端请求失败'): string {
+  if (status === 402) {
+    const label = json?.balance_type === 'token' ? '金币' : '积分'
+    return json?.error || json?.message || `云端${label}余额不足，请充值或购买套餐后重试`
+  }
+  return json?.message || json?.error || `${fallbackPrefix}(HTTP ${status})`
+}
+
 export function getCloudApiBase(): string {
   return `${getRuntimeConfig().apiDomain}/api`
 }

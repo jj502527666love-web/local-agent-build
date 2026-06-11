@@ -3,6 +3,26 @@ import { ref, computed } from 'vue'
 import { translateError } from '@/utils/error-message'
 import { useCloudAuthStore } from '@/stores/cloud-auth'
 
+// 「继续生成」相关：与主进程 chat-engine 的中断/报错尾标正则保持一致
+const INTERRUPT_TAIL_RES: RegExp[] = [
+  /\n*\[已中断\]\s*$/,
+  /\n*\[上一轮已被新消息中断\]\s*$/,
+  /(?:^|\n)\[Error\][\s\S]*$/
+]
+
+/** 判断一条 assistant 回复是否处于「可继续」状态（末尾带中断/报错标记）。 */
+export function isContinuable(content: unknown): boolean {
+  if (typeof content !== 'string' || !content) return false
+  return INTERRUPT_TAIL_RES.some((re) => re.test(content))
+}
+
+/** 去掉中断/报错尾标，仅保留已产出的半截正文（与主进程逻辑一致）。 */
+function stripInterruptionMarker(content: string): string {
+  let s = content
+  for (const re of INTERRUPT_TAIL_RES) s = s.replace(re, '')
+  return s.trimEnd()
+}
+
 export interface Conversation {
   id: string
   bot_id: string
@@ -560,6 +580,22 @@ export const useChatStore = defineStore('chat', () => {
     )
   }
 
+  // 从中断处继续生成:保留已产出的半截回答，让模型接着写(不丢弃已生成内容、省 completion token)
+  async function continueGenerate() {
+    const convId = currentConversationId.value
+    if (!convId || streamingConvIds.value.has(convId)) return
+    // 乐观:去掉最后一条 assistant 的中断/报错标记，立即反映"继续中"；完成后由 DB seamless swap
+    const list = messages.value
+    const last = list[list.length - 1]
+    if (last && last.role === 'assistant' && typeof last.content === 'string') {
+      const stripped = stripInterruptionMarker(last.content)
+      messages.value = [...list.slice(0, -1), { ...last, content: stripped }]
+    }
+    await runStreamedRequest(convId, (requestId) =>
+      window.api.chat.invoke('continue', convId, requestId)
+    )
+  }
+
   // 编辑某条用户消息并重发(删除该消息及其后消息，用新内容重发)
   async function editMessage(messageId: string, newContent: string) {
     const convId = currentConversationId.value
@@ -646,6 +682,7 @@ export const useChatStore = defineStore('chat', () => {
     stopListenUpdateMessage,
     sendMessage,
     regenerate,
+    continueGenerate,
     editMessage,
     deleteMessage,
     cancel,

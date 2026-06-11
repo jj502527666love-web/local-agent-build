@@ -17,7 +17,8 @@ import { ingestBytes, ingestFile, ensureLocalBlob } from './blob'
 
 const BLOB_PREFIX = 'sync-blob://'
 const VIDEO_EXTS = new Set(['mp4', 'mov', 'webm', 'mkv', 'avi', 'm4v'])
-const TIME_COLS = new Set(['created_at', 'updated_at'])
+/** 时间列：不参与 content_hash，也不参与合并冲突判定（merge.ts 共用）。 */
+export const TIME_COLS = new Set(['created_at', 'updated_at'])
 
 const MIME_BY_EXT: Record<string, string> = {
   png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp',
@@ -50,10 +51,24 @@ export function parseDbTimeMs(s: any): number {
   return Number.isFinite(ms) ? ms : 0
 }
 
-function tableColumns(entity: string): string[] {
+interface ColumnInfo {
+  type: string
+  notnull: boolean
+  hasDefault: boolean
+}
+
+function tableInfo(entity: string): Map<string, ColumnInfo> {
   const db = getDatabase()
   const cols = db.prepare(`PRAGMA table_info(${entity})`).all() as any[]
-  return cols.map((c) => String(c.name))
+  const map = new Map<string, ColumnInfo>()
+  for (const c of cols) {
+    map.set(String(c.name), {
+      type: String(c.type || ''),
+      notnull: !!c.notnull,
+      hasDefault: c.dflt_value !== null && c.dflt_value !== undefined,
+    })
+  }
+  return map
 }
 
 // ---- 媒体值的形态解析 ----
@@ -319,15 +334,32 @@ export function deserializePayload(payload: EntityPayload): Record<string, any> 
 /** UPSERT 一行（动态列；ON CONFLICT DO UPDATE 不级联删子行）。 */
 export function applyUpsert(entity: string, rowObj: Record<string, any>): void {
   const db = getDatabase()
-  const cols = new Set(tableColumns(entity))
-  const useCols = Object.keys(rowObj).filter((c) => cols.has(c))
-  if (!useCols.includes('id')) useCols.unshift('id')
+  const info = tableInfo(entity)
+  const useCols: string[] = []
+  const values: any[] = []
+  for (const c of Object.keys(rowObj)) {
+    const col = info.get(c)
+    if (!col) continue
+    if (rowObj[c] === undefined) continue
+    let v = normalizeForSqlite(rowObj[c])
+    if (v === null && col.notnull && c !== 'id') {
+      // 远端 payload（旧版本/异常数据）对 NOT NULL 列给了 null：
+      // 有列默认值则省略该列交给 DEFAULT，无默认值则按类型兜底，避免约束错误卡死整页同步
+      if (col.hasDefault) continue
+      v = /INT|REAL|NUM|FLOA|DOUB/i.test(col.type) ? 0 : ''
+    }
+    useCols.push(c)
+    values.push(v)
+  }
+  if (!useCols.includes('id')) {
+    useCols.unshift('id')
+    values.unshift(normalizeForSqlite(rowObj.id))
+  }
   const placeholders = useCols.map(() => '?').join(', ')
   const updates = useCols
     .filter((c) => c !== 'id')
     .map((c) => `${c} = excluded.${c}`)
     .join(', ')
-  const values = useCols.map((c) => normalizeForSqlite(rowObj[c]))
   const sql =
     `INSERT INTO ${entity} (${useCols.join(', ')}) VALUES (${placeholders}) ` +
     (updates ? `ON CONFLICT(id) DO UPDATE SET ${updates}` : 'ON CONFLICT(id) DO NOTHING')

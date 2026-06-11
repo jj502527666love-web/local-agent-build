@@ -1,5 +1,5 @@
 import { ENTITY_MAP } from './registry'
-import { stableStringify } from './serializer'
+import { stableStringify, TIME_COLS } from './serializer'
 import type { ConflictRecord, EntityPayload } from './types'
 
 // 三路合并（base = 上次同步基线，local = 本机当前，remote = 云端当前）。
@@ -80,6 +80,7 @@ export function mergeEntity(
   }
 
   const setFields = new Set(def?.setFields || [])
+  const secretFields = new Set(def?.secretFields || [])
   const baseFields = base?.fields || {}
   const fields: Record<string, any> = {}
   const keys = new Set([
@@ -93,6 +94,14 @@ export function mergeEntity(
     const bv = baseFields[k]
     const lv = local.fields[k]
     const rv = remote.fields[k]
+
+    if (TIME_COLS.has(k)) {
+      // 时间列任何一方编辑都会变，按 LWW 取胜者即可，不算业务冲突
+      // （否则双端各改不同字段时每次合并都会产生一条 updated_at 伪冲突）
+      fields[k] = remoteNewer ? (rv ?? lv ?? bv) : (lv ?? rv ?? bv)
+      continue
+    }
+
     const lc = !eq(lv, bv)
     const rc = !eq(rv, bv)
 
@@ -109,20 +118,27 @@ export function mergeEntity(
       } else if (setFields.has(k)) {
         fields[k] = mergeSet(bv, lv, rv)
       } else {
-        // 标量真冲突：LWW，记录被舍弃方
+        // 标量真冲突：LWW，记录被舍弃方（敏感字段只留掩码，不在冲突表存明文）
         const winner = remoteNewer ? rv : lv
         fields[k] = winner
+        const masked = secretFields.has(k)
         conflicts.push({
           entity: local.entity,
           uid: local.uid,
           field: k,
-          localValue: stableStringify(lv),
-          remoteValue: stableStringify(rv),
+          localValue: masked ? '«secret»' : stableStringify(lv),
+          remoteValue: masked ? '«secret»' : stableStringify(rv),
           resolution: remoteNewer ? 'remote' : 'local',
           ts_ms: now,
         })
       }
     }
+  }
+
+  // 清除值为 undefined 的键：一方 payload 缺列时 LWW 可能选中 undefined，
+  // 落库会被序列化为显式 NULL，撞 NOT NULL 约束（如 image_sessions.model_id）
+  for (const k of Object.keys(fields)) {
+    if (fields[k] === undefined) delete fields[k]
   }
 
   // blob 引用并集（未被引用的会在 apply/GC 阶段被忽略/回收）

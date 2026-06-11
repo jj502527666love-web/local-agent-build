@@ -52,6 +52,22 @@ export function useImageBilling() {
     )
   }
 
+  /** 纯计算：返回本次预计消耗与可用余额，不产生任何副作用（供需要自定弹窗/中止逻辑的调用方）。 */
+  function checkBalance(
+    providerId: string,
+    modelKey: string,
+    count: number,
+  ): { ok: boolean; balanceType: string; required: number; available: number } {
+    const estimate = estimateImageCost(providerId, modelKey, count)
+    const available = availableBalance(estimate.balanceType)
+    return {
+      ok: estimate.amount <= 0 || available + 0.000001 >= estimate.amount,
+      balanceType: estimate.balanceType,
+      required: estimate.amount,
+      available,
+    }
+  }
+
   /** 余额是否足够；不足则置位 lowBalanceState 并打开弹窗，返回 false。 */
   function ensureEnoughBalance(providerId: string, modelKey: string, count: number): boolean {
     const estimate = estimateImageCost(providerId, modelKey, count)
@@ -67,5 +83,5 @@ export function useImageBilling() {
     return false
   }
 
-  return { lowBalanceOpen, lowBalanceState, estimateImageCost, ensureEnoughBalance }
+  return { lowBalanceOpen, lowBalanceState, estimateImageCost, checkBalance, ensureEnoughBalance }
 }

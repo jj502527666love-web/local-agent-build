@@ -7,7 +7,7 @@ import {
   getSyncConfig,
   type SyncConfig,
 } from './engine'
-import { restartSyncScheduler, stopSyncScheduler, startupSync, triggerDebounced } from './scheduler'
+import { restartSyncScheduler, stopSyncScheduler, startupSync } from './scheduler'
 import { listConflicts, markConflictsSeen, setLastPullSeq } from './state'
 import { localBlobStats } from './blob'
 import * as api from './api'
@@ -107,4 +107,4 @@ export function onAccountReady(): void {
   void startupSync().then(broadcastStatus).catch(() => {})
 }
 
-export { triggerDebounced, restartSyncScheduler, stopSyncScheduler }
+export { restartSyncScheduler, stopSyncScheduler }

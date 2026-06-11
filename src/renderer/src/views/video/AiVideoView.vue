@@ -294,6 +294,7 @@ import PromptTextarea from '@/components/PromptTextarea.vue'
 import GalleryPicker from '@/components/GalleryPicker.vue'
 import { cloudClient } from '@/utils/cloud-api'
 import { useCloudAuthStore } from '@/stores/cloud-auth'
+import { useLowBalanceStore } from '@/stores/low-balance'
 import { useSiteConfigStore } from '@/stores/site-config'
 import { useModelStore } from '@/stores/models'
 import { dataUriToBlob, loadAsDataUri } from '@/utils/image-source'
@@ -379,6 +380,7 @@ interface VideoGeneration {
 }
 
 const cloudAuth = useCloudAuthStore()
+const lowBalance = useLowBalanceStore()
 const siteConfig = useSiteConfigStore()
 const modelStore = useModelStore()
 const router = useRouter()
@@ -592,7 +594,9 @@ function formatDate(v: string): string {
 }
 
 function errorMessage(e: any, fallback: string): string {
-  return e?.message || e?.error || String(e || '') || fallback
+  const raw = e?.message || e?.error || String(e || '') || fallback
+  // 统一过 translateError：余额不足/HTTP 状态码/网络错误等都转成中文友好提示
+  return translateError(raw)
 }
 
 function referenceAssetTypeLabel(assetType: string): string {
@@ -1125,6 +1129,12 @@ async function onPickFrameReference(event: Event, role: Extract<VideoReferenceRo
 async function submitTask() {
   if (!selectedSku.value) return
   submitError.value = ''
+  // 前置余额拦截：视频 SKU 单价已知，余额不够直接弹充值引导，不浪费一次提交
+  const cost = Number(selectedSku.value.credit_cost || 0)
+  if (cost > 0 && creditBalance.value + 1e-6 < cost) {
+    lowBalance.open({ balanceType: 'credit', required: cost, available: creditBalance.value })
+    return
+  }
   submitting.value = true
   try {
     const referencePayload = normalizedReferencePayload()

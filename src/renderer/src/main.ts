@@ -7,6 +7,7 @@ import { getCloudToken, setCloudToken } from './utils/cloud-api'
 import { useThemeStore } from './stores/theme'
 import { useCloudAuthStore } from './stores/cloud-auth'
 import { useSiteConfigStore } from './stores/site-config'
+import { useLowBalanceStore } from './stores/low-balance'
 import './assets/main.css'
 
 // 用主进程原生对话框替换浏览器 alert/confirm：规避 Electron(Windows) 弹窗关闭后输入框
@@ -64,6 +65,14 @@ window.addEventListener('cloud-auth-expired', (event) => {
   if (cur.matched.some((r) => r.meta?.requiresAuth)) {
     router.replace({ path: '/login', query: { reason: 'expired' } })
   }
+})
+
+// === 云端「余额不足」事件统一处理 ===
+// 由 cloud-api.ts 在业务请求命中 402 时派发。打开全局 store，
+// 由 MainLayout 常驻的 LowBalanceModal 统一展示充值引导。
+window.addEventListener('cloud-low-balance', (event) => {
+  const detail = (event as CustomEvent<{ balanceType?: string; required?: number; available?: number }>)?.detail
+  useLowBalanceStore().open(detail)
 })
 
 window.api?.cloud?.onTokenUpdated?.(({ token }) => {

@@ -13,11 +13,22 @@ import {
 } from '@/utils/image2prompt-presets'
 import { compressImage } from '@/utils/compress-image'
 import { cloudClient } from '@/utils/cloud-api'
+import { translateError, isBalanceError } from '@/utils/error-message'
 import { useVideoTaskPolling } from './useVideoTaskPolling'
 import { useVideoCatalogSelection } from './useVideoCatalogSelection'
 import { useVideoFrames } from './useVideoFrames'
 
 export type TaskStatus = 'pending' | 'running' | 'done' | 'error' | 'skipped' | 'blocked'
+
+// 节点失败时把原始错误转成中文友好提示；命中余额不足则派发全局事件弹充值引导。
+// 画布节点生图走主进程，余额 402 不经前端 cloud-api，故在此显式识别并提示。
+function toFriendlyNodeError(e: any, fallback: string): string {
+  const raw = (e?.message || e?.error || String(e || '') || fallback) as string
+  if (isBalanceError(raw) && typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('cloud-low-balance', { detail: {} }))
+  }
+  return translateError(raw)
+}
 
 export interface WorkflowTask {
   nodeId: string
@@ -1479,7 +1490,7 @@ export function useWorkflowEngine() {
           .catch(async (e: any) => {
             statusMap.set(nodeId, 'error')
             await canvasStore.updateNode(nodeId, {
-              data: { ...node.data, status: 'error', error: e?.message || '未知错误' }
+              data: { ...node.data, status: 'error', error: toFriendlyNodeError(e, '未知错误') }
             })
           })
       }
@@ -1571,11 +1582,12 @@ export function useWorkflowEngine() {
       return { ok: true, message: `${doneCount} 个节点完成` }
     } catch (e: any) {
       // Global workflow error — surface it on all pending nodes
+      const friendly = toFriendlyNodeError(e, '工作流执行失败')
       const canvasStore2 = useCanvasStore()
       for (const node of canvasStore2.nodes.filter((n) => n.project_id === projectId)) {
         if (!node.data.status || node.data.status === 'pending') {
           await canvasStore2.updateNode(node.id, {
-            data: { ...node.data, status: 'error', error: e?.message || '工作流执行失败' }
+            data: { ...node.data, status: 'error', error: friendly }
           })
         }
       }
@@ -1622,7 +1634,7 @@ export function useWorkflowEngine() {
       await executeNode(nodeId, projectId)
     } catch (e: any) {
       await canvasStore.updateNode(nodeId, {
-        data: { ...node.data, status: 'error', error: e?.message || '未知错误' }
+        data: { ...node.data, status: 'error', error: toFriendlyNodeError(e, '未知错误') }
       })
     } finally {
       const cleared = new Set(activeSingleRuns.value)

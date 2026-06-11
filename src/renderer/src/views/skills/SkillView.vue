@@ -33,6 +33,30 @@
           <textarea v-model="form.implementation" rows="8" class="textarea-field font-mono text-xs" placeholder="// 可使用 args 参数, fetch, AbortSignal, crypto&#10;// 支持 async/await&#10;return { result: args.input }"></textarea>
         </div>
 
+        <!-- 脱离沙箱白名单开关（内置预设强制留在沙箱内，不显示） -->
+        <div v-if="!isEditingBuiltin" class="border border-surface-3 rounded-xl p-4">
+          <div class="flex items-start justify-between gap-4">
+            <div class="min-w-0">
+              <label class="form-label mb-1">脱离沙箱运行</label>
+              <p class="text-[11px] text-text-tertiary leading-relaxed">
+                默认沙箱模式下，工具只能在对话工作区内读写、且禁止危险命令。开启后该工具可读写<span class="text-amber-600 dark:text-amber-400">任意路径的文件、执行任意系统命令</span>。请仅对你完全信任、自己编写的工具开启。开启后每次调用都会强制弹出确认。
+              </p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              :aria-checked="form.unsandboxed"
+              @click="toggleUnsandboxed"
+              :class="[
+                'relative inline-flex h-5 w-9 flex-shrink-0 items-center rounded-full transition-colors',
+                form.unsandboxed ? 'bg-amber-500' : 'bg-surface-3'
+              ]"
+            >
+              <span :class="['inline-block h-4 w-4 transform rounded-full bg-white transition-transform', form.unsandboxed ? 'translate-x-4' : 'translate-x-0.5']"></span>
+            </button>
+          </div>
+        </div>
+
         <!-- Test Panel -->
         <div class="border border-surface-3 rounded-xl overflow-hidden">
           <div class="px-4 py-2.5 bg-surface-2 flex items-center justify-between">
@@ -83,6 +107,7 @@
               <div class="flex items-center gap-2 flex-wrap">
                 <span class="font-semibold text-sm text-text-primary truncate">{{ skill.name }}</span>
                 <span v-if="skill.is_builtin" class="text-[10px] font-medium px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-600 dark:bg-indigo-900/20 dark:text-indigo-300">内置</span>
+                <span v-if="skill.unsandboxed && !skill.is_builtin" class="text-[10px] font-medium px-1.5 py-0.5 rounded bg-amber-50 text-amber-600 dark:bg-amber-900/20 dark:text-amber-300">脱离沙箱</span>
                 <span :class="['status-badge', skill.enabled ? 'status-active' : 'status-inactive']">{{ skill.enabled ? '已启用' : '已禁用' }}</span>
                 <span class="text-xs text-text-disabled">v{{ skill.version }}</span>
               </div>
@@ -113,7 +138,12 @@ const visibleSkills = computed(() =>
 )
 const showForm = ref(false)
 const editingId = ref<string | null>(null)
-const form = ref({ name: '', description: '', implementation: '' })
+// 编辑中的是否为内置预设：内置工具不允许脱离沙箱，对应开关隐藏
+const isEditingBuiltin = computed(() => {
+  if (!editingId.value) return false
+  return !!store.skills.find((s) => s.id === editingId.value)?.is_builtin
+})
+const form = ref({ name: '', description: '', implementation: '', unsandboxed: false })
 const functionDefStr = ref('{}')
 
 const testing = ref(false)
@@ -121,7 +151,7 @@ const testArgsStr = ref('{}')
 const testResult = ref<{ success: boolean; result?: any; error?: string; duration: number } | null>(null)
 
 function resetForm() {
-  form.value = { name: '', description: '', implementation: '' }
+  form.value = { name: '', description: '', implementation: '', unsandboxed: false }
   functionDefStr.value = '{}'
   testResult.value = null
   testArgsStr.value = '{}'
@@ -135,11 +165,29 @@ function openCreate() {
 
 function editSkill(skill: Skill) {
   editingId.value = skill.id
-  form.value = { name: skill.name, description: skill.description, implementation: skill.implementation }
+  form.value = {
+    name: skill.name,
+    description: skill.description,
+    implementation: skill.implementation,
+    unsandboxed: !!skill.unsandboxed
+  }
   functionDefStr.value = JSON.stringify(skill.function_def, null, 2)
   testResult.value = null
   testArgsStr.value = '{}'
   showForm.value = true
+}
+
+// 打开「脱离沙箱」需二次确认，关闭直接生效
+function toggleUnsandboxed() {
+  if (!form.value.unsandboxed) {
+    const ok = confirm(
+      '确定让该工具「脱离沙箱」运行吗？\n\n' +
+      '开启后，此工具可读写你电脑上任意路径的文件、执行任意系统命令，不再受工作区限制。\n' +
+      '请仅对你完全信任、自己编写的工具开启。每次调用仍会弹出确认。'
+    )
+    if (!ok) return
+  }
+  form.value.unsandboxed = !form.value.unsandboxed
 }
 
 async function saveSkill() {

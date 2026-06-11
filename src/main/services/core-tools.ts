@@ -579,6 +579,8 @@ async function executeKbTool(
           const src = [h.kb_name, h.source_doc].filter(Boolean).join(' / ') || '云端知识库'
           merged.push({ score: Math.round(h.score * 1000) / 1000, source: src + offline, content: h.content || '', origin: 'cloud' })
         }
+        // 云端检索因余额不足等原因不可用：带回提示，避免静默用陈旧缓存让用户以为知识库正常
+        if (cloudRes.unavailableReason) errors.push(cloudRes.unavailableReason)
       } catch (e: any) {
         errors.push(`云端检索失败: ${e.message || String(e)}`)
       }

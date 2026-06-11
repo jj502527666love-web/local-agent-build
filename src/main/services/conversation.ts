@@ -261,6 +261,13 @@ export function updateMessageCard(id: string, patch: Partial<MessageCard>): Mess
   }
 }
 
+// 更新单条消息正文（用于「继续生成」时剥掉 [已中断]/[Error] 标记，保留已产出的半截内容）。
+export function updateMessageContent(id: string, content: string): boolean {
+  const db = getDatabase()
+  const result = db.prepare('UPDATE messages SET content = ? WHERE id = ?').run(content, id)
+  return result.changes > 0
+}
+
 export function deleteMessage(id: string): boolean {
   const db = getDatabase()
   const result = db.prepare('DELETE FROM messages WHERE id = ?').run(id)

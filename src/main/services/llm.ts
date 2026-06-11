@@ -11,6 +11,7 @@ import {
   wasLastCloudTokenRefreshAuthFailure,
 } from './cloud-token'
 import { normalizeApiBase } from './api-base-normalize'
+import { getSetting } from './settings'
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool'
@@ -106,6 +107,17 @@ function isStreamTerminatedError(err: any): boolean {
   if (name === 'typeerror' && msg === 'terminated') return true
   if (msg.includes('other side closed')) return true
   return false
+}
+
+// 本机网络不可用类错误（断网 / DNS 解析失败 / 拒绝连接），区别于"上游中途断流"。
+// 给这类错误单独的中文提示，引导用户检查本地网络而非反复重试。
+const OFFLINE_CODES = new Set(['ENETUNREACH', 'EAI_AGAIN', 'ECONNREFUSED', 'ENOTFOUND', 'EHOSTUNREACH'])
+function isOfflineError(err: any): boolean {
+  if (!err) return false
+  const code = err.cause?.code || err.code
+  if (code && OFFLINE_CODES.has(code)) return true
+  const msg = String(err.message || err).toLowerCase()
+  return msg.includes('enotfound') || msg.includes('eai_again') || msg.includes('enetunreach') || msg.includes('econnrefused')
 }
 
 function describeFetchError(err: any): string {
@@ -291,10 +303,27 @@ export async function callLLM(
 // 流式请求最多重试次数（仅在尚未产生任何输出且错误属于连接中断类时生效）。
 const MAX_STREAM_RETRIES = 2
 
-// LLM 流式静默超时：连续 60 秒未收到任何 chunk 就认为连接已悄悄断开。
+// LLM 流式静默超时：连续 N 秒未收到任何 chunk 就认为连接已悄悄断开。
 // 用 reader.cancel() 主动断流 → 抛错；外层若尚未推送过 token 会自动重试整条请求，
 // 已推送过则降级为友好错误（连接被中断）。
-const STREAM_IDLE_TIMEOUT_MS = 60_000
+// 默认 90s（旧版 60s），可由用户在设置里用 stream_idle_timeout_ms 覆盖（钳制 30s~600s），
+// 避免推理模型长时间思考被误判为断线。
+const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 90_000
+// 已观察到推理思维链(reasoning)后，模型可能在两段思考之间静默更久，放宽到至少该值。
+const REASONING_IDLE_TIMEOUT_MS = 180_000
+
+function resolveStreamIdleTimeout(): number {
+  try {
+    const raw = getSetting('stream_idle_timeout_ms')
+    if (raw) {
+      const n = parseInt(String(raw), 10)
+      if (Number.isFinite(n) && n > 0) return Math.max(30_000, Math.min(n, 600_000))
+    }
+  } catch {
+    /* 读取失败用默认值 */
+  }
+  return DEFAULT_STREAM_IDLE_TIMEOUT_MS
+}
 
 async function streamLLM(
   url: string,
@@ -311,6 +340,9 @@ async function streamLLM(
 
   let attempt = 0
   let lastErr: any
+  // 空流(silent-200)单独限流：最多额外重试 1 次，区分"网关偶发抖动"与"确实余额不足/限流"，
+  // 避免对真欠费场景反复打满重试浪费用户时间。
+  let emptyStreamRetried = false
   while (attempt <= MAX_STREAM_RETRIES) {
     if (signal?.aborted) throw new AbortedError()
     try {
@@ -322,9 +354,15 @@ async function streamLLM(
       // 此时只能降级为友好错误，由用户手动重试。
       const hadOutput = (err as any).__streamHadOutput === true
       const idleTimeout = (err as any).__streamIdleTimeout === true
-      const retryable =
+      const emptyStream = (err as any).__emptyStream === true
+      let retryable =
         !hadOutput &&
         (idleTimeout || isStreamTerminatedError(err) || isTransientFetchError(err))
+      // 空流补一次重试（仅一次）
+      if (!retryable && emptyStream && !emptyStreamRetried) {
+        retryable = true
+        emptyStreamRetried = true
+      }
       if (!retryable || attempt >= MAX_STREAM_RETRIES) break
       const delay = 500 * Math.pow(2, attempt)
       console.log(`[llm] stream attempt ${attempt + 1}/${MAX_STREAM_RETRIES + 1} terminated (${describeFetchError(err)}), retry in ${delay}ms`)
@@ -335,6 +373,14 @@ async function streamLLM(
 
   // 重试耗尽或本身就不可重试。对连接中断类错误抠成中文友好提示，
   // 避免上层把裸 `terminated` 写进 DB 让用户摸不着头脑。
+  // 先识别"本机断网"：给更准确的引导（检查网络）而非泛化的"连接被中断"。
+  if (isOfflineError(lastErr)) {
+    const offline: any = new Error('网络连接不可用，请检查本机网络后重试')
+    offline.cause = lastErr
+    if (lastErr?.__partialContent) offline.__partialContent = lastErr.__partialContent
+    if (lastErr?.__partialToolCalls) offline.__partialToolCalls = lastErr.__partialToolCalls
+    throw offline
+  }
   if (isStreamTerminatedError(lastErr) || isTransientFetchError(lastErr)) {
     const friendly: any = new Error('与模型服务的连接被中断，请稍后重试（terminated）')
     friendly.cause = lastErr
@@ -392,16 +438,20 @@ async function streamLLMOnce(
   let buffer = ''
   let usage: any = null
 
-  // Stream idle watchdog：60s 没收到 chunk 就 reader.cancel() 主动断开，
+  // Stream idle watchdog：连续静默超时就 reader.cancel() 主动断开，
   // 让下面的 reader.read() 抛错；catch 里识别 idleTimedOut 并贴标签由外层决定重试 / 报错。
+  // 一旦见过 reasoning chunk，放宽窗口，避免推理模型分段思考时被误杀。
+  const baseIdleTimeout = resolveStreamIdleTimeout()
+  let sawReasoning = false
   let idleTimer: ReturnType<typeof setTimeout> | undefined
   let idleTimedOut = false
   const armIdle = (): void => {
     if (idleTimer) clearTimeout(idleTimer)
+    const ms = sawReasoning ? Math.max(baseIdleTimeout, REASONING_IDLE_TIMEOUT_MS) : baseIdleTimeout
     idleTimer = setTimeout(() => {
       idleTimedOut = true
       try { reader.cancel(new Error('LLM stream idle timeout')) } catch {}
-    }, STREAM_IDLE_TIMEOUT_MS)
+    }, ms)
   }
   const disarmIdle = (): void => {
     if (idleTimer) {
@@ -444,6 +494,7 @@ async function streamLLMOnce(
         // 故长时间思考不会被 60s 静默超时误杀。不并入 content、不回传模型、不入库。
         const reasoningPiece = delta?.reasoning_content ?? delta?.reasoning
         if (reasoningPiece) {
+          sawReasoning = true
           reasoningContent += reasoningPiece
           if (window && notifyStream) {
             window.webContents.send('chat:stream', {

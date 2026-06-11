@@ -15,6 +15,8 @@ export interface Skill {
   version: string
   enabled: boolean
   is_builtin: boolean
+  /** 脱离沙箱：放开文件/命令路径限制（仍在 vm 隔离中运行）。仅自定义工具可开。 */
+  unsandboxed: boolean
   created_at: string
 }
 

@@ -5,7 +5,7 @@ import { v4 as uuid } from 'uuid'
 import { getDataDir } from './data-path'
 import { getBot, type ToolApproval } from './bot'
 import { getPersona } from './persona'
-import { getMessages, addMessage, getConversation, updateConversationTitle, deleteMessagesFrom } from './conversation'
+import { getMessages, addMessage, getConversation, updateConversationTitle, deleteMessagesFrom, updateMessageContent, deleteMessage } from './conversation'
 import { callLLM, ChatMessage, AbortedError, isAbortedError } from './llm'
 import { listSkills } from './skill'
 import { getMcpServer } from './mcp-server'
@@ -16,7 +16,7 @@ import { searchCloudKnowledgeBases } from './cloud-kb-search'
 import { listKnowledgeBases, listCategories, type KnowledgeBase } from './knowledge'
 import { executeSkillSandbox, resolveInWorkspace } from './skill-sandbox'
 import { getSetting } from './settings'
-import { callMcpTool } from './mcp-server'
+import { callMcpTool, normalizeMcpToolResult } from './mcp-server'
 import { listPromptSkills, getPromptSkillByName } from './prompt-skill'
 import { coreToolDefs, executeCoreToolCall, CORE_TOOL_NAMES, KB_TOOL_NAMES, previewFileWrite, previewFileRead, type FileWritePreview, type FileReadPreview } from './core-tools'
 import { sanitizeOpenAIMessages } from './message-sanitizer'
@@ -215,11 +215,20 @@ function isFileOpReadOutsideTrusted(args: any, sandboxDir: string): boolean {
   return true
 }
 
-function needsApproval(mode: ToolApproval, name: string, args: any, sandboxDir?: string): boolean {
+function needsApproval(
+  mode: ToolApproval,
+  name: string,
+  args: any,
+  sandboxDir?: string,
+  mcpReadOnlyTools?: Set<string>
+): boolean {
   // ask_user 本身就是向用户征询选择，不再走工具确认（避免双重弹窗）
   if (name === 'ask_user') return false
   if (mode === 'off') return false
   if (mode === 'all') return true
+  // MCP 工具显式声明 readOnlyHint=true 的视为只读查询，destructive 模式下免审批
+  //（集合在构建时已排除与核心工具/小工具同名者，防止借同名豁免提权）
+  if (mcpReadOnlyTools?.has(name)) return false
   if (isDestructiveTool(name, args)) return true
   // destructive 模式下：file_ops 读取工作区外（且非白名单）文件也需确认，防静默外泄。
   if (name === 'file_ops' && sandboxDir) return isFileOpReadOutsideTrusted(args, sandboxDir)
@@ -671,11 +680,29 @@ export async function sendMessage(
   const signal = abortController.signal
   // 不再做整轮 180s 硬超时。只保留 30 分钟 hard deadline 兜底防失控循环。
   // 实际「卡死检测」由 llm.ts 的 stream idle timeout 完成（60s 无 token 即视为静默）。
+  // 30 分钟硬上限只统计「Agent 实际工作时间」：等待用户审批弹窗期间暂停计时，
+  // 避免用户离开思考时整轮被硬上限误杀（审批本身另有 APPROVAL_TIMEOUT_MS 兜底）。
   let agentTurnTimedOut = false
-  const agentTurnTimer = setTimeout(() => {
-    agentTurnTimedOut = true
-    abortController.abort()
-  }, AGENT_HARD_DEADLINE_MS)
+  let deadlineRemainingMs = AGENT_HARD_DEADLINE_MS
+  let deadlineStartedAt = Date.now()
+  let agentTurnTimer: ReturnType<typeof setTimeout> | undefined
+  const startDeadline = (): void => {
+    deadlineStartedAt = Date.now()
+    agentTurnTimer = setTimeout(() => {
+      agentTurnTimedOut = true
+      abortController.abort()
+    }, deadlineRemainingMs)
+  }
+  const pauseDeadline = (): void => {
+    if (!agentTurnTimer) return
+    clearTimeout(agentTurnTimer)
+    agentTurnTimer = undefined
+    deadlineRemainingMs = Math.max(0, deadlineRemainingMs - (Date.now() - deadlineStartedAt))
+  }
+  const resumeDeadline = (): void => {
+    if (!agentTurnTimer) startDeadline()
+  }
+  startDeadline()
   const emitStream = (payload: Record<string, any>): void => {
     if (!window) return
     if (isChatRequestCanceled(requestId) && payload.type !== 'aborted') return
@@ -735,12 +762,17 @@ export async function sendMessage(
     if (allPS.length > 0) capSummary.push(`Skills技能: ${allPS.map(s => s.name).join(', ')} (通过 use_skill 工具调用)`)
   }
   if (effectiveMcpIds.length > 0) {
-    const mcpNames: string[] = []
+    // 仅列出已发现工具的 MCP 服务（含工具名清单）。没有工具就不提，
+    // 防止模型被告知「有 MCP 服务」却无对应工具可调而幻觉式编造调用。
+    const mcpLines: string[] = []
     for (const id of effectiveMcpIds) {
       const server = getMcpServer(id)
-      if (server && server.enabled) mcpNames.push(server.name)
+      if (server && server.enabled && server.tools.length > 0) {
+        const toolNames = server.tools.map((t: any) => t?.name).filter(Boolean)
+        if (toolNames.length > 0) mcpLines.push(`${server.name}（工具: ${toolNames.join(', ')}）`)
+      }
     }
-    if (mcpNames.length > 0) capSummary.push(`MCP服务: ${mcpNames.join(', ')}`)
+    if (mcpLines.length > 0) capSummary.push(`MCP服务: ${mcpLines.join('；')}`)
   }
   baseSystemParts.push(`当前配置:\n${capSummary.join('\n')}`)
 
@@ -941,6 +973,15 @@ export async function sendMessage(
             '- 若片段相关度偏低或方向不符，可调用 kb_search 用重写过的 query 重新检索（会同时检索云端知识库）。'
         })
         console.log(`[chat] Cloud KB RAG: ${cloudRes.hits.length} hits (source=${cloudRes.source})`)
+      } else if (cloudRes.unavailableReason) {
+        // 余额不足等导致云端检索停用：如实告知 LLM，避免它以为"知识库为空"而编造
+        messages.push({
+          role: 'system',
+          content:
+            `云端线上知识库当前不可用（原因：${cloudRes.unavailableReason}）。\n` +
+            '请如实告知用户"线上知识库暂时不可用（云端余额不足），请充值后重试"，不要编造知识库内容。'
+        })
+        console.log(`[chat] Cloud KB RAG unavailable: ${cloudRes.unavailableReason}`)
       } else {
         messages.push({
           role: 'system',
@@ -1104,6 +1145,33 @@ export async function sendMessage(
   // 到顶不静默丢弃，而是追加"可续跑"提示(见下方 round >= MAX_TOOL_ROUNDS 分支)，配合修复 bug1。
   const DEFAULT_MAX_TOOL_ROUNDS = 40
   const MAX_TOOL_ROUNDS = bot.max_tool_rounds && bot.max_tool_rounds > 0 ? bot.max_tool_rounds : DEFAULT_MAX_TOOL_ROUNDS
+    // 脱离沙箱白名单工具：能任意读写文件 / 执行任意命令，安全级别等同 run_command。
+    // 即便智能体审批模式为 off 也强制弹一次确认，作为越权操作的安全兜底。
+    const unsandboxedToolNames = new Set<string>(
+      listSkills()
+        .filter((s) => effectiveSkillIds.includes(s.id) && s.enabled && !s.is_builtin && s.unsandboxed)
+        .map((s) => s.function_def?.name as string)
+        .filter(Boolean)
+    )
+    // MCP 工具中显式声明 readOnlyHint=true 的免审批集合（destructive 模式下纯查询免确认，降低交互摩擦）。
+    // 排除与核心工具 / use_skill / 已启用小工具同名者：executeToolCall 按名路由时这些优先命中，
+    // 不能让 MCP 工具借同名声明把高危工具「洗」成免审批。
+    const enabledSkillToolNames = new Set<string>(
+      listSkills()
+        .filter((s) => effectiveSkillIds.includes(s.id) && s.enabled)
+        .map((s) => s.function_def?.name as string)
+        .filter(Boolean)
+    )
+    const mcpReadOnlyToolNames = new Set<string>()
+    for (const mcpId of effectiveMcpIds) {
+      const mcpServer = getMcpServer(mcpId)
+      if (!mcpServer || !mcpServer.enabled) continue
+      for (const t of mcpServer.tools) {
+        const n = t?.name
+        if (!n || CORE_TOOL_NAMES.includes(n) || n === 'use_skill' || enabledSkillToolNames.has(n)) continue
+        if (t?.annotations?.readOnlyHint === true) mcpReadOnlyToolNames.add(n)
+      }
+    }
     let currentMessages: ChatMessage[] = [...messages]
     let round = 0
     // 工具失败熔断历史(贯穿本次 sendMessage 的整个工具循环)
@@ -1246,11 +1314,18 @@ export async function sendMessage(
           continue
         }
 
-        if (needsApproval(bot.tool_approval, fnName, parsedArgs, sandboxDir)) {
+        // 脱离沙箱工具强制确认（忽略审批模式）；其余按智能体审批策略。
+        if (unsandboxedToolNames.has(fnName) || needsApproval(bot.tool_approval, fnName, parsedArgs, sandboxDir, mcpReadOnlyToolNames)) {
           const preview = fnName === 'file_ops'
             ? (previewFileWrite(parsedArgs, sandboxDir) || previewFileRead(parsedArgs, sandboxDir))
             : null
-          const approved = await requestToolApproval(window, options.conversationId, toolCall, parsedArgs, preview, signal)
+          pauseDeadline()
+          let approved: boolean
+          try {
+            approved = await requestToolApproval(window, options.conversationId, toolCall, parsedArgs, preview, signal)
+          } finally {
+            resumeDeadline()
+          }
           if (signal.aborted) throw new AbortedError()
           if (!approved) {
             plans.push({
@@ -1458,6 +1533,58 @@ export async function regenerateLastResponse(
   deleteMessagesFrom(conversationId, lastUser.id)
   await sendMessage(
     { conversationId, botId: conv.bot_id, content: lastUser.content, attachments: lastUser.attachments, requestId },
+    window
+  )
+}
+
+// 可「继续生成」的中断/报错尾标正则：标记落库时位于正文末尾（`${partial}\n\n${marker}`），
+// 故 [已中断]/[上一轮…] 锚定结尾、[Error] 锚定行首，避免正文里内联出现 "[Error]" 被误判为可继续。
+const INTERRUPT_TAIL_RES: RegExp[] = [
+  /\n*\[已中断\]\s*$/,
+  /\n*\[上一轮已被新消息中断\]\s*$/,
+  /(?:^|\n)\[Error\][\s\S]*$/
+]
+
+// 剥掉中断/报错尾标，返回已产出的半截正文。
+function stripInterruptionMarker(content: string): string {
+  let s = content
+  for (const re of INTERRUPT_TAIL_RES) s = s.replace(re, '')
+  return s.trimEnd()
+}
+
+// 判断某条消息是否处于「可继续」状态（末尾带中断/报错标记）。供 UI 决定是否显示「继续生成」。
+export function isContinuableContent(content: unknown): boolean {
+  if (typeof content !== 'string' || !content) return false
+  return INTERRUPT_TAIL_RES.some((re) => re.test(content))
+}
+
+// 从中断处继续生成：保留已产出的半截回答，追加一轮让模型接着写，
+// 避免「重新生成」整条重发并丢弃已产出内容（既省 completion token，也不丢用户已看到的内容）。
+export async function continueLastResponse(
+  conversationId: string,
+  window: BrowserWindow | null,
+  requestId?: string
+): Promise<void> {
+  const msgs = getMessages(conversationId)
+  if (msgs.length === 0) throw new Error('没有可继续的回复')
+  const last = msgs[msgs.length - 1]
+  if (last.role !== 'assistant' || !isContinuableContent(last.content)) {
+    throw new Error('最后一条回复不可继续')
+  }
+  const conv = getConversation(conversationId)
+  if (!conv) throw new Error('Conversation not found')
+
+  const partial = stripInterruptionMarker(typeof last.content === 'string' ? last.content : '')
+  if (!partial) {
+    // 中断前未产出任何内容：等价于重新生成最后一轮回复
+    deleteMessage(last.id)
+    await regenerateLastResponse(conversationId, window, requestId)
+    return
+  }
+  // 保留半截正文（去掉中断标记），再用一条「继续」消息驱动模型接着写
+  updateMessageContent(last.id, partial)
+  await sendMessage(
+    { conversationId, botId: conv.bot_id, content: '继续', requestId },
     window
   )
 }
@@ -1706,13 +1833,22 @@ function buildToolsList(
   // Add MCP server tools
   // 双层兜底：先把 MCP 的 inputSchema 字段映射成 OpenAI 的 parameters，再走 normalize
   // 处理空 properties 等剩余 schema 缺陷。
+  // 同名去重：与核心工具 / 小工具 / use_skill / 其它 MCP 服务器撞名的跳过（executeToolCall
+  // 按名路由时核心和小工具优先命中，重复注入只会让上游报 duplicate function 或模型困惑）。
+  const existingToolNames = new Set<string>(
+    tools.map((t: any) => t?.function?.name).filter(Boolean)
+  )
   for (const mcpId of mcpIds) {
     const server = getMcpServer(mcpId)
     if (server && server.enabled) {
       for (const tool of server.tools) {
+        const fn = mcpToolToOpenAIFunction(tool)
+        const fnName = fn?.name
+        if (!fnName || existingToolNames.has(fnName)) continue
+        existingToolNames.add(fnName)
         tools.push({
           type: 'function',
-          function: normalizeFunctionSchema(mcpToolToOpenAIFunction(tool))
+          function: normalizeFunctionSchema(fn)
         })
       }
     }
@@ -1805,7 +1941,9 @@ async function executeToolCall(
   )
 
   if (skill) {
-    const result = await executeSkillSandbox(skill.implementation, args, sandboxDir, timeoutMs)
+    // 脱离沙箱白名单工具：放开路径/命令限制（仍在 vm 隔离内运行）。内置预设永不脱离沙箱。
+    const unrestricted = !skill.is_builtin && skill.unsandboxed
+    const result = await executeSkillSandbox(skill.implementation, args, sandboxDir, timeoutMs, unrestricted)
     return result.success ? result.result : { error: result.error }
   }
 
@@ -1813,12 +1951,16 @@ async function executeToolCall(
   for (const mcpId of mcpIds) {
     const server = getMcpServer(mcpId)
     if (server && server.enabled) {
-      const mcpTool = server.tools.find((t: any) => t.name === functionName)
+      const mcpTool = server.tools.find((t: any) => t?.name === functionName)
       if (mcpTool) {
         try {
-          return await callMcpTool(mcpId, functionName, args, timeoutMs)
+          // 结果规范化：content 数组拍平为文本 / isError 转 {error}（计入失败熔断）/
+          // structuredContent 原样保留，避免协议包装层原样进上下文浪费 token
+          return normalizeMcpToolResult(await callMcpTool(mcpId, functionName, args, timeoutMs))
         } catch (err: any) {
-          return { error: `MCP tool ${functionName} failed: ${err.message}` }
+          // 启动失败的 message 可能带 2KB stderr 诊断：进对话上下文截断即可，全文在 MCP 页面可见
+          const brief = String(err?.message || err).slice(0, 500)
+          return { error: `MCP 工具 ${functionName} 调用失败: ${brief}` }
         }
       }
     }

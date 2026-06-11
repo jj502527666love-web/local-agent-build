@@ -109,6 +109,14 @@
         <router-view />
       </div>
     </main>
+
+    <!-- 全局余额不足弹窗：任意云端调用命中 402 时统一展示充值引导 -->
+    <LowBalanceModal
+      v-model:visible="lowBalance.visible"
+      :balance-type="lowBalance.balanceType"
+      :required="lowBalance.required"
+      :available="lowBalance.available"
+    />
   </div>
 </template>
 
@@ -116,6 +124,8 @@
 import { computed, onMounted, ref, watchEffect } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useWorkflowEngine } from '@/views/canvas/composables/useWorkflowEngine'
+import LowBalanceModal from '@/components/LowBalanceModal.vue'
+import { useLowBalanceStore } from '@/stores/low-balance'
 import IconChat from '@/components/icons/IconChat.vue'
 import IconBot from '@/components/icons/IconBot.vue'
 import IconKnowledge from '@/components/icons/IconKnowledge.vue'
@@ -153,6 +163,7 @@ import { appName, appAbbr, appIconUrl } from '@/utils/branding'
 const route = useRoute()
 const router = useRouter()
 const cloudAuth = useCloudAuthStore()
+const lowBalance = useLowBalanceStore()
 const pageTitle = computed(() => (route.meta?.title as string) || '')
 
 // 画布任务全局徽标：useWorkflowEngine 是 module-level singleton，

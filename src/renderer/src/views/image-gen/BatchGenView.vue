@@ -361,9 +361,11 @@ import ErrorDetailDialog from '@/components/ErrorDetailDialog.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import GalleryPicker from '@/components/GalleryPicker.vue'
 import ImageLightbox from '@/components/ImageLightbox.vue'
-import { translateError } from '@/utils/error-message'
+import { translateError, isBalanceError } from '@/utils/error-message'
 import PromptTextarea from '@/components/PromptTextarea.vue'
 import { IMAGE_PROMPT_MAX_LENGTH } from '@shared/prompt-limits'
+import { useImageBilling } from '@/views/ecom/useImageBilling'
+import { useLowBalanceStore } from '@/stores/low-balance'
 
 // BatchTask 类型已提到 stores/batch-gen-form.ts，下面作为本地别名使用
 type BatchTask = BatchGenTask
@@ -371,6 +373,8 @@ type BatchTask = BatchGenTask
 const router = useRouter()
 const store = useImageGenStore()
 const modelStore = useModelStore()
+const { checkBalance } = useImageBilling()
+const lowBalance = useLowBalanceStore()
 const presetStore = usePromptPresetStore()
 const handoff = useHandoffStore()
 
@@ -651,23 +655,43 @@ async function runOne(task: BatchTask): Promise<void> {
 
 async function startAll() {
   if (!canStart.value || batchRunning.value) return
-  batchRunning.value = true
 
   const queue = tasks.value.filter(t => t.status !== 'done')
+  // 前置余额拦截：按「单价 × 张数」估算整批消耗，不够直接弹充值引导，不浪费整队失败请求
+  const bal = checkBalance(selectedProviderId.value, selectedModelId.value, queue.length)
+  if (!bal.ok) {
+    lowBalance.open({ balanceType: bal.balanceType, required: bal.required, available: bal.available })
+    return
+  }
+
+  batchRunning.value = true
   for (const t of queue) { t.status = 'pending'; t.error = '' }
   const limit = Math.max(1, Math.min(concurrency.value, queue.length, 10))
   let cursor = 0
+  let balanceStopped = false
 
   async function worker() {
-    while (cursor < queue.length) {
+    while (cursor < queue.length && !balanceStopped) {
       const task = queue[cursor++]
       if (!task) break
       await runOne(task)
+      // 跑批途中余额耗尽：立即停队，避免后续每条都失败刷满红字
+      if (task.status === 'error' && isBalanceError(task.error)) {
+        balanceStopped = true
+        lowBalance.open({ balanceType: 'credit', required: 0, available: 0 })
+      }
     }
   }
 
   const workers = Array.from({ length: limit }, () => worker())
   await Promise.all(workers)
+
+  // 因余额中止：把还没跑的任务标注清楚，避免用户以为它们悄悄成功了
+  if (balanceStopped) {
+    for (const t of queue) {
+      if (t.status === 'pending') { t.status = 'error'; t.error = '余额不足，已暂停后续生成' }
+    }
+  }
 
   batchRunning.value = false
   // Record usage after at least one success so the image model bubbles up next time

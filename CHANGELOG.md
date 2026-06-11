@@ -6,6 +6,91 @@
 
 ---
 
+## [0.8.2] - 2026-06-11
+
+> **云同步健壮性整修（建议配合云控端 1.6.2）**：针对深度检查发现的同步引擎缺陷做一轮集中修复——单条异常记录卡死整体同步（`NOT NULL constraint failed` 类）、未知实体无前向兼容、同步期间外键全局关闭、媒体悬空引用、「实时」模式未生效、本地媒体缓存无限增长、`updated_at` 伪冲突刷屏等。修复后旧数据/旧版本造成的异常记录会被容错跳过并记入冲突列表，同步不再永久中断。
+
+> **MCP 服务整修（同版本一并交付）**：深度检查发现 MCP 功能管理壳完整但调用链路断裂——工具清单从未被拉取、协议无握手、Windows 下 `npx` 无法启动，绑定 MCP 的智能体在对话中实际拿不到任何工具。本版本按 MCP 标准协议重写 stdio 客户端，打通「配置 → 工具发现 → 对话注入 → 调用执行」全链路，详见下方「MCP 服务」区块。
+
+### 修复
+
+- **同步永久卡死（单条坏记录）**：pull 的整页事务内逐条 try/catch，单条 apply 失败（约束冲突 / 结构差异）登记 `(apply_error)` 冲突记录（按 entity/uid 去重）后继续，游标正常推进；此前一条坏记录会让同一页每次同步都失败。
+- **`NOT NULL constraint failed`（如 `image_sessions.model_id`）**：`serializer.applyUpsert` 对 NOT NULL 列收到 null 时兜底——有列默认值则省略该列交给 DEFAULT，无默认值按类型回退 `''` / `0`；`merge.mergeEntity` 合并结果清除值为 undefined 的键（一方 payload 缺列时 LWW 可能选中 undefined，落库会变成显式 NULL）。
+- **未知实体（前向兼容）**：pull 到本版本不认识的实体不再抛错（此前 `SELECT` 不存在的表导致同步永久中断），改为跳过并登记 `sync_meta.skipped_unknown_entities`；升级后发现已支持则自动重置拉取游标全量回补。
+- **同步期间级联删除失效**：`foreign_keys=OFF` 由覆盖整个 runSync（含网络 await 间隙，业务删除会丢 `ON DELETE CASCADE` 产生无墓碑孤儿）收窄为仅包裹同步事务的同步执行块（`withForeignKeysOff`）。
+- **媒体悬空引用**：`blob.uploadReferenced` 不再无条件标记已上传——本地缓存与云端均无的 blob 返回「不可得」集合，引用它的变更挂起不推送（oplog 保留待恢复重推）并记录 `(blob_missing)` 冲突；此前会推送悬空引用导致其它设备对缺失媒体永久 404 重试。
+- **无扩展名文件 ext 解析错误**：`blob.ingestFile` 此前用 `split('.').pop()` 会把整个路径当扩展名，落缓存必然失败并连锁触发媒体静默丢失；改为只看文件名段、无扩展名回退 `bin`，与 serializer 的 `extname` 逻辑一致。
+- **`updated_at` 伪冲突刷屏**：时间列（`created_at` / `updated_at`）不再参与合并冲突判定（按 LWW 直取），双端各改不同字段时不再每次合并都产生一条假冲突。
+
+### 变更
+
+- **「实时」同步真正生效**：原 `triggerDebounced`（30s 防抖）从未被业务写入路径调用，「实时」实际退化为 120s 兜底轮询；改为调度器每 30s 轮询 `sync_oplog` 水位（`MAX(seq)` 单调不复用），检测到新本地变更即触发同步，永久挂起的待推项不会造成无限循环。
+- **本地媒体缓存 GC 接线**：成功同步后每 24h 执行一次 `gcLocalBlobs`，引用集合 = 业务表媒体列 + `sync_shadow` 基线 + 待下载表 + 未上传 blob 的并集（保守不误删）；此前 GC 函数存在但从未被调用，`sync-media` 只增不减。
+- 冲突记录对 `secretFields`（如 `model_providers.api_key`）脱敏为 `«secret»`，不再明文落 `sync_conflicts`。
+- `PushResult.status` 新增 `rejected`（云控端 1.6.2 服务端校验拒绝单条变更时返回；客户端 oplog 自动保留待重推）。
+
+### 对话体验与小工具
+
+#### 新增
+
+- **「继续生成」从中断处续写**：对话被中断 / 报错（`[已中断]` / `[Error]`）后，末条回复下方出现「继续生成」按钮 → IPC `chat:continue` → `chat-engine.continueLastResponse`，剥掉中断标记保留半截正文，以一条「继续」消息驱动模型续写，避免「重新生成」整条重发并丢弃已产出内容（省 completion token）。新增 `isContinuableContent`、`conversation.updateMessageContent`、store `continueGenerate` / `isContinuable`、`ChatView` 按钮。
+- **「小工具」脱离沙箱白名单（per-skill）**：`skills` 表新增 `unsandboxed` 列（幂等迁移 + `schema.sql`）；`skill-sandbox.ts` 新增 `unrestricted` 模式放开读写路径收口与危险命令黑名单（**保留 vm 隔离**，不暴露主进程 `process`）；`SkillView.vue` 加开关（仅自定义工具、二次确认、卡片「脱离沙箱」标识）。内置预设强制留在沙箱内（DB / UI / 执行三处），导入 / 导出不携带该标记，脱离沙箱工具即便审批模式为 `off` 也强制弹一次确认。
+- **流式静默超时可配**：设置页「常规」新增「流式静默超时」（30–600s，默认 90s，存 `stream_idle_timeout_ms`）。
+- **系统托盘 + 关闭去向提示**：`src/main/index.ts` 新增常驻 `Tray`（右键菜单「显示主界面」/「退出」，单击 / 双击唤起主窗口），让「关闭窗口后仍在后台运行」可见、可重新唤起、可彻底退出；首次以 `close-window` 方式关闭时弹一次系统通知说明去向（设备级 `close_tray_hinted` 标记，仅提示一次）；`before-quit` 销毁托盘。设置页「点击关闭按钮时」文案同步说明托盘。
+
+#### 变更 / 修复
+
+- 流式静默超时由固定 60s 改为可配（默认 90s），收到推理思维链后放宽到 ≥180s，避免推理模型长思考被误判断线（`llm.ts`）。
+- 空响应（silent-200）补一次自动重试；断网 / DNS 失败 / 拒绝连接给「网络连接不可用，请检查本机网络」专属中文提示（`llm.ts`）。
+- 30 分钟硬上限暂停计时：等待工具审批弹窗期间不计时（`pauseDeadline` / `resumeDeadline`），避免用户思考时整轮被误中断（`chat-engine.ts`）。
+
+### 余额 / 报错友好化
+
+#### 新增
+
+- **全局「余额不足」统一引导**：`utils/cloud-api.ts` 的 `request()` 统一识别 HTTP 402 → 抛结构化 `CloudBalanceError`（`code='INSUFFICIENT_BALANCE'`）+ 派发 `cloud-low-balance` 事件；新增 `stores/low-balance.ts`，`MainLayout` 常驻 `LowBalanceModal`，`main.ts` 统一监听。覆盖所有走 `cloudClient.*` 的调用（视频、市场、灵感、模板、套餐、订单）。
+- 后端 `cloud-token.ts` 新增 `CloudBalanceError` / `throwCloudHttpError`（抛错版）/ `cloudErrorText`（文案版），402 统一转中文友好提示。
+
+#### 变更 / 修复
+
+- 视频生成：提交前按 SKU 单价做余额前置拦截弹充值引导；`errorMessage` 统一过 `translateError`（`AiVideoView.vue`）。
+- 批量出图：开跑前按「单价 × 张数」前置拦截；跑批途中命中余额错误立即停队并标注剩余任务（`BatchGenView.vue` + `useImageBilling.checkBalance`）。
+- 抠图（快速 / 精细）：`cloud-matting` / `cloud-fine-matting` 提交 / 轮询不再暴露裸 `HTTP 402`，统一中文余额提示。
+- 云端知识库检索：402 不再静默降级到陈旧缓存，带回 `unavailableReason` 如实告知 LLM / 用户「线上知识库余额不足」（`cloud-kb-search.ts` + `core-tools.ts` + `chat-engine.ts`）。
+- 画布工作流：节点 / 工作流失败统一过 `translateError`，命中余额则派发全局充值引导事件（`useWorkflowEngine.ts`）。
+- 市场投稿 / 模板投稿 / 灵感上传：失败文案经 `cloudErrorText` 友好化，402 → 中文余额提示。
+- `error-message.ts`：`ERROR_MAP` 增补余额 / 402 条目，`isBalanceError` 扩展识别中文「余额不足」与结构化 code。
+
+### MCP 服务（整修：从不可用到全链路可用）
+
+#### 修复
+
+- **MCP 工具从未注入对话（根治）**：工具清单缓存（`mcp_servers.tools`）从未被填充——唯一的拉取函数 `listMcpToolsFromServer` 无任何调用方（无 IPC、无 UI 入口），`buildToolsList` 永远遍历空数组。现启动 / 创建 / 编辑 / 手动刷新均执行 `tools/list` 并持久化（随云同步跨设备分发，另一台设备无需重新探测），服务器推送 `notifications/tools/list_changed` 时自动刷新缓存。
+- **MCP 协议握手缺失**：原实现 spawn 后直接裸发 `tools/call`（自启动仅固定等 1 秒），标准 MCP 服务器在未握手时会拒绝一切业务请求；现严格按规范先 `initialize`（60s 超时，容忍 npx 首启下载）→ `notifications/initialized` 后才发业务请求；stdout 单监听器按行分帧、并发请求按 JSON-RPC id 路由；服务器端 `ping` 有应答、未知请求回 `-32601`，防止对端挂起等待。
+- **Windows 下 `npx` / `uvx` 必然启动失败**：`spawn` 裸命令名遇 `.cmd` 脚本抛 ENOENT（Node 已禁止隐式解析），而 UI 占位文案恰恰引导用户填 `npx`；改经 `cmd /c` 启动并对参数手工加引号（含空格路径安全），停止改用 `taskkill /T /F` 杀整棵进程树，根治 npx→node 孤儿进程残留（`mcp-server.ts`）。
+- **stderr 不消费导致子进程假死**：MCP 规范要求服务器日志走 stderr，原实现从不读取，日志写满管道缓冲后子进程被写阻塞；现持续消费并保留 8KB 尾部，作为「启动失败」的诊断信息直接展示在卡片上（缺依赖 / 命令不存在 / 鉴权失败一目了然）。
+- **启动失败 UI 仍显示「运行中」**：spawn 错误异步触发而原 `startMcpServer` 同步返回 true，store 不检查结果硬置 running；现启动全异步化（成功含握手 + 工具拉取，失败 reject 带 stderr 诊断），进程退出 / 崩溃实时推送 `mcp:status` 事件，徽标即时更新，不再是进页面时的一次性快照。
+- **环境变量 JSON 填错静默变空**：表单 `JSON.parse` 失败被空 catch 吞掉，保存「成功」但 env 实为 `{}`（API_KEY 不生效且无从排查）；现实时校验红字提示并阻断保存（`McpView.vue`）。
+- **系统提示词幻觉诱因**：原来只要绑定 MCP 就向模型宣称「MCP服务: xxx」而工具列表为空，诱导模型编造调用；现仅列出已发现工具的服务并附工具名清单（`chat-engine.ts`）。
+- 工具标签渲染 `[object Object]`（`{{ t }}` 直渲对象）、删除无确认、表单无必填校验、`tools` / `args` / `env` 列损坏时 `JSON.parse` 抛错炸整页列表，一并修复。
+
+#### 新增
+
+- 「刷新工具」按钮（IPC `mcp:refreshTools`）；创建 / 编辑保存后自动后台探测（启动 + 握手 + 拉工具，结果落卡片状态）。
+- 启用 / 禁用开关：停用的服务器不注入对话（此前 `enabled` 字段存在但无 UI，想停用只能删除）。
+- 运行状态全生命周期：`starting` / `running` / `stopped` / `error` 四态徽标 + 启动失败原因展示（stderr 摘要）+ 工具名标签（超 8 个折叠计数，悬停显示描述）。
+- MCP 工具声明 `annotations.readOnlyHint=true` 的在 `destructive` 审批模式下免确认，纯查询工具不再每次弹窗（豁免集合构建时排除与核心工具 / 小工具同名者防借名提权；`all` 模式仍全审批）。
+- 工具结果规范化（`normalizeMcpToolResult`）：`content` 数组拍平为正文文本（image / audio / resource 留类型占位）、`isError` 转 `{error}` 计入失败熔断、`structuredContent` 原样保留，不再把协议包装层塞给模型浪费 token。
+- 删除前原生确认框（提示会自动解绑智能体）；名称 / 命令必填校验。
+
+#### 变更
+
+- `mcp:status` 升级返回运行时对象（状态 + 错误详情 + 工具数）；preload 新增 `mcp.onStatus` 事件订阅（返回 unsubscribe）。
+- `buildToolsList` 对 MCP 工具做同名去重（与核心工具 / 小工具 / 其它 MCP 服务器撞名跳过，与 `executeToolCall` 的路由优先级一致）。
+- `sync/registry.ts`：`mcp_servers` 补 `secretFields: ['env']`，冲突记录不再明文留存 API key（与 `model_providers.api_key` 同策略）。
+- 编辑保存时命令 / 参数 / 环境变量有变更自动停掉旧进程，按新配置重新探测生效。
+- 对话上下文中的 MCP 调用失败信息截断 500 字（完整 stderr 诊断在 MCP 页面查看）；对话冷启动 MCP 由 `ensureClient` 事件驱动就绪（不再固定 sleep 1 秒）。
+
 ## [0.8.1] - 2026-06-08
 
 > **对话内交互选项卡片（ask_user）+ 生图参数确认卡**：把原「工具调用确认」的人在回路回环泛化为通用「选项卡片」——AI 可在对话中弹出可点击选项让用户选择 / 澄清（inline 嵌入消息流、选完留痕），结果作为 tool result 回传给模型继续；并以此实现生图前「未指定尺寸时」的参数确认卡（尺寸 / 分辨率 / 画质 / 张数）。复用现有 `chat:appendMessage` 通道，新增 `chat:updateMessage` 留痕更新。

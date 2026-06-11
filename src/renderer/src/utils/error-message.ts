@@ -1,6 +1,9 @@
 const ERROR_MAP: Record<string, string> = {
   'Insufficient token balance': 'Token \u4f59\u989d\u4e0d\u8db3\uff0c\u8bf7\u8054\u7cfb\u7ba1\u7406\u5458\u5145\u503c',
   'Insufficient credit balance': '\u79ef\u5206\u4f59\u989d\u4e0d\u8db3\uff0c\u8bf7\u8054\u7cfb\u7ba1\u7406\u5458\u5145\u503c',
+  'INSUFFICIENT_BALANCE': '\u4f59\u989d\u4e0d\u8db3\uff0c\u8bf7\u5145\u503c\u540e\u91cd\u8bd5',
+  'insufficient balance': '\u4f59\u989d\u4e0d\u8db3\uff0c\u8bf7\u5145\u503c\u540e\u91cd\u8bd5',
+  'HTTP 402': '\u4f59\u989d\u4e0d\u8db3\uff0c\u8bf7\u5145\u503c\u540e\u91cd\u8bd5',
   'Cloud login required': '\u8bf7\u5148\u767b\u5f55\u4e91\u7aef\u8d26\u53f7',
   'Custom provider is disabled by admin': '\u7ba1\u7406\u5458\u5df2\u7981\u7528\u81ea\u5b9a\u4e49\u670d\u52a1\u5546',
   'You do not have access to this model': '\u60a8\u6ca1\u6709\u8be5\u6a21\u578b\u7684\u4f7f\u7528\u6743\u9650',
@@ -82,5 +85,8 @@ export function translateError(msg: string): string {
 }
 
 export function isBalanceError(msg: string): boolean {
-  return msg.includes('Insufficient') && msg.includes('balance')
+  if (!msg) return false
+  if (msg.includes('INSUFFICIENT_BALANCE')) return true
+  if (msg.toLowerCase().includes('insufficient') && msg.toLowerCase().includes('balance')) return true
+  return msg.includes('余额不足')
 }

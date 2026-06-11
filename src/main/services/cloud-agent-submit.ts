@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'fs'
 import { extname } from 'path'
-import { fetchWithCloudAuth, getCloudApiBase, getCloudToken } from './cloud-token'
+import { fetchWithCloudAuth, getCloudApiBase, getCloudToken, cloudErrorText } from './cloud-token'
 import { getBot, setBotSubmissionState } from './bot'
 import { getPersona } from './persona'
 import { makeUploadThumbnailBlob } from './thumbnail-upload'
@@ -98,7 +98,7 @@ export async function submitAgentToMarket(localBotId: string): Promise<AgentSubm
     }
     return { ok: false, error: '参数校验失败' }
   }
-  if (!resp.ok) return { ok: false, error: json?.message || json?.error || `HTTP ${resp.status}` }
+  if (!resp.ok) return { ok: false, error: cloudErrorText(resp.status, json, '请求失败') }
 
   setBotSubmissionState(bot.id, {
     cloudAgentId: Number(json?.cloud_agent_id || 0),
@@ -130,7 +130,7 @@ export async function syncAgentSubmissionStatus(localBotIds: string[]): Promise<
 
   let json: any = null
   try { json = await resp.json() } catch { /* ignore */ }
-  if (!resp.ok) return { ok: false, error: json?.message || json?.error || `HTTP ${resp.status}` }
+  if (!resp.ok) return { ok: false, error: cloudErrorText(resp.status, json, '请求失败') }
 
   const items = Array.isArray(json?.items) ? json.items : []
   for (const item of items) {
@@ -163,7 +163,7 @@ export async function withdrawAgentSubmission(localBotId: string): Promise<Agent
 
   let json: any = null
   try { json = await resp.json() } catch { /* ignore */ }
-  if (!resp.ok) return { ok: false, error: json?.message || json?.error || `HTTP ${resp.status}` }
+  if (!resp.ok) return { ok: false, error: cloudErrorText(resp.status, json, '请求失败') }
 
   setBotSubmissionState(bot.id, { status: 'withdrawn', rejectReason: '', reviewedAt: '' })
   return { ok: true, data: json }
@@ -191,6 +191,6 @@ export async function rateAgent(cloudAgentId: number, score: number, comment?: s
   let json: any = null
   try { json = await resp.json() } catch { /* ignore */ }
   if (resp.status === 401) return { ok: false, error: '登录已过期，请重新登录' }
-  if (!resp.ok) return { ok: false, error: json?.message || json?.error || `HTTP ${resp.status}` }
+  if (!resp.ok) return { ok: false, error: cloudErrorText(resp.status, json, '请求失败') }
   return { ok: true, data: json }
 }

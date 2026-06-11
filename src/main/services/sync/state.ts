@@ -113,6 +113,13 @@ export function countPending(): number {
   return row ? Number(row.c) : 0
 }
 
+/** oplog 水位（MAX(seq)；AUTOINCREMENT 单调不复用，可用于检测「有新本地变更」）。 */
+export function getOplogWatermark(): number {
+  const db = getDatabase()
+  const row = db.prepare('SELECT MAX(seq) AS m FROM sync_oplog').get() as any
+  return row && row.m != null ? Number(row.m) : 0
+}
+
 /** push 成功后清理该实体已确认的 oplog（仅删 seq<=capturedMax，保留期间新增）。 */
 export function clearOpsUpTo(entity: string, uid: string, maxSeq: number): void {
   const db = getDatabase()
@@ -153,6 +160,15 @@ export function recordConflict(
     `INSERT INTO sync_conflicts(entity, uid, field, local_value, remote_value, resolution, ts_ms)
      VALUES(?, ?, ?, ?, ?, ?, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER))`,
   ).run(entity, uid, field, localValue.slice(0, 2000), remoteValue.slice(0, 2000), resolution)
+}
+
+/** 是否已存在同 (entity, uid, field) 的冲突记录（用于每轮同步重复发生的事件去重）。 */
+export function hasConflict(entity: string, uid: string, field: string): boolean {
+  const db = getDatabase()
+  const row = db
+    .prepare('SELECT 1 FROM sync_conflicts WHERE entity = ? AND uid = ? AND field = ? LIMIT 1')
+    .get(entity, uid, field)
+  return !!row
 }
 
 export function countUnseenConflicts(): number {
