@@ -269,22 +269,34 @@ export const useCreativeTemplateStore = defineStore('creativeTemplates', () => {
     cloudLoading.value = true
     cloudError.value = null
     try {
-      const options: { page: number; pageSize: number; categoryId?: number; search?: string } = {
-        page: cloudPage.value,
-        pageSize: cloudPageSize.value,
+      // 云端模板广场改为前端随机 + 无限滚动：这里一次性循环拉全量，分页仅用于抓全。
+      // 安全上限 30 页（每页 100，最多 3000 条），避免异常数据导致死循环。
+      const fetchSize = 100
+      let page = 1
+      let total = Infinity
+      const acc: CloudCreativeTemplate[] = []
+      while (acc.length < total && page <= 30) {
+        const options: { page: number; pageSize: number; categoryId?: number; search?: string } = {
+          page,
+          pageSize: fetchSize,
+        }
+        if (cloudActiveCategoryId.value) options.categoryId = cloudActiveCategoryId.value
+        if (cloudSearch.value) options.search = cloudSearch.value
+        const res = await invoke<{
+          items: CloudCreativeTemplate[]
+          total: number
+          page: number
+          pageSize: number
+        }>('cloudList', options)
+        const items = Array.isArray(res.items) ? res.items : []
+        if (page === 1) total = typeof res.total === 'number' ? res.total : items.length
+        acc.push(...items)
+        if (!items.length) break
+        page++
       }
-      if (cloudActiveCategoryId.value) options.categoryId = cloudActiveCategoryId.value
-      if (cloudSearch.value) options.search = cloudSearch.value
-      const res = await invoke<{
-        items: CloudCreativeTemplate[]
-        total: number
-        page: number
-        pageSize: number
-      }>('cloudList', options)
-      cloudTemplates.value = res.items
-      cloudTotal.value = res.total
-      cloudPage.value = res.page
-      cloudPageSize.value = res.pageSize
+      cloudTemplates.value = acc
+      cloudTotal.value = total === Infinity ? acc.length : total
+      cloudPage.value = 1
     } catch (e: unknown) {
       cloudTemplates.value = []
       cloudTotal.value = 0

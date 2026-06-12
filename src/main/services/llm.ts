@@ -9,6 +9,7 @@ import {
   refreshCloudToken,
   notifyCloudAuthExpired,
   wasLastCloudTokenRefreshAuthFailure,
+  CloudBalanceError,
 } from './cloud-token'
 import { normalizeApiBase } from './api-base-normalize'
 import { getSetting } from './settings'
@@ -54,6 +55,33 @@ class LLMHttpError extends Error {
     super(`LLM API error ${status}: ${body}`)
     this.status = status
   }
+}
+
+// 把上游 402 响应抠成中文「余额不足」错误（CloudBalanceError，code=INSUFFICIENT_BALANCE）。
+// 网关真·余额不足在预检阶段就返回 402，这里统一转成中文，避免各 callLLM 调用方
+// （识图 / 提示词优化 / 会话总结 / 头像生成等非对话路径）把后端英文原样透传给用户。
+// 兼容新老网关：优先读 balance_type 字段，老网关无该字段时按英文文案回退判断额度类型。
+function makeBalanceError(errorText: string): CloudBalanceError {
+  let data: any = {}
+  try {
+    data = JSON.parse(errorText) || {}
+  } catch {
+    /* 非 JSON 响应：保持空对象，走文案兜底 */
+  }
+  const balanceType: 'token' | 'credit' =
+    data.balance_type === 'token'
+      ? 'token'
+      : data.balance_type === 'credit'
+        ? 'credit'
+        : /token/i.test(errorText)
+          ? 'token'
+          : 'credit'
+  const label = balanceType === 'token' ? '金币' : '积分'
+  return new CloudBalanceError(`云端${label}余额不足，请充值或购买套餐后重试`, {
+    balanceType,
+    needed: Number(data.needed || 0),
+    current: Number(data.current || 0),
+  })
 }
 
 export function isAbortedError(err: any): boolean {
@@ -274,6 +302,7 @@ export async function callLLM(
 
   if (!response.ok) {
     const errorText = await response.text()
+    if (response.status === 402) throw makeBalanceError(errorText)
     throw new LLMHttpError(response.status, errorText)
   }
 
@@ -412,6 +441,7 @@ async function streamLLMOnce(
 
   if (!response.ok) {
     const errorText = await response.text()
+    if (response.status === 402) throw makeBalanceError(errorText)
     throw new Error(`LLM API error ${response.status}: ${errorText}`)
   }
 
@@ -480,6 +510,20 @@ async function streamLLMOnce(
 
       try {
         const parsed = JSON.parse(data)
+
+        // 上游 / 网关错误事件:OpenAI 流式协议与本网关在失败时都会下发 data: {"error":{...}}。
+        // 网关已把上游空响应 / 限流 / 4xx-5xx 统一翻译成中文 error 事件注入流内,
+        // 据此抛出精确错误(区别于"静默空流"),由外层 catch 透传给用户,避免被误判为"无响应"。
+        if (parsed.error) {
+          const detail =
+            typeof parsed.error === 'string'
+              ? parsed.error
+              : parsed.error.message || parsed.error.error || JSON.stringify(parsed.error)
+          const ge: any = new Error(String(detail))
+          ge.__gatewayStreamError = true
+          throw ge
+        }
+
         const delta = parsed.choices?.[0]?.delta
         const reason = parsed.choices?.[0]?.finish_reason
 
@@ -529,7 +573,9 @@ async function streamLLMOnce(
             if (tc.function?.arguments) toolCalls[idx].function.arguments += tc.function.arguments
           }
         }
-      } catch {
+      } catch (e: any) {
+        // 网关/上游错误事件需向上抛出（区别于"跳过格式错误的 JSON 行"）
+        if (e?.__gatewayStreamError) throw e
         // skip malformed JSON
       }
     }
@@ -560,9 +606,12 @@ async function streamLLMOnce(
   }
 
   // silent-200 / 空流识别:HTTP 200 但整条流无任何有效产出(无正文 / 工具调用 / 思维链 / 用量)。
-  // 多见于余额不足、限流或网关静默失败。抛友好错误，避免上层把空内容落库毒化会话历史(bug3)。
+  // 成因是上游限流 / 网关静默失败 / 个别模型 silent-200，与本地余额无关
+  // （真·余额不足在网关预检阶段已返回 402，根本到不了这里）。
+  // 故文案不再臆测"余额不足"，避免误导用户去查余额。抛友好错误并打 __emptyStream 标记，
+  // 由 streamLLM 决定是否补一次重试，同时避免上层把空内容落库毒化会话历史(bug3)。
   if (!fullContent && toolCalls.length === 0 && !reasoningContent && !usage) {
-    const e: any = new Error('模型无响应（可能余额不足、被限流或服务暂不可用），请稍后重试')
+    const e: any = new Error('模型未返回任何内容（可能上游限流或服务波动），请稍后重试')
     e.__emptyStream = true
     throw e
   }

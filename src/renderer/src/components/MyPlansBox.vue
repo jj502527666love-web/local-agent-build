@@ -23,8 +23,8 @@
               </div>
               <ExpandableText v-if="p.description" :text="p.description" :lines="1" />
             </div>
-            <span :class="['text-[10px] px-2 py-0.5 rounded-full whitespace-nowrap', statusClass(p.status)]">
-              {{ statusLabel(p.status) }}
+            <span :class="['text-[10px] px-2 py-0.5 rounded-full whitespace-nowrap', statusClass(effectiveStatus(p))]">
+              {{ statusLabel(effectiveStatus(p)) }}
             </span>
           </div>
 
@@ -129,6 +129,22 @@ function isActivePlan(plan: MyPlan): boolean {
   if (plan.status !== 'active') return false
   if (!plan.expires_at) return true
   return new Date(plan.expires_at).getTime() > Date.now()
+}
+
+/**
+ * 展示用「有效状态」：存储的 status 字段靠云端每小时一次的定时任务才翻转，
+ * 到期后短时间内（桌面端甚至更久，因 plans 不随余额轮询刷新）仍是 'active'。
+ * 这里按 expires_at 实时派生，避免徽标显示「生效中」绿标与同卡片「已过期」自相矛盾。
+ */
+function effectiveStatus(plan: MyPlan): string {
+  if (
+    plan.status === 'active' &&
+    plan.expires_at &&
+    new Date(plan.expires_at).getTime() <= Date.now()
+  ) {
+    return 'expired'
+  }
+  return plan.status
 }
 
 function statusClass(status: string): string {

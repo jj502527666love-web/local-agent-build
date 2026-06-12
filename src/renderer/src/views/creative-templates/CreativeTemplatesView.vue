@@ -101,7 +101,61 @@
         >使用云端模板</button>
       </div>
 
-      <!-- 卡片网格 -->
+      <!-- 云端模板：瀑布流（固定 5 列，随机排序 + 无限滚动） -->
+      <div v-else-if="activeTab === 'cloud'">
+        <div class="flex gap-3 items-start">
+          <div v-for="(col, ci) in cloudColumns" :key="ci" class="flex-1 min-w-0 flex flex-col gap-3">
+            <div
+              v-for="item in col"
+              :key="String(item.id)"
+              class="group cursor-pointer rounded-xl overflow-hidden border border-surface-3 bg-surface-0 shadow-sm hover:shadow-md transition-shadow"
+              @click="openUse(item)"
+            >
+              <!-- 瀑布流封面：按原图比例展示（不裁剪），高度错落 -->
+              <div class="bg-surface-2 overflow-hidden">
+                <img
+                  v-if="resolveCover(item)"
+                  :src="resolveCover(item)"
+                  class="w-full h-auto block group-hover:scale-105 transition-transform duration-300"
+                  loading="lazy"
+                  @error="hideBrokenImage"
+                />
+                <div v-else class="w-full aspect-[3/4] flex items-center justify-center">
+                  <svg class="w-10 h-10 text-text-disabled" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909M3.75 21h16.5A2.25 2.25 0 0 0 22.5 18.75V5.25A2.25 2.25 0 0 0 20.25 3H3.75A2.25 2.25 0 0 0 1.5 5.25v13.5A2.25 2.25 0 0 0 3.75 21Z" />
+                  </svg>
+                </div>
+              </div>
+              <div class="p-3">
+                <h4 class="text-xs font-medium text-text-primary truncate" :title="item.title">{{ item.title }}</h4>
+                <p class="mt-1 text-[10px] text-text-tertiary line-clamp-2 min-h-[1.6em]">{{ item.description || '暂无描述' }}</p>
+                <div class="mt-2 flex items-center justify-between text-[10px] text-text-tertiary">
+                  <span>{{ item.variables?.length || 0 }} 个变量</span>
+                  <span v-if="item.default_size">{{ item.default_size }}</span>
+                </div>
+                <div class="mt-2 flex gap-1.5" @click.stop>
+                  <button
+                    class="flex-1 px-2 py-1 text-[10px] text-white bg-primary-600 hover:bg-primary-700 rounded transition-colors"
+                    @click="openUse(item)"
+                  >使用</button>
+                  <button
+                    class="px-2 py-1 text-[10px] text-text-secondary border border-surface-3 hover:bg-surface-1 rounded transition-colors"
+                    @click="importCloud(item as CloudCreativeTemplate)"
+                  >另存到本地</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 底部哨兵：进入视口自动加载下一批；仍有更多时显示加载指示 -->
+        <div :ref="setCloudSentinel" class="h-px"></div>
+        <div v-if="cloudHasMore" class="py-6 flex items-center justify-center">
+          <svg class="w-5 h-5 animate-spin text-primary-500" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+        </div>
+      </div>
+
+      <!-- 我的模板：保持原网格布局不变 -->
       <div v-else class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
         <div
           v-for="item in currentTemplates"
@@ -180,20 +234,6 @@
         </div>
       </div>
 
-      <!-- 云端分页 -->
-      <div v-if="activeTab === 'cloud' && !loading && store.cloudTotal > store.cloudPageSize" class="mt-5 flex items-center justify-center gap-3 text-xs">
-        <button
-          class="px-3 py-1.5 border border-surface-3 rounded-lg bg-surface-0 hover:bg-surface-1 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-          :disabled="store.cloudPage <= 1 || loading"
-          @click="store.setCloudPage(store.cloudPage - 1)"
-        >上一页</button>
-        <span class="text-text-secondary">第 <strong class="text-text-primary">{{ store.cloudPage }}</strong> 页 / 共 {{ cloudTotalPages }} 页（{{ store.cloudTotal }} 个模板）</span>
-        <button
-          class="px-3 py-1.5 border border-surface-3 rounded-lg bg-surface-0 hover:bg-surface-1 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-          :disabled="store.cloudPage >= cloudTotalPages || loading"
-          @click="store.setCloudPage(store.cloudPage + 1)"
-        >下一页</button>
-      </div>
     </div>
 
     <CreateTemplateWizard
@@ -324,6 +364,7 @@ import {
   type CreativeTemplateVariable,
 } from '@/stores/creative-templates'
 import { useCloudAuthStore } from '@/stores/cloud-auth'
+import { useRandomInfiniteFeed } from '@/utils/random-infinite-feed'
 import TemplateEditorModal from './components/TemplateEditorModal.vue'
 import TemplateUseModal from './components/TemplateUseModal.vue'
 import CreateTemplateWizard from './components/CreateTemplateWizard.vue'
@@ -397,10 +438,28 @@ const currentTemplates = computed<Array<CreativeTemplate | CloudCreativeTemplate
   return activeTab.value === 'local' ? store.templates : store.cloudTemplates
 })
 
-const cloudTotalPages = computed(() => {
-  if (!store.cloudPageSize) return 1
-  return Math.max(1, Math.ceil(store.cloudTotal / store.cloudPageSize))
+// 云端模板广场：前端随机排序 + 无限滚动（首屏 25，每次下拉 +20）
+const {
+  items: cloudFeedItems,
+  hasMore: cloudHasMore,
+  setItems: setCloudFeed,
+  setSentinel: setCloudSentinel,
+} = useRandomInfiniteFeed<CloudCreativeTemplate>({ initial: 25, step: 20 })
+
+// 5 列瀑布流：对随机后的展示切片做 round-robin 分配，下拉追加时已有卡片不重排
+const CLOUD_COLUMN_COUNT = 5
+const cloudColumns = computed<CloudCreativeTemplate[][]>(() => {
+  const cols: CloudCreativeTemplate[][] = Array.from({ length: CLOUD_COLUMN_COUNT }, () => [])
+  cloudFeedItems.value.forEach((item, i) => cols[i % CLOUD_COLUMN_COUNT].push(item))
+  return cols
 })
+
+// 云端模板每次重新加载（进入 / 切分类 / 搜索）后重新洗牌
+watch(
+  () => store.cloudTemplates,
+  (list) => setCloudFeed(Array.isArray(list) ? list.slice() : []),
+  { immediate: true }
+)
 
 const emptyText = computed(() => activeTab.value === 'local' ? '暂无模板' : '暂无云端模板')
 const emptyHint = computed(() => activeTab.value === 'local'
