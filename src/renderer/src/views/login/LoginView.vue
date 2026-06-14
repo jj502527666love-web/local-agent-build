@@ -1,23 +1,36 @@
 <template>
-  <div class="h-screen w-screen flex items-center justify-center bg-surface-1">
-    <div class="w-full max-w-sm bg-surface-0 rounded-2xl shadow-lg p-8">
-      <div class="flex items-center gap-3 mb-8">
-        <img
-          v-if="appIconUrl"
-          :src="appIconUrl"
-          class="w-10 h-10 rounded-xl object-cover flex-shrink-0"
-          alt=""
-          draggable="false"
-        />
-        <div
-          v-else
-          class="w-10 h-10 rounded-xl bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center flex-shrink-0"
-        >
-          <span class="text-white text-sm font-bold">{{ appAbbr }}</span>
+  <div class="login-root h-screen w-screen overflow-y-auto grid place-items-center p-6">
+    <!-- 云控端配置的登录页背景图：fixed 铺满视口 + cover 自适应任意窗口尺寸；无图/加载失败时露出 login-root 的品牌橙光晕兜底 -->
+    <div
+      v-if="loginBgUrl"
+      class="fixed inset-0 bg-center bg-cover bg-no-repeat pointer-events-none"
+      :style="{ backgroundImage: `url('${loginBgUrl}')` }"
+    ></div>
+    <div class="relative z-10 w-full max-w-sm bg-surface-0 rounded-2xl shadow-lg p-8">
+      <!-- 品牌区：图标 + 名称 + 装饰线副标题，居中竖排 -->
+      <div class="flex flex-col items-center text-center mb-7">
+        <div class="relative mb-3">
+          <img
+            v-if="appIconUrl"
+            :src="appIconUrl"
+            class="w-16 h-16 rounded-2xl object-cover"
+            alt=""
+            draggable="false"
+          />
+          <div
+            v-else
+            class="w-16 h-16 rounded-2xl bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center"
+          >
+            <span class="text-white text-lg font-bold">{{ appAbbr }}</span>
+          </div>
+          <!-- 同色系柔光底：仅作质感衬托，不引入其它色相 -->
+          <div class="absolute -inset-3 -z-10 rounded-full bg-primary-500/20 blur-2xl"></div>
         </div>
-        <div>
-          <h1 class="text-base font-bold text-text-primary">{{ appName }}</h1>
-          <p class="text-xs text-text-tertiary">{{ subtitle }}</p>
+        <h1 class="text-lg font-bold text-text-primary">{{ appName }}</h1>
+        <div class="mt-2 flex items-center gap-2.5">
+          <span class="h-px w-7 bg-surface-3"></span>
+          <span class="text-xs text-text-tertiary">{{ subtitle }}</span>
+          <span class="h-px w-7 bg-surface-3"></span>
         </div>
       </div>
 
@@ -25,16 +38,22 @@
         <!-- 用户名：登录 / 注册 显示；找回密码不需要 -->
         <div v-if="!isForgot">
           <label class="block text-xs font-medium text-text-secondary mb-1.5">用户名</label>
-          <input v-model="form.username" type="text" required autocomplete="username"
-            class="w-full px-3 py-2.5 text-sm bg-surface-2 border border-surface-3 rounded-lg text-text-primary outline-none focus:border-primary-500 transition-colors"
-            :placeholder="isRegister ? '中文 / 英文 / 数字 / 下划线，6-16 位' : '请输入用户名'" />
+          <div class="relative">
+            <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-tertiary pointer-events-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path :d="icons.user" /></svg>
+            <input v-model="form.username" type="text" required autocomplete="username"
+              class="w-full pl-9 pr-3 py-2.5 text-sm bg-surface-2 border border-surface-3 rounded-lg text-text-primary outline-none focus:border-primary-500 transition-colors"
+              :placeholder="isRegister ? '中文 / 英文 / 数字 / 下划线，6-16 位' : '请输入用户名'" />
+          </div>
         </div>
 
         <div v-if="isRegister">
           <label class="block text-xs font-medium text-text-secondary mb-1.5">昵称</label>
-          <input v-model="form.nickname" type="text"
-            class="w-full px-3 py-2.5 text-sm bg-surface-2 border border-surface-3 rounded-lg text-text-primary outline-none focus:border-primary-500 transition-colors"
-            placeholder="中文 / 英文 / 数字 / 下划线，2-30 位（选填，不填默认用用户名）" />
+          <div class="relative">
+            <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-tertiary pointer-events-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path :d="icons.user" /></svg>
+            <input v-model="form.nickname" type="text"
+              class="w-full pl-9 pr-3 py-2.5 text-sm bg-surface-2 border border-surface-3 rounded-lg text-text-primary outline-none focus:border-primary-500 transition-colors"
+              placeholder="中文 / 英文 / 数字 / 下划线，2-30 位（选填，不填默认用用户名）" />
+          </div>
         </div>
 
         <!-- 手机号：找回密码必填；注册时按云控端开关决定是否必填 -->
@@ -43,18 +62,24 @@
             手机号
             <span v-if="isRegister && !needSms" class="text-text-tertiary">(选填)</span>
           </label>
-          <input v-model="form.phone" type="tel" autocomplete="tel" maxlength="11"
-            class="w-full px-3 py-2.5 text-sm bg-surface-2 border border-surface-3 rounded-lg text-text-primary outline-none focus:border-primary-500 transition-colors"
-            placeholder="请输入手机号" />
+          <div class="relative">
+            <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-tertiary pointer-events-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path :d="icons.phone" /></svg>
+            <input v-model="form.phone" type="tel" autocomplete="tel" maxlength="11"
+              class="w-full pl-9 pr-3 py-2.5 text-sm bg-surface-2 border border-surface-3 rounded-lg text-text-primary outline-none focus:border-primary-500 transition-colors"
+              placeholder="请输入手机号" />
+          </div>
         </div>
 
         <!-- 短信验证码：找回密码必填；注册在开启短信验证时必填 -->
         <div v-if="showSmsCode">
           <label class="block text-xs font-medium text-text-secondary mb-1.5">短信验证码</label>
           <div class="flex gap-2">
-            <input v-model="form.code" type="text" inputmode="numeric" maxlength="6" autocomplete="one-time-code"
-              class="flex-1 min-w-0 px-3 py-2.5 text-sm bg-surface-2 border border-surface-3 rounded-lg text-text-primary outline-none focus:border-primary-500 transition-colors"
-              placeholder="6 位验证码" />
+            <div class="relative flex-1 min-w-0">
+              <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-tertiary pointer-events-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path :d="icons.shield" /></svg>
+              <input v-model="form.code" type="text" inputmode="numeric" maxlength="6" autocomplete="one-time-code"
+                class="w-full pl-9 pr-3 py-2.5 text-sm bg-surface-2 border border-surface-3 rounded-lg text-text-primary outline-none focus:border-primary-500 transition-colors"
+                placeholder="6 位验证码" />
+            </div>
             <button type="button" @click="handleSendCode" :disabled="countdown > 0 || sendingCode"
               class="flex-shrink-0 px-3 py-2.5 text-xs font-medium bg-surface-2 border border-surface-3 rounded-lg text-primary-600 hover:border-primary-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors whitespace-nowrap">
               {{ countdown > 0 ? `${countdown}s 后重发` : (sendingCode ? '发送中...' : '获取验证码') }}
@@ -65,28 +90,40 @@
         <!-- 密码：登录 / 注册用「密码」，找回用「新密码」 -->
         <div>
           <label class="block text-xs font-medium text-text-secondary mb-1.5">{{ isForgot ? '新密码' : '密码' }}</label>
-          <input v-model="form.password" type="password" required
-            :autocomplete="isRegister || isForgot ? 'new-password' : 'current-password'"
-            class="w-full px-3 py-2.5 text-sm bg-surface-2 border border-surface-3 rounded-lg text-text-primary outline-none focus:border-primary-500 transition-colors"
-            :placeholder="isRegister || isForgot ? '至少 6 位' : '请输入密码'" />
+          <div class="relative">
+            <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-tertiary pointer-events-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path :d="icons.lock" /></svg>
+            <input v-model="form.password" type="password" required
+              :autocomplete="isRegister || isForgot ? 'new-password' : 'current-password'"
+              class="w-full pl-9 pr-3 py-2.5 text-sm bg-surface-2 border border-surface-3 rounded-lg text-text-primary outline-none focus:border-primary-500 transition-colors"
+              :placeholder="isRegister || isForgot ? '至少 6 位' : '请输入密码'" />
+          </div>
         </div>
 
         <div v-if="isRegister || isForgot">
           <label class="block text-xs font-medium text-text-secondary mb-1.5">确认密码</label>
-          <input v-model="form.confirmPassword" type="password" required autocomplete="new-password"
-            class="w-full px-3 py-2.5 text-sm bg-surface-2 border border-surface-3 rounded-lg text-text-primary outline-none focus:border-primary-500 transition-colors"
-            placeholder="再次输入密码" />
+          <div class="relative">
+            <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-tertiary pointer-events-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path :d="icons.lock" /></svg>
+            <input v-model="form.confirmPassword" type="password" required autocomplete="new-password"
+              class="w-full pl-9 pr-3 py-2.5 text-sm bg-surface-2 border border-surface-3 rounded-lg text-text-primary outline-none focus:border-primary-500 transition-colors"
+              placeholder="再次输入密码" />
+          </div>
         </div>
 
-        <div v-if="isLogin" class="flex items-center gap-4">
-          <label class="flex items-center gap-1.5 text-xs text-text-secondary cursor-pointer">
-            <input type="checkbox" v-model="rememberUsername" class="w-3.5 h-3.5 rounded border-surface-3 accent-primary-600" />
-            记住账号
-          </label>
-          <label class="flex items-center gap-1.5 text-xs text-text-secondary cursor-pointer">
-            <input type="checkbox" v-model="rememberPassword" class="w-3.5 h-3.5 rounded border-surface-3 accent-primary-600" />
-            记住密码
-          </label>
+        <!-- 记住账号 / 记住密码 + 忘记密码（仅登录态，忘记密码移至本行右侧） -->
+        <div v-if="isLogin" class="flex items-center justify-between gap-2">
+          <div class="flex items-center gap-4">
+            <label class="flex items-center gap-1.5 text-xs text-text-secondary cursor-pointer">
+              <input type="checkbox" v-model="rememberUsername" class="w-3.5 h-3.5 rounded border-surface-3 accent-primary-600" />
+              记住账号
+            </label>
+            <label class="flex items-center gap-1.5 text-xs text-text-secondary cursor-pointer">
+              <input type="checkbox" v-model="rememberPassword" class="w-3.5 h-3.5 rounded border-surface-3 accent-primary-600" />
+              记住密码
+            </label>
+          </div>
+          <button v-if="siteConfig.forgotPassword.enabled" type="button" @click="goForgot" class="flex-shrink-0 text-xs text-text-tertiary hover:text-primary-600 transition-colors">
+            忘记密码？
+          </button>
         </div>
 
         <div v-if="isRegister" class="flex items-start gap-1.5">
@@ -107,36 +144,42 @@
         <div v-if="error" class="text-xs text-red-500 bg-red-50 dark:text-red-300 dark:bg-red-900/20 rounded-lg px-3 py-2">{{ error }}</div>
         <div v-if="notice" class="text-xs text-green-600 bg-green-50 dark:text-green-300 dark:bg-green-900/20 rounded-lg px-3 py-2">{{ notice }}</div>
 
+        <!-- 提交按钮：品牌橙同色系微渐变（不引入紫/蓝多色） -->
         <button type="submit" :disabled="submitting || (isRegister && !siteConfig.register.enabled)"
-          class="w-full py-3 text-sm font-semibold bg-primary-600 hover:bg-primary-700 disabled:opacity-50 text-white rounded-xl transition-colors">
+          class="w-full py-3 text-sm font-semibold bg-gradient-to-r from-primary-500 to-primary-600 hover:from-primary-600 hover:to-primary-700 disabled:opacity-50 disabled:hover:from-primary-500 disabled:hover:to-primary-600 text-white rounded-xl shadow-sm transition-all">
           {{ submitButtonText }}
         </button>
       </form>
 
-      <div class="mt-5 flex items-center justify-center gap-3 text-center">
-        <!-- 找回密码：返回登录 -->
-        <button v-if="isForgot" @click="backToLogin" class="text-xs text-primary-600 hover:text-primary-700 transition-colors">
-          返回登录
-        </button>
+      <!-- 底部：找回态返回登录；登录/注册态用「或」分隔的模式切换 -->
+      <div class="mt-6">
+        <div v-if="isForgot" class="text-center">
+          <button @click="backToLogin" class="text-xs text-primary-600 hover:text-primary-700 transition-colors">
+            返回登录
+          </button>
+        </div>
         <template v-else>
-          <button v-if="isRegister || siteConfig.register.enabled" @click="toggleMode" class="text-xs text-primary-600 hover:text-primary-700 transition-colors">
-            {{ isRegister ? '已有账号？去登录' : '没有账号？去注册' }}
-          </button>
-          <span v-else class="text-xs text-text-tertiary">当前暂未开放注册，请联系管理员</span>
-          <!-- 忘记密码入口：仅登录态 + 云控端开启「找回密码」时显示 -->
-          <button v-if="isLogin && siteConfig.forgotPassword.enabled" @click="goForgot" class="text-xs text-text-tertiary hover:text-primary-600 transition-colors">
-            忘记密码？
-          </button>
+          <div class="flex items-center gap-3">
+            <span class="h-px flex-1 bg-surface-3"></span>
+            <span class="text-xs text-text-tertiary">或</span>
+            <span class="h-px flex-1 bg-surface-3"></span>
+          </div>
+          <div class="mt-4 text-center">
+            <button v-if="isRegister || siteConfig.register.enabled" @click="toggleMode" class="text-xs text-primary-600 hover:text-primary-700 transition-colors">
+              {{ isRegister ? '已有账号？去登录' : '没有账号？去注册' }}
+            </button>
+            <span v-else class="text-xs text-text-tertiary">当前暂未开放注册，请联系管理员</span>
+          </div>
         </template>
       </div>
-    </div>
 
-    <AgreementDialog
-      :open="agreementDialog.open"
-      :title="agreementDialog.title"
-      :content-html="agreementDialog.content"
-      @close="agreementDialog.open = false"
-    />
+      <AgreementDialog
+        :open="agreementDialog.open"
+        :title="agreementDialog.title"
+        :content-html="agreementDialog.content"
+        @close="agreementDialog.open = false"
+      />
+    </div>
   </div>
 </template>
 
@@ -148,9 +191,20 @@ import { useSiteConfigStore } from '@/stores/site-config'
 import AgreementDialog from '@/components/AgreementDialog.vue'
 import { appName, appAbbr, appIconUrl } from '@/utils/branding'
 
+// 输入框前置线性图标（heroicons outline 风格，描边用 currentColor，统一中性灰）
+const icons = {
+  user: 'M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.5 20.25a8.25 8.25 0 0 1 15 0',
+  lock: 'M16.5 10.5V6.75a4.5 4.5 0 1 0-9 0v3.75m-1.5 0h12a1.5 1.5 0 0 1 1.5 1.5v7.5a1.5 1.5 0 0 1-1.5 1.5h-12a1.5 1.5 0 0 1-1.5-1.5V12a1.5 1.5 0 0 1 1.5-1.5Z',
+  phone: 'M9 1.5h6a1.5 1.5 0 0 1 1.5 1.5v18a1.5 1.5 0 0 1-1.5 1.5H9a1.5 1.5 0 0 1-1.5-1.5V3A1.5 1.5 0 0 1 9 1.5Zm1.5 18h3',
+  shield: 'M11.998 2.25 4.5 5.25v5.379c0 4.486 3.097 7.32 7.498 8.621 4.401-1.3 7.498-4.135 7.498-8.62V5.25l-7.498-3Z'
+}
+
 const router = useRouter()
 const store = useCloudAuthStore()
 const siteConfig = useSiteConfigStore()
+
+// 登录页背景图（云控端配置，空则用 login-root 的品牌橙光晕兜底）
+const loginBgUrl = computed(() => siteConfig.loginBackground.url)
 
 // 三种模式：登录 / 注册 / 找回密码
 const isRegister = ref(false)
@@ -407,3 +461,18 @@ async function handleSubmit() {
   }
 }
 </script>
+
+<style scoped>
+/* 登录页背景：极淡品牌橙径向光晕叠加在主题表面色上（方案 b，不引入紫/蓝） */
+.login-root {
+  background:
+    radial-gradient(125% 80% at 50% -12%, rgba(242, 118, 56, 0.1), transparent 60%),
+    var(--surface-1);
+}
+/* 深色模式下光晕更克制，避免发脏 */
+:global(.dark) .login-root {
+  background:
+    radial-gradient(125% 80% at 50% -12%, rgba(242, 118, 56, 0.06), transparent 60%),
+    var(--surface-1);
+}
+</style>

@@ -8,6 +8,7 @@ import { useThemeStore } from './stores/theme'
 import { useCloudAuthStore } from './stores/cloud-auth'
 import { useSiteConfigStore } from './stores/site-config'
 import { useLowBalanceStore } from './stores/low-balance'
+import { applyPrimaryColor, DEFAULT_PRIMARY } from './utils/theme-color'
 import './assets/main.css'
 
 // 用主进程原生对话框替换浏览器 alert/confirm：规避 Electron(Windows) 弹窗关闭后输入框
@@ -24,6 +25,15 @@ if (nativeDialog) {
 // 启动时根据 runtimeConfig.appName 设置 document.title（覆盖 index.html 默认 'LocalAgent'）
 const _cfg = (window as unknown as { runtimeConfig?: { appName?: string } }).runtimeConfig
 if (_cfg?.appName) document.title = _cfg.appName
+
+// 启动即注入缓存的主题主色，避免首屏用内置橙再跳变为云控端配置色；
+// site-config 拉到最新主色后会再调一次 applyPrimaryColor 即时换肤。
+try {
+  const _theme = JSON.parse(localStorage.getItem('site_config_theme') || '{}')
+  applyPrimaryColor(_theme?.primary_color || DEFAULT_PRIMARY)
+} catch {
+  applyPrimaryColor(DEFAULT_PRIMARY)
+}
 
 const router = createRouter({
   history: createWebHashHistory(),

@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { cloudPublic } from '@/utils/cloud-api'
+import { applyPrimaryColor, DEFAULT_PRIMARY } from '@/utils/theme-color'
 
 /**
  * 站点公开配置 store。无需登录，App 启动时拉取一次。
@@ -88,6 +89,22 @@ export interface CustomerServiceInfo {
   project_key?: string | null
 }
 
+/**
+ * 登录页背景图。由云控端「系统设置 → 站点」上传，桌面端登录页全屏背景（cover）。
+ * url 为空表示未配置，登录页回退到内置品牌橙光晕背景。
+ */
+export interface LoginBackground {
+  url: string
+}
+
+/**
+ * 全局主题。primary_color 是云控端配置的主色（hex），桌面端据此派生整套
+ * primary 50~900 色阶并注入 CSS 变量换肤。空表示用桌面端内置默认橙。
+ */
+export interface ThemeConfig {
+  primary_color: string
+}
+
 const DEFAULT_LABELS: CurrencyLabels = { token: '金币', credit: '积分' }
 const DEFAULT_PAYMENT: PaymentAvailability = { wechat: true, tianque: true }
 const DEFAULT_REGISTER: RegisterAvailability = { enabled: true, sms_verify_enabled: false }
@@ -100,6 +117,8 @@ const DEFAULT_AGREEMENTS: Agreements = {
 }
 const DEFAULT_CHAT_MODEL: ChatDefaultModel = { provider_id: '', model_id: '' }
 const DEFAULT_CUSTOMER_SERVICE: CustomerServiceInfo | null = null
+const DEFAULT_LOGIN_BACKGROUND: LoginBackground = { url: '' }
+const DEFAULT_THEME: ThemeConfig = { primary_color: DEFAULT_PRIMARY }
 
 const STORAGE_KEY = 'site_config_currency'
 const PAYMENT_STORAGE_KEY = 'site_config_payment'
@@ -110,6 +129,9 @@ const RECHARGE_STORAGE_KEY = 'site_config_recharge'
 const AGREEMENTS_STORAGE_KEY = 'site_config_agreements'
 const CHAT_MODEL_STORAGE_KEY = 'site_config_chat_default_model'
 const CUSTOMER_SERVICE_STORAGE_KEY = 'site_config_customer_service'
+const LOGIN_BACKGROUND_STORAGE_KEY = 'site_config_login_background'
+// 注意：此 key 必须与 main.ts 启动防闪注入读取的 key 一致
+const THEME_STORAGE_KEY = 'site_config_theme'
 
 function readCache(): CurrencyLabels {
   try {
@@ -322,6 +344,48 @@ function writeCustomerServiceCache(info: CustomerServiceInfo | null) {
   }
 }
 
+function readLoginBackgroundCache(): LoginBackground {
+  try {
+    const raw = localStorage.getItem(LOGIN_BACKGROUND_STORAGE_KEY)
+    if (!raw) return { ...DEFAULT_LOGIN_BACKGROUND }
+    const parsed = JSON.parse(raw)
+    return { url: typeof parsed?.url === 'string' ? parsed.url : '' }
+  } catch {
+    return { ...DEFAULT_LOGIN_BACKGROUND }
+  }
+}
+
+function writeLoginBackgroundCache(b: LoginBackground) {
+  try {
+    localStorage.setItem(LOGIN_BACKGROUND_STORAGE_KEY, JSON.stringify(b))
+  } catch {
+    // 静默失败
+  }
+}
+
+function readThemeCache(): ThemeConfig {
+  try {
+    const raw = localStorage.getItem(THEME_STORAGE_KEY)
+    if (!raw) return { ...DEFAULT_THEME }
+    const parsed = JSON.parse(raw)
+    return {
+      primary_color: typeof parsed?.primary_color === 'string' && parsed.primary_color
+        ? parsed.primary_color
+        : DEFAULT_THEME.primary_color,
+    }
+  } catch {
+    return { ...DEFAULT_THEME }
+  }
+}
+
+function writeThemeCache(t: ThemeConfig) {
+  try {
+    localStorage.setItem(THEME_STORAGE_KEY, JSON.stringify(t))
+  } catch {
+    // 静默失败
+  }
+}
+
 export const useSiteConfigStore = defineStore('siteConfig', () => {
   // 启动时先用 localStorage 缓存，避免首屏闪烁默认文案
   const labels = ref<CurrencyLabels>(readCache())
@@ -333,6 +397,8 @@ export const useSiteConfigStore = defineStore('siteConfig', () => {
   const agreements = ref<Agreements>(readAgreementsCache())
   const chatDefaultModel = ref<ChatDefaultModel>(readChatDefaultModelCache())
   const customerService = ref<CustomerServiceInfo | null>(readCustomerServiceCache())
+  const loginBackground = ref<LoginBackground>(readLoginBackgroundCache())
+  const theme = ref<ThemeConfig>(readThemeCache())
   const loading = ref(false)
   const lastFetchedAt = ref<number | null>(null)
 
@@ -439,6 +505,27 @@ export const useSiteConfigStore = defineStore('siteConfig', () => {
         writeCustomerServiceCache(nextCustomerService)
       }
 
+      // 登录页背景图（后加字段，老后端不带时保持当前值）
+      if (data?.login_background && typeof data.login_background === 'object') {
+        const nextBg: LoginBackground = {
+          url: typeof data.login_background.url === 'string' ? data.login_background.url : '',
+        }
+        loginBackground.value = nextBg
+        writeLoginBackgroundCache(nextBg)
+      }
+
+      // 全局主题主色（后加字段）：解析后即时派生注入 CSS 变量换肤
+      if (data?.theme && typeof data.theme === 'object') {
+        const nextTheme: ThemeConfig = {
+          primary_color: typeof data.theme.primary_color === 'string' && data.theme.primary_color
+            ? data.theme.primary_color
+            : DEFAULT_THEME.primary_color,
+        }
+        theme.value = nextTheme
+        writeThemeCache(nextTheme)
+        applyPrimaryColor(nextTheme.primary_color)
+      }
+
       lastFetchedAt.value = Date.now()
     } catch {
       // 拉取失败保持当前值（缓存或默认）
@@ -454,5 +541,5 @@ export const useSiteConfigStore = defineStore('siteConfig', () => {
     fetch()
   }
 
-  return { labels, payment, register, forgotPassword, plansStore, recharge, agreements, chatDefaultModel, customerService, hasAnyPayment, hasAnyRecharge, loading, lastFetchedAt, labelOf, fetch, init }
+  return { labels, payment, register, forgotPassword, plansStore, recharge, agreements, chatDefaultModel, customerService, loginBackground, theme, hasAnyPayment, hasAnyRecharge, loading, lastFetchedAt, labelOf, fetch, init }
 })
