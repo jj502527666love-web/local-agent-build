@@ -3,7 +3,8 @@ import { app } from 'electron'
 import { join } from 'path'
 import { readFileSync, mkdirSync } from 'fs'
 import { getDataDir } from '../services/data-path'
-import { seedPresetPersonas } from '../services/persona'
+// import { seedPresetPersonas } from '../services/persona' // 暂停人格规则预设
+// import { seedPresetBots } from '../services/bot' // 暂停智能体预设
 import { seedBuiltinPresets } from '../services/prompt-preset'
 import { seedBuiltinSkillPresets } from '../services/skill'
 import { seedCreativeTemplatePresets } from '../services/creative-template'
@@ -68,7 +69,8 @@ function initSchema(): void {
   db.exec(schema)
   runMigrations()
   expireStalePendingCards()
-  seedPresetPersonas()
+  // seedPresetPersonas() // 暂停人格规则预设
+  // seedPresetBots() // 暂停智能体预设
   seedBuiltinPresets()
   seedBuiltinSkillPresets()
   seedCreativeTemplatePresets()
@@ -105,6 +107,25 @@ function runMigrations(): void {
     db.exec("ALTER TABLE model_providers ADD COLUMN request_override_patch TEXT NOT NULL DEFAULT '{}'")
   }
 
+  // mcp_servers: always_load 白名单（false 时该 server 的工具不直接注入 LLM tools，仅通过
+  // mcp_list_servers / mcp_describe_tools / mcp_call 元工具按需发现），旧库幂等加列。
+  const mcpCols = db.prepare("PRAGMA table_info(mcp_servers)").all() as any[]
+  const mcpColNames = mcpCols.map((c: any) => c.name)
+  if (mcpCols.length > 0 && !mcpColNames.includes('always_load')) {
+    db.exec("ALTER TABLE mcp_servers ADD COLUMN always_load INTEGER NOT NULL DEFAULT 0")
+  }
+
+  // deck_projects: 风格家族(限定选型作用域+主题), 旧库幂等加列
+  const dpCols = db.prepare("PRAGMA table_info(deck_projects)").all() as any[]
+  const dpNames = dpCols.map((c: any) => c.name)
+  if (dpCols.length > 0 && !dpNames.includes('style_family')) {
+    db.exec("ALTER TABLE deck_projects ADD COLUMN style_family TEXT NOT NULL DEFAULT ''")
+  }
+  // deck_projects: grammar(huashu 式 deck 级设计语法: showcase 确立后贯穿全 deck), 旧库幂等加列
+  if (dpCols.length > 0 && !dpNames.includes('grammar')) {
+    db.exec("ALTER TABLE deck_projects ADD COLUMN grammar TEXT NOT NULL DEFAULT '{}'")
+  }
+
   const botCols = db.prepare("PRAGMA table_info(bots)").all() as any[]
   const botColNames = botCols.map((c: any) => c.name)
   if (!botColNames.includes('kb_only')) {
@@ -125,6 +146,10 @@ function runMigrations(): void {
   // 默认 0=关：避免对没图片需求的智能体浪费 system prompt token、避免 LLM 误调
   if (!botColNames.includes('enable_image_gen')) {
     db.exec("ALTER TABLE bots ADD COLUMN enable_image_gen INTEGER NOT NULL DEFAULT 0")
+  }
+  // AI PPT 能力总开关：智能体级别控制是否暴露 deck_* 工具集(规划/生成/图表/评审/导出)。默认 0=关。
+  if (!botColNames.includes('enable_deck')) {
+    db.exec("ALTER TABLE bots ADD COLUMN enable_deck INTEGER NOT NULL DEFAULT 0")
   }
   // 智能体市场（云端创建/投稿 → 桌面保存到本地）：旧库幂等加列
   if (!botColNames.includes('avatar')) {
@@ -535,6 +560,43 @@ function runMigrations(): void {
     );
     CREATE INDEX IF NOT EXISTS idx_fine_matting_tasks_status ON fine_matting_tasks(status);
     CREATE INDEX IF NOT EXISTS idx_fine_matting_tasks_created ON fine_matting_tasks(created_at);
+  `)
+
+  // ewei 商城连接器 + 商品图替换审计表幂等建表（旧库升级路径）。完整字段语义见 resources/schema.sql。
+  // 与 matting_providers 同策略：本地加密、排除云同步（见 services/sync/registry.ts）。
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ewei_connectors (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      base_url TEXT NOT NULL DEFAULT '',
+      account TEXT NOT NULL DEFAULT '',
+      password_enc TEXT NOT NULL DEFAULT '',
+      account_version TEXT NOT NULL DEFAULT '2.1.6',
+      shop_version TEXT NOT NULL DEFAULT '4.6.11',
+      current_shop_id INTEGER NOT NULL DEFAULT 0,
+      current_shop_name TEXT NOT NULL DEFAULT '',
+      is_default INTEGER NOT NULL DEFAULT 0,
+      last_login_at TEXT NOT NULL DEFAULT '',
+      last_login_status TEXT NOT NULL DEFAULT '',
+      last_login_message TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS ewei_goods_image_logs (
+      id TEXT PRIMARY KEY,
+      connector_id TEXT NOT NULL DEFAULT '',
+      shop_id INTEGER NOT NULL DEFAULT 0,
+      goods_id INTEGER NOT NULL DEFAULT 0,
+      goods_title TEXT NOT NULL DEFAULT '',
+      slot TEXT NOT NULL DEFAULT '',
+      old_value_json TEXT NOT NULL DEFAULT '',
+      new_paths_json TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'pending',
+      error TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_ewei_logs_goods ON ewei_goods_image_logs(goods_id);
+    CREATE INDEX IF NOT EXISTS idx_ewei_logs_created ON ewei_goods_image_logs(created_at);
   `)
 }
 

@@ -57,10 +57,23 @@
       <div
         v-for="t in tasks"
         :key="t.id"
-        class="relative group rounded-lg overflow-hidden border border-surface-3 bg-surface-1 aspect-square"
+        class="relative group rounded-lg overflow-hidden border bg-surface-1 aspect-square"
+        :class="selectable && pickedIndex(t.resultPath) >= 0 ? 'border-primary-500 ring-2 ring-primary-400' : 'border-surface-3'"
       >
-        <!-- 成功：缩略图（点击大图预览） -->
-        <img v-if="t.status === 'success'" :src="t.url" class="w-full h-full object-cover cursor-zoom-in" :alt="t.label" @click="preview(t)" />
+        <!-- 成功：缩略图（选图模式点击切换选中，否则点击大图预览） -->
+        <img
+          v-if="t.status === 'success'"
+          :src="t.url"
+          class="w-full h-full object-cover"
+          :class="selectable ? 'cursor-pointer' : 'cursor-zoom-in'"
+          :alt="t.label"
+          @click="onImageClick(t)"
+        />
+        <!-- 选图模式：选中序号角标 -->
+        <span
+          v-if="selectable && t.status === 'success' && pickedIndex(t.resultPath) >= 0"
+          class="absolute top-1.5 left-1.5 z-10 text-[11px] font-medium bg-primary-600 text-white rounded-full w-5 h-5 flex items-center justify-center shadow"
+        >{{ pickedIndex(t.resultPath) + 1 }}</span>
 
         <!-- 处理中 -->
         <div v-else-if="t.status === 'loading' || t.status === 'pending'" class="absolute inset-0 flex flex-col items-center justify-center gap-2 text-text-tertiary">
@@ -87,6 +100,9 @@
           v-if="t.status === 'success'"
           class="absolute top-1.5 right-1.5 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity"
         >
+          <button v-if="selectable" class="action-btn" title="预览大图" @click="preview(t)">
+            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z" /></svg>
+          </button>
           <button class="action-btn" title="打开" @click="openImage(t)">
             <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 0 0 3 8.25v10.5A2.25 2.25 0 0 0 5.25 21h10.5A2.25 2.25 0 0 0 18 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" /></svg>
           </button>
@@ -127,10 +143,35 @@ import { ref, computed } from 'vue'
 import ImageLightbox from '@/components/ImageLightbox.vue'
 import type { EcomGenTask } from '../types'
 
-const props = withDefaults(defineProps<{ tasks: EcomGenTask[]; generating?: boolean }>(), {
-  generating: false,
-})
-defineEmits<{ (e: 'retry', id: string): void; (e: 'clear'): void; (e: 'cancel'): void }>()
+const props = withDefaults(
+  defineProps<{
+    tasks: EcomGenTask[]
+    generating?: boolean
+    /** 选图模式：成功项可点选，点击图片切换选中（而非大图预览）。默认 false，ecom 各页行为不变。 */
+    selectable?: boolean
+    /** 已选中的 result_path 列表（用于高亮 + 序号角标）。 */
+    pickedPaths?: string[]
+  }>(),
+  {
+    generating: false,
+    selectable: false,
+    pickedPaths: () => [],
+  },
+)
+const emit = defineEmits<{
+  (e: 'retry', id: string): void
+  (e: 'clear'): void
+  (e: 'cancel'): void
+  (e: 'toggle-pick', payload: { path: string; url: string }): void
+}>()
+
+function pickedIndex(path: string): number {
+  return props.pickedPaths.indexOf(path)
+}
+function onImageClick(t: EcomGenTask): void {
+  if (props.selectable) emit('toggle-pick', { path: t.resultPath, url: t.url })
+  else preview(t)
+}
 
 const api = () => (window as any).api
 

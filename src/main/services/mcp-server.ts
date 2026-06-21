@@ -1,7 +1,40 @@
 import { getDatabase } from '../database'
 import { v4 as uuid } from 'uuid'
-import { spawn, execFileSync, ChildProcess } from 'child_process'
+import { spawn, execFile, ChildProcess } from 'child_process'
 import { app, BrowserWindow } from 'electron'
+
+// 对话「中止」专用错误：abort 时立即解除在途 RPC / 握手等待的 await，
+// 由 chat-engine 捕获后归类（最终走 AbortedError 分支），文案不进对话上下文。
+export class McpAbortedError extends Error {
+  constructor() {
+    super('MCP 调用已中止')
+    this.name = 'McpAbortedError'
+  }
+}
+
+// 把任意 promise 与「中止信号」赛跑：signal abort 时立即 reject（不影响 promise 本体继续，
+// 共享客户端/握手不会因单个会话中止而被误杀）。无 signal 时原样返回。
+function raceAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise
+  if (signal.aborted) return Promise.reject(new McpAbortedError())
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => {
+      signal.removeEventListener('abort', onAbort)
+      reject(new McpAbortedError())
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    promise.then(
+      (v) => {
+        signal.removeEventListener('abort', onAbort)
+        resolve(v)
+      },
+      (e) => {
+        signal.removeEventListener('abort', onAbort)
+        reject(e)
+      }
+    )
+  })
+}
 
 // ============================================================================
 // MCP（Model Context Protocol）stdio 客户端
@@ -22,6 +55,10 @@ export interface McpServer {
   env: Record<string, string>
   enabled: boolean
   tools: any[]
+  // true：该服务器的工具直接以原名注入 LLM tools 列表（高频工具适用）
+  // false（默认）：工具不直接暴露给模型，必须通过 mcp_list_servers / mcp_describe_tools / mcp_call
+  // 三元元工具按需发现与调用，节省 prompt token、避免模型被海量工具淹没
+  always_load: boolean
   created_at: string
 }
 
@@ -54,7 +91,8 @@ function parseMcpServer(row: any): McpServer {
     args: safeJsonParse<string[]>(row.args, []),
     env: safeJsonParse<Record<string, string>>(row.env, {}),
     tools: safeJsonParse<any[]>(row.tools, []),
-    enabled: Boolean(row.enabled)
+    enabled: Boolean(row.enabled),
+    always_load: Boolean(row.always_load)
   }
 }
 
@@ -209,21 +247,49 @@ class McpClient {
     }
   }
 
-  request(method: string, params?: any, timeoutMs = RPC_TIMEOUT_MS): Promise<any> {
+  request(method: string, params?: any, timeoutMs = RPC_TIMEOUT_MS, signal?: AbortSignal): Promise<any> {
     return new Promise((resolve, reject) => {
       if (this.exited) {
         reject(new Error('MCP 服务器未在运行'))
         return
       }
+      if (signal?.aborted) {
+        reject(new McpAbortedError())
+        return
+      }
       const id = this.nextId++
+      // 中止 / 超时 / 回包 三条路径共用的清理：摘掉 abort 监听 + 删 pending，避免泄漏与重复 settle。
+      const detach = (): void => {
+        if (signal) signal.removeEventListener('abort', onAbort)
+      }
+      const onAbort = (): void => {
+        this.pending.delete(id)
+        clearTimeout(timer)
+        detach()
+        reject(new McpAbortedError())
+      }
       const timer = setTimeout(() => {
         this.pending.delete(id)
+        detach()
         reject(new Error(`MCP 请求超时 (${method}, ${timeoutMs}ms)`))
       }, timeoutMs)
-      this.pending.set(id, { resolve, reject, timer })
+      // 包一层使「服务器回包 / failPending」也摘掉 abort 监听（dispatch/failPending 会 clearTimeout）
+      this.pending.set(id, {
+        resolve: (v: any) => {
+          detach()
+          resolve(v)
+        },
+        reject: (e: Error) => {
+          detach()
+          reject(e)
+        },
+        timer
+      })
+      if (signal) signal.addEventListener('abort', onAbort, { once: true })
       if (!this.send({ jsonrpc: '2.0', id, method, params: params ?? {} })) {
         clearTimeout(timer)
         this.pending.delete(id)
+        detach()
         reject(new Error('MCP 服务器 stdin 不可写（进程可能已退出）'))
       }
     })
@@ -261,9 +327,15 @@ class McpClient {
     return all
   }
 
-  async callTool(name: string, args: Record<string, any>, timeoutMs = RPC_TIMEOUT_MS): Promise<any> {
-    await this.ready
-    return this.request('tools/call', { name, arguments: args ?? {} }, timeoutMs)
+  async callTool(
+    name: string,
+    args: Record<string, any>,
+    timeoutMs = RPC_TIMEOUT_MS,
+    signal?: AbortSignal
+  ): Promise<any> {
+    // 握手等待也要可被中止：否则首次冷启动的 60s 握手期间点「中止」仍会干等。
+    await raceAbort(this.ready, signal)
+    return this.request('tools/call', { name, arguments: args ?? {} }, timeoutMs, signal)
   }
 
   kill(): void {
@@ -272,14 +344,15 @@ class McpClient {
     const pid = this.proc.pid
     if (this.exited || !pid) return
     if (process.platform === 'win32') {
-      // shell 启动时 pid 是 cmd.exe，必须 /T 连同 npx→node 子进程整树杀掉，防孤儿进程残留
-      try {
-        execFileSync('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore', timeout: 5000 })
-      } catch {
-        try {
-          this.proc.kill()
-        } catch {}
-      }
+      // shell 启动时 pid 是 cmd.exe，必须 /T 连同 npx→node 子进程整树杀掉，防孤儿进程残留。
+      // 用异步 execFile（不是 execFileSync）：绝不在 main 线程同步等待，避免 taskkill 阻塞事件循环冻结 UI。
+      execFile('taskkill', ['/pid', String(pid), '/T', '/F'], { timeout: 5000 }, (err) => {
+        if (err) {
+          try {
+            this.proc.kill()
+          } catch {}
+        }
+      })
     } else {
       try {
         this.proc.kill('SIGTERM')
@@ -333,15 +406,16 @@ async function refreshToolsQuietly(id: string): Promise<void> {
   }
 }
 
-/** 取就绪的客户端：已运行直接复用，否则启动 + 握手（并发调用合流，只起一个进程） */
-async function ensureClient(id: string): Promise<McpClient> {
+/** 取就绪的客户端：已运行直接复用，否则启动 + 握手（并发调用合流，只起一个进程）。
+ *  传入 signal 时，握手等待可被「中止」立即解除（但不杀共享进程，握手在后台继续，下次复用）。 */
+async function ensureClient(id: string, signal?: AbortSignal): Promise<McpClient> {
   const existing = clients.get(id)
   if (existing && !existing.exited) {
-    await existing.ready
+    await raceAbort(existing.ready, signal)
     return existing
   }
   const inflight = startingPromises.get(id)
-  if (inflight) return inflight
+  if (inflight) return raceAbort(inflight, signal)
 
   const p = (async () => {
     const server = getMcpServer(id)
@@ -362,12 +436,13 @@ async function ensureClient(id: string): Promise<McpClient> {
       throw new Error(detail)
     }
   })()
+  // 注册表清理绑定到 p 的真实生命周期（而非 await）：即便调用方因中止提前返回，
+  // 仍在握手的 p 继续占用 startingPromises，保证并发合流不重复 spawn。
   startingPromises.set(id, p)
-  try {
-    return await p
-  } finally {
-    startingPromises.delete(id)
-  }
+  p.then(() => {}, () => {}).finally(() => {
+    if (startingPromises.get(id) === p) startingPromises.delete(id)
+  })
+  return raceAbort(p, signal)
 }
 
 // ---- CRUD ----
@@ -390,13 +465,22 @@ export function createMcpServer(data: {
   command: string
   args?: string[]
   env?: Record<string, string>
+  always_load?: boolean
 }): McpServer {
   const db = getDatabase()
   const id = uuid()
   const now = new Date().toISOString()
   db.prepare(
-    'INSERT INTO mcp_servers (id, name, command, args, env, created_at) VALUES (?, ?, ?, ?, ?, ?)'
-  ).run(id, data.name, data.command, JSON.stringify(data.args || []), JSON.stringify(data.env || {}), now)
+    'INSERT INTO mcp_servers (id, name, command, args, env, always_load, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+  ).run(
+    id,
+    data.name,
+    data.command,
+    JSON.stringify(data.args || []),
+    JSON.stringify(data.env || {}),
+    data.always_load ? 1 : 0,
+    now
+  )
   return getMcpServer(id)!
 }
 
@@ -409,6 +493,7 @@ export function updateMcpServer(
     env: Record<string, string>
     enabled: boolean
     tools: any[]
+    always_load: boolean
   }>
 ): McpServer | null {
   const db = getDatabase()
@@ -416,7 +501,7 @@ export function updateMcpServer(
   if (!existing) return null
 
   db.prepare(
-    'UPDATE mcp_servers SET name=?, command=?, args=?, env=?, enabled=?, tools=? WHERE id=?'
+    'UPDATE mcp_servers SET name=?, command=?, args=?, env=?, enabled=?, tools=?, always_load=? WHERE id=?'
   ).run(
     data.name ?? existing.name,
     data.command ?? existing.command,
@@ -424,6 +509,7 @@ export function updateMcpServer(
     JSON.stringify(data.env ?? existing.env),
     data.enabled !== undefined ? (data.enabled ? 1 : 0) : existing.enabled ? 1 : 0,
     JSON.stringify(data.tools ?? existing.tools),
+    data.always_load !== undefined ? (data.always_load ? 1 : 0) : existing.always_load ? 1 : 0,
     id
   )
   const updated = getMcpServer(id)
@@ -511,6 +597,8 @@ export async function refreshMcpTools(id: string): Promise<McpServer> {
   const client = await ensureClient(id)
   const tools = await client.listTools()
   persistTools(id, tools)
+  // 广播 toolsUpdated 让渲染层即时刷新缓存(与 refreshToolsQuietly 行为对齐;手动按钮多收一次推送是幂等无害)
+  emitStatus(id, 'running', undefined, true)
   return getMcpServer(id)!
 }
 
@@ -518,10 +606,41 @@ export async function callMcpTool(
   serverId: string,
   toolName: string,
   args: Record<string, any>,
-  timeoutMs = RPC_TIMEOUT_MS
+  timeoutMs = RPC_TIMEOUT_MS,
+  signal?: AbortSignal
 ): Promise<any> {
-  const client = await ensureClient(serverId)
-  return client.callTool(toolName, args, timeoutMs)
+  const client = await ensureClient(serverId, signal)
+  return client.callTool(toolName, args, timeoutMs, signal)
+}
+
+/**
+ * 后台预热所有 enabled 的 MCP 服务（app 启动 / 登录就绪后调用）。
+ * 不阻塞、不抛错：失败仅落 error 状态（用户在 MCP 页可见），避免首次对话调用工具时
+ * 才现拉起进程 + 60s 握手造成的「长时间无响应」。已在跑的服务由 ensureClient 直接复用。
+ */
+export function warmupEnabledMcpServers(): void {
+  let servers: McpServer[]
+  try {
+    servers = listMcpServers().filter((s) => s.enabled)
+  } catch (e) {
+    console.warn('[mcp] 预热读取服务列表失败:', e)
+    return
+  }
+  for (const server of servers) {
+    // 启动成功后顺手刷一次工具表：避免首次调用走「列表为空 → 临时拉表 → 再 RPC」的串行等待
+    // 首刷失败延迟 500ms 重试一次，吸收握手刚就绪后 tools/list 偶发瞬态失败；二次再失败才 warn
+    ensureClient(server.id)
+      .then(() => refreshMcpTools(server.id).catch(() =>
+        new Promise<void>((r) => setTimeout(r, 500)).then(() =>
+          refreshMcpTools(server.id).catch((e) => {
+            console.warn(`[mcp] 预热刷新工具失败 (${server.name}):`, e?.message || e)
+          })
+        )
+      ))
+      .catch((e) => {
+        console.warn(`[mcp] 预热启动失败 (${server.name}):`, e?.message || e)
+      })
+  }
 }
 
 /**

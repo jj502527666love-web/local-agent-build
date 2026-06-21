@@ -26,6 +26,8 @@ export interface Bot {
   tool_approval: ToolApproval
   /** 是否启用 AI 生图能力（image_gen tool）。0=关、1=开。默认关，避免对无图需求的智能体浪费 prompt 与 LLM 误调。 */
   enable_image_gen: number
+  /** 是否启用 AI PPT 能力（deck_* 工具集）。0=关、1=开。默认关。 */
+  enable_deck: number
   /** 单轮对话最大工具调用步数(0=用默认 40)。 */
   max_tool_rounds: number
   /** 2:3 形象图本地绝对路径（空=用首字母占位） */

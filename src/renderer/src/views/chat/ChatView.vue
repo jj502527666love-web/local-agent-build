@@ -253,11 +253,16 @@
                   <svg class="w-3 h-3 ml-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m19.5 8.25-7.5 7.5-7.5-7.5" /></svg>
                 </button>
                 <div v-if="toolbarDropdown === 'mcp'" class="toolbar-dropdown">
-                  <label v-for="m in mcpStore.servers" :key="m.id" class="toolbar-dropdown-item">
-                    <input type="checkbox" :value="m.id" v-model="tempMcpIds" class="rounded w-3 h-3" />
+                  <label
+                    v-for="m in mcpStore.servers"
+                    :key="m.id"
+                    :class="['toolbar-dropdown-item', { disabled: !m.enabled }]"
+                  >
+                    <input type="checkbox" :value="m.id" v-model="tempMcpIds" :disabled="!m.enabled" class="rounded w-3 h-3" />
                     <span class="truncate">{{ m.name }}</span>
+                    <span v-if="!m.enabled" class="text-[10px] text-text-disabled ml-auto">（未启用）</span>
                   </label>
-                  <div v-if="!mcpStore.servers.length" class="text-[10px] text-text-disabled px-3 py-2">无可用MCP</div>
+                  <div v-if="!mcpStore.servers.length" class="text-[10px] text-text-disabled px-3 py-2">暂无 MCP 服务</div>
                 </div>
               </div>
             </div>
@@ -542,6 +547,8 @@ const userSkills = computed(() =>
   skillStore.skills.filter((s) => !CORE_TOOL_NAMES.includes(s.function_def?.name))
 )
 const mcpStore = useMcpStore()
+// MCP 弹层只展示「已启用」的服务器，避免误把 disabled 项一并选中
+const enabledMcpServers = computed(() => mcpStore.servers.filter((s) => s.enabled))
 const promptSkillStore = usePromptSkillStore()
 const presetStore = usePromptPresetStore()
 
@@ -607,7 +614,8 @@ interface FileReadPreview {
   path: string
   outsideWorkspace: boolean
 }
-const pendingApproval = ref<{ request_id: string; conversation_id: string; tool: string; args: any; preview?: FileWritePreview | FileReadPreview } | null>(null)
+// 审批卡改由 store 级常驻状态按当前会话派生：切走/回来不丢、跨会话不互相覆盖（见 chat store）。
+const pendingApproval = computed(() => chatStore.getPendingApproval(chatStore.currentConversationId))
 const formattedApprovalArgs = computed(() => {
   const args = pendingApproval.value?.args
   if (args == null) return ''
@@ -672,8 +680,8 @@ const approvalDiffSummary = computed(() => {
 async function respondApproval(approved: boolean) {
   const ap = pendingApproval.value
   if (!ap) return
-  pendingApproval.value = null
-  await window.api.chat.invoke('respondToolApproval', ap.request_id, approved)
+  // store 内乐观清掉本地卡片后再回传主进程（UI 立即恢复）
+  await chatStore.respondApproval(ap.request_id, approved)
 }
 
 // 对话内交互卡片（ask_user / 生图参数卡）用户选择回传 → 主进程 resolve 挂起的工具执行
@@ -894,7 +902,37 @@ function saveDraftFor(convId: string) {
     tempPromptSkillDirs: [...tempPromptSkillDirs.value],
   })
 }
+// 把「按 bot 默认 ∩ enabled 预填到 tempXxx」抽成局部辅助函数，loadDraftFor 与 watch 兜底复用。
+// 仅在对应 tempXxx 当前为空时才填，避免覆盖用户「本轮明确不用」的清空意图。
+// 返回是否产生过预填，调用方据此决定是否 saveDraftFor。
+function prefillToolsFromBot(): boolean {
+  if (!currentBot.value) return false
+  let changed = false
+  if (tempMcpIds.value.length === 0) {
+    const enabledIds = new Set(enabledMcpServers.value.map((s) => s.id))
+    const botMcpIds = Array.isArray(currentBot.value.mcp_ids) ? currentBot.value.mcp_ids : []
+    const prefilled = botMcpIds.filter((id: string) => enabledIds.has(id))
+    if (prefilled.length) { tempMcpIds.value = prefilled; changed = true }
+  }
+  if (tempKbIds.value.length === 0) {
+    const botKbIds = Array.isArray(currentBot.value.kb_category_ids) ? currentBot.value.kb_category_ids : []
+    if (botKbIds.length) { tempKbIds.value = [...botKbIds]; changed = true }
+  }
+  if (tempSkillIds.value.length === 0) {
+    const botSkillIds = Array.isArray(currentBot.value.skill_ids) ? currentBot.value.skill_ids : []
+    if (botSkillIds.length) { tempSkillIds.value = [...botSkillIds]; changed = true }
+  }
+  if (tempPromptSkillDirs.value.length === 0) {
+    const botDirs = Array.isArray(currentBot.value.prompt_skill_dirs) ? currentBot.value.prompt_skill_dirs : []
+    if (botDirs.length) { tempPromptSkillDirs.value = [...botDirs]; changed = true }
+  }
+  return changed
+}
+
 function loadDraftFor(convId: string) {
+  // 首次为该会话加载草稿（drafts 里尚无条目）时，按 bot 默认 ∩ enabled 预填四类 temp；
+  // 若 drafts 已存在则严格按 draft 还原，避免覆盖用户显式清空后的「本轮不用」语义。
+  const hadDraft = !!chatStore.drafts[convId]
   const d = chatStore.getDraft(convId)
   inputText.value = d.inputText
   pendingAttachments.value = JSON.parse(JSON.stringify(d.attachments))
@@ -902,6 +940,7 @@ function loadDraftFor(convId: string) {
   tempSkillIds.value = [...d.tempSkillIds]
   tempMcpIds.value = [...d.tempMcpIds]
   tempPromptSkillDirs.value = [...d.tempPromptSkillDirs]
+  if (!hadDraft && prefillToolsFromBot()) saveDraftFor(convId)
 }
 function clearLocalDraft() {
   inputText.value = ''
@@ -916,6 +955,24 @@ watch(() => chatStore.currentConversationId, (newId, oldId) => {
   if (newId) loadDraftFor(newId)
   else clearLocalDraft()
 })
+
+// 兜底：loadDraftFor 首次执行时若 bots 异步未就绪（currentBot 还是 undefined），
+// 预填路径会被静默跳过；此后 hadDraft 永远为 true 导致预填永久失效。
+// 这里同时盯 currentBot 与 currentConversationId，待 bot 就绪后按需补做一次预填。
+watch(
+  () => [chatStore.currentConversationId, currentBot.value?.id] as const,
+  ([convId, botId]) => {
+    if (!convId || !botId) return
+    // 仅在四类 temp 全部为空（很可能是首次预填因 bot 未就绪被跳过）时尝试补预填
+    const allEmpty =
+      tempMcpIds.value.length === 0 &&
+      tempKbIds.value.length === 0 &&
+      tempSkillIds.value.length === 0 &&
+      tempPromptSkillDirs.value.length === 0
+    if (!allEmpty) return
+    if (prefillToolsFromBot()) saveDraftFor(convId)
+  }
+)
 
 /**
  * 「对话默认模型」解析：
@@ -1410,14 +1467,14 @@ async function send() {
   inputText.value = ''
   const attachments = pendingAttachments.value.length ? JSON.parse(JSON.stringify(pendingAttachments.value)) : undefined
   pendingAttachments.value = []
-  const overrides = (tempKbIds.value.length || tempSkillIds.value.length || tempMcpIds.value.length || tempPromptSkillDirs.value.length)
-    ? {
-        kbCategoryIds: tempKbIds.value.length ? [...tempKbIds.value] : undefined,
-        skillIds: tempSkillIds.value.length ? [...tempSkillIds.value] : undefined,
-        mcpIds: tempMcpIds.value.length ? [...tempMcpIds.value] : undefined,
-        promptSkillDirs: tempPromptSkillDirs.value.length ? [...tempPromptSkillDirs.value] : undefined
-      }
-    : undefined
+  // 四类 override 全部无条件下发：空数组同样表示「本轮明确不用」，与 MCP 对齐，
+  // 避免用户清空知识库/小工具/Skills 后被静默回填 bot 默认
+  const overrides = {
+    kbCategoryIds: [...tempKbIds.value],
+    skillIds: [...tempSkillIds.value],
+    mcpIds: [...tempMcpIds.value],
+    promptSkillDirs: [...tempPromptSkillDirs.value]
+  }
   await chatStore.sendMessage(text, attachments, overrides)
 }
 
@@ -1429,9 +1486,8 @@ onMounted(async () => {
   // 监听 image_gen fire-and-forget 完成后追加的图片消息（异步生图工作流）
   chatStore.listenAppendMessage()
   chatStore.listenUpdateMessage()
-  window.api.chat.onToolApproval((data: any) => {
-    pendingApproval.value = data
-  })
+  // app 级常驻审批监听（幂等，永不退订）：审批卡按会话路由、切走/回来不丢
+  chatStore.initApprovalListener()
   await Promise.all([
     botStore.fetchBots(),
     kbStore.fetchCategories(),
@@ -1470,7 +1526,7 @@ onUnmounted(() => {
   chatStore.stopListenTitleUpdates()
   chatStore.stopListenAppendMessage()
   chatStore.stopListenUpdateMessage()
-  window.api.chat.offToolApproval()
+  // 审批监听是 app 级常驻、按会话路由，不在此退订（退订会导致切走对话页时审批卡丢失，正是本次修复点）
 })
 </script>
 
@@ -1486,6 +1542,14 @@ onUnmounted(() => {
 }
 .toolbar-dropdown-item {
   @apply flex items-center gap-2 px-3 py-1.5 text-xs cursor-pointer text-text-secondary hover:bg-surface-2 hover:text-text-primary transition-colors;
+}
+/* 未启用的 MCP 项灰显 + 禁止点击（仍保留在列表里供用户感知，避免「列表里看不到」的困惑） */
+.toolbar-dropdown-item.disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.toolbar-dropdown-item.disabled:hover {
+  @apply bg-transparent text-text-secondary;
 }
 </style>
 

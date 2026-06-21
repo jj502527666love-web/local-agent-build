@@ -9,7 +9,7 @@ import { registerIpcHandlers } from './ipc'
 import { backfillCreationGallery } from './services/gallery'
 import { cleanupStaleGenerations } from './services/image-generation'
 import { getThumbnailBytes, getThumbnailPlaceholderBytes, queueThumbnail } from './services/thumbnail'
-import { stopAllMcpServers } from './services/mcp-server'
+import { stopAllMcpServers, warmupEnabledMcpServers } from './services/mcp-server'
 import { getDataDir } from './services/data-path'
 import { runStartupTasks as runBackupStartupTasks, recoverInterruptedRestore } from './services/backup'
 import { getRuntimeConfig } from './services/runtime-config'
@@ -370,6 +370,12 @@ if (gotSingleInstanceLock) {
       // Backup startup tasks: 清理上次崩溃残骸 + 异步触发自动备份（如配置）
       runBackupStartupTasks().catch((e) => console.error('Backup startup error:', e))
       startAutoDownloadScheduler()
+
+      // 后台预热 enabled 的 MCP 服务：避免首次对话调用工具时才现拉起进程 + 60s 握手造成长时间无响应。
+      // 延后到 UI 起来后再拉，避免与启动期关键 IO 抢资源；fire-and-forget，失败只记状态（MCP 页可见）。
+      setTimeout(() => {
+        try { warmupEnabledMcpServers() } catch (e) { console.error('[mcp] warmup failed:', e) }
+      }, 1500)
     })
   }
 

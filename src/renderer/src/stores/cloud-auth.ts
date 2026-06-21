@@ -50,6 +50,11 @@ export interface CloudPermissions {
   // 精细抠图（抠抠图 koukoutu）：是否允许（关闭后桌面端「精细抠图」入口隐藏）+ 月配额（张，0=不限）
   allow_fine_matting: boolean
   fine_matting_quota_per_month: number
+  // 店铺商品图：开启后桌面端侧栏「店铺商品图」入口可见。默认 false（默认拒绝），
+  // 云控端在「桌面端设置 → 店铺商品图」按用户/分组放开；生图仍走现有云端积分计费，不额外计费。
+  allow_ewei_shop: boolean
+  // 对接的商城/平台对终端用户显示的名称（隐藏底层 ewei 品牌，云控端可自定义）；缺省「商城」。
+  ewei_shop_mall_name: string
   [key: string]: any
 }
 
@@ -151,6 +156,11 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
     image_matting_quota_per_month: 100,
     allow_fine_matting: true,
     fine_matting_quota_per_month: 100,
+    // 默认 false（默认拒绝）：仅当云控端被授权管理端开放该功能、且用户被授权时，云控端才下发 true。
+    // 未更新 / 未授权的云控端不返回此键 → 保持 false → 桌面端不显示「店铺商品图」入口。
+    allow_ewei_shop: false,
+    // 商城显示名缺省值；云控端下发后由 fetchCloudData / refreshBalances 的 policies 合并覆盖。
+    ewei_shop_mall_name: '商城',
   })
   const balances = ref<{ type: string; amount: number }[]>([])
   const quotas = ref<CloudQuotas | null>(null)
@@ -253,6 +263,8 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
       image_matting_quota_per_month: 100,
       allow_fine_matting: true,
       fine_matting_quota_per_month: 100,
+      allow_ewei_shop: false,
+      ewei_shop_mall_name: '商城',
     }
     window.api?.cloud?.setPermissions({
       allow_custom_provider: false,

@@ -3,7 +3,7 @@ import { v4 as uuid } from 'uuid'
 import { getModelProvider, type ModelProvider } from './model-provider'
 import { createImageSession } from './image-session'
 import { getDataDir } from './data-path'
-import { getCloudToken, getCloudApiBase, getCloudGatewayUrl, resolveCloudModelId, refreshCloudToken, notifyCloudAuthExpired, wasLastCloudTokenRefreshAuthFailure, getCloudModels } from './cloud-token'
+import { getCloudToken, getCloudGatewayUrl, resolveCloudModelId, refreshCloudToken, notifyCloudAuthExpired, wasLastCloudTokenRefreshAuthFailure, getCloudModels } from './cloud-token'
 import { join } from 'path'
 import { mkdirSync, writeFileSync, unlinkSync, existsSync } from 'fs'
 import { BrowserWindow, nativeImage } from 'electron'
@@ -20,6 +20,7 @@ import {
   attachSnapshotToError,
   extractRawRequest
 } from './request-snapshot'
+import { uploadImageBytesToCloud } from './cloud-image-asset'
 
 // ---- Global concurrency limit (Bug #3) ----
 // 所有入口（ImageGenView / BatchGenView / ImageEditView / Canvas / Chat 工具）共享此上限，
@@ -335,6 +336,13 @@ export interface GenerateImageOptions {
    */
   canvasProjectId?: string
   canvasNodeId?: string
+  /**
+   * 外部中止信号（向后兼容，可选）。传入后会与每个生成项内部的 AbortController 联动：
+   * signal.abort() 触发后沿 fetch / 轮询链路尽快终止，对应项标记 status='canceled'。
+   * 典型用途：deck-generator 的 resolveFigure 持有整轮 PPT 生成的 signal，用户中止后
+   * 不必等云端把整张图轮询跑完（30~90s 空跑）。不传时行为与原先完全一致。
+   */
+  signal?: AbortSignal
 }
 
 /**
@@ -984,19 +992,24 @@ async function callCloudImageAPI(
   }
 
   if (hasRefImages) {
-    body.images = await Promise.all(refImages.map(async (img) => {
-      // 不再 stripBase64：理由同 multipart 路径（裸 JPEG 被苍 api / sub2api 拒收）。
-      // 体积兜底由 shrinkRefImageIfTooLarge 接管，仅在 > 2MB 时用 nativeImage 重编码。
-      const { buffer } = await prepareRefImageForUpload(img, 'image/jpeg')
-      return buffer.toString('base64')
+    // 云端生图参考图改为先上传云控端换 https URL，以 image_urls 提交，不再内联 base64；
+    // 已是 http(s) URL 的直接透传（不重复上传）。云控端网关按 image_urls 读回字节再转发上游。
+    body.image_urls = await Promise.all(refImages.map(async (img) => {
+      if (/^https?:\/\//i.test(img.trim())) return img.trim()
+      const { buffer, mimeType } = await prepareRefImageForUpload(img, 'image/jpeg')
+      return await uploadRefImageToCloud(buffer, mimeType)
     }))
   }
 
   if (mask) {
-    // mask 直接透传（PNG，必须保留 alpha 通道）；不重编码，不 stripBase64。
-    const maskMatch = mask.match(/^data:([^;]+);base64,/)
-    const maskRaw = maskMatch ? mask.slice(maskMatch[0].length) : mask
-    body.mask = maskRaw
+    // mask 同样换 URL：PNG 必须保留 alpha，故用 readRefImageBytes 取原始字节（不经 shrink 重编码），
+    // 上传换 URL 后以 mask_url 提交。
+    if (/^https?:\/\//i.test(mask.trim())) {
+      body.mask_url = mask.trim()
+    } else {
+      const { buffer, mimeType } = await readRefImageBytes(mask, 'image/png')
+      body.mask_url = await uploadRefImageToCloud(buffer, mimeType)
+    }
   }
 
   const submitUrl = `${gatewayUrl}${endpoint}`
@@ -1216,41 +1229,8 @@ async function prepareRefImageForUpload(input: string, fallbackMime: string): Pr
  * 6h 过期由 video:purge-reference-assets 自动清理。依赖桌面端整体已登录云控端。
  */
 async function uploadRefImageToCloud(buffer: Buffer, mimeType: string): Promise<string> {
-  const token = getCloudToken()
-  if (!token) {
-    throw new Error('多米参考图需先上传云端换取 URL，但云端登录已失效，请重新登录后重试')
-  }
-
-  const ext = mimeType.includes('jpeg') || mimeType.includes('jpg')
-    ? 'jpg'
-    : mimeType.includes('webp')
-      ? 'webp'
-      : mimeType.includes('gif')
-        ? 'gif'
-        : 'png'
-
-  const form = new FormData()
-  // Buffer 作为 Uint8Array 子类运行时可作 BlobPart，编译期类型不互通故 as unknown 断言（同 multipart 路径）。
-  const blob = new Blob([buffer as unknown as BlobPart], { type: mimeType })
-  form.append('file', blob, `ref.${ext}`)
-
-  const uploadUrl = `${getCloudApiBase()}/client/images/reference-assets`
-  const res = await fetchWithTimeout(uploadUrl, {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${token}` },
-    body: form
-  }, 60_000)
-
-  if (!res.ok) {
-    throw new Error(`多米参考图上传失败 HTTP ${res.status}: ${await readResponseError(res)}`)
-  }
-
-  const data: any = await res.json().catch(() => null)
-  const url = data?.url || data?.asset?.storage_url
-  if (!url || typeof url !== 'string') {
-    throw new Error('多米参考图上传响应缺少 url 字段')
-  }
-  return url
+  // 统一走共享上传模块（与视觉发图共用同一端点 /client/images/reference-assets）。
+  return uploadImageBytesToCloud(buffer, mimeType)
 }
 
 /**
@@ -1623,6 +1603,15 @@ export async function generateImages(
       // 注册中止句柄：cancelGeneration(genId) 会 abort 此 controller，沿 fetch / 轮询链路终止
       const abortController = new AbortController()
       inflightAbortControllers.set(genId, abortController)
+      // 外部 signal（options.signal）与本项内部 controller 联动：任一中止都 abort 同一个
+      // controller，使下游 callImageAPI → pollAsyncTask → interruptibleSleep/fetchWithTimeout
+      // 全链路保持不变即可尽快终止。已 aborted 则立即透传，避免下面再发起请求。
+      const externalSignal = options.signal
+      const onExternalAbort = () => abortController.abort()
+      if (externalSignal) {
+        if (externalSignal.aborted) abortController.abort()
+        else externalSignal.addEventListener('abort', onExternalAbort, { once: true })
+      }
       try {
         updateGenerationStatus(genId, 'generating', {})
         emitProgress({
@@ -1737,6 +1726,8 @@ export async function generateImages(
         })
       } finally {
         inflightAbortControllers.delete(genId)
+        // 正常结束时摘除外部 signal 监听，避免长生命周期 signal 累积监听器泄漏
+        if (externalSignal) externalSignal.removeEventListener('abort', onExternalAbort)
       }
     }
 

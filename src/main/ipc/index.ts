@@ -8,10 +8,11 @@ import * as botService from '../services/bot'
 import * as conversationService from '../services/conversation'
 import * as skillService from '../services/skill'
 import * as mcpServerService from '../services/mcp-server'
+import { listMarket, searchMarket, getMarketDetail, installFromMarket } from '../services/mcp-market'
 import * as settingsService from '../services/settings'
 import * as dataPathService from '../services/data-path'
 import * as usageStatsService from '../services/usage-stats'
-import { sendMessage, cancelChat, isChatActive, respondToolApproval, regenerateLastResponse, editAndResend, continueLastResponse } from '../services/chat-engine'
+import { sendMessage, cancelChat, isChatActive, respondToolApproval, listPendingApprovals, regenerateLastResponse, editAndResend, continueLastResponse } from '../services/chat-engine'
 import { respondUserChoice } from '../services/user-choice'
 import { callLLM } from '../services/llm'
 import { skillPresets } from '../services/skill-presets'
@@ -35,6 +36,8 @@ import * as canvasService from '../services/canvas'
 import * as galleryService from '../services/gallery'
 import * as mattingService from '../services/matting'
 import * as mattingProviderService from '../services/matting-providers'
+import * as eweiConnectorService from '../services/ewei-connectors'
+import * as eweiClient from '../services/ewei-client'
 import * as cloudVideoService from '../services/cloud-video'
 import * as videoGenerationService from '../services/video-generation'
 import { fetchQuota as fetchMattingQuotaFromCloud } from '../services/cloud-matting'
@@ -59,6 +62,7 @@ import * as syncService from '../services/sync'
 import * as deviceSettingsService from '../services/device-settings'
 import { uploadInspiration as uploadInspirationToCloud } from '../services/cloud-inspiration'
 import { runInEpoch } from '../services/account-epoch'
+import { registerDeckIpc } from '../services/deck/deck-ipc'
 
 // 用账号代次（epoch）包裹每个 IPC handler 的执行：handler 及其 await / fire-and-forget 子任务
 // 都运行在「当前账号代次」的 AsyncLocalStorage 上下文中。账号热切换后，旧 handler 触发的残留
@@ -79,6 +83,8 @@ export function registerIpcHandlers(): void {
   const ipcMain = wrapWithEpoch(electronIpcMain)
   // 同步模块初始化：装好进度广播器（schema/触发器在开库时已安装）。
   syncService.initSyncModule()
+  // === AI Deck(设计/PPT/视频) ===
+  registerDeckIpc(ipcMain)
   // === Model Providers ===
   ipcMain.handle('model:list', () => modelProviderService.listModelProviders())
   ipcMain.handle('model:get', (_, id: string) => modelProviderService.getModelProvider(id))
@@ -202,6 +208,10 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('chat:isActive', (_, conversationId: string) => isChatActive(conversationId))
   ipcMain.handle('chat:respondToolApproval', (_, requestId: string, approved: boolean) =>
     respondToolApproval(requestId, approved)
+  )
+  // 重新进入会话时补投仍挂起的审批（卡片切走期间可能丢失，靠此恢复）
+  ipcMain.handle('chat:listPendingApprovals', (_, conversationId: string) =>
+    listPendingApprovals(conversationId)
   )
   // 对话内交互卡片（ask_user / 生图参数确认卡）用户选择回传 → resolve 挂起的工具执行
   ipcMain.handle('chat:respondUserChoice', (_, requestId: string, selection: any) =>
@@ -391,6 +401,16 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('mcp:stop', (_, id: string) => mcpServerService.stopMcpServer(id))
   ipcMain.handle('mcp:status', (_, id: string) => mcpServerService.getMcpServerRuntime(id))
   ipcMain.handle('mcp:refreshTools', (_, id: string) => mcpServerService.refreshMcpTools(id))
+
+  // MCP 市场（第三方源拉取 + 安装到本地 mcp_servers 表）
+  ipcMain.handle('mcpMarket:list', (_, source, page, pageSize) => listMarket(source, page, pageSize))
+  ipcMain.handle('mcpMarket:search', (_, source, keyword, page, pageSize) =>
+    searchMarket(source, keyword, page, pageSize)
+  )
+  ipcMain.handle('mcpMarket:detail', (_, source, id: string) => getMarketDetail(source, id))
+  ipcMain.handle('mcpMarket:install', (_, detail, envOverrides) =>
+    installFromMarket(detail, envOverrides)
+  )
 
   // === Prompt Skills (SKILL.md) ===
   ipcMain.handle('promptSkill:list', () => promptSkillService.listPromptSkills())
@@ -1398,4 +1418,49 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('fineMatting:deleteTask', (_, id: string) => fineMattingService.deleteTask(id))
   // 拉云控端精细抠图配额 + 三档价 + 阈值。用于桌面端 FineMattingView 顶部 banner + 按尺寸预估
   ipcMain.handle('fineMatting:fetchCloudQuota', () => fetchFineMattingQuotaFromCloud())
+
+  // === ewei 商城连接器（业务端账号绑定 + 门店商品图替换）===
+  // 凭据脱敏一律在本 IPC 层完成：明文密码 / session_id 永不下发 renderer。
+  ipcMain.handle('ewei:listConnectors', () => eweiConnectorService.listConnectors())
+  ipcMain.handle('ewei:getConnector', (_, id: string) => eweiConnectorService.getConnectorSummary(id))
+  ipcMain.handle('ewei:createConnector', (_, data: eweiConnectorService.CreateConnectorInput) =>
+    eweiConnectorService.createConnector(data),
+  )
+  ipcMain.handle('ewei:updateConnector', (_, id: string, data: eweiConnectorService.UpdateConnectorInput) =>
+    eweiConnectorService.updateConnector(id, data),
+  )
+  ipcMain.handle('ewei:deleteConnector', (_, id: string) => {
+    eweiClient.clearSession(id)
+    return eweiConnectorService.deleteConnector(id)
+  })
+  // 登录 / 登出
+  ipcMain.handle('ewei:login', (_, id: string) => eweiClient.login(id))
+  ipcMain.handle('ewei:logout', (_, id: string) => eweiClient.logout(id))
+  // 门店
+  ipcMain.handle('ewei:listShops', (_, id: string, page?: number, pagesize?: number) =>
+    eweiClient.listShops(id, page ?? 1, pagesize ?? 50),
+  )
+  ipcMain.handle('ewei:switchShop', (_, id: string, shopId: number, shopName?: string) =>
+    eweiClient.switchShop(id, shopId, shopName ?? ''),
+  )
+  // 商品
+  ipcMain.handle('ewei:listGoods', (_, id: string, params: eweiClient.GoodsListParams) =>
+    eweiClient.listGoods(id, params || {}),
+  )
+  ipcMain.handle('ewei:goodsDetail', (_, id: string, goodsId: number) =>
+    eweiClient.getGoodsDetail(id, goodsId),
+  )
+  // 替换商品图（生成→上传→回写一体，进度走 'ewei:progress'）
+  ipcMain.handle('ewei:replaceGoodsImage', (_, args: eweiClient.ReplaceGoodsImageArgs) =>
+    eweiClient.replaceGoodsImage(args),
+  )
+  // 替换历史（审计/回滚）
+  ipcMain.handle('ewei:listImageLogs', (_, goodsId: number, limit?: number) =>
+    eweiClient.listImageLogs(goodsId, limit),
+  )
+  // 新增商品（收银台建品 + 多图集/原价补刀），进度走 'ewei:progress'
+  ipcMain.handle('ewei:listGoodsCategories', (_, id: string) => eweiClient.listGoodsCategories(id))
+  ipcMain.handle('ewei:addGoods', (_, id: string, form: eweiClient.AddGoodsForm) =>
+    eweiClient.addGoods(id, form),
+  )
 }

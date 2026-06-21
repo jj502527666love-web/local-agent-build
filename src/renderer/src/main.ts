@@ -46,9 +46,26 @@ const app = createApp(App)
 app.use(router)
 app.use(pinia)
 
+// ewei「店铺商品图」分区记忆：侧栏入口恒指向 /ewei（连接器页），
+// 记录最后停留的 ewei 深层页，从【非 ewei 页面】点回 /ewei 时自动跳回上次的深层页，
+// 避免"进了商品图替换页，切走再回来却落到连接器页"。在 ewei 内部点则照常回连接器根页。
+let lastEweiPath = '/ewei'
+router.afterEach((to) => {
+  if (to.path.startsWith('/ewei')) lastEweiPath = to.fullPath
+})
+
 // Auth guard: redirect to login if not authenticated
-router.beforeEach((to, _from, next) => {
+router.beforeEach((to, from, next) => {
   const token = getCloudToken()
+  if (
+    to.path === '/ewei' &&
+    !from.path.startsWith('/ewei') &&
+    lastEweiPath &&
+    lastEweiPath !== '/ewei'
+  ) {
+    next(lastEweiPath)
+    return
+  }
   if (to.matched.some(r => r.meta.requiresAuth) && !token) {
     next('/login')
   } else if (to.meta.guest && token) {

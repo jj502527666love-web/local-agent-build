@@ -127,6 +127,7 @@ import { useWorkflowEngine } from '@/views/canvas/composables/useWorkflowEngine'
 import LowBalanceModal from '@/components/LowBalanceModal.vue'
 import { useLowBalanceStore } from '@/stores/low-balance'
 import IconChat from '@/components/icons/IconChat.vue'
+// import IconDeck from '@/components/icons/IconDeck.vue' // AI PPT 暂时下线
 import IconBot from '@/components/icons/IconBot.vue'
 import IconKnowledge from '@/components/icons/IconKnowledge.vue'
 import IconModel from '@/components/icons/IconModel.vue'
@@ -153,6 +154,7 @@ import IconVideoGen from '@/components/icons/IconVideoGen.vue'
 import IconVideoCreation from '@/components/icons/IconVideoCreation.vue'
 import IconCanvasSquare from '@/components/icons/IconCanvasSquare.vue'
 import IconImageToolkit from '@/components/icons/IconImageToolkit.vue'
+import IconEweiShop from '@/components/icons/IconEweiShop.vue'
 import AnnouncementBar from '@/components/AnnouncementBar.vue'
 import ExpiryGlobalBanner from '@/components/ExpiryGlobalBanner.vue'
 import SidebarBalanceBadge from '@/components/SidebarBalanceBadge.vue'
@@ -215,6 +217,7 @@ const allNavItems = [
     icon: IconAICreation,
     children: [
       { path: '/image-gen', label: 'AI 生图', icon: IconImageGen },
+      // { path: '/deck', label: 'AI PPT', icon: IconDeck }, // AI PPT 暂时下线
       { path: '/batch-gen', label: '批量生图', icon: IconBatchGen },
       { path: '/image-to-prompt', label: '图片反推', icon: IconImage2Prompt },
       { path: '/ai-matting', label: '快速抠图', icon: IconImageMatting, requireAnyPermission: ['allow_image_matting', 'allow_custom_matting_provider'] },
@@ -224,6 +227,10 @@ const allNavItems = [
     ]
   },
   { path: '/image-toolkit', label: '图像处理', icon: IconImageToolkit },
+  // 店铺商品图：填域名/账号/密码登录 ewei 商城，选门店后用本地图库/AI生图替换商品主图/详情图。
+  // 入口权限门控：allow_ewei_shop 默认 false（默认拒绝）。两级门控——授权管理端开放本云控端该功能
+  // 且用户被授权时，云控端才下发 true；老/未授权云控端不下发 → 隐藏入口。
+  { path: '/ewei', label: '店铺商品图', icon: IconEweiShop, requireAnyPermission: ['allow_ewei_shop'] },
   { path: '/inspiration', label: '灵感广场', icon: IconInspiration },
   { path: '/canvas-square', label: '创意模板', icon: IconCanvasSquare },
   {

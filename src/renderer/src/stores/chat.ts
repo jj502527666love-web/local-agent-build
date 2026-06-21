@@ -3,6 +3,9 @@ import { ref, computed } from 'vue'
 import { translateError } from '@/utils/error-message'
 import { useCloudAuthStore } from '@/stores/cloud-auth'
 
+// 工具执行心跳行前缀（带尾部空格）：onStream 据此原地更新「执行中 Ns」而非追加堆积
+const HEARTBEAT_PREFIX = '  工具执行中… '
+
 // 「继续生成」相关：与主进程 chat-engine 的中断/报错尾标正则保持一致
 const INTERRUPT_TAIL_RES: RegExp[] = [
   /\n*\[已中断\]\s*$/,
@@ -125,6 +128,19 @@ export interface StreamingState {
   collapsed: boolean
 }
 
+/**
+ * 工具审批请求（与主进程 chat:toolApproval / listPendingApprovals 载荷镜像）。
+ * 提升为 store 级、按 conversation_id 索引：app 级常驻监听更新，
+ * 切走会话/页面再回来仍可恢复（配合主进程 listPendingApprovals 补投），不再因 ChatView 卸载丢失。
+ */
+export interface ApprovalRequest {
+  request_id: string
+  conversation_id: string
+  tool: string
+  args: any
+  preview?: any
+}
+
 function emptyChatDraft(): ChatDraft {
   return {
     inputText: '',
@@ -149,8 +165,12 @@ export const useChatStore = defineStore('chat', () => {
   const drafts = ref<Record<string, ChatDraft>>({})
   /** 进行中的流式回复（per-conversation）。切走会话/页面再回来不丢，本轮完成后删除。 */
   const streamingStates = ref<Record<string, StreamingState>>({})
+  /** 待审批的工具调用（per-conversation）。app 级常驻监听更新，切走/回来不丢。 */
+  const pendingApprovals = ref<Record<string, ApprovalRequest>>({})
   /** app 级常驻流式监听只装一次的幂等标志（store 单例，setup 仅执行一次）。 */
   let streamListenerReady = false
+  /** app 级常驻审批监听只装一次的幂等标志。 */
+  let approvalListenerReady = false
 
   const streaming = computed(() =>
     currentConversationId.value ? streamingConvIds.value.has(currentConversationId.value) : false
@@ -240,6 +260,8 @@ export const useChatStore = defineStore('chat', () => {
   async function selectConversation(id: string) {
     currentConversationId.value = id
     messages.value = hydrateReasoning((await window.api.chat.invoke('getMessages', id)) as Message[])
+    // 补投该会话仍挂起的工具审批（切走/重进时卡片可能丢失，靠主进程权威状态恢复）
+    void refetchPendingApprovals(id)
   }
 
   async function deleteConversation(id: string) {
@@ -260,6 +282,12 @@ export const useChatStore = defineStore('chat', () => {
       const next = { ...streamingStates.value }
       delete next[id]
       streamingStates.value = next
+    }
+    // 同步清理挂起的审批卡
+    if (pendingApprovals.value[id]) {
+      const next = { ...pendingApprovals.value }
+      delete next[id]
+      pendingApprovals.value = next
     }
   }
 
@@ -405,10 +433,30 @@ export const useChatStore = defineStore('chat', () => {
           st.collapsed = false
           st.toolLogs.push(...buildToolStartLogs(data.tools))
           break
+        case 'tool_heartbeat': {
+          // 「执行中 Ns」原地更新最后一行（带 HEARTBEAT_PREFIX 标记），不堆积刷屏
+          if (!st.toolActive) break
+          const secs = Math.max(1, Math.round((data.elapsedMs || 0) / 1000))
+          const line = `${HEARTBEAT_PREFIX}${secs}s`
+          const logs = st.toolLogs
+          if (logs.length && logs[logs.length - 1].startsWith(HEARTBEAT_PREFIX)) {
+            logs[logs.length - 1] = line
+          } else {
+            logs.push(line)
+          }
+          break
+        }
         case 'tool_result':
+          // 工具有结果回来：先撤掉尾部心跳占位行，再追加结果
+          if (st.toolLogs.length && st.toolLogs[st.toolLogs.length - 1].startsWith(HEARTBEAT_PREFIX)) {
+            st.toolLogs.pop()
+          }
           st.toolLogs.push(`  ${data.tool}: ${data.summary || 'done'}`)
           break
         case 'tool_done':
+          if (st.toolLogs.length && st.toolLogs[st.toolLogs.length - 1].startsWith(HEARTBEAT_PREFIX)) {
+            st.toolLogs.pop()
+          }
           st.content = ''
           break
         case 'aborted': {
@@ -427,6 +475,69 @@ export const useChatStore = defineStore('chat', () => {
       // 当前停在该会话时镜像给 streamContent，沿用现有 scrollToBottom 的 watch
       if (currentConversationId.value === convId) streamContent.value = st.content
     })
+  }
+
+  /**
+   * App 级常驻审批监听：只装一次，永不随组件卸载退订（对照 initStreamListener）。
+   * - chat:toolApproval 到达 → 按 conversation_id 写入 pendingApprovals（不同会话互不覆盖）。
+   * - chat:toolApprovalResolved（主进程超时/中止）→ 清掉对应会话的卡片，避免残留无法操作的浮层。
+   */
+  function initApprovalListener() {
+    if (approvalListenerReady) return
+    approvalListenerReady = true
+    window.api.chat.onToolApproval((data: any) => {
+      const convId = data?.conversation_id
+      if (!convId) return
+      pendingApprovals.value = { ...pendingApprovals.value, [convId]: data as ApprovalRequest }
+    })
+    window.api.chat.onToolApprovalResolved((data: any) => {
+      const convId = data?.conversation_id
+      if (!convId) return
+      const cur = pendingApprovals.value[convId]
+      // 仅当 request_id 匹配才清，避免误清同会话的下一张卡
+      if (cur && (!data.request_id || cur.request_id === data.request_id)) {
+        const next = { ...pendingApprovals.value }
+        delete next[convId]
+        pendingApprovals.value = next
+      }
+    })
+  }
+
+  function getPendingApproval(convId: string | null): ApprovalRequest | null {
+    if (!convId) return null
+    return pendingApprovals.value[convId] || null
+  }
+
+  /** 回应审批：先乐观清掉本地卡片（UI 立即恢复），再回传主进程 resolve 挂起的工具执行。 */
+  async function respondApproval(requestId: string, approved: boolean) {
+    for (const [cid, ap] of Object.entries(pendingApprovals.value)) {
+      if (ap.request_id === requestId) {
+        const next = { ...pendingApprovals.value }
+        delete next[cid]
+        pendingApprovals.value = next
+        break
+      }
+    }
+    await window.api.chat.invoke('respondToolApproval', requestId, approved)
+  }
+
+  /** 重新进入会话时补投仍挂起的审批（卡片在切走期间可能未送达/被覆盖，靠主进程权威状态恢复）。 */
+  async function refetchPendingApprovals(convId: string) {
+    if (!convId) return
+    try {
+      const list = (await window.api.chat.invoke('listPendingApprovals', convId)) as ApprovalRequest[]
+      if (Array.isArray(list) && list.length > 0) {
+        // 主进程审批门串行，单会话至多一张挂起卡，取最后一张即可
+        pendingApprovals.value = { ...pendingApprovals.value, [convId]: list[list.length - 1] }
+      } else if (pendingApprovals.value[convId]) {
+        // 主进程已无挂起项（已超时/中止）：清掉本地残留
+        const next = { ...pendingApprovals.value }
+        delete next[convId]
+        pendingApprovals.value = next
+      }
+    } catch {
+      /* 拉取失败不致命 */
+    }
   }
 
   // 统一的流式请求执行器:管理 per-conversation 流式态、调用主进程、结束后与 DB seamless swap。
@@ -555,10 +666,12 @@ export const useChatStore = defineStore('chat', () => {
         botId,
         content,
         attachments,
-        ...(overrides?.kbCategoryIds?.length ? { overrideKbCategoryIds: overrides.kbCategoryIds } : {}),
-        ...(overrides?.skillIds?.length ? { overrideSkillIds: overrides.skillIds } : {}),
-        ...(overrides?.mcpIds?.length ? { overrideMcpIds: overrides.mcpIds } : {}),
-        ...(overrides?.promptSkillDirs?.length ? { overridePromptSkillDirs: overrides.promptSkillDirs } : {})
+        // 四类 override 都按「undefined=未指定走 bot 默认 / 空数组=本轮明确不用」对称下发，
+        // 避免 length 守卫把用户清空意图静默回填为 bot 默认（与 MCP 对齐）
+        ...(overrides?.kbCategoryIds !== undefined ? { overrideKbCategoryIds: overrides.kbCategoryIds } : {}),
+        ...(overrides?.skillIds !== undefined ? { overrideSkillIds: overrides.skillIds } : {}),
+        ...(overrides?.mcpIds !== undefined ? { overrideMcpIds: overrides.mcpIds } : {}),
+        ...(overrides?.promptSkillDirs !== undefined ? { overridePromptSkillDirs: overrides.promptSkillDirs } : {})
       })
     )
   }
@@ -632,6 +745,7 @@ export const useChatStore = defineStore('chat', () => {
     streamContent.value = ''
     drafts.value = {}
     streamingStates.value = {}
+    pendingApprovals.value = {}
   }
 
   function isConversationStreaming(convId: string): boolean {
@@ -650,6 +764,13 @@ export const useChatStore = defineStore('chat', () => {
       canceledRequestIds.value.add(requestId)
       canceledRequestIds.value = new Set(canceledRequestIds.value)
     }
+    // 乐观立即复位：移出 streaming 集合，输入框/中断按钮即刻恢复，不必干等主进程 IPC 最终 resolve。
+    // 半截内容已由主进程在中断时落库（含 [已中断] 标记），runStreamedRequest 的 finally 随后做
+    // live 气泡→DB 消息的 seamless swap（与后端 abort 透传到 MCP 调用的修复配合，间隔通常仅毫秒级）。
+    if (streamingConvIds.value.has(id)) {
+      streamingConvIds.value.delete(id)
+      streamingConvIds.value = new Set(streamingConvIds.value)
+    }
     return (await window.api.chat.invoke('cancel', id, requestId)) as boolean
   }
 
@@ -667,6 +788,11 @@ export const useChatStore = defineStore('chat', () => {
     streamingStates,
     getStreamingState,
     initStreamListener,
+    pendingApprovals,
+    initApprovalListener,
+    getPendingApproval,
+    respondApproval,
+    refetchPendingApprovals,
     fetchConversations,
     createConversation,
     updateConversationModel,

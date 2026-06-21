@@ -100,7 +100,16 @@
 
       <section class="flex flex-col min-h-0 bg-surface-1">
         <div class="flex-1 overflow-y-auto p-4">
-          <EcomResultGrid :tasks="gen.tasks.value" :generating="gen.generating.value" @retry="onRetry" @clear="gen.reset()" @cancel="gen.cancel()" />
+          <EcomResultGrid
+            :tasks="gen.tasks.value"
+            :generating="gen.generating.value"
+            :selectable="pickable"
+            :picked-paths="pickedPaths"
+            @retry="onRetry"
+            @clear="gen.reset()"
+            @cancel="gen.cancel()"
+            @toggle-pick="emit('toggle-pick', $event)"
+          />
         </div>
       </section>
     </div>
@@ -133,10 +142,18 @@ import type { EcomGeneratorForm, EcomGenParams, UploadedImage } from './types'
 
 // 主图 / 详情页共用本面板，靠 prop 区分；两个壳视图（EcomMainView / EcomDetailView）
 // 是不同组件，路由切换不复用，因此各自独立挂载、配各自 scope，表单 / 结果天然隔离。
-const props = defineProps<{
-  imageType: 'main' | 'detail'
-  scopeKey: string
-}>()
+const props = withDefaults(
+  defineProps<{
+    imageType: 'main' | 'detail'
+    scopeKey: string
+    /** 选图模式：结果可点选，向上 emit toggle-pick。供 ewei 商品图工作台复用本面板。默认 false。 */
+    pickable?: boolean
+    /** 已选中的 result_path 列表（高亮 + 序号）。 */
+    pickedPaths?: string[]
+  }>(),
+  { pickable: false, pickedPaths: () => [] },
+)
+const emit = defineEmits<{ (e: 'toggle-pick', payload: { path: string; url: string }): void }>()
 
 const isDetailType = props.imageType === 'detail'
 

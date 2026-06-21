@@ -113,6 +113,11 @@
               <span class="text-xs font-medium text-text-primary">调用生图能力</span>
             </label>
             <p class="text-[11px] text-text-tertiary mt-1 ml-5 leading-snug">开启后，该智能体的对话中会出现「生图：」模型切换条，AI 可调用生图工具。</p>
+            <label class="flex items-center gap-2 cursor-pointer select-none mt-3">
+              <input type="checkbox" v-model="form.enable_deck" :true-value="1" :false-value="0" class="rounded" />
+              <span class="text-xs font-medium text-text-primary">AI PPT 能力</span>
+            </label>
+            <p class="text-[11px] text-text-tertiary mt-1 ml-5 leading-snug">开启后，该智能体可在对话中规划大纲、逐页生成、配图表/图标、设计评审并导出 PPT（受控模板 + AI 自由设计双引擎）。</p>
           </div>
           <div>
             <label class="form-label">工具调用确认</label>
@@ -327,12 +332,13 @@ const form = ref({
   prompt_skill_dirs: [] as string[],
   tool_approval: 'destructive' as ToolApproval,
   enable_image_gen: 0 as number,
+  enable_deck: 0 as number,
   max_tool_rounds: 0 as number,
   avatar: ''
 })
 
 function resetForm() {
-  form.value = { name: '', description: '', persona_id: '', kb_only: 0, kb_category_ids: [], skill_ids: [], mcp_ids: [], prompt_skill_dirs: [], tool_approval: 'destructive', enable_image_gen: 0, max_tool_rounds: 0, avatar: '' }
+  form.value = { name: '', description: '', persona_id: '', kb_only: 0, kb_category_ids: [], skill_ids: [], mcp_ids: [], prompt_skill_dirs: [], tool_approval: 'destructive', enable_image_gen: 0, enable_deck: 0, max_tool_rounds: 0, avatar: '' }
 }
 
 function openCreate() {
@@ -354,6 +360,7 @@ function editBot(bot: Bot) {
     prompt_skill_dirs: [...(bot.prompt_skill_dirs || [])],
     tool_approval: bot.tool_approval || 'destructive',
     enable_image_gen: bot.enable_image_gen || 0,
+    enable_deck: bot.enable_deck || 0,
     max_tool_rounds: bot.max_tool_rounds || 0,
     avatar: bot.avatar || ''
   }

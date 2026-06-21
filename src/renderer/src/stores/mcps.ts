@@ -13,6 +13,9 @@ export interface McpServer {
   env: Record<string, string>
   enabled: boolean
   tools: any[]
+  // true：工具直接以原名注入对话工具列表；false（默认）：通过 mcp_list_servers /
+  // mcp_describe_tools / mcp_call 三元元工具按需发现与调用，节省 prompt token
+  always_load: boolean
   created_at: string
 }
 

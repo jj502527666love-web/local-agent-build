@@ -16,6 +16,8 @@ import type { SyncEntityDef } from './types'
 //   - vector_provider : 本机向量服务配置，设备相关
 //   - cloud_kb_cache  : 7 天 TTL 在线检索缓存
 //   - matting_providers: AK Secret 以 device-id 派生密钥本地加密，跨设备无法解密
+//   - ewei_connectors  : 第三方商城密码以 device-id 派生密钥本地加密，跨设备无法解密
+//   - ewei_goods_image_logs: 本机商品图替换审计/回滚载体，设备相关，无同步价值
 // ============================================================================
 
 export const SYNC_ENTITIES: SyncEntityDef[] = [

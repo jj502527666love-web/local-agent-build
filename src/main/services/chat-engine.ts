@@ -19,6 +19,7 @@ import { getSetting } from './settings'
 import { callMcpTool, normalizeMcpToolResult } from './mcp-server'
 import { listPromptSkills, getPromptSkillByName } from './prompt-skill'
 import { coreToolDefs, executeCoreToolCall, CORE_TOOL_NAMES, KB_TOOL_NAMES, previewFileWrite, previewFileRead, type FileWritePreview, type FileReadPreview } from './core-tools'
+import { deckToolDefs, executeDeckTool, DECK_TOOL_NAMES } from './deck/deck-tools'
 import { sanitizeOpenAIMessages } from './message-sanitizer'
 import { type ToolHistoryEntry, hashToolArgs, isToolFailure, checkToolCircuitBreaker } from './tool-circuit-breaker'
 import { cancelPendingChoices, cancelAllPendingChoices } from './user-choice'
@@ -77,13 +78,35 @@ const RESPONSE_RESERVE_RATIO = 0.25
 const AGENT_HARD_DEADLINE_MS = 30 * 60_000
 // Tool approval popup独立超时（30 min）：用户离开喝水/开会不会被强制拒绝；
 // 真正想取消的话用对话面板的「中止」按钮（走 cancelChat → abortController.abort()）。
-const APPROVAL_TIMEOUT_MS = 30 * 60_000
+// 工具审批超时兜底：仅作为「卡片确实丢失且补投也失败」的最后保险。审批卡现已 app 级常驻 +
+// 按会话路由 + 进入会话补投（见 listPendingApprovals / chat:toolApprovalResolved），正常不会丢，
+// 故从 30 分钟收紧到 10 分钟，缩短极端情况下的静默挂起时长。
+const APPROVAL_TIMEOUT_MS = 10 * 60_000
 const MAX_TOOL_RESULT_CHARS = 12_000
+// 工具执行阶段心跳间隔：慢工具 / MCP 冷启动握手期间没有任何流式输出，靠它周期性给渲染端
+// 发「执行中 Ns」反馈，避免长等待被当成挂死。快工具在首个 tick 前就返回，不会显示。
+const TOOL_HEARTBEAT_INTERVAL_MS = 5_000
 // Agent loop 内上下文压缩：单次回答的多轮工具调用会让 currentMessages 只增不减、逼近模型
 // 上下文上限，导致 prefill 变慢 / 请求过重 → 间接触发流式 terminated。进入时的滑动窗口只在
 // 「回答之间」生效，管不到 loop 内，故这里单独压缩。下面两个常量控制压缩力度（可调）。
 const KEEP_TOOL_RESULT_ROUNDS = 2  // 最近 N 轮工具结果保全文，更早的压成占位
 const MIN_KEEP_ROUNDS = 3          // 硬裁兜底：至少保留最近 N 轮（N*2 条核心消息）
+// MCP 工具差异化超时：annotations 显式标记 longRunning 的工具放宽到 5 分钟，
+// 避免默认 30s RPC 超时把生图 / 长检索类工具直接打断
+const MCP_LONG_RUNNING_TIMEOUT_MS = 5 * 60_000
+
+// 按 mcp tool annotations 计算调用超时：annotations.timeoutMs > annotations.longRunning > 默认
+function resolveMcpToolTimeoutMs(mcpId: string, toolName: string): number | undefined {
+  const server = getMcpServer(mcpId)
+  const tool = server?.tools?.find((t: any) => t?.name === toolName) as any
+  const ann = tool?.annotations
+  if (ann && typeof ann === 'object') {
+    const explicit = Number(ann.timeoutMs)
+    if (Number.isFinite(explicit) && explicit > 0) return explicit
+    if (ann.longRunning === true) return MCP_LONG_RUNNING_TIMEOUT_MS
+  }
+  return undefined
+}
 
 function getModelPromptBudget(modelId: string): number {
   const id = String(modelId || '')
@@ -100,6 +123,7 @@ type ActiveChatController = {
 const activeControllers = new Map<string, ActiveChatController>()
 const canceledRequestIds = new Set<string>()
 const canceledRequestReasons = new Map<string, 'user' | 'replaced'>()
+
 // 取消标记自动清理：避免长时间运行累积无界 Set/Map。
 // 后台生图任务最长 ~90s（按 image_gen 注释），给 10 分钟兜底足够覆盖任何
 // 异步追加路径；之后即便有迟到事件也会落地为新消息（不会再有同 requestId 流）。
@@ -130,6 +154,7 @@ export function cancelChat(conversationId: string, requestId?: string): boolean 
   for (const [, ctx] of pendingApprovals) {
     if (ctx.conversationId === conversationId) {
       ctx.cleanup()
+      notifyApprovalResolved(ctx.window, ctx.conversationId, ctx.requestId)
       ctx.resolve(false)
     }
   }
@@ -152,19 +177,50 @@ export function cancelAllChats(): number {
   }
   activeControllers.clear()
   for (const [, ctx] of pendingApprovals) {
-    try { ctx.cleanup(); ctx.resolve(false) } catch {}
+    try {
+      ctx.cleanup()
+      notifyApprovalResolved(ctx.window, ctx.conversationId, ctx.requestId)
+      ctx.resolve(false)
+    } catch {}
   }
   cancelAllPendingChoices()
   return hit
 }
 
 // === Tool approval ===
+/** 审批卡向渲染端投递的载荷（与 chat:toolApproval / listPendingApprovals 返回一致）。 */
+interface ApprovalPayload {
+  request_id: string
+  conversation_id: string
+  tool: string
+  args: any
+  preview?: any
+}
 interface PendingApproval {
   conversationId: string
+  requestId: string
+  window: BrowserWindow | null
+  payload: ApprovalPayload
   resolve: (approved: boolean) => void
   cleanup: () => void
 }
 const pendingApprovals = new Map<string, PendingApproval>()
+
+/** 通知渲染端某审批已在主进程侧被解决（超时 / 中止），让常驻审批监听清掉对应卡片。 */
+function notifyApprovalResolved(win: BrowserWindow | null, conversationId: string, requestId: string): void {
+  if (win && !win.isDestroyed()) {
+    win.webContents.send('chat:toolApprovalResolved', { request_id: requestId, conversation_id: conversationId })
+  }
+}
+
+/** 列出某会话仍挂起的审批载荷：渲染端重新进入会话时补投，避免卡片在切走期间丢失后无法恢复。 */
+export function listPendingApprovals(conversationId: string): ApprovalPayload[] {
+  const out: ApprovalPayload[] = []
+  for (const [, ctx] of pendingApprovals) {
+    if (ctx.conversationId === conversationId) out.push(ctx.payload)
+  }
+  return out
+}
 
 const DESTRUCTIVE_FILE_OPS = new Set(['write', 'append', 'mkdir', 'delete', 'copy', 'rename', 'write_json'])
 // 会读到文件内容或枚举目录条目的读类操作：工作区外读取需用户确认，防静默外泄。
@@ -245,39 +301,37 @@ function requestToolApproval(
 ): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
     const requestId = uuid()
+    const payload: ApprovalPayload = {
+      request_id: requestId,
+      conversation_id: conversationId,
+      tool: toolCall.function?.name || 'unknown',
+      args: parsedArgs,
+      preview: preview || undefined
+    }
     const cleanup = () => {
       pendingApprovals.delete(requestId)
       signal.removeEventListener('abort', onAbort)
       clearTimeout(timer)
     }
-    const onAbort = () => {
+    // 超时 / 中止属「主进程侧解决」：除 resolve(false) 外还要通知渲染端清掉常驻卡片，避免残留。
+    const resolveBySystem = () => {
       const ctx = pendingApprovals.get(requestId)
       if (ctx) {
         cleanup()
+        notifyApprovalResolved(window, conversationId, requestId)
         ctx.resolve(false)
       }
     }
-    const timer = setTimeout(() => {
-      const ctx = pendingApprovals.get(requestId)
-      if (ctx) {
-        cleanup()
-        ctx.resolve(false)
-      }
-    }, APPROVAL_TIMEOUT_MS)
-    pendingApprovals.set(requestId, { conversationId, resolve, cleanup })
+    const onAbort = () => resolveBySystem()
+    const timer = setTimeout(() => resolveBySystem(), APPROVAL_TIMEOUT_MS)
+    pendingApprovals.set(requestId, { conversationId, requestId, window, payload, resolve, cleanup })
     if (signal.aborted) {
       onAbort()
       return
     }
     signal.addEventListener('abort', onAbort, { once: true })
     if (window) {
-      window.webContents.send('chat:toolApproval', {
-        request_id: requestId,
-        conversation_id: conversationId,
-        tool: toolCall.function?.name || 'unknown',
-        args: parsedArgs,
-        preview: preview || undefined
-      })
+      window.webContents.send('chat:toolApproval', payload)
     } else {
       // No window to ask: fail closed
       cleanup()
@@ -574,6 +628,24 @@ export interface SendMessageOptions {
   overridePromptSkillDirs?: string[]
 }
 
+// 缓存每个会话最近一轮 sendMessage 的 overrides，供 regenerate/continue/edit 复用
+// 不持久化到 DB，进程重启自然失效，符合「这一次回放沿用最近一次设置」的预期
+type LastTurnOverrides = Pick<
+  SendMessageOptions,
+  'overrideMcpIds' | 'overrideSkillIds' | 'overrideKbCategoryIds' | 'overridePromptSkillDirs'
+>
+const lastTurnOverrides = new Map<string, LastTurnOverrides>()
+
+/** 清理指定会话的 lastTurnOverrides 缓存（会话删除时调用，避免 stash 残留指向已删会话） */
+export function clearLastTurnOverridesForConversation(conversationId: string): void {
+  lastTurnOverrides.delete(conversationId)
+}
+
+/** 清空所有会话的 lastTurnOverrides（账号热切换前清场，防止跨账号串数据） */
+export function clearAllLastTurnOverrides(): void {
+  lastTurnOverrides.clear()
+}
+
 function normalizeAttachments(attachments?: any[]): any[] | undefined {
   if (!attachments || attachments.length === 0) return attachments
   return attachments.map((att) => {
@@ -725,6 +797,14 @@ export async function sendMessage(
   const effectiveSkillIds = options.overrideSkillIds ?? bot.skill_ids
   const effectiveMcpIds = options.overrideMcpIds ?? bot.mcp_ids
   const effectivePromptSkillDirs = options.overridePromptSkillDirs ?? (bot.prompt_skill_dirs || [])
+
+  // 记录本轮 overrides，供 regenerate/continue/edit 复用，避免回放时丢失用户当前的工具选择
+  lastTurnOverrides.set(options.conversationId, {
+    overrideMcpIds: options.overrideMcpIds,
+    overrideSkillIds: options.overrideSkillIds,
+    overrideKbCategoryIds: options.overrideKbCategoryIds,
+    overridePromptSkillDirs: options.overridePromptSkillDirs,
+  })
   // 云端知识库绑定（由云控端智能体预设下发，市场导入写入 bot.cloud_kb_ids；对话时在线检索）
   const effectiveCloudKbIds = (bot.cloud_kb_ids || []).filter((n) => n > 0)
   const hasCloudKb = effectiveCloudKbIds.length > 0 && bot.cloud_agent_id > 0
@@ -762,17 +842,29 @@ export async function sendMessage(
     if (allPS.length > 0) capSummary.push(`Skills技能: ${allPS.map(s => s.name).join(', ')} (通过 use_skill 工具调用)`)
   }
   if (effectiveMcpIds.length > 0) {
-    // 仅列出已发现工具的 MCP 服务（含工具名清单）。没有工具就不提，
-    // 防止模型被告知「有 MCP 服务」却无对应工具可调而幻觉式编造调用。
-    const mcpLines: string[] = []
+    // 仅列出已发现工具的 MCP 服务（防止模型被告知「有 MCP 服务」却无对应工具可调而幻觉编造调用）。
+    // always_load=true 的服务：完整列工具名，工具已直接注入 LLM tools，可直接调用。
+    // always_load=false 的服务：仅列服务名 + 工具数量，工具未直接注入，需走 mcp_list_servers /
+    // mcp_describe_tools / mcp_call 三元元工具按需发现与调用，避免海量工具淹没 prompt。
+    const alwaysLines: string[] = []
+    const onDemandLines: string[] = []
     for (const id of effectiveMcpIds) {
       const server = getMcpServer(id)
-      if (server && server.enabled && server.tools.length > 0) {
-        const toolNames = server.tools.map((t: any) => t?.name).filter(Boolean)
-        if (toolNames.length > 0) mcpLines.push(`${server.name}（工具: ${toolNames.join(', ')}）`)
+      if (!server || !server.enabled || server.tools.length === 0) continue
+      const toolNames = server.tools.map((t: any) => t?.name).filter(Boolean)
+      if (toolNames.length === 0) continue
+      if (server.always_load) {
+        alwaysLines.push(`${server.name}（工具: ${toolNames.join(', ')}）`)
+      } else {
+        onDemandLines.push(`${server.name}: ${toolNames.length} 个工具`)
       }
     }
-    if (mcpLines.length > 0) capSummary.push(`MCP服务: ${mcpLines.join('；')}`)
+    if (alwaysLines.length > 0) capSummary.push(`MCP服务（直接可用）: ${alwaysLines.join('；')}`)
+    if (onDemandLines.length > 0) {
+      capSummary.push(
+        `MCP服务（按需发现，工具未直接注入；用 mcp_list_servers 列出、mcp_describe_tools 查 schema、mcp_call 调用）: ${onDemandLines.join('；')}`
+      )
+    }
   }
   baseSystemParts.push(`当前配置:\n${capSummary.join('\n')}`)
 
@@ -1133,7 +1225,7 @@ export async function sendMessage(
   messages.push(...included)
 
   // Build tools list from skills and MCP (KB tools auto-included when KB enabled)
-  const tools = buildToolsList(effectiveSkillIds, effectiveMcpIds, effectivePromptSkillDirs, effectiveKbCategoryIds, !!bot.enable_image_gen, effectiveCloudKbIds)
+  const tools = buildToolsList(effectiveSkillIds, effectiveMcpIds, effectivePromptSkillDirs, effectiveKbCategoryIds, !!bot.enable_image_gen, effectiveCloudKbIds, !!bot.enable_deck)
 
   const systemCount = messages.length - included.length
   console.log(`[chat] context: ${systemCount} system + ${included.length} history msgs, ~${estimateMessagesTokens([...messages])} tokens, ${tools.length} tools`)
@@ -1172,6 +1264,11 @@ export async function sendMessage(
         if (t?.annotations?.readOnlyHint === true) mcpReadOnlyToolNames.add(n)
       }
     }
+    // 元工具中 mcp_list_servers / mcp_describe_tools 是纯只读发现接口（仅读本地 mcp_servers 表
+    // 与已缓存的 tools schema，不发起 MCP RPC），免审批；mcp_call 不加入此集合，审批时按
+    // args.tool 反查目标工具的 readOnlyHint 动态判定（见 needsApproval 调用处）。
+    mcpReadOnlyToolNames.add('mcp_list_servers')
+    mcpReadOnlyToolNames.add('mcp_describe_tools')
     let currentMessages: ChatMessage[] = [...messages]
     let round = 0
     // 工具失败熔断历史(贯穿本次 sendMessage 的整个工具循环)
@@ -1314,8 +1411,20 @@ export async function sendMessage(
           continue
         }
 
+        // mcp_call 元工具：审批语义按目标 MCP 工具的 readOnlyHint 判定（不能让收敛入口
+        // 把高危工具洗成默认免审批，也不能把只读工具变成每次都弹审批）。
+        // 把目标工具名映射给 needsApproval 判定，命中 mcpReadOnlyToolNames 则 destructive 模式免审批。
+        let approvalToolName = fnName
+        let approvalToolArgs = parsedArgs
+        if (fnName === 'mcp_call') {
+          const targetName = String(parsedArgs?.tool || '')
+          if (targetName) {
+            approvalToolName = targetName
+            approvalToolArgs = parsedArgs?.args && typeof parsedArgs.args === 'object' ? parsedArgs.args : {}
+          }
+        }
         // 脱离沙箱工具强制确认（忽略审批模式）；其余按智能体审批策略。
-        if (unsandboxedToolNames.has(fnName) || needsApproval(bot.tool_approval, fnName, parsedArgs, sandboxDir, mcpReadOnlyToolNames)) {
+        if (unsandboxedToolNames.has(fnName) || needsApproval(bot.tool_approval, approvalToolName, approvalToolArgs, sandboxDir, mcpReadOnlyToolNames)) {
           const preview = fnName === 'file_ops'
             ? (previewFileWrite(parsedArgs, sandboxDir) || previewFileRead(parsedArgs, sandboxDir))
             : null
@@ -1356,7 +1465,9 @@ export async function sendMessage(
           signal,
           requestId,
           undefined,
-          hasCloudKb ? { kbIds: effectiveCloudKbIds, agentId: bot.cloud_agent_id, topK: bot.cloud_kb_top_k || 5 } : undefined
+          hasCloudKb ? { kbIds: effectiveCloudKbIds, agentId: bot.cloud_agent_id, topK: bot.cloud_kb_top_k || 5 } : undefined,
+          effectiveProviderId,
+          effectiveModelId
         )
         // 工具已经返回字符串（如 use_skill 返回的 markdown skill 正文）就直接用；
         // 再 JSON.stringify 会在原文外面再裹一层引号 + 转义全部 \n 和 "，
@@ -1369,7 +1480,18 @@ export async function sendMessage(
         emitStream({ type: 'tool_result', tool: p.fnName, summary })
         return { ...p, result, resultStr }
       })
-      const completed = await Promise.all(pendingExecs)
+      // 工具执行期心跳：周期性向渲染端报「执行中 Ns」，让 MCP 冷启动握手 / 慢工具的长等待有可见反馈。
+      const toolBatchStart = Date.now()
+      const heartbeat = setInterval(() => {
+        emitStream({ type: 'tool_heartbeat', elapsedMs: Date.now() - toolBatchStart })
+      }, TOOL_HEARTBEAT_INTERVAL_MS)
+      if (typeof heartbeat.unref === 'function') heartbeat.unref()
+      let completed: Plan[]
+      try {
+        completed = await Promise.all(pendingExecs)
+      } finally {
+        clearInterval(heartbeat)
+      }
       if (signal.aborted) throw new AbortedError()
 
       // Pass 3 (serial): persist + append in original order so the LLM sees a deterministic transcript.
@@ -1531,8 +1653,9 @@ export async function regenerateLastResponse(
   const conv = getConversation(conversationId)
   if (!conv) throw new Error('Conversation not found')
   deleteMessagesFrom(conversationId, lastUser.id)
+  const stash = lastTurnOverrides.get(conversationId) ?? {}
   await sendMessage(
-    { conversationId, botId: conv.bot_id, content: lastUser.content, attachments: lastUser.attachments, requestId },
+    { ...stash, conversationId, botId: conv.bot_id, content: lastUser.content, attachments: lastUser.attachments, requestId },
     window
   )
 }
@@ -1583,8 +1706,9 @@ export async function continueLastResponse(
   }
   // 保留半截正文（去掉中断标记），再用一条「继续」消息驱动模型接着写
   updateMessageContent(last.id, partial)
+  const stash = lastTurnOverrides.get(conversationId) ?? {}
   await sendMessage(
-    { conversationId, botId: conv.bot_id, content: '继续', requestId },
+    { ...stash, conversationId, botId: conv.bot_id, content: '继续', requestId },
     window
   )
 }
@@ -1605,8 +1729,9 @@ export async function editAndResend(
   if (!conv) throw new Error('Conversation not found')
   const attachments = target.attachments
   deleteMessagesFrom(conversationId, messageId)
+  const stash = lastTurnOverrides.get(conversationId) ?? {}
   await sendMessage(
-    { conversationId, botId: conv.bot_id, content: newContent, attachments, requestId },
+    { ...stash, conversationId, botId: conv.bot_id, content: newContent, attachments, requestId },
     window
   )
 }
@@ -1726,14 +1851,86 @@ async function maybeGenerateSummary(
  *   塞一个永远不会被模型用到的占位字段就能绕过该 bug，对正常调用无副作用。
  * 不修改输入对象，返回新对象，避免污染 DB / 内存里的原始 function_def。
  */
+const MAX_SCHEMA_DEPTH = 12
+const MAX_SCHEMA_DESC_LEN = 2048
+// 递归会进入的嵌套 schema 容器关键字（其余键值原样保留，不递归——如 enum/required/type 等）
+const SCHEMA_NESTED_KEYS = new Set([
+  'items', 'additionalProperties', 'oneOf', 'anyOf', 'allOf', 'not',
+  'prefixItems', 'contains', 'if', 'then', 'else', 'patternProperties'
+])
+// 始终剥离的元关键字（部分 OpenAI 兼容上游遇到会解析失败 / silent-200）
+const SCHEMA_DROP_KEYS = new Set(['$schema', '$id', '$comment', '$anchor', '$defs', 'definitions'])
+
+/**
+ * 递归清洗 JSON Schema，剥离/转换部分 OpenAI 兼容上游（DeepSeek/智谱/豆包/Moonshot/云网关等）
+ * 不稳定解析的结构，降低绑定 MCP 后因工具 inputSchema 触发 silent-200 / 挂连接的概率：
+ * - 删除 $schema/$id/$comment/$anchor 与根上的 $defs/definitions
+ * - 内联内部 $ref（#/$defs/* 或 #/definitions/*）；环引用 / 无法解析则退化为宽松 { type:'object' }
+ * - 截断超长 description；限制嵌套深度，超深退化为 { type:'object' }
+ * 不修改入参，返回新对象。
+ */
+function sanitizeJsonSchema(
+  node: any,
+  defs: Record<string, any>,
+  depth: number,
+  seenRefs: Set<string>
+): any {
+  if (node === null || typeof node !== 'object') return node
+  if (Array.isArray(node)) {
+    if (depth > MAX_SCHEMA_DEPTH) return []
+    return node.map((n) => sanitizeJsonSchema(n, defs, depth + 1, seenRefs))
+  }
+  if (depth > MAX_SCHEMA_DEPTH) return { type: 'object' }
+
+  // 内联内部 $ref
+  if (typeof node.$ref === 'string') {
+    const ref = node.$ref
+    if (seenRefs.has(ref)) return { type: 'object' } // 防环
+    const m = /^#\/(?:\$defs|definitions)\/(.+)$/.exec(ref)
+    if (m && defs[m[1]] !== undefined) {
+      const next = new Set(seenRefs)
+      next.add(ref)
+      return sanitizeJsonSchema(defs[m[1]], defs, depth + 1, next)
+    }
+    return { type: 'object' } // 外部 / 缺失 $ref：退化为宽松对象
+  }
+
+  const out: any = {}
+  for (const [k, v] of Object.entries(node)) {
+    if (SCHEMA_DROP_KEYS.has(k)) continue
+    if (k === 'description') {
+      out.description = typeof v === 'string' && v.length > MAX_SCHEMA_DESC_LEN ? v.slice(0, MAX_SCHEMA_DESC_LEN) : v
+      continue
+    }
+    if (k === 'properties' && v && typeof v === 'object' && !Array.isArray(v)) {
+      const p: any = {}
+      for (const [pk, pv] of Object.entries(v)) p[pk] = sanitizeJsonSchema(pv, defs, depth + 1, seenRefs)
+      out.properties = p
+      continue
+    }
+    if (SCHEMA_NESTED_KEYS.has(k)) {
+      out[k] = sanitizeJsonSchema(v, defs, depth + 1, seenRefs)
+      continue
+    }
+    out[k] = v
+  }
+  return out
+}
+
 function normalizeFunctionSchema(fn: any): any {
   if (!fn || typeof fn !== 'object') return fn
   const rawParams = fn.parameters
   const baseParams =
     rawParams && typeof rawParams === 'object' && !Array.isArray(rawParams) ? rawParams : {}
+  // 收集 $defs/definitions 供内部 $ref 内联（清洗后这两个根字段会被剥离）
+  const defs: Record<string, any> = {
+    ...(baseParams.definitions && typeof baseParams.definitions === 'object' ? baseParams.definitions : {}),
+    ...(baseParams.$defs && typeof baseParams.$defs === 'object' ? baseParams.$defs : {})
+  }
+  const cleaned = sanitizeJsonSchema(baseParams, defs, 0, new Set<string>())
   const normalizedParams: any = {
-    ...baseParams,
-    type: typeof baseParams.type === 'string' ? baseParams.type : 'object'
+    ...cleaned,
+    type: typeof cleaned.type === 'string' ? cleaned.type : 'object'
   }
   const props = normalizedParams.properties
   const isEmptyProps =
@@ -1774,7 +1971,8 @@ function buildToolsList(
   promptSkillDirs: string[] = [],
   kbCategoryIds: string[] = [],
   enableImageGen: boolean = false,
-  cloudKbIds: number[] = []
+  cloudKbIds: number[] = [],
+  enableDeck: boolean = false
 ): any[] {
   // Core tools 默认全量加入；但会进一步过滤:
   // - 未启用知识库时剔除 kb_* 工具，避免给模型展示无意义入口（本地分类 或 云端知识库 任一启用即保留）
@@ -1789,6 +1987,13 @@ function buildToolsList(
     type: 'function',
     function: normalizeFunctionSchema(t.function)
   }))
+
+  // PPT Agent: 开启 enable_deck 的智能体注入 deck 工具集(规划大纲/逐页生成/图表/图标/评审/导出)
+  if (enableDeck) {
+    for (const t of deckToolDefs) {
+      tools.push({ type: 'function', function: normalizeFunctionSchema(t.function) })
+    }
+  }
 
   // Add user skills as tools (skip core tool names to avoid duplicates)
   // 走 normalize 兜底：用户自建小工具的 function_def 可能 properties 为空 {} 或缺失 parameters，
@@ -1835,26 +2040,116 @@ function buildToolsList(
   // 处理空 properties 等剩余 schema 缺陷。
   // 同名去重：与核心工具 / 小工具 / use_skill / 其它 MCP 服务器撞名的跳过（executeToolCall
   // 按名路由时核心和小工具优先命中，重复注入只会让上游报 duplicate function 或模型困惑）。
+  // always_load 分流：true 的 server 工具继续按原方式直接注入；false 的 server 仅在系统提示里
+  // 由 capSummary 概述存在，工具发现与调用走下方三元元工具，避免海量工具淹没 prompt。
   const existingToolNames = new Set<string>(
     tools.map((t: any) => t?.function?.name).filter(Boolean)
   )
+  let hasOnDemandMcp = false
   for (const mcpId of mcpIds) {
     const server = getMcpServer(mcpId)
-    if (server && server.enabled) {
-      for (const tool of server.tools) {
-        const fn = mcpToolToOpenAIFunction(tool)
-        const fnName = fn?.name
-        if (!fnName || existingToolNames.has(fnName)) continue
-        existingToolNames.add(fnName)
-        tools.push({
-          type: 'function',
-          function: normalizeFunctionSchema(fn)
-        })
-      }
+    if (!server || !server.enabled) continue
+    if (!server.always_load) {
+      hasOnDemandMcp = true
+      continue
+    }
+    for (const tool of server.tools) {
+      const fn = mcpToolToOpenAIFunction(tool)
+      const fnName = fn?.name
+      if (!fnName || existingToolNames.has(fnName)) continue
+      existingToolNames.add(fnName)
+      tools.push({
+        type: 'function',
+        function: normalizeFunctionSchema(fn)
+      })
+    }
+  }
+
+  // 三元 MCP 元工具：当存在「按需发现」的 MCP server 时注入，让模型主动探查 → 看 schema → 调用。
+  // 名字固定为内置常量，与核心/小工具/use_skill/MCP 真实工具去重（如撞名直接跳过，正常不会出现）。
+  if (hasOnDemandMcp) {
+    const meta = buildMcpMetaToolDefs()
+    for (const m of meta) {
+      if (existingToolNames.has(m.function.name)) continue
+      existingToolNames.add(m.function.name)
+      tools.push(m)
     }
   }
 
   return tools
+}
+
+// === MCP 三元元工具 ===
+// mcp_list_servers / mcp_describe_tools / mcp_call：把「非 always_load」的 MCP 工具收敛到三个入口，
+// 避免一次性把所有 MCP 工具 schema 塞进 LLM tools，节省 prompt token、降低模型困惑。
+
+export const MCP_META_TOOL_NAMES = ['mcp_list_servers', 'mcp_describe_tools', 'mcp_call'] as const
+
+function buildMcpMetaToolDefs(): any[] {
+  return [
+    {
+      type: 'function',
+      function: {
+        name: 'mcp_list_servers',
+        description:
+          '列出当前对话可用的 MCP 服务器及其工具数量与概述。无参数。需要 MCP 工具但不确定有哪些时先调用此工具。',
+        parameters: { type: 'object', properties: {}, additionalProperties: false }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'mcp_describe_tools',
+        description:
+          '查询指定 MCP 服务器下的工具列表与完整调用 schema。需要先通过 mcp_list_servers 确定 server。',
+        parameters: {
+          type: 'object',
+          properties: {
+            server: {
+              type: 'string',
+              description: 'MCP server id 或 name（两种均可，优先按 id 精确匹配，否则按 name 匹配）'
+            }
+          },
+          required: ['server'],
+          additionalProperties: false
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'mcp_call',
+        description:
+          '调用指定 MCP 工具。必须先通过 mcp_describe_tools 拿到该工具的 inputSchema 再构造 args，避免参数错误。',
+        parameters: {
+          type: 'object',
+          properties: {
+            server: { type: 'string', description: 'MCP server id 或 name' },
+            tool: { type: 'string', description: '目标工具名（来自 mcp_describe_tools 返回）' },
+            args: { type: 'object', description: '调用参数对象，结构由目标工具 inputSchema 定义', additionalProperties: true }
+          },
+          required: ['server', 'tool', 'args'],
+          additionalProperties: false
+        }
+      }
+    }
+  ]
+}
+
+/** 元工具调用时根据 args.server 解析到具体 mcpId：优先按 id，再按 name 完全匹配。 */
+function resolveMcpServerRef(effectiveMcpIds: string[], ref: string): { id: string; server: any } | null {
+  if (!ref || typeof ref !== 'string') return null
+  // 先按 id 命中
+  if (effectiveMcpIds.includes(ref)) {
+    const s = getMcpServer(ref)
+    if (s && s.enabled) return { id: ref, server: s }
+  }
+  // 再按 name 命中（大小写敏感的全等）
+  for (const id of effectiveMcpIds) {
+    const s = getMcpServer(id)
+    if (s && s.enabled && s.name === ref) return { id, server: s }
+  }
+  return null
 }
 
 /**
@@ -1899,7 +2194,11 @@ async function executeToolCall(
   signal?: AbortSignal,
   requestId?: string,
   timeoutMs?: number,
-  cloudKb?: { kbIds: number[]; agentId: number; topK: number }
+  cloudKb?: { kbIds: number[]; agentId: number; topK: number },
+  // deck 子生成的模型回退: 与主对话同口径(conv.active 缺失时回退 bot.model / cloud:default),
+  // 避免旧数据 bot(模型绑在 bot.model_* 而非 conv.active_*)发起 PPT 工具时 provider 为空致集体哑火。
+  fallbackProviderId?: string,
+  fallbackModelId?: string
 ): Promise<any> {
   const functionName = toolCall.function?.name
   let args: any = {}
@@ -1934,6 +2233,30 @@ async function executeToolCall(
   const coreResult = await executeCoreToolCall(functionName, args, sandboxDir, kbContext, execContext)
   if (coreResult.handled) return coreResult.result
 
+  // Try deck tools (PPT Agent): 子生成(填槽/自由HTML/图表判断/评审)用对话当前模型
+  if (DECK_TOOL_NAMES.includes(functionName)) {
+    const conv = conversationId ? getConversation(conversationId) : null
+    // 与主对话同口径回退: conv.active 缺失时用主流程已算好的 effective(含 bot.model / cloud:default 兜底)
+    const providerId = conv?.active_model_provider_id || fallbackProviderId || undefined
+    const modelId = conv?.active_model_id || fallbackModelId || undefined
+    const deckResult = await executeDeckTool(functionName, args, {
+      conversationId,
+      providerId,
+      modelId,
+      imageProviderId: conv?.active_image_provider_id || undefined,
+      imageModelId: conv?.active_image_model_id || undefined,
+      window: window || null,
+      signal,
+      kb: {
+        categoryIds: kbCategoryIds,
+        cloudKbIds: cloudKb?.kbIds || [],
+        cloudAgentId: cloudKb?.agentId || 0,
+        topK: cloudKb?.topK || 5
+      }
+    })
+    if (deckResult.handled) return deckResult.result
+  }
+
   // Try user skills
   const allSkills = listSkills()
   const skill = allSkills.find(
@@ -1947,7 +2270,67 @@ async function executeToolCall(
     return result.success ? result.result : { error: result.error }
   }
 
-  // Try MCP tools
+  // MCP 三元元工具：mcp_list_servers / mcp_describe_tools / mcp_call
+  // 把「按需发现」的 MCP 工具收敛到三个入口，always_load=true 的服务依旧裸名直调（走下方循环）。
+  if (functionName === 'mcp_list_servers') {
+    // 与 capSummary 行为一致：只列出已发现工具的服务，避免模型按列表调 describe 拿到空 tools
+    // 引起一轮浪费；正在握手/启动失败的服务在 tools 持久化前不出现，符合产品预期
+    const list: any[] = []
+    for (const id of mcpIds) {
+      const server = getMcpServer(id)
+      if (!server || !server.enabled) continue
+      const toolCount = Array.isArray(server.tools) ? server.tools.length : 0
+      if (toolCount === 0) continue
+      list.push({
+        server: server.id,
+        name: server.name,
+        toolCount,
+        alwaysLoad: !!server.always_load
+      })
+    }
+    return { servers: list }
+  }
+
+  if (functionName === 'mcp_describe_tools') {
+    const ref = String(args?.server || '')
+    const hit = resolveMcpServerRef(mcpIds, ref)
+    if (!hit) return { error: `MCP server "${ref}" 不存在或未启用` }
+    const tools = Array.isArray(hit.server.tools) ? hit.server.tools : []
+    // 复用 sanitizeJsonSchema 清洗 inputSchema，避免把 $ref / $defs 等 LLM 难处理结构原样回传
+    const described = tools.map((t: any) => {
+      const rawSchema = t?.inputSchema && typeof t.inputSchema === 'object' ? t.inputSchema : {}
+      const defs: Record<string, any> = {
+        ...(rawSchema.definitions && typeof rawSchema.definitions === 'object' ? rawSchema.definitions : {}),
+        ...(rawSchema.$defs && typeof rawSchema.$defs === 'object' ? rawSchema.$defs : {})
+      }
+      return {
+        name: t?.name,
+        description: t?.description || '',
+        inputSchema: sanitizeJsonSchema(rawSchema, defs, 0, new Set<string>())
+      }
+    }).filter((t: any) => t.name)
+    return { server: hit.server.id, name: hit.server.name, tools: described }
+  }
+
+  if (functionName === 'mcp_call') {
+    const ref = String(args?.server || '')
+    const targetTool = String(args?.tool || '')
+    const targetArgs = args?.args && typeof args.args === 'object' ? args.args : {}
+    if (!targetTool) return { error: 'mcp_call 缺少 tool 参数' }
+    const hit = resolveMcpServerRef(mcpIds, ref)
+    if (!hit) return { error: `MCP server "${ref}" 不存在或未启用` }
+    const meta = (hit.server.tools as any[]).find((t: any) => t?.name === targetTool)
+    if (!meta) return { error: `MCP server "${hit.server.name}" 下没有工具 "${targetTool}"` }
+    try {
+      const effectiveTimeoutMs = timeoutMs ?? resolveMcpToolTimeoutMs(hit.id, targetTool)
+      return normalizeMcpToolResult(await callMcpTool(hit.id, targetTool, targetArgs, effectiveTimeoutMs, signal))
+    } catch (err: any) {
+      const brief = String(err?.message || err).slice(0, 500)
+      return { error: `MCP 工具 ${targetTool} 调用失败: ${brief}` }
+    }
+  }
+
+  // Try MCP tools（always_load=true 的服务直接以原名注入了 LLM tools，按名路由到这里）
   for (const mcpId of mcpIds) {
     const server = getMcpServer(mcpId)
     if (server && server.enabled) {
@@ -1955,8 +2338,11 @@ async function executeToolCall(
       if (mcpTool) {
         try {
           // 结果规范化：content 数组拍平为文本 / isError 转 {error}（计入失败熔断）/
-          // structuredContent 原样保留，避免协议包装层原样进上下文浪费 token
-          return normalizeMcpToolResult(await callMcpTool(mcpId, functionName, args, timeoutMs))
+          // structuredContent 原样保留，避免协议包装层原样进上下文浪费 token。
+          // 透传 signal：用户点「中止」时立即解除在途 MCP RPC / 握手等待，而非干等 30/60s 超时。
+          // timeoutMs 形参恒为 undefined（来自调用方），这里按工具 annotations 解析差异化超时
+          const effectiveTimeoutMs = timeoutMs ?? resolveMcpToolTimeoutMs(mcpId, functionName)
+          return normalizeMcpToolResult(await callMcpTool(mcpId, functionName, args, effectiveTimeoutMs, signal))
         } catch (err: any) {
           // 启动失败的 message 可能带 2KB stderr 诊断：进对话上下文截断即可，全文在 MCP 页面可见
           const brief = String(err?.message || err).slice(0, 500)

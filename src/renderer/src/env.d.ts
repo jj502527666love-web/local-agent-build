@@ -11,6 +11,11 @@ interface Window {
   api: {
     db: { query: (channel: string, ...args: unknown[]) => Promise<unknown> }
     canvas: { invoke: (channel: string, ...args: unknown[]) => Promise<unknown> }
+    deck: {
+      invoke: (channel: string, ...args: unknown[]) => Promise<unknown>
+      /** deck:progress 进度回调；payload = { reqId, phase:'outline'|'slide', done, total }。返回 unsubscribe */
+      onProgress: (callback: (data: unknown) => void) => () => void
+    }
     gallery: { invoke: (channel: string, ...args: unknown[]) => Promise<unknown> }
     creativeTemplate: { invoke: (channel: string, ...args: unknown[]) => Promise<unknown> }
     matting: {
@@ -58,6 +63,8 @@ interface Window {
       offTitleUpdated: () => void
       onToolApproval: (callback: (data: unknown) => void) => void
       offToolApproval: () => void
+      onToolApprovalResolved: (callback: (data: unknown) => void) => void
+      offToolApprovalResolved: () => void
       onAppendMessage: (callback: (data: unknown) => void) => void
       offAppendMessage: () => void
       onUpdateMessage: (callback: (data: unknown) => void) => void
@@ -67,6 +74,9 @@ interface Window {
     mcp: {
       invoke: (channel: string, ...args: unknown[]) => Promise<unknown>
       onStatus: (callback: (data: unknown) => void) => () => void
+    }
+    mcpMarket: {
+      invoke: <T = any>(channel: string, ...args: any[]) => Promise<T>
     }
     promptSkill: { invoke: (channel: string, ...args: unknown[]) => Promise<unknown> }
     settings: { invoke: (channel: string, ...args: unknown[]) => Promise<unknown> }

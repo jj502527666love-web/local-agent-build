@@ -3,10 +3,10 @@ import { join, resolve } from 'path'
 import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync, rmSync } from 'fs'
 import { getRootDir, getDataDir, setAccountSubdir } from './data-path'
 import { closeDatabase, getDatabase } from '../database'
-import { stopAllMcpServers } from './mcp-server'
+import { stopAllMcpServers, warmupEnabledMcpServers } from './mcp-server'
 import { stopAutoDownloadScheduler, startAutoDownloadScheduler } from './video-generation'
 import { cancelAllGenerations, cleanupStaleGenerations } from './image-generation'
-import { cancelAllChats } from './chat-engine'
+import { cancelAllChats, clearAllLastTurnOverrides } from './chat-engine'
 import { bumpEpoch } from './account-epoch'
 import { stopSyncScheduler, onAccountReady } from './sync'
 
@@ -220,6 +220,8 @@ function performAccountSwitchHotSwap(targetKey: string, targetDir: string): void
   try { stopAutoDownloadScheduler() } catch (e) { console.error('[account] stop scheduler failed:', e) }
   try { stopSyncScheduler() } catch (e) { console.error('[account] stop sync scheduler failed:', e) }
   try { stopAllMcpServers() } catch (e) { console.error('[account] stop mcp failed:', e) }
+  // 清空 chat-engine 内的 stash，避免上一账号会话的 overrides 残留串到新账号
+  try { clearAllLastTurnOverrides() } catch (e) { console.error('[account] clear last-turn overrides failed:', e) }
   try { closeDatabase() } catch (e) { console.error('[account] close db failed:', e) }
 
   activeKey = targetKey
@@ -237,4 +239,8 @@ function performAccountSwitchHotSwap(targetKey: string, targetDir: string): void
     if (win.isDestroyed()) continue
     try { win.webContents.reload() } catch (e) { console.error('[account] reload window failed:', e) }
   }
+  // 新账号目录下重新预热 MCP，与 main/index.ts 启动路径一致延迟 1500ms，避免与 reload 期 IO 抢资源
+  setTimeout(() => {
+    try { warmupEnabledMcpServers() } catch (e) { console.error('[account] warmup mcp failed:', e) }
+  }, 1500)
 }

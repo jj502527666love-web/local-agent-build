@@ -33,6 +33,7 @@ export interface CloudAgent {
   tool_skill_ids: string[]
   tool_approval: ToolApproval
   enable_image_gen: number
+  enable_deck: number
   tags: string[]
   download_count: number
   rating_avg: number
@@ -111,6 +112,7 @@ function mapAgent(raw: any, origin: string): CloudAgent {
     tool_skill_ids: toolIds,
     tool_approval: normalizeApproval(raw.tool_approval),
     enable_image_gen: raw.enable_image_gen ? 1 : 0,
+    enable_deck: raw.enable_deck ? 1 : 0,
     tags: Array.isArray(raw.tags) ? raw.tags.map((t: unknown) => String(t)) : [],
     download_count: Number(raw.download_count || 0),
     rating_avg: Number(raw.rating_avg || 0),
@@ -274,6 +276,8 @@ export async function importAgentAsLocal(cloudAgentInput: CloudAgent): Promise<I
     const systemPrompt = String(full.system_prompt ?? cloud.system_prompt ?? '').trim()
     const toolApproval = normalizeApproval(full.tool_approval ?? cloud.tool_approval)
     const enableImageGen = (full.enable_image_gen ?? cloud.enable_image_gen) ? 1 : 0
+    // 透传云端 AI PPT 能力位: 否则市场来源的 PPT 类智能体落本地后 enable_deck 恒为 0, deck 工具集不注入
+    const enableDeck = (full.enable_deck ?? cloud.enable_deck) ? 1 : 0
     const avatarUrl = String(full.avatar || cloud.avatar || '')
     const rawToolIds: string[] = Array.isArray(full.tool_skill_ids) && full.tool_skill_ids.length
       ? full.tool_skill_ids.map((x: unknown) => String(x))
@@ -302,6 +306,7 @@ export async function importAgentAsLocal(cloudAgentInput: CloudAgent): Promise<I
       skill_ids: toolIds,
       tool_approval: toolApproval,
       enable_image_gen: enableImageGen,
+      enable_deck: enableDeck,
       cloud_kb_ids: cloudKbIds,
       cloud_kb_only: cloudKbOnly,
       cloud_kb_top_k: cloudKbTopK,

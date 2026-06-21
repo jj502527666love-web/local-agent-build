@@ -121,11 +121,55 @@ jobs:
           OEM_PROJECT_KEY: ${{ inputs.oem_project_key }}
           BUILD_OPTIONS: ${{ inputs.build_options }}
 
+      # 双架构稳健打包：先编一次 arch 无关的渲染层/主进程 JS（electron-vite build），
+      # 再由 dist-mac-per-arch.js 为每个 arch 做「干净 npm ci（按目标 arch 选装 optional
+      # 平台子包 + prebuild）→ 单 arch 打包 → 合并 latest-mac.yml」。
+      # 不能用旧的 `npm run dist`（单次 electron-builder 同打双 arch）：那会把 host(arm64) 的
+      # better_sqlite3.node / resvg / sqlite-vec 原样塞进 x64 包 → Intel Mac dlopen wrong architecture。
       - name: Build & Package
-        run: npm run dist
+        run: |
+          npm run build
+          node scripts/dist-mac-per-arch.js
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      # 防回归硬断言：核验每个 zip 内全部原生 .node（better-sqlite3 / resvg / sqlite-vec / onnx 若有）
+      # 架构与该包 arch 一致，且 latest-mac.yml 同时覆盖双架构。任一不符即 ::error:: 退 1，
+      # 触发后续 failure callback + release cleanup，绝不放行错架构包。
+      - name: Assert native module arch per zip (anti-regression)
+        shell: bash
+        working-directory: ./dist
+        run: |
+          set -uo pipefail
+          fail=0
+          check() {
+            local zip="$1" want="$2" out
+            out="/tmp/arch-$want"
+            rm -rf "$out"; mkdir -p "$out"
+            unzip -oq "$zip" -d "$out"
+            local found=0
+            while IFS= read -r node; do
+              found=1
+              local archs
+              archs=$(lipo -archs "$node" 2>/dev/null || file -b "$node")
+              echo "[$want] $(basename "$node"): $archs"
+              case "$want" in
+                x64)   echo "$archs" | grep -qw 'x86_64' || { echo "::error::$zip :: $(basename "$node") 不是 x86_64 ($archs)"; fail=1; } ;;
+                arm64) echo "$archs" | grep -qw 'arm64'  || { echo "::error::$zip :: $(basename "$node") 不是 arm64 ($archs)";  fail=1; } ;;
+              esac
+            done < <(find "$out" -name '*.node')
+            [ "$found" = 1 ] || { echo "::error::$zip 内未找到任何 .node（解包异常）"; fail=1; }
+          }
+          x64zip=$(ls *-x64-mac.zip 2>/dev/null | head -n1)
+          armzip=$(ls *-arm64-mac.zip 2>/dev/null | head -n1)
+          [ -n "$x64zip" ] && [ -n "$armzip" ] || { echo "::error::缺 x64 或 arm64 的 zip"; ls -la; exit 1; }
+          check "$x64zip" x64
+          check "$armzip" arm64
+          grep -q -- '-x64-mac.zip'   latest-mac.yml || { echo '::error::latest-mac.yml 缺 x64 条目'; cat latest-mac.yml; fail=1; }
+          grep -q -- '-arm64-mac.zip' latest-mac.yml || { echo '::error::latest-mac.yml 缺 arm64 条目'; cat latest-mac.yml; fail=1; }
+          [ "$fail" = 0 ] || { echo '::error::arch 校验失败，拒绝发布错误架构包'; exit 1; }
+          echo 'OK: 两架构原生模块校验通过，latest-mac.yml 覆盖双架构。'
 
       # 包体积预算自检：mac 出 zip（双架构 x64/arm64），各自校验。
       # 阈值 130MB（mac zip 基线略高于 win nsis）。超阈值通过 ::warning:: 上 GHA Annotation。

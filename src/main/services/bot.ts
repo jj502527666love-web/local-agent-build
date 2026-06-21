@@ -24,6 +24,8 @@ export interface Bot {
   tool_approval: ToolApproval
   /** 是否启用 AI 生图能力（image_gen tool + 「生图：」切换条）。0=关、1=开。默认关。 */
   enable_image_gen: number
+  /** 是否启用 AI PPT 能力（deck_* 工具集：规划/生成/图表/评审/导出）。0=关、1=开。默认关。 */
+  enable_deck: number
   /** 单轮对话最大工具调用步数(0=用默认 40)。长任务(多页 PPT 等)可调高，避免被步数上限中断。 */
   max_tool_rounds: number
   /** 2:3 形象图本地绝对路径（市场导入时下载落盘；本地创建时也可上传）。空=用首字母占位 */
@@ -53,6 +55,7 @@ function parseBot(row: any): Bot {
     prompt_skill_dirs: JSON.parse(row.prompt_skill_dirs || '[]'),
     tool_approval: (row.tool_approval || 'destructive') as ToolApproval,
     enable_image_gen: row.enable_image_gen ? 1 : 0,
+    enable_deck: row.enable_deck ? 1 : 0,
     max_tool_rounds: Number(row.max_tool_rounds || 0),
     avatar: row.avatar || '',
     source: row.source || 'local',
@@ -93,6 +96,7 @@ export function createBot(data: {
   prompt_skill_dirs?: string[]
   tool_approval?: ToolApproval
   enable_image_gen?: number
+  enable_deck?: number
   max_tool_rounds?: number
   avatar?: string
   source?: string
@@ -102,7 +106,7 @@ export function createBot(data: {
   const id = uuid()
   const now = new Date().toISOString()
   db.prepare(
-    'INSERT INTO bots (id, name, description, model_provider_id, model_id, persona_id, kb_only, kb_category_ids, cloud_kb_ids, cloud_kb_only, cloud_kb_top_k, skill_ids, mcp_ids, prompt_skill_dirs, tool_approval, enable_image_gen, max_tool_rounds, avatar, source, cloud_agent_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    'INSERT INTO bots (id, name, description, model_provider_id, model_id, persona_id, kb_only, kb_category_ids, cloud_kb_ids, cloud_kb_only, cloud_kb_top_k, skill_ids, mcp_ids, prompt_skill_dirs, tool_approval, enable_image_gen, enable_deck, max_tool_rounds, avatar, source, cloud_agent_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
   ).run(
     id,
     data.name,
@@ -120,6 +124,7 @@ export function createBot(data: {
     JSON.stringify(data.prompt_skill_dirs || []),
     data.tool_approval || 'destructive',
     data.enable_image_gen ? 1 : 0,
+    data.enable_deck ? 1 : 0,
     data.max_tool_rounds || 0,
     data.avatar || '',
     data.source || 'local',
@@ -148,6 +153,7 @@ export function updateBot(
     prompt_skill_dirs: string[]
     tool_approval: ToolApproval
     enable_image_gen: number
+    enable_deck: number
     max_tool_rounds: number
     avatar: string
   }>
@@ -158,7 +164,7 @@ export function updateBot(
 
   const now = new Date().toISOString()
   db.prepare(
-    'UPDATE bots SET name=?, description=?, model_provider_id=?, model_id=?, persona_id=?, kb_only=?, kb_category_ids=?, cloud_kb_ids=?, cloud_kb_only=?, cloud_kb_top_k=?, skill_ids=?, mcp_ids=?, prompt_skill_dirs=?, tool_approval=?, enable_image_gen=?, max_tool_rounds=?, avatar=?, updated_at=? WHERE id=?'
+    'UPDATE bots SET name=?, description=?, model_provider_id=?, model_id=?, persona_id=?, kb_only=?, kb_category_ids=?, cloud_kb_ids=?, cloud_kb_only=?, cloud_kb_top_k=?, skill_ids=?, mcp_ids=?, prompt_skill_dirs=?, tool_approval=?, enable_image_gen=?, enable_deck=?, max_tool_rounds=?, avatar=?, updated_at=? WHERE id=?'
   ).run(
     data.name ?? existing.name,
     data.description ?? existing.description,
@@ -175,6 +181,7 @@ export function updateBot(
     JSON.stringify(data.prompt_skill_dirs ?? existing.prompt_skill_dirs),
     data.tool_approval ?? existing.tool_approval,
     data.enable_image_gen !== undefined ? (data.enable_image_gen ? 1 : 0) : existing.enable_image_gen,
+    data.enable_deck !== undefined ? (data.enable_deck ? 1 : 0) : existing.enable_deck,
     data.max_tool_rounds !== undefined ? data.max_tool_rounds : existing.max_tool_rounds,
     data.avatar ?? existing.avatar,
     now,
@@ -187,6 +194,68 @@ export function deleteBot(id: string): boolean {
   const db = getDatabase()
   const result = db.prepare('DELETE FROM bots WHERE id = ?').run(id)
   return result.changes > 0
+}
+
+/** 内置预设智能体: 数据库初始化时按 name 幂等创建。需在 seedPresetPersonas 之后调用(依赖 persona)。 */
+const PPT_BOT_TOOLS = [
+  'builtin_current_time',
+  'builtin_calculator',
+  'builtin_fetch_webpage',
+  'builtin_json_tool',
+  'builtin_text_tool',
+  'builtin_random_generator'
+]
+
+export function seedPresetBots(): void {
+  try {
+    const db = getDatabase()
+    // PPT 设计师: 绑 PPT 设计师 persona + 开启 deck 工具集 + 提高工具步数上限(多页 PPT 需多步)
+    const exists = db.prepare('SELECT id FROM bots WHERE name = ?').get('PPT 设计师') as
+      | { id: string }
+      | undefined
+    if (exists) {
+      // 旧库幂等升级: 已存在但 skill_ids 为空时补上 6 个内置工具(不覆盖用户手动选择); 同时确保生图/AI PPT 能力默认开
+      const row = db.prepare('SELECT skill_ids, enable_image_gen, enable_deck FROM bots WHERE id = ?').get(exists.id) as
+        | { skill_ids: string; enable_image_gen: number; enable_deck: number }
+        | undefined
+      let cur: string[] = []
+      try {
+        cur = JSON.parse(row?.skill_ids || '[]')
+      } catch {
+        cur = []
+      }
+      if (cur.length === 0) {
+        db.prepare("UPDATE bots SET skill_ids = ?, updated_at = datetime('now') WHERE id = ?").run(
+          JSON.stringify(PPT_BOT_TOOLS),
+          exists.id
+        )
+      }
+      if (!row?.enable_image_gen) {
+        db.prepare("UPDATE bots SET enable_image_gen = 1, updated_at = datetime('now') WHERE id = ?").run(exists.id)
+      }
+      // enable_deck 列是后加的(旧库 ALTER DEFAULT 0): 若此预设 bot 在加列前就已 seed, 这里幂等补 1, 否则 PPT 设计师丧失 deck 能力且无自愈
+      if (!row?.enable_deck) {
+        db.prepare("UPDATE bots SET enable_deck = 1, updated_at = datetime('now') WHERE id = ?").run(exists.id)
+      }
+    } else {
+      const persona = db.prepare("SELECT id FROM personas WHERE name = 'PPT 设计师'").get() as { id: string } | undefined
+      createBot({
+        name: 'PPT 设计师',
+        description: '通过多轮对话帮你做专业、可编辑的演示文稿。支持受控模板与 AI 自由设计双引擎，可绑知识库取真实素材。',
+        persona_id: persona?.id,
+        enable_deck: 1,
+        // 默认开启生图能力(deck_gen_image 优先生图, 失败降级自绘 SVG; 同时暴露通用 image_gen 工具)
+        enable_image_gen: 1,
+        // 默认勾选全部 6 个内置小工具(取当前时间/计算器/抓网页/JSON/文本/随机), 供设计时取数/算数/查资料
+        skill_ids: PPT_BOT_TOOLS,
+        max_tool_rounds: 60,
+        tool_approval: 'destructive',
+        source: 'local'
+      })
+    }
+  } catch (e) {
+    console.error('Failed to seed preset bots:', e)
+  }
 }
 
 /** 按市场来源云端 id 查本地 bot（保存到本地去重用） */

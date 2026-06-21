@@ -86,6 +86,13 @@ export const routes: RouteRecordRaw[] = [
         component: () => import('@/views/image-gen/ImageGenView.vue'),
         meta: { title: 'AI 生图' }
       },
+      // AI PPT 暂时下线
+      // {
+      //   path: 'deck',
+      //   name: 'deck',
+      //   component: () => import('@/views/deck/DeckView.vue'),
+      //   meta: { title: 'AI PPT' }
+      // },
       {
         path: 'ecom/batch-sku',
         name: 'ecomBatchSku',
@@ -115,6 +122,34 @@ export const routes: RouteRecordRaw[] = [
         name: 'ecomPoster',
         component: () => import('@/views/ecom/PosterView.vue'),
         meta: { title: 'AI 海报生成' }
+      },
+      {
+        // ewei 商城：连接器列表 + 登录 + 选门店
+        path: 'ewei',
+        name: 'eweiConnectors',
+        component: () => import('@/views/ewei/EweiConnectorsView.vue'),
+        meta: { title: '店铺商品图' }
+      },
+      {
+        // 某门店商品列表
+        path: 'ewei/:connectorId/goods',
+        name: 'eweiGoods',
+        component: () => import('@/views/ewei/EweiGoodsListView.vue'),
+        meta: { title: '门店商品' }
+      },
+      {
+        // 新增商品
+        path: 'ewei/:connectorId/goods/new',
+        name: 'eweiGoodsCreate',
+        component: () => import('@/views/ewei/EweiGoodsCreateView.vue'),
+        meta: { title: '新增商品' }
+      },
+      {
+        // 某商品的图片替换工作台
+        path: 'ewei/:connectorId/goods/:goodsId/image',
+        name: 'eweiGoodsImage',
+        component: () => import('@/views/ewei/EweiGoodsImageView.vue'),
+        meta: { title: '商品图替换' }
       },
       {
         path: 'batch-gen',

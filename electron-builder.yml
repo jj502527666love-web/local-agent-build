@@ -30,7 +30,6 @@ files:
   - '!node_modules/better-sqlite3/src/**/*'
   - '!node_modules/better-sqlite3/docs/**/*'
   - '!node_modules/better-sqlite3/benchmark/**/*'
-  # Python bytecode caches (from bundled-skills/ppt-master/scripts/*) — never runtime-needed
   - '!**/__pycache__/**/*'
   - '!**/*.pyc'
   - '!**/*.pyo'

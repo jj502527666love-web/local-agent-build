@@ -150,6 +150,7 @@ CREATE TABLE IF NOT EXISTS mcp_servers (
   env TEXT NOT NULL DEFAULT '{}',
   enabled INTEGER NOT NULL DEFAULT 1,
   tools TEXT NOT NULL DEFAULT '[]',
+  always_load INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -510,3 +511,108 @@ CREATE TABLE IF NOT EXISTS cloud_kb_cache (
 );
 CREATE INDEX IF NOT EXISTS idx_cloud_kb_cache_query ON cloud_kb_cache(query_hash);
 CREATE INDEX IF NOT EXISTS idx_cloud_kb_cache_cached ON cloud_kb_cache(cached_at);
+
+-- ewei 商城连接器（业务管理端账号绑定）。第三方商城域名 + 账号 + 密码，登录后管理门店商品图。
+-- 安全同 matting_providers：密码 AES-256-GCM 加密存（device-id 派生 key），不参与云同步。
+-- session_id 不落库（纯内存态，过期用存的 password 静默重登，见 services/ewei-client.ts）。
+CREATE TABLE IF NOT EXISTS ewei_connectors (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,                              -- 连接器别名
+  base_url TEXT NOT NULL DEFAULT '',               -- 业务管理端域名，末尾带 /
+  account TEXT NOT NULL DEFAULT '',                -- 登录账号（明文，列表 masked 展示）
+  password_enc TEXT NOT NULL DEFAULT '',           -- 登录密码：v1:{iv}:{tag}:{ct} 加密
+  account_version TEXT NOT NULL DEFAULT '2.1.6',   -- web_site(账户)接口 version 头
+  shop_version TEXT NOT NULL DEFAULT '4.6.11',     -- shop_web(商品/上传)接口 version 头
+  current_shop_id INTEGER NOT NULL DEFAULT 0,      -- 当前选中门店主键
+  current_shop_name TEXT NOT NULL DEFAULT '',
+  is_default INTEGER NOT NULL DEFAULT 0,
+  last_login_at TEXT NOT NULL DEFAULT '',
+  last_login_status TEXT NOT NULL DEFAULT '',
+  last_login_message TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- ewei 商品图替换审计/回滚载体。回写前写 pending+备份原值，上传成功 uploaded，落库成功 done，失败 error。
+CREATE TABLE IF NOT EXISTS ewei_goods_image_logs (
+  id TEXT PRIMARY KEY,
+  connector_id TEXT NOT NULL DEFAULT '',
+  shop_id INTEGER NOT NULL DEFAULT 0,
+  goods_id INTEGER NOT NULL DEFAULT 0,
+  goods_title TEXT NOT NULL DEFAULT '',
+  slot TEXT NOT NULL DEFAULT '',                   -- mainThumb/galleryReplace/galleryAppend/detailAppend/optionThumb
+  old_value_json TEXT NOT NULL DEFAULT '',         -- 受影响字段的原值（回滚用）
+  new_paths_json TEXT NOT NULL DEFAULT '[]',       -- 本次上传得到的相对 path 数组
+  status TEXT NOT NULL DEFAULT 'pending',
+  error TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_ewei_logs_goods ON ewei_goods_image_logs(goods_id);
+CREATE INDEX IF NOT EXISTS idx_ewei_logs_created ON ewei_goods_image_logs(created_at);
+
+-- ============================================================
+-- AI Deck(设计/PPT/视频工作台) 持久化 4 表  (参见 docs/deck-feature-spec.md §5.5)
+-- 仅追加新表; 对齐既有约定: TEXT datetime('now') 时间列 + 表级 FK ON DELETE CASCADE
+-- 注: 语义图标向量的 vec0 虚表由运行时 icon-index-builder 加载 sqlite-vec 扩展后创建,
+--     不写入 schema.sql, 以免扩展未加载时 db.exec 整体失败(与 vector_chunks vec0 同策略)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS deck_projects (
+  id                TEXT PRIMARY KEY,
+  title             TEXT NOT NULL DEFAULT '',
+  text_provider_id  TEXT NOT NULL DEFAULT '',
+  text_model_id     TEXT NOT NULL DEFAULT '',
+  image_provider_id TEXT NOT NULL DEFAULT '',
+  image_model_id    TEXT NOT NULL DEFAULT '',
+  theme_id          TEXT NOT NULL DEFAULT '',
+  template_id       TEXT NOT NULL DEFAULT '',
+  style_family      TEXT NOT NULL DEFAULT '',
+  grammar           TEXT NOT NULL DEFAULT '{}',
+  outline           TEXT NOT NULL DEFAULT '{}',
+  status            TEXT NOT NULL DEFAULT 'draft',
+  aspect_ratio      TEXT NOT NULL DEFAULT '16:9',
+  system_prompt     TEXT NOT NULL DEFAULT '',
+  created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS deck_slides (
+  id          TEXT PRIMARY KEY,
+  project_id  TEXT NOT NULL,
+  sort_order  INTEGER NOT NULL DEFAULT 0,
+  layout      TEXT NOT NULL DEFAULT '',
+  ir          TEXT NOT NULL DEFAULT '{}',
+  html        TEXT NOT NULL DEFAULT '',
+  notes       TEXT NOT NULL DEFAULT '',
+  image_path  TEXT NOT NULL DEFAULT '',
+  render_path TEXT NOT NULL DEFAULT '',
+  review      TEXT NOT NULL DEFAULT '{}',
+  status      TEXT NOT NULL DEFAULT 'draft',
+  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (project_id) REFERENCES deck_projects(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_deck_slides_project ON deck_slides(project_id);
+CREATE INDEX IF NOT EXISTS idx_deck_slides_project_sort ON deck_slides(project_id, sort_order);
+
+CREATE TABLE IF NOT EXISTS deck_assets (
+  id          TEXT PRIMARY KEY,
+  project_id  TEXT NOT NULL,
+  kind        TEXT NOT NULL DEFAULT '',
+  local_path  TEXT NOT NULL DEFAULT '',
+  file_size   INTEGER NOT NULL DEFAULT 0,
+  status      TEXT NOT NULL DEFAULT 'pending',
+  error       TEXT NOT NULL DEFAULT '',
+  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (project_id) REFERENCES deck_projects(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_deck_assets_project ON deck_assets(project_id);
+
+CREATE TABLE IF NOT EXISTS deck_icon_vectors (
+  icon_id         TEXT PRIMARY KEY,
+  name            TEXT NOT NULL,
+  keywords        TEXT NOT NULL DEFAULT '',
+  svg_path        TEXT NOT NULL,
+  embedding_model TEXT NOT NULL DEFAULT '',
+  embedding_dim   INTEGER NOT NULL DEFAULT 384,
+  embedding       BLOB
+);

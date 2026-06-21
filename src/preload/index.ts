@@ -38,6 +38,13 @@ const api = {
       ipcRenderer.on('chat:toolApproval', (_event, data) => callback(data)),
     offToolApproval: () => ipcRenderer.removeAllListeners('chat:toolApproval'),
     /**
+     * 审批已在主进程侧被解决（超时 / 中止）事件；payload = { request_id, conversation_id }。
+     * 渲染端常驻审批监听据此清掉对应卡片，避免残留无法操作的浮层。
+     */
+    onToolApprovalResolved: (callback: (data: unknown) => void) =>
+      ipcRenderer.on('chat:toolApprovalResolved', (_event, data) => callback(data)),
+    offToolApprovalResolved: () => ipcRenderer.removeAllListeners('chat:toolApprovalResolved'),
+    /**
      * 异步追加消息事件：image_gen fire-and-forget 完成后由主进程发出，
      * payload: { conversationId, message }。renderer 端 chat store 监听后
      * 把 message push 到 messages.value（仅当 currentConversationId 匹配）。
@@ -57,6 +64,10 @@ const api = {
   skill: {
     invoke: (channel: string, ...args: unknown[]) =>
       ipcRenderer.invoke(`skill:${channel}`, ...args)
+  },
+  mcpMarket: {
+    invoke: (channel: string, ...args: unknown[]) =>
+      ipcRenderer.invoke(`mcpMarket:${channel}`, ...args)
   },
   mcp: {
     invoke: (channel: string, ...args: unknown[]) =>
@@ -121,6 +132,16 @@ const api = {
     /** @deprecated 改用 onProgress 返回的 unsubscribe，避免误清其他视图的监听 */
     offProgress: () => ipcRenderer.removeAllListeners('imageGen:progress')
   },
+  deck: {
+    invoke: (channel: string, ...args: unknown[]) =>
+      ipcRenderer.invoke(`deck:${channel}`, ...args),
+    // 注册 deck:progress(大纲/逐页生成进度)回调，返回 unsubscribe
+    onProgress: (callback: (data: unknown) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, data: unknown) => callback(data)
+      ipcRenderer.on('deck:progress', handler)
+      return () => ipcRenderer.off('deck:progress', handler)
+    }
+  },
   canvas: {
     invoke: (channel: string, ...args: unknown[]) =>
       ipcRenderer.invoke(`canvas:${channel}`, ...args)
@@ -157,6 +178,19 @@ const api = {
       const handler = (_event: Electron.IpcRendererEvent, data: unknown) => callback(data)
       ipcRenderer.on('fineMatting:progress', handler)
       return () => ipcRenderer.off('fineMatting:progress', handler)
+    },
+  },
+  ewei: {
+    invoke: (channel: string, ...args: unknown[]) =>
+      ipcRenderer.invoke(`ewei:${channel}`, ...args),
+    /**
+     * ewei 商品图替换进度回调；payload = { taskId, goodsId, phase: 'uploading'|'saving'|'done'|'error', current?, total?, message? }
+     * 返回 unsubscribe 函数。
+     */
+    onProgress: (callback: (data: unknown) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, data: unknown) => callback(data)
+      ipcRenderer.on('ewei:progress', handler)
+      return () => ipcRenderer.off('ewei:progress', handler)
     },
   },
   videoGen: {

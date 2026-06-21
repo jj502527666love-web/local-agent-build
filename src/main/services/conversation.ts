@@ -3,6 +3,7 @@ import { v4 as uuid } from 'uuid'
 import { join } from 'path'
 import { existsSync, mkdirSync, rmSync } from 'fs'
 import { getDataDir } from './data-path'
+import { clearLastTurnOverridesForConversation } from './chat-engine'
 
 export interface Conversation {
   id: string
@@ -169,6 +170,8 @@ export function deleteConversation(id: string): boolean {
   } catch (e) {
     console.error('Failed to cleanup workspace:', e)
   }
+  // 同步清理 chat-engine 内的 stash，避免 lastTurnOverrides 残留指向已删会话
+  try { clearLastTurnOverridesForConversation(id) } catch (e) { console.error('Failed to clear last-turn overrides:', e) }
   return result.changes > 0
 }
 

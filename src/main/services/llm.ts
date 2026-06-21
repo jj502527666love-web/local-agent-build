@@ -13,6 +13,7 @@ import {
 } from './cloud-token'
 import { normalizeApiBase } from './api-base-normalize'
 import { getSetting } from './settings'
+import { uploadDataUriToCloud } from './cloud-image-asset'
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool'
@@ -38,6 +39,9 @@ export interface LLMRequestOptions {
   streamContext?: {
     conversationId?: string
     requestId?: string
+    /** 后台 LLM 调用的流式增量回调（不经 chat:stream，由调用方自行推送到专用频道，如 AI PPT 大纲流式） */
+    onContent?: (piece: string) => void
+    onReasoning?: (piece: string) => void
   }
 }
 
@@ -194,6 +198,38 @@ async function fetchWithRetry(url: string, init: RequestInit, retries = 2): Prom
   throw enriched
 }
 
+/**
+ * 视觉发图换 URL：把 messages 里以 dataURI / 裸 base64 内联的图片，统一上传云控端换成
+ * https URL 再发给模型。覆盖图生词 / 聊天看图 / 画布关键帧分析等视觉输入场景——链路与
+ * 上游日志不再夹带大段 base64；vision 接口原生支持 image_url 传 http URL，无协议障碍。
+ * http(s) URL 原样保留；单张上传失败时回退原内联值，不阻断对话。
+ */
+async function materializeMessageImages(messages: ChatMessage[]): Promise<ChatMessage[]> {
+  let changed = false
+  const out = await Promise.all(messages.map(async (msg) => {
+    if (!Array.isArray(msg.content)) return msg
+    let partChanged = false
+    const parts = await Promise.all(msg.content.map(async (part: any) => {
+      if (part?.type !== 'image_url' || typeof part?.image_url?.url !== 'string') return part
+      const url: string = part.image_url.url
+      if (/^https?:\/\//i.test(url)) return part
+      try {
+        const cloudUrl = await uploadDataUriToCloud(url)
+        if (cloudUrl && cloudUrl !== url) {
+          partChanged = true
+          return { ...part, image_url: { ...part.image_url, url: cloudUrl } }
+        }
+      } catch (e: any) {
+        console.warn('[LLM] 视觉图上传云端换 URL 失败，回退内联 base64：', e?.message || e)
+      }
+      return part
+    }))
+    if (partChanged) { changed = true; return { ...msg, content: parts } }
+    return msg
+  }))
+  return changed ? out : messages
+}
+
 export async function callLLM(
   providerId: string,
   options: LLMRequestOptions,
@@ -231,9 +267,16 @@ export async function callLLM(
     apiKey = config.apiKey
   }
 
+  // 视觉发图换 URL：仅云端模型下，把 messages 里内联的 dataURI/base64 图片先上传云控端换
+  // https URL 再发，不再内联 base64。自定义直连 provider 保持原样（不引入云控端依赖，
+  // 与「自定义模型完全不碰」的策略一致）。
+  const outboundMessages = isCloud
+    ? await materializeMessageImages(options.messages)
+    : options.messages
+
   const body: any = {
     model: bodyModelId,
-    messages: options.messages,
+    messages: outboundMessages,
     stream: options.stream ?? false
   }
   // 云端网关按 cloud_model_id 主键精确路由到具体服务商，避免同 model_id 多家时 first() 错位
@@ -540,6 +583,7 @@ async function streamLLMOnce(
         if (reasoningPiece) {
           sawReasoning = true
           reasoningContent += reasoningPiece
+          streamContext?.onReasoning?.(reasoningPiece)
           if (window && notifyStream) {
             window.webContents.send('chat:stream', {
               type: 'reasoning',
@@ -552,6 +596,7 @@ async function streamLLMOnce(
 
         if (delta?.content) {
           fullContent += delta.content
+          streamContext?.onContent?.(delta.content)
           if (window && notifyStream) {
             window.webContents.send('chat:stream', {
               type: 'content',

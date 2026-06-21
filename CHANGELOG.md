@@ -6,6 +6,86 @@
 
 ---
 
+## [0.9.1] - 2026-06-21
+
+> **MCP 体验大幅升级**：新增「MCP 市场」一键发现与安装常用 MCP 服务（接入 mcp-cn.com 精选与 mcpmarket.cn 全量两大大陆免 key 源）；新增「按需加载（元工具）」机制，根治大量 MCP 工具撑大 prompt 导致云端网关 524 超时；修复对话里 MCP 选择在重新生成/续写/编辑消息时丢失、禁用项被静默隐藏等多处可用性问题。
+
+### 新增（MCP 市场）
+
+- **MCP 市场 tab**：`views/mcps/McpView.vue` 仿 SkillsView 增加 installed / market 双 tab；接入两个大陆免 key 源——mcp-cn.com（精选 ~74 条，零包装）与 mcpmarket.cn（全量 ~69k 条，规模派）。
+- **主进程市场服务** `services/mcp-market.ts`：listMarket / searchMarket / getMarketDetail / installFromMarket 四个 API；针对 mcp-cn 的 connections 字段（unquoted JSON5）自实现两阶段正则解析。
+- **安装流程**：远程 MCP（streamable-http）暂拒装；stdio 走现有 `createMcpServer`，名称前缀 `[市场]`；含 `<your-xxx>` 等占位符时弹窗让用户填充后再装（弹窗仅阴影、无遮罩）。
+- **链路**：新增 `mcpMarket.invoke` 通配 IPC 桥（preload + `env.d.ts`）+ pinia `stores/mcpMarket.ts`（fetchList / search / loadMore / fetchDetail / install）。
+
+### 新增（MCP 元工具按需加载）
+
+- **三元元工具**：`mcp_list_servers` / `mcp_describe_tools` / `mcp_call`——把未勾选「始终加载」的 MCP 服务从全量工具注入降级为「按需发现」，大幅压缩 prompt token，根治云端 Cloudflare 100s 切（HTTP 524）。
+- **数据库新增 `always_load` 列**：`resources/schema.sql` + `database/index.ts` runMigrations 幂等 ALTER；`McpServer` interface / `parseMcpServer` / create / update 全链路打通；编辑表单新增「始终加载到对话工具列表（高频工具勾选）」checkbox。
+- **混合注入策略**：`always_load=true` 的 server 仍按裸名直接注入；`always_load=false` 的 server 只通过元工具暴露；`capSummary` 分「直接可用 / 按需发现」两栏。
+- **审批兼容**：`mcp_call` 的审批 `approvalToolName` / `approvalArgs` 重映射到目标 MCP 工具，`readOnlyHint` 判定与裸名注入路径一致。
+
+### 修复
+
+- **重新生成 / 续写 / 编辑消息丢失 MCP / KB / Skills / PromptSkills 选择**：`chat-engine.ts` 新增模块级 `lastTurnOverrides` Map（按 `conversation_id` 缓存最近一轮 override），三个回放入口注入；`stores/chat.ts` 四类 override 统一 `!== undefined` 判空，清空意图不再被静默回填 bot 默认。
+- **弹层禁用 MCP 被隐藏**：对话内 MCP 选择改为「disabled 灰显不隐藏」+ 尾标「（未启用）」，避免 bot 绑了禁用 MCP 时用户无感知。
+- **进入对话首次未按 bot.mcp_ids 预填**：新增 `enabledMcpServers` computed + `loadDraftFor` watchEffect 兜底（bots 异步未就绪时首次跳过预填，待 `currentBot.id` 就绪再补做）。
+- **warmup 后偶发 tools 列表为空**：`warmupEnabledMcpServers` 在 `ensureClient` 后追加 `refreshMcpTools` 主动刷新；失败 500ms 后重试一次吸收握手刚就绪的瞬态失败；末尾广播 `toolsUpdated` 让渲染层即时刷新。
+- **MCP 长任务被默认超时打断**：按 `tool.annotations.timeoutMs` / `longRunning` 解析（`resolveMcpToolTimeoutMs`），新增 `MCP_LONG_RUNNING_TIMEOUT_MS = 5 分钟` 兜底。
+
+### 优化
+
+- **账号热切换后自动 warmup**：`performAccountSwitchHotSwap` reload 后 1.5s 触发 `warmupEnabledMcpServers`，并同步清理 `lastTurnOverrides` 缓存避免内存累积（`deleteConversation` 同样清理）。
+- **类型派生防漂移**：`LastTurnOverrides = Pick<SendMessageOptions, ...>`，override 字段重命名时编译期可捕获。
+
+## [0.9.0] - 2026-06-20
+
+> **全新「AI PPT」创作功能（app 原生受控模板引擎）**：输入一句话主题，经「LLM 出大纲选版式 → 按模板 schema 填槽 → 离屏 Chromium 渲染 → 确定性映射」生成专业、可编辑的演示文稿。**零外部 Python / Node 依赖**（presenton 的 Python 逻辑全部用 TS 重写）；声明式模板为数据非代码（规避 RCE），由固定渲染器产出 html2pptx 4 约束合规 HTML，故 PPTX 与 HTML/PDF 平级、真可编辑。
+
+### 新增（AI PPT 创作）
+
+- **受控模板引擎**：`deck/` 下 32 模块——两阶段生成（`deck-generator` 出大纲选版式 → 按 schema 填槽，字数上限截断防溢出 + 逐页口播解说稿）、`design-rules` 反 AI-slop 设计方法论注入提示词、`html-ir` 产唯一合规 HTML、`offscreen-renderer` 离屏 BrowserWindow 渲染/抽取/截图、`pptx-exporter` html2pptx TS 实现。
+- **风格分组（14 套风格，界面称「风格」）+ 配色主题（8 套）**：`families.ts` 把模板按 presenton 组归入不同风格，选型只在所选风格内进行、每种风格绑定一套配色主题 → 避免一份 PPT 风格混搭并控制选型 prompt 体量；`template-provider` 进程级共享单例缓存云端 manifest。
+- **全量移植 presenton 217 套版式**为声明式模板（13 组，`deck-templates-src/`）；按需云缓存（上游母 CDN → 云控端 → 桌面端三层分发 + SHA256 强校验）。结构校验 + 满字数真渲染 QA 双过（`scripts/verify-deck-templates.mjs`、`qa-render-templates.mjs`）。
+- **自适应排版**：`declarative` 渲染器对卡片网格/列表按盒高自适应、长文本自动缩字、内部元素卡内钳制 → 内容填满 schema 上限也不溢出画布、不破版。
+- **导出全家桶**：可编辑 PPTX（pptxgenjs）、PDF（pdf-lib）、GIF（gifenc）、MP4（ffmpeg 逐帧编码）、可点击 HTML 原型（`prototype-exporter`）；解说视频（`narrate-pipeline`：云端 TTS 配音 + 逐帧渲染 + 合流）。
+- **信息图**（`infographic.ts`）：LLM 判断数据页 → 出 ChartSpec → 渲染柱/折线/饼/进度图，主题色驱动配色，自动填入空图槽。
+- **语义图标检索**（`icon-search`/`minilm-embedder`/`icon-index-builder`）：MiniLM 本地嵌入（失败回退云端语义嵌入）+ sqlite-vec vec0 KNN（失败回退 JS cosine）+ @resvg 栅格化；空图片位自动配语义图标，并提供关键词检索面板。
+- **设计评审**（`critique.ts`）：逐页截图 + 度量 → 多模态 LLM 5 维打分与改进建议。
+- **ffmpeg 应用内一键下载安装**（`ffmpeg-manager`）：三层分发 + SHA256 强校验 + mac arm64 ad-hoc 自签；仅视频/解说导出门控，GIF/PPTX/PDF/预览不门控。
+- **云控端资源管理**：`agent-admin` 新增 AI PPT 资源资产（ffmpeg/模板包，含从 manifest 批量导入 + 分批拉取固化）与解说 TTS 供应商管理（key 留服务端、按字符计费）。
+- **5 段式接线**：`/deck` 路由 + 侧栏「AI PPT」入口 + `stores/deck` + `deck:*` IPC + `deck-service` 编排；`deck_projects/deck_slides/deck_assets/deck_icon_vectors` 数据表。
+
+> **全新「店铺商品图」功能（ewei 商城集成）**：桌面端可绑定 ewei 商城业务端（填域名/账号/密码，密码 AES-256-GCM 本地加密、不上云、不参与同步），登录后选门店，用本地图库 / AI 生图 / 电商生图 替换商品主图·图集·详情图·SKU 图，并支持从零新增商品（含完整多规格 SKU）。所有接口契约经真实环境抓包/写验证。
+
+### 新增
+
+- **ewei 连接器与客户端**：`services/ewei-connectors.ts` 连接器 CRUD + 复用 matting 的 AES-256-GCM 加解密（device-id 派生 key、密文 `v1:iv:tag:ct`）；`services/ewei-client.ts` 无界面 HTTP 客户端——密码 AES-128-CBC/ZeroPadding 复刻、仅 `session-id` 头维持会话（单飞登录、`-10000` 节流重登并自动恢复门店）、列店/切店、商品列表/详情、`utility/attachment/upload` 上传（超大自动压缩）。
+- **商品图替换工作台** `views/ewei/EweiGoodsImageView.vue`：6 个图位（主图 / 图集替换·追加 / 详情图追加·替换 / SKU 图），3 个来源（AI 生成复用电商 `EcomGeneratorPanel` 的 `pickable` 选图模式 / 本地图库 / 本地文件），批量上传 + 安全回写——多规格商品完整回填 `specs/options` 防 SKU 误删、实体商品规避运费模板坑、剔除 `diy_share`；审计表 `ewei_goods_image_logs`。
+- **新增商品** `views/ewei/EweiGoodsCreateView.vue` + `ewei-client.addGoods`：走收银台 `goods/save`（无运费坑、最安全的 SKU 路径），多图集 / 单规格原价用 `goods/edit` 补；完整表单——基本信息（标题/类型实体·虚拟·称重/上下架/单位）+ 多图集 + 分类 + 单规格（价/库存/原价/编码/条码）或笛卡尔积 **SKU 编辑器**（规格组+规格值+每值图 → 每 SKU 价/库存/原价/编码/图/隐藏）。
+- **可复用选图弹窗** `views/ewei/EweiImagePicker.vue`（AI 生成 / 图库 / 文件三来源）；**入口权限位** `allow_ewei_shop`（侧栏菜单 `requireAnyPermission` + 视图运行时门控）。
+- **数据表** `ewei_connectors` + `ewei_goods_image_logs`：`resources/schema.sql` + `database/index.ts` runMigrations 双写幂等建表，明确排除出 `sync/registry.ts` 的 SYNC_ENTITIES（凭据本地加密、跨设备不可解密）。
+
+### 优化
+
+- 本地图库 / 选图网格改用 `local-file://...&thumb=1` 缩略图（主进程 360px JPEG 缓存 + `preloadThumbnails` 预热），一次加载大量商品原图不再卡顿；应用商品图时仍用原图路径。
+- 电商「AI 生成主图 / 详情页」面板（`EcomGeneratorPanel` + `EcomResultGrid`）新增可选 `pickable` 选图模式（默认关闭，主图/详情页/批量 SKU 原功能零影响），供店铺商品图直接复用完整控制栏与两步法生成。
+- 店铺商品各页状态持久化（商品列表筛选/结果、图片工作台图位+已选图、**新增商品表单草稿**，存入 `stores/ewei.ts`）+ ewei「分区记忆」路由守卫：从其它功能页返回「店铺商品图」时自动回到上次停留的深层页（`main.ts`）。
+
+### 变更（入口两级授权门控）
+
+- 「店铺商品图」入口改为**两级授权门控**：`cloud-auth.ts` 的 `allow_ewei_shop` 默认值由 `true` 改为 **`false`（默认拒绝）**，`EweiConnectorsView` 守卫改 `=== true`。仅当①授权管理端开放本云控端该功能、且②云控端对该用户授权时，云控端才下发 `allow_ewei_shop=true` → 入口显示。老/未授权云控端不下发 → 隐藏。**需配合云控端 1.6.8 + 授权管理端 0.14.0；务必后端先行，否则现网用户会暂时看不到该入口。**
+
+## [0.8.5] - 2026-06-14
+
+> **登录 / 注册 / 找回密码页面整体改版（建议配合云控端 1.6.5）**：品牌图标与名称居中、输入框配图标、登录按钮品牌色渐变；登录页支持云控端配置的自定义背景图与主题色。
+
+### 变更
+
+- 登录 / 注册 / 找回密码页面整体改版：品牌图标与名称居中展示、输入框配图标、登录按钮采用品牌色渐变。
+- 登录页支持显示由云控端配置的自定义背景图，自动铺满并随窗口自适应（需云控端 1.6.5）。
+- 支持由云控端统一配置应用主题色，按钮 / 链接 / 选中态等整体配色跟随云控端设置（需云控端 1.6.5）。
+- 「记住账号 / 记住密码」一行新增「忘记密码」入口，登录页布局更清晰。
+
 ## [0.8.4] - 2026-06-13
 
 > **对话/生图「模型无响应」误报与套餐到期状态修复（建议配合云控端 1.6.4）**：根治「有余额却报模型无响应（可能余额不足）」的误导文案——空流文案与余额解耦，并解析云控端注入的精确错误事件；非对话路径（识图/提示词优化等）余额不足统一中文；「我的套餐」徽标按到期时间实时派生，到期即显示「已过期」。
