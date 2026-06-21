@@ -23,6 +23,10 @@ on:
         description: 'Repo-relative path to the icon PNG (pre-uploaded by agent-build)'
         required: true
         type: string
+      icon_url:
+        description: 'Cloud-hosted icon URL; inject falls back to it if the committed icon is missing'
+        required: false
+        type: string
       callback_url:
         description: 'agent-build callback endpoint'
         required: true
@@ -110,6 +114,7 @@ jobs:
           DOMAIN: ${{ inputs.domain }}
           API_DOMAIN: ${{ inputs.api_domain }}
           ICON_LOCAL_PATH: ${{ inputs.icon_path }}
+          ICON_URL: ${{ inputs.icon_url }}
           PLATFORM: win
           APP_ID: ${{ inputs.app_id }}
           UPDATE_URL: ${{ inputs.update_url }}

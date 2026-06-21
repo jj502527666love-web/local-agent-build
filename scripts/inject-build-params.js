@@ -245,12 +245,17 @@ async function main() {
   const DOMAIN = env('DOMAIN').replace(/\/+$/, '')
   const API_DOMAIN = env('API_DOMAIN').replace(/\/+$/, '')
   const PLATFORM = validatePlatform(env('PLATFORM'))
-  const ICON_URL = process.env.ICON_LOCAL_PATH || env('ICON_URL')
+  // 图标来源：ICON_LOCAL_PATH = 云打包时 commit 到仓库的本地文件；ICON_URL = 云端原始图标 URL。
+  // 二者至少有一个。云打包会同时传两者：优先读本地文件，文件缺失时回退到 URL 下载——
+  // 规避「图标 commit 到 main 后、workflow_dispatch 解析 ref 抢在其可见之前 → checkout 缺图标」的竞态。
+  const ICON_LOCAL = process.env.ICON_LOCAL_PATH || ''
+  const ICON_REMOTE = optionalEnv('ICON_URL')
+  if (!ICON_LOCAL && !ICON_REMOTE) fail('missing icon source: need ICON_LOCAL_PATH or ICON_URL')
   const BUILD_OPTIONS = parseBuildOptions(optionalEnv('BUILD_OPTIONS'))
 
   maskInActions(DOMAIN)
   maskInActions(API_DOMAIN)
-  maskInActions(ICON_URL)
+  maskInActions(ICON_REMOTE)
   maskInActions(optionalEnv('BUILD_OPTIONS'))
 
   const EXEC_NAME = safeExecutableName(APP_NAME)
@@ -274,13 +279,17 @@ async function main() {
 
   // 1. 取得图标 buffer
   let iconBuf
-  if (process.env.ICON_LOCAL_PATH) {
-    iconBuf = fs.readFileSync(process.env.ICON_LOCAL_PATH)
-    log(`icon loaded from local: ${process.env.ICON_LOCAL_PATH} (${iconBuf.length} bytes)`)
-  } else {
-    log(`downloading icon ...`)
-    iconBuf = await downloadFile(ICON_URL)
+  if (ICON_LOCAL && fs.existsSync(ICON_LOCAL)) {
+    iconBuf = fs.readFileSync(ICON_LOCAL)
+    log(`icon loaded from local: ${ICON_LOCAL} (${iconBuf.length} bytes)`)
+  } else if (ICON_REMOTE) {
+    // 本地图标缺失（云打包图标 commit 竞态导致 checkout 未含）→ 回退云端 URL 下载
+    if (ICON_LOCAL) log(`local icon missing (${ICON_LOCAL}); falling back to ICON_URL download`)
+    else log(`downloading icon from ICON_URL ...`)
+    iconBuf = await downloadFile(ICON_REMOTE)
     log(`icon downloaded: ${iconBuf.length} bytes`)
+  } else {
+    fail(`icon unavailable: local "${ICON_LOCAL}" missing and no ICON_URL fallback`)
   }
   if (iconBuf.length > 2 * 1024 * 1024) fail('icon > 2MB')
   const dim = validatePng(iconBuf)
