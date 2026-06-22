@@ -25,7 +25,7 @@
         </template>
       </div>
     </header>
-    <div class="flex-1 overflow-y-auto p-6">
+    <div class="flex-1 overflow-y-auto p-6" @scroll="onListScroll">
       <div v-if="!filtered.length" class="empty-state">
         <div class="w-20 h-20 rounded-2xl bg-surface-2 flex items-center justify-center mb-5">
           <svg class="w-10 h-10 text-text-disabled" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -42,7 +42,7 @@
       </div>
       <div v-else class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 max-w-5xl">
         <div
-          v-for="project in filtered"
+          v-for="project in displayed"
           :key="project.id"
           class="group relative bg-surface-0 border rounded-xl p-4 cursor-pointer hover:shadow-card transition-all"
           :class="selectedIds.has(project.id) ? 'border-primary-500 ring-2 ring-primary-500/30' : 'border-surface-3 hover:border-primary-400'"
@@ -103,6 +103,10 @@
           <h3 v-else class="text-sm font-medium text-text-primary truncate mb-1">{{ project.title }}</h3>
           <p class="text-[10px] text-text-tertiary">{{ formatDate(project.updated_at) }}</p>
         </div>
+      </div>
+      <!-- 加载更多：列表只渲染前 visibleCount 个，触底自动加载，量大时避免一次性渲染全部卡片 -->
+      <div v-if="hasMore" class="flex justify-center mt-5">
+        <button @click="loadMore" class="btn-secondary text-xs">加载更多（剩余 {{ filtered.length - displayed.length }}）</button>
       </div>
     </div>
 
@@ -191,7 +195,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, nextTick } from 'vue'
+import { ref, computed, watch, onMounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { useCanvasStore } from '@/stores/canvas'
 import { useModelStore } from '@/stores/models'
@@ -273,6 +277,23 @@ const filtered = computed(() => {
   const q = search.value.toLowerCase()
   return canvasStore.projects.filter((p) => p.title.toLowerCase().includes(q))
 })
+
+// 渲染层窗口化：本地 sqlite 取全量很快，真正的瓶颈是一次性把所有画布卡片渲染成 DOM。
+// 只渲染前 visibleCount 个，触底或点「加载更多」再增量加载；搜索仍是对全量内存即时过滤。
+const PAGE_SIZE = 24
+const visibleCount = ref(PAGE_SIZE)
+const displayed = computed(() => filtered.value.slice(0, visibleCount.value))
+const hasMore = computed(() => visibleCount.value < filtered.value.length)
+function loadMore() {
+  if (hasMore.value) visibleCount.value += PAGE_SIZE
+}
+function onListScroll(e: Event) {
+  const el = e.target as HTMLElement
+  // 距底部 240px 内即预加载下一批，滚动更顺滑
+  if (el.scrollHeight - el.scrollTop - el.clientHeight < 240) loadMore()
+}
+// 搜索条件变化时重置窗口，避免停留在上一次翻得很深的位置
+watch(search, () => { visibleCount.value = PAGE_SIZE })
 
 function formatDate(dateStr: string): string {
   if (!dateStr) return ''

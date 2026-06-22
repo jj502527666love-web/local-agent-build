@@ -38,6 +38,9 @@ import * as mattingService from '../services/matting'
 import * as mattingProviderService from '../services/matting-providers'
 import * as eweiConnectorService from '../services/ewei-connectors'
 import * as eweiClient from '../services/ewei-client'
+import * as mallRegistry from '../services/mall/registry'
+import { clearSession as clearDiandaSession } from '../services/mall/dianda-adapter'
+import { clearSession as clearQdyunSession } from '../services/mall/qdyun-adapter'
 import * as cloudVideoService from '../services/cloud-video'
 import * as videoGenerationService from '../services/video-generation'
 import { fetchQuota as fetchMattingQuotaFromCloud } from '../services/cloud-matting'
@@ -1419,8 +1422,11 @@ export function registerIpcHandlers(): void {
   // 拉云控端精细抠图配额 + 三档价 + 阈值。用于桌面端 FineMattingView 顶部 banner + 按尺寸预估
   ipcMain.handle('fineMatting:fetchCloudQuota', () => fetchFineMattingQuotaFromCloud())
 
-  // === ewei 商城连接器（业务端账号绑定 + 门店商品图替换）===
-  // 凭据脱敏一律在本 IPC 层完成：明文密码 / session_id 永不下发 renderer。
+  // === 店铺商品图：多商城连接器（按连接器 platform 经 registry 分发到 ewei/dianda 适配器）===
+  // 凭据脱敏一律在本 IPC 层完成：明文密码 / session / cookie 永不下发 renderer。
+  // 信道名沿用 ewei:* 保持对 renderer 兼容；具体平台由连接器 platform 决定。
+  const adapterForConnector = (id: string) =>
+    mallRegistry.getAdapter(eweiConnectorService.getConnector(id)?.platform)
   ipcMain.handle('ewei:listConnectors', () => eweiConnectorService.listConnectors())
   ipcMain.handle('ewei:getConnector', (_, id: string) => eweiConnectorService.getConnectorSummary(id))
   ipcMain.handle('ewei:createConnector', (_, data: eweiConnectorService.CreateConnectorInput) =>
@@ -1431,36 +1437,47 @@ export function registerIpcHandlers(): void {
   )
   ipcMain.handle('ewei:deleteConnector', (_, id: string) => {
     eweiClient.clearSession(id)
+    clearDiandaSession(id)
+    clearQdyunSession(id) // qdyun 用持久化分区，须显式清 cookie+JWT，否则磁盘残留
     return eweiConnectorService.deleteConnector(id)
   })
-  // 登录 / 登出
-  ipcMain.handle('ewei:login', (_, id: string) => eweiClient.login(id))
-  ipcMain.handle('ewei:logout', (_, id: string) => eweiClient.logout(id))
+  // 平台能力位（renderer 据此显隐「选门店」、是否走验证码登录）
+  ipcMain.handle('ewei:capabilities', (_, id: string) => adapterForConnector(id).capabilities)
+  // 登录：beginLogin 直接成功(ewei)或返回验证码挑战(点大)；submitLogin 提交验证码；refreshCaptcha 换图
+  ipcMain.handle('ewei:login', (_, id: string) => adapterForConnector(id).beginLogin(id))
+  ipcMain.handle('ewei:submitLogin', (_, id: string, captcha: string, challengeId?: string) =>
+    adapterForConnector(id).submitLogin(id, captcha, challengeId),
+  )
+  ipcMain.handle('ewei:refreshCaptcha', (_, id: string) => {
+    const a = adapterForConnector(id)
+    return a.refreshCaptcha ? a.refreshCaptcha(id) : Promise.reject(new Error('该商城无需验证码'))
+  })
+  ipcMain.handle('ewei:logout', (_, id: string) => adapterForConnector(id).logout(id))
   // 门店
   ipcMain.handle('ewei:listShops', (_, id: string, page?: number, pagesize?: number) =>
-    eweiClient.listShops(id, page ?? 1, pagesize ?? 50),
+    adapterForConnector(id).listShops(id, page ?? 1, pagesize ?? 50),
   )
   ipcMain.handle('ewei:switchShop', (_, id: string, shopId: number, shopName?: string) =>
-    eweiClient.switchShop(id, shopId, shopName ?? ''),
+    adapterForConnector(id).switchShop(id, shopId, shopName ?? ''),
   )
   // 商品
   ipcMain.handle('ewei:listGoods', (_, id: string, params: eweiClient.GoodsListParams) =>
-    eweiClient.listGoods(id, params || {}),
+    adapterForConnector(id).listGoods(id, params || {}),
   )
   ipcMain.handle('ewei:goodsDetail', (_, id: string, goodsId: number) =>
-    eweiClient.getGoodsDetail(id, goodsId),
+    adapterForConnector(id).getGoodsDetail(id, goodsId),
   )
-  // 替换商品图（生成→上传→回写一体，进度走 'ewei:progress'）
+  // 替换商品图（上传→回写一体，进度走 'ewei:progress'）
   ipcMain.handle('ewei:replaceGoodsImage', (_, args: eweiClient.ReplaceGoodsImageArgs) =>
-    eweiClient.replaceGoodsImage(args),
+    adapterForConnector(args.connectorId).replaceGoodsImage(args),
   )
-  // 替换历史（审计/回滚）
+  // 替换历史（mall 无关，直接走 connector service）
   ipcMain.handle('ewei:listImageLogs', (_, goodsId: number, limit?: number) =>
-    eweiClient.listImageLogs(goodsId, limit),
+    eweiConnectorService.listImageLogs(goodsId, limit),
   )
-  // 新增商品（收银台建品 + 多图集/原价补刀），进度走 'ewei:progress'
-  ipcMain.handle('ewei:listGoodsCategories', (_, id: string) => eweiClient.listGoodsCategories(id))
+  // 分类 / 新增商品
+  ipcMain.handle('ewei:listGoodsCategories', (_, id: string) => adapterForConnector(id).listGoodsCategories(id))
   ipcMain.handle('ewei:addGoods', (_, id: string, form: eweiClient.AddGoodsForm) =>
-    eweiClient.addGoods(id, form),
+    adapterForConnector(id).addGoods(id, form),
   )
 }

@@ -125,6 +125,12 @@
                 <span v-if="isPicked(it.file_path)" class="absolute top-1 left-1 text-[10px] bg-primary-600 text-white rounded-full w-5 h-5 flex items-center justify-center shadow">{{ pickIndex(it.file_path) + 1 }}</span>
               </div>
             </div>
+            <!-- 图库分页：每页 36 张，否则只能看到第一页、第 37 张起永远选不到 -->
+            <div v-if="galleryTotal > galleryPageSize" class="flex items-center justify-center gap-2 mt-4 text-[11px] text-text-tertiary">
+              <button class="ewei-chip" :disabled="galleryPage <= 1 || galleryLoading" @click="loadGallery(galleryPage - 1)">上一页</button>
+              <span>{{ galleryPage }} / {{ galleryTotalPages }}（共 {{ galleryTotal }}）</span>
+              <button class="ewei-chip" :disabled="galleryPage >= galleryTotalPages || galleryLoading" @click="loadGallery(galleryPage + 1)">下一页</button>
+            </div>
           </div>
 
           <!-- 本地文件 -->
@@ -148,12 +154,14 @@
 import { ref, reactive, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import EcomGeneratorPanel from '@/views/ecom/EcomGeneratorPanel.vue'
-import { useEweiStore } from '@/stores/ewei'
+import { useEweiStore, type MallCapabilities } from '@/stores/ewei'
 
 const route = useRoute()
 const router = useRouter()
 const store = useEweiStore()
 const ewei = () => (window as any).api.ewei
+// 平台能力位：点大(detailFormat='blocks')隐藏详情图/SKU 图位，避免「点了才报错」
+const caps = ref<MallCapabilities | null>(null)
 
 const connectorId = route.params.connectorId as string
 const goodsId = Number(route.params.goodsId)
@@ -208,12 +216,24 @@ const slotOptions = [
   { key: 'optionThumb', short: 'SKU 图', multi: false, detail: false, needsOption: true, hint: '替换某个规格(SKU)的图。' },
 ] as const
 type SlotKey = (typeof slotOptions)[number]['key']
-const slotGroups: { name: string; items: SlotKey[] }[] = [
-  { name: '', items: ['mainThumb'] },
-  { name: '图集', items: ['galleryReplace', 'galleryAppend'] },
-  { name: '详情图', items: ['detailReplace', 'detailAppend'] },
-  { name: 'SKU 图', items: ['optionThumb'] },
-]
+const slotGroups = computed<{ name: string; items: SlotKey[] }[]>(() => {
+  const groups: { name: string; items: SlotKey[] }[] = [
+    { name: '', items: ['mainThumb'] },
+    { name: '图集', items: ['galleryReplace', 'galleryAppend'] },
+    { name: '详情图', items: ['detailReplace', 'detailAppend'] },
+    { name: 'SKU 图', items: ['optionThumb'] },
+  ]
+  // 点大/全端云：详情为块状结构、SKU 改图暂未支持 → 隐藏这两组图位
+  let result = groups
+  if (caps.value?.detailFormat === 'blocks') {
+    result = result.filter((g) => g.name !== '详情图' && g.name !== 'SKU 图')
+  }
+  // 全端云仅支持主图：无图集能力时隐藏「图集」组，避免点了才报错
+  if (caps.value && !caps.value.supportsGallery) {
+    result = result.filter((g) => g.name !== '图集')
+  }
+  return result
+})
 function def(key: SlotKey) {
   return slotOptions.find((s) => s.key === key)!
 }
@@ -295,6 +315,10 @@ const galleryItems = ref<any[]>([])
 const galleryCategory = ref('')
 const gallerySearch = ref('')
 const galleryLoading = ref(false)
+const galleryPage = ref(1)
+const galleryTotal = ref(0)
+const galleryPageSize = 36
+const galleryTotalPages = computed(() => Math.max(1, Math.ceil(galleryTotal.value / galleryPageSize)))
 async function loadGalleryCategories(): Promise<void> {
   try {
     galleryCategories.value = (await (window as any).api.gallery.invoke('listCategories')) || []
@@ -305,12 +329,15 @@ async function loadGalleryCategories(): Promise<void> {
 async function loadGallery(page = 1): Promise<void> {
   galleryLoading.value = true
   try {
-    const r = await (window as any).api.gallery.invoke('listItemsPaged', galleryCategory.value || null, gallerySearch.value.trim(), page, 36)
+    const r = await (window as any).api.gallery.invoke('listItemsPaged', galleryCategory.value || null, gallerySearch.value.trim(), page, galleryPageSize)
     galleryItems.value = r?.items || []
+    galleryTotal.value = r?.total || 0
+    galleryPage.value = page
     const paths = galleryItems.value.map((it: any) => it.file_path).filter(Boolean)
     if (paths.length) (window as any).api.imageGen.invoke('preloadThumbnails', paths).catch(() => {})
   } catch {
     galleryItems.value = []
+    galleryTotal.value = 0
   } finally {
     galleryLoading.value = false
   }
@@ -389,6 +416,7 @@ watch(
 
 onMounted(async () => {
   if (!store.connectors.length) await store.loadConnectors()
+  store.getCapabilities(connectorId).then((c) => { caps.value = c }).catch(() => {})
   await loadDetail()
   // 还原上次的图位 / 来源 / 已选图
   const ws = store.getImageWorkState(goodsId)

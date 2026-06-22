@@ -6,6 +6,27 @@
 
 ---
 
+## [0.9.2] - 2026-06-22
+
+> **「店铺商品图」多商城泛化 + 三处缺陷修复**：把原本写死单一商城的「店铺商品图」泛化为可扩展多商城（连接器加 `platform` 维度 + `MallAdapter` 适配器抽象 + 按平台分发），并修复切换店铺串数据、本地图库缺分页、画布列表缺分页三处问题。**面向用户的更新记录（`shared/changelog.ts`）按要求只描述用户可感知的变化、不出现任何底层平台品牌名。**
+
+### 新增
+
+- **连接器多商城维度**：`ewei_connectors` 加 `platform`（默认回填旧平台）/`extra_json` 列（`database/index.ts` 幂等迁移 + `resources/schema.sql` 同步）；`ewei-connectors.ts` CRUD/`resolveCredentials` 带 platform + 新增 `getExtra`/`setExtra`。
+- **适配器层** `services/mall/`：`MallAdapter` 接口 + `registry.getAdapter(platform)` 分发；原协议客户端零改动包成适配器；新增第二个平台适配器（cookie 会话 + 图形验证码两步登录 + 列品/详情/上传/全量回写）。
+- **登录泛化**：两步登录 `beginLogin`/`submitLogin`（能力位 `capabilities.needsCaptcha/needsShopSwitch/detailFormat`），验证码弹窗（换一张 / 错误重输 / 会话持久化减少弹出）；主进程 IPC 按连接器 platform 分发（保留原信道 + 新增 submitLogin/refreshCaptcha/capabilities）。
+- **权限消费按商城**：`cloud-auth` 增按商城聚合结构 `shops` + 平铺兼容字段；侧栏入口门控、页面门控、连接器平台选择均按「任一商城被授权」放行 / 按授权过滤。
+
+### 修复
+
+- 店铺商品图：切换门店后商品列表仍命中上一门店缓存（缓存只按连接器键、切店不失效）→ `switchShop` 清连接器缓存。
+- 店铺商品图：本地图库选图面板只显示第一页、无翻页（数据层支持分页但 UI 未接）→ 补翻页。
+- 画布：画布列表一次性渲染全部卡片 → 渲染层窗口化 + 触底加载更多。
+
+### 变更
+
+- 多代理复查后修复：页面门控与侧栏门控口径统一；harvest 全量回写支持同名多值字段、不丢数据；多规格商品图位整体守卫防误删；删客户端清理关联授权行；`upsertMallAuth` 不重置 `created_at` 等。
+
 ## [0.9.1] - 2026-06-21
 
 > **MCP 体验大幅升级**：新增「MCP 市场」一键发现与安装常用 MCP 服务（接入 mcp-cn.com 精选与 mcpmarket.cn 全量两大大陆免 key 源）；新增「按需加载（元工具）」机制，根治大量 MCP 工具撑大 prompt 导致云端网关 524 超时；修复对话里 MCP 选择在重新生成/续写/编辑消息时丢失、禁用项被静默隐藏等多处可用性问题。

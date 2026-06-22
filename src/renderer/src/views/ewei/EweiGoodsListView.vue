@@ -5,7 +5,7 @@
       <button class="ewei-chip" @click="router.push('/ewei')">返回</button>
       <div class="flex-1 min-w-0">
         <h2 class="text-sm font-semibold text-text-primary truncate">{{ connector?.name || '门店商品' }}</h2>
-        <p class="text-[11px] text-text-tertiary truncate">门店：{{ connector?.current_shop_name || connector?.current_shop_id || '未选择' }}</p>
+        <p v-if="caps?.needsShopSwitch" class="text-[11px] text-text-tertiary truncate">门店：{{ connector?.current_shop_name || connector?.current_shop_id || '未选择' }}</p>
       </div>
       <input v-model="keyword" class="ewei-input !mt-0 !w-48" placeholder="搜索商品标题" @keyup.enter="reload(1)" />
       <select v-model="status" class="ewei-input !mt-0 !w-24" @change="reload(1)">
@@ -14,7 +14,7 @@
         <option value="-2">下架</option>
       </select>
       <button class="ewei-chip" @click="reload(1)">查询</button>
-      <button class="btn-primary !py-1.5 !px-3 text-xs" @click="router.push(`/ewei/${connectorId}/goods/new`)">新增商品</button>
+      <button v-if="caps?.supportsAddGoods" class="btn-primary !py-1.5 !px-3 text-xs" @click="router.push(`/ewei/${connectorId}/goods/new`)">新增商品</button>
     </div>
 
     <!-- 商品网格 -->
@@ -65,7 +65,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useEweiStore, type EweiConnectorSummary } from '@/stores/ewei'
+import { useEweiStore, type EweiConnectorSummary, type MallCapabilities } from '@/stores/ewei'
 
 const route = useRoute()
 const router = useRouter()
@@ -75,6 +75,7 @@ const connectorId = route.params.connectorId as string
 const ewei = () => (window as any).api.ewei
 
 const connector = ref<EweiConnectorSummary | undefined>(undefined)
+const caps = ref<MallCapabilities | undefined>(undefined)
 const goods = ref<any[]>([])
 const count = ref(0)
 const page = ref(1)
@@ -129,6 +130,7 @@ function openImage(g: any): void {
 onMounted(async () => {
   if (!store.connectors.length) await store.loadConnectors()
   connector.value = store.getConnector(connectorId)
+  caps.value = await store.getCapabilities(connectorId).catch(() => undefined)
   // 切走再回来：有缓存就直接还原（不重新拉，内容原样在），用「查询」按钮主动刷新
   const cached = store.getGoodsListState(connectorId)
   if (cached) {

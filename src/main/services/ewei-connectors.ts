@@ -22,6 +22,10 @@ export interface EweiConnector {
   password_enc: string
   account_version: string
   shop_version: string
+  /** 对接平台：'ewei' / 'dianda' …（多商城泛化，旧行默认 ewei）。 */
+  platform: string
+  /** 各平台专属参数 JSON（如点大的 cookie/remember），仅主进程用，不下发 renderer。 */
+  extra_json: string
   current_shop_id: number
   current_shop_name: string
   is_default: number
@@ -32,7 +36,7 @@ export interface EweiConnector {
   updated_at: string
 }
 
-/** 列表/详情返回类型（不暴露密文，账号 masked）。 */
+/** 列表/详情返回类型（不暴露密文 / extra_json，账号 masked）。 */
 export interface EweiConnectorSummary {
   id: string
   name: string
@@ -40,6 +44,7 @@ export interface EweiConnectorSummary {
   account_masked: string
   account_version: string
   shop_version: string
+  platform: string
   current_shop_id: number
   current_shop_name: string
   is_default: boolean
@@ -74,6 +79,7 @@ export function toSummary(row: EweiConnector): EweiConnectorSummary {
     account_masked: maskAccount(row.account),
     account_version: row.account_version,
     shop_version: row.shop_version,
+    platform: row.platform || 'ewei',
     current_shop_id: row.current_shop_id,
     current_shop_name: row.current_shop_name,
     is_default: !!row.is_default,
@@ -112,6 +118,8 @@ export interface CreateConnectorInput {
   password: string // 明文，函数内加密
   account_version?: string
   shop_version?: string
+  /** 对接平台，缺省 'ewei'。决定主进程用哪个协议适配器。 */
+  platform?: string
   is_default?: boolean
 }
 
@@ -131,10 +139,10 @@ export function createConnector(data: CreateConnectorInput): EweiConnectorSummar
   }
 
   db.prepare(`INSERT INTO ewei_connectors
-    (id, name, base_url, account, password_enc, account_version, shop_version,
+    (id, name, base_url, account, password_enc, account_version, shop_version, platform, extra_json,
      current_shop_id, current_shop_name, is_default,
      last_login_at, last_login_status, last_login_message, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 0, '', ?, '', '', '', ?, ?)`).run(
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, '{}', 0, '', ?, '', '', '', ?, ?)`).run(
     id,
     data.name.trim(),
     base,
@@ -142,6 +150,7 @@ export function createConnector(data: CreateConnectorInput): EweiConnectorSummar
     encryptSecret(data.password),
     data.account_version || '2.1.6',
     data.shop_version || '4.6.11',
+    (data.platform || 'ewei').trim(),
     data.is_default ? 1 : 0,
     now,
     now,
@@ -220,10 +229,18 @@ export function deleteConnector(id: string): boolean {
   return result.changes > 0
 }
 
-/** 取明文账号/密码（仅在 ewei-client 登录时用，用完即丢，不传 renderer）。 */
+/** 取明文账号/密码 + 平台/扩展参数（仅在适配器登录时用，用完即丢，不传 renderer）。 */
 export function resolveCredentials(
   id: string,
-): { base_url: string; account: string; password: string; account_version: string; shop_version: string } | null {
+): {
+  base_url: string
+  account: string
+  password: string
+  account_version: string
+  shop_version: string
+  platform: string
+  extra: Record<string, any>
+} | null {
   const row = getConnector(id)
   if (!row) return null
   return {
@@ -232,7 +249,39 @@ export function resolveCredentials(
     password: decryptSecret(row.password_enc),
     account_version: row.account_version,
     shop_version: row.shop_version,
+    platform: row.platform || 'ewei',
+    extra: parseExtra(row.extra_json),
   }
+}
+
+function parseExtra(s: string): Record<string, any> {
+  try {
+    const o = JSON.parse(s || '{}')
+    return o && typeof o === 'object' ? o : {}
+  } catch {
+    return {}
+  }
+}
+
+/** 读连接器 extra_json（各平台专属参数，如点大 cookie/remember）。 */
+export function getExtra(id: string): Record<string, any> {
+  const row = getConnector(id)
+  return row ? parseExtra(row.extra_json) : {}
+}
+
+/** 合并写入 extra_json（浅合并；传 null 值删除该键）。供适配器持久化会话 cookie 等。 */
+export function setExtra(id: string, patch: Record<string, any>): void {
+  const db = getDatabase()
+  const cur = getExtra(id)
+  for (const k of Object.keys(patch)) {
+    if (patch[k] === null || patch[k] === undefined) delete cur[k]
+    else cur[k] = patch[k]
+  }
+  db.prepare('UPDATE ewei_connectors SET extra_json = ?, updated_at = ? WHERE id = ?').run(
+    JSON.stringify(cur),
+    new Date().toISOString(),
+    id,
+  )
 }
 
 /** 记录当前选中门店（切店成功后调用）。 */

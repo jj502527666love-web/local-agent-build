@@ -230,7 +230,7 @@ const allNavItems = [
   // 店铺商品图：填域名/账号/密码登录 ewei 商城，选门店后用本地图库/AI生图替换商品主图/详情图。
   // 入口权限门控：allow_ewei_shop 默认 false（默认拒绝）。两级门控——授权管理端开放本云控端该功能
   // 且用户被授权时，云控端才下发 true；老/未授权云控端不下发 → 隐藏入口。
-  { path: '/ewei', label: '店铺商品图', icon: IconEweiShop, requireAnyPermission: ['allow_ewei_shop'] },
+  { path: '/ewei', label: '店铺商品图', icon: IconEweiShop, requireAnyPermission: ['allow_ewei_shop', 'allow_dianda_shop'] },
   { path: '/inspiration', label: '灵感广场', icon: IconInspiration },
   { path: '/canvas-square', label: '创意模板', icon: IconCanvasSquare },
   {

@@ -46,6 +46,14 @@ files:
   # Chromium 三方许可 HTML（~9.5MB）。运行时不读，仅用于法律披露；
   # 如果分发要求合规可以单独存档，无需打入安装包。
   - '!**/LICENSES.chromium.html'
+  # mac 双架构 per-arch 打包产物互相污染防护：scripts/dist-mac-per-arch.js 先打 x64 到 dist-x64/，
+  # 再打 arm64 到 dist-arm64/。electron-builder 只自动排除「当前这次」的输出目录(dist-arm64)，
+  # 残留的 dist-x64/（一整个 ~440MB 的 x64 .app）会被当普通文件卷进 arm64 的 app.asar →
+  # arm64 zip 从 ~127MB 暴涨到 362MB（x64 因先打、那时无 dist-arm64 故干净）。显式排除所有
+  # dist 构建产物目录，杜绝跨 arch 产物互相污染。
+  - '!dist/**/*'
+  - '!dist-x64/**/*'
+  - '!dist-arm64/**/*'
 # sqlite-vec 原生扩展(vec0.dll/.so/.dylib)+ 原生 .node 模块必须解包到 asar 外，
 # 否则 loadExtension 无法按文件路径加载(运行时会回退 JS cosine，解包后才能真正启用 KNN 加速)。
 asarUnpack:

@@ -43,6 +43,12 @@
               <span v-if="isPicked(it.file_path)" class="absolute top-1 left-1 text-[10px] bg-primary-600 text-white rounded-full w-5 h-5 flex items-center justify-center shadow">{{ idx(it.file_path) + 1 }}</span>
             </div>
           </div>
+          <!-- 图库分页：每页 36 张，否则只能看到第一页、第 37 张起永远选不到 -->
+          <div v-if="galleryTotal > galleryPageSize" class="flex items-center justify-center gap-2 mt-4 text-[11px] text-text-tertiary">
+            <button class="ewei-chip" :disabled="galleryPage <= 1 || galleryLoading" @click="loadGallery(galleryPage - 1)">上一页</button>
+            <span>{{ galleryPage }} / {{ galleryTotalPages }}（共 {{ galleryTotal }}）</span>
+            <button class="ewei-chip" :disabled="galleryPage >= galleryTotalPages || galleryLoading" @click="loadGallery(galleryPage + 1)">下一页</button>
+          </div>
         </div>
 
         <div v-show="tab === 'file'" class="flex-1 min-h-0 overflow-y-auto p-4">
@@ -74,7 +80,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import EcomGeneratorPanel from '@/views/ecom/EcomGeneratorPanel.vue'
 
 const props = withDefaults(
@@ -136,6 +142,10 @@ const galleryItems = ref<any[]>([])
 const galleryCategory = ref('')
 const gallerySearch = ref('')
 const galleryLoading = ref(false)
+const galleryPage = ref(1)
+const galleryTotal = ref(0)
+const galleryPageSize = 36
+const galleryTotalPages = computed(() => Math.max(1, Math.ceil(galleryTotal.value / galleryPageSize)))
 async function loadGalleryCategories(): Promise<void> {
   try {
     galleryCategories.value = (await (window as any).api.gallery.invoke('listCategories')) || []
@@ -146,12 +156,15 @@ async function loadGalleryCategories(): Promise<void> {
 async function loadGallery(page = 1): Promise<void> {
   galleryLoading.value = true
   try {
-    const r = await (window as any).api.gallery.invoke('listItemsPaged', galleryCategory.value || null, gallerySearch.value.trim(), page, 36)
+    const r = await (window as any).api.gallery.invoke('listItemsPaged', galleryCategory.value || null, gallerySearch.value.trim(), page, galleryPageSize)
     galleryItems.value = r?.items || []
+    galleryTotal.value = r?.total || 0
+    galleryPage.value = page
     const paths = galleryItems.value.map((it: any) => it.file_path).filter(Boolean)
     if (paths.length) (window as any).api.imageGen.invoke('preloadThumbnails', paths).catch(() => {})
   } catch {
     galleryItems.value = []
+    galleryTotal.value = 0
   } finally {
     galleryLoading.value = false
   }

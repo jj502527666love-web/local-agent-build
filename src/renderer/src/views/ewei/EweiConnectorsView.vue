@@ -55,8 +55,8 @@
               {{ busy[c.id] === 'login' ? '登录中…' : '登录' }}
             </button>
             <template v-else>
-              <button class="ewei-chip" :disabled="!!busy[c.id]" @click="openShops(c)">选门店</button>
-              <button class="ewei-chip-primary" :disabled="!c.current_shop_id" @click="enterGoods(c)">进入商品</button>
+              <button v-if="connNeedsShop(c)" class="ewei-chip" :disabled="!!busy[c.id]" @click="openShops(c)">选门店</button>
+              <button class="ewei-chip-primary" :disabled="connNeedsShop(c) && !c.current_shop_id" @click="enterGoods(c)">进入商品</button>
               <button class="ewei-chip" @click="doLogout(c)">登出</button>
             </template>
             <button class="ewei-chip" @click="openEdit(c)">编辑</button>
@@ -74,8 +74,15 @@
         <h3 class="text-sm font-semibold text-text-primary mb-3">{{ form.id ? '编辑连接器' : '新建连接器' }}</h3>
         <div class="space-y-3">
           <label class="block">
+            <span class="text-xs font-medium text-text-secondary">对接商城</span>
+            <select v-model="form.platform" class="ewei-input" :disabled="!!form.id">
+              <option v-for="p in platformOptions" :key="p.key" :value="p.key">{{ platformLabel(p.key) }}</option>
+            </select>
+            <span v-if="form.id" class="text-[11px] text-text-tertiary mt-1 block">商城类型创建后不可更改</span>
+          </label>
+          <label class="block">
             <span class="text-xs font-medium text-text-secondary">名称</span>
-            <input v-model="form.name" class="ewei-input" :placeholder="'如：我的' + mallName + '-生产'" />
+            <input v-model="form.name" class="ewei-input" :placeholder="'如：我的' + mallNameOf(form.platform) + '-生产'" />
           </label>
           <label class="block">
             <span class="text-xs font-medium text-text-secondary">业务管理端域名</span>
@@ -87,8 +94,8 @@
           </label>
           <label class="block">
             <span class="text-xs font-medium text-text-secondary">登录密码</span>
-            <input v-model="form.password" type="password" class="ewei-input" :placeholder="form.id ? '留空表示不修改' : mallName + '登录密码'" />
-            <span class="text-[11px] text-text-tertiary mt-1 block">密码经 AES-256-GCM 本地加密存储，仅用于登录你的{{ mallName }}；不会上传，换机后需重输。</span>
+            <input v-model="form.password" type="password" class="ewei-input" :placeholder="form.id ? '留空表示不修改' : mallNameOf(form.platform) + '登录密码'" />
+            <span class="text-[11px] text-text-tertiary mt-1 block">密码经 AES-256-GCM 本地加密存储，仅用于登录你的{{ mallNameOf(form.platform) }}；不会上传，换机后需重输。</span>
           </label>
           <label class="flex items-center gap-2 text-xs text-text-secondary">
             <input v-model="form.is_default" type="checkbox" class="rounded" />
@@ -137,6 +144,41 @@
         </div>
       </div>
     </div>
+
+    <!-- 验证码登录弹窗（点大等需验证码的平台；仅阴影，无遮罩）-->
+    <div v-if="captchaOpen" class="fixed inset-0 z-50 flex items-center justify-center" @click.self="captchaOpen = false">
+      <div class="w-[360px] bg-surface-0 border border-surface-3 rounded-2xl shadow-2xl p-5">
+        <h3 class="text-sm font-semibold text-text-primary mb-3">输入验证码登录</h3>
+        <div class="flex items-center gap-2 mb-2">
+          <img
+            v-if="captchaImage"
+            :src="captchaImage"
+            class="h-11 rounded-md border border-surface-3 bg-white cursor-pointer flex-shrink-0"
+            alt="验证码"
+            title="点击换一张"
+            @click="refreshCaptchaImg"
+          />
+          <input
+            v-model="captchaInput"
+            class="ewei-input !mt-0 flex-1"
+            placeholder="输入图中字符"
+            @keyup.enter="submitCaptcha"
+          />
+        </div>
+        <button class="text-[11px] text-primary-600 mb-2" @click="refreshCaptchaImg">看不清，换一张</button>
+        <p v-if="captchaError" class="text-[11px] text-error mb-2">{{ captchaError }}</p>
+        <div class="flex justify-end gap-2 mt-2">
+          <button class="ewei-chip" @click="captchaOpen = false">取消</button>
+          <button
+            class="btn-primary !py-1.5 !px-4 text-xs"
+            :disabled="captchaSubmitting || !captchaInput.trim()"
+            @click="submitCaptcha"
+          >
+            {{ captchaSubmitting ? '登录中…' : '登录' }}
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -150,9 +192,25 @@ const router = useRouter()
 const cloudAuth = useCloudAuthStore()
 const store = useEweiStore()
 
-const allowed = computed(() => cloudAuth.permissions.allow_ewei_shop === true)
-// 商城显示名：云控端自定义，隐藏底层平台（ewei）品牌；缺省「商城」
-const mallName = computed(() => (cloudAuth.permissions.ewei_shop_mall_name as string) || '商城')
+// 页面门控与侧栏一致：任一商城被授权即可进入（dianda 单授权用户也能用）
+const allowed = computed(
+  () => cloudAuth.permissions.allow_ewei_shop === true || cloudAuth.permissions.allow_dianda_shop === true,
+)
+// 某商城是否被授权（按商城聚合 shops 优先，回退平铺 allow_{mall}_shop）
+function mallAllowed(key: string): boolean {
+  const shops = (cloudAuth.permissions.shops || {}) as Record<string, any>
+  if (shops[key]) return shops[key].allowed === true
+  return cloudAuth.permissions['allow_' + key + '_shop'] === true
+}
+// 商城显示名（按商城）：云控端自定义，隐藏底层平台品牌；缺省「商城」
+function mallNameOf(key: string): string {
+  const shops = (cloudAuth.permissions.shops || {}) as Record<string, any>
+  if (shops[key]?.mall_name) return shops[key].mall_name
+  const flat = cloudAuth.permissions[`${key}_shop_mall_name`]
+  return (flat as string) || '商城'
+}
+// 顶部说明用任一已授权商城名（缺省「商城」）
+const mallName = computed(() => mallNameOf('ewei') || mallNameOf('dianda') || '商城')
 
 const busy = reactive<Record<string, '' | 'login'>>({})
 const warn = reactive<Record<string, string>>({})
@@ -183,7 +241,11 @@ async function doLogin(c: EweiConnectorSummary): Promise<void> {
   warn[c.id] = ''
   try {
     const r = await store.login(c.id)
-    if (r.isMerch || r.isSupply) {
+    if (r.needCaptcha) {
+      openCaptcha(c, r.captchaImage)
+      return
+    }
+    if (r.result.isMerch || r.result.isSupply) {
       warn[c.id] = '检测到子商户 / 供货商账号，部分商品（多商户来源）的图片可能无法直接替换，建议用店主账号'
     }
     await store.loadConnectors()
@@ -192,6 +254,65 @@ async function doLogin(c: EweiConnectorSummary): Promise<void> {
   } finally {
     busy[c.id] = ''
   }
+}
+
+// ---- 验证码登录（点大等需验证码的平台）----
+const captchaOpen = ref(false)
+const captchaConnector = ref<EweiConnectorSummary | null>(null)
+const captchaImage = ref('')
+const captchaInput = ref('')
+const captchaSubmitting = ref(false)
+const captchaError = ref('')
+
+function openCaptcha(c: EweiConnectorSummary, img: string): void {
+  captchaConnector.value = c
+  captchaImage.value = img
+  captchaInput.value = ''
+  captchaError.value = ''
+  captchaOpen.value = true
+}
+async function refreshCaptchaImg(): Promise<void> {
+  if (!captchaConnector.value) return
+  try {
+    const r = await store.refreshCaptcha(captchaConnector.value.id)
+    captchaImage.value = r.captchaImage
+    captchaInput.value = ''
+  } catch (e: any) {
+    captchaError.value = e?.message || '刷新失败'
+  }
+}
+async function submitCaptcha(): Promise<void> {
+  const c = captchaConnector.value
+  if (!c || !captchaInput.value.trim()) return
+  captchaSubmitting.value = true
+  captchaError.value = ''
+  try {
+    const r = await store.submitLogin(c.id, captchaInput.value.trim())
+    if (r.needCaptcha) {
+      captchaImage.value = r.captchaImage
+      captchaInput.value = ''
+      captchaError.value = '验证码错误，请重试'
+      return
+    }
+    captchaOpen.value = false
+    await store.loadConnectors()
+  } catch (e: any) {
+    captchaError.value = e?.message || '登录失败'
+  } finally {
+    captchaSubmitting.value = false
+  }
+}
+
+// 平台是否需要选门店（与主进程 capabilities 一致：点大无门店）
+function connNeedsShop(c: EweiConnectorSummary): boolean {
+  return (c.platform || 'ewei') !== 'dianda'
+}
+// 可选平台（key 为协议标识，对用户隐藏品牌，标签用云控端自定义商城名）。
+// 仅展示「该用户被授权」的商城，避免越过二级门控创建未授权平台的连接器。
+const ALL_PLATFORMS = ['ewei', 'dianda', 'qdyun']
+const platformOptions = computed(() => ALL_PLATFORMS.filter((k) => mallAllowed(k)).map((k) => ({ key: k })))
+function platformLabel(key: string): string {
+  return mallNameOf(key)
 }
 async function doLogout(c: EweiConnectorSummary): Promise<void> {
   await store.logout(c.id)
@@ -206,10 +327,11 @@ function enterGoods(c: EweiConnectorSummary): void {
 const formOpen = ref(false)
 const saving = ref(false)
 const formError = ref('')
-const form = reactive({ id: '', name: '', base_url: '', account: '', password: '', is_default: false })
+const form = reactive({ id: '', name: '', base_url: '', account: '', password: '', platform: 'ewei', is_default: false })
 
 function openCreate(): void {
-  Object.assign(form, { id: '', name: '', base_url: '', account: '', password: '', is_default: !store.connectors.length })
+  const firstPlatform = platformOptions.value[0]?.key || 'ewei'
+  Object.assign(form, { id: '', name: '', base_url: '', account: '', password: '', platform: firstPlatform, is_default: !store.connectors.length })
   formError.value = ''
   formOpen.value = true
 }
@@ -220,6 +342,7 @@ function openEdit(c: EweiConnectorSummary): void {
     base_url: c.base_url,
     account: '', // 账号 masked 不回填，留空则不改
     password: '',
+    platform: c.platform || 'ewei', // 平台不可改（编辑时只读）
     is_default: c.is_default,
   })
   formError.value = ''
@@ -227,6 +350,11 @@ function openEdit(c: EweiConnectorSummary): void {
 }
 async function saveForm(): Promise<void> {
   formError.value = ''
+  // 新建时校验所选平台仍被授权（防越过二级门控建未授权商城连接器）
+  if (!form.id && !mallAllowed(form.platform)) {
+    formError.value = '该商城未授权，无法创建连接器'
+    return
+  }
   saving.value = true
   try {
     if (form.id) {
@@ -240,6 +368,7 @@ async function saveForm(): Promise<void> {
         base_url: form.base_url,
         account: form.account,
         password: form.password,
+        platform: form.platform,
         is_default: form.is_default,
       })
     }
@@ -251,7 +380,7 @@ async function saveForm(): Promise<void> {
   }
 }
 async function onDelete(c: EweiConnectorSummary): Promise<void> {
-  if (!window.confirm(`删除连接器「${c.name}」？仅删除本地绑定，不影响你的${mallName.value}。`)) return
+  if (!window.confirm(`删除连接器「${c.name}」？仅删除本地绑定，不影响你的${mallNameOf(c.platform)}。`)) return
   await store.deleteConnector(c.id)
 }
 

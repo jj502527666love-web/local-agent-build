@@ -55,6 +55,12 @@ export interface CloudPermissions {
   allow_ewei_shop: boolean
   // 对接的商城/平台对终端用户显示的名称（隐藏底层 ewei 品牌，云控端可自定义）；缺省「商城」。
   ewei_shop_mall_name: string
+  // 多商城泛化：点大商城（iappwx）的二级授权与自定义名（与 ewei 平级，下发同结构）。
+  allow_dianda_shop: boolean
+  dianda_shop_mall_name: string
+  // 按商城聚合下发（推荐消费此结构）：{ [mall_key]: { allowed, mall_name, real_name } }。
+  // 平铺的 allow_*_shop / *_shop_mall_name 为向后兼容保留。
+  shops: Record<string, { allowed: boolean; mall_name: string; real_name?: string }>
   [key: string]: any
 }
 
@@ -161,6 +167,9 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
     allow_ewei_shop: false,
     // 商城显示名缺省值；云控端下发后由 fetchCloudData / refreshBalances 的 policies 合并覆盖。
     ewei_shop_mall_name: '商城',
+    allow_dianda_shop: false,
+    dianda_shop_mall_name: '商城',
+    shops: {},
   })
   const balances = ref<{ type: string; amount: number }[]>([])
   const quotas = ref<CloudQuotas | null>(null)
@@ -265,6 +274,9 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
       fine_matting_quota_per_month: 100,
       allow_ewei_shop: false,
       ewei_shop_mall_name: '商城',
+      allow_dianda_shop: false,
+      dianda_shop_mall_name: '商城',
+      shops: {},
     }
     window.api?.cloud?.setPermissions({
       allow_custom_provider: false,

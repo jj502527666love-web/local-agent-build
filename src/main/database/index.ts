@@ -573,6 +573,8 @@ function runMigrations(): void {
       password_enc TEXT NOT NULL DEFAULT '',
       account_version TEXT NOT NULL DEFAULT '2.1.6',
       shop_version TEXT NOT NULL DEFAULT '4.6.11',
+      platform TEXT NOT NULL DEFAULT 'ewei',
+      extra_json TEXT NOT NULL DEFAULT '{}',
       current_shop_id INTEGER NOT NULL DEFAULT 0,
       current_shop_name TEXT NOT NULL DEFAULT '',
       is_default INTEGER NOT NULL DEFAULT 0,
@@ -598,6 +600,17 @@ function runMigrations(): void {
     CREATE INDEX IF NOT EXISTS idx_ewei_logs_goods ON ewei_goods_image_logs(goods_id);
     CREATE INDEX IF NOT EXISTS idx_ewei_logs_created ON ewei_goods_image_logs(created_at);
   `)
+
+  // ewei_connectors 多商城泛化：platform 区分对接平台(ewei/dianda…)，extra_json 存各平台专属参数
+  // (如点大的 cookie/remember)。旧库幂等加列，旧行默认 platform='ewei' 保证向后兼容。
+  const eweiCols = db.prepare("PRAGMA table_info(ewei_connectors)").all() as any[]
+  const eweiColNames = eweiCols.map((c: any) => c.name)
+  if (eweiCols.length > 0 && !eweiColNames.includes('platform')) {
+    db.exec("ALTER TABLE ewei_connectors ADD COLUMN platform TEXT NOT NULL DEFAULT 'ewei'")
+  }
+  if (eweiCols.length > 0 && !eweiColNames.includes('extra_json')) {
+    db.exec("ALTER TABLE ewei_connectors ADD COLUMN extra_json TEXT NOT NULL DEFAULT '{}'")
+  }
 }
 
 export function closeDatabase(): void {

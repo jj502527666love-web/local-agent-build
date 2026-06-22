@@ -11,6 +11,7 @@ export interface EweiConnectorSummary {
   account_masked: string
   account_version: string
   shop_version: string
+  platform: string
   current_shop_id: number
   current_shop_name: string
   is_default: boolean
@@ -30,6 +31,19 @@ export interface EweiLoginResult {
   isMerch: boolean
   isSupply: boolean
 }
+
+/** 平台能力位（与主进程 MallCapabilities 对齐）：renderer 据此显隐选门店/验证码。 */
+export interface MallCapabilities {
+  needsShopSwitch: boolean
+  needsCaptcha: boolean
+  supportsAddGoods: boolean
+  detailFormat: 'html' | 'blocks'
+}
+
+/** 登录结果：直接成功，或需验证码（点大）。 */
+export type MallBeginLoginResult =
+  | { needCaptcha: false; result: EweiLoginResult }
+  | { needCaptcha: true; captchaImage: string; challengeId?: string }
 
 export interface EweiShop {
   id: number
@@ -101,6 +115,7 @@ export const useEweiStore = defineStore('ewei', () => {
     base_url: string
     account: string
     password: string
+    platform?: string
     is_default?: boolean
   }): Promise<EweiConnectorSummary> {
     const c = await ewei().invoke('createConnector', data)
@@ -122,10 +137,29 @@ export const useEweiStore = defineStore('ewei', () => {
     await loadConnectors()
   }
 
-  async function login(id: string): Promise<EweiLoginResult> {
-    const r = (await ewei().invoke('login', id)) as EweiLoginResult
-    loginInfo.value[id] = r
+  // 登录：beginLogin 直接成功(ewei)或返回验证码挑战(点大)
+  async function login(id: string): Promise<MallBeginLoginResult> {
+    const r = (await ewei().invoke('login', id)) as MallBeginLoginResult
+    if (!r.needCaptcha) loginInfo.value[id] = r.result
     return r
+  }
+  // 提交验证码完成登录（点大）；验证码错会再返回新挑战
+  async function submitLogin(id: string, captcha: string): Promise<MallBeginLoginResult> {
+    const r = (await ewei().invoke('submitLogin', id, captcha)) as MallBeginLoginResult
+    if (!r.needCaptcha) loginInfo.value[id] = r.result
+    return r
+  }
+  // 换一张验证码
+  async function refreshCaptcha(id: string): Promise<{ captchaImage: string }> {
+    return (await ewei().invoke('refreshCaptcha', id)) as { captchaImage: string }
+  }
+  // 平台能力位（缓存按 connectorId）
+  const capsCache = ref<Record<string, MallCapabilities>>({})
+  async function getCapabilities(id: string): Promise<MallCapabilities> {
+    if (capsCache.value[id]) return capsCache.value[id]
+    const c = (await ewei().invoke('capabilities', id)) as MallCapabilities
+    capsCache.value[id] = c
+    return c
   }
 
   async function logout(id: string): Promise<void> {
@@ -137,8 +171,17 @@ export const useEweiStore = defineStore('ewei', () => {
     return await ewei().invoke('listShops', id, page, pagesize)
   }
 
+  // 切门店后清掉该连接器的本地缓存：商品列表结果 / 新增商品草稿 / 暂存的当前商品。
+  // 这些缓存 key 只含 connectorId、不含门店 id，若不作废，门店B进入时会直接命中复用门店A的旧数据。
+  function clearConnectorCache(id: string): void {
+    delete goodsListState.value[id]
+    delete createDraft.value[id]
+    currentGoods.value = null
+  }
+
   async function switchShop(id: string, shopId: number, shopName = ''): Promise<void> {
     await ewei().invoke('switchShop', id, shopId, shopName)
+    clearConnectorCache(id) // 门店已变，作废旧门店残留的列表/草稿缓存，强制下次进入重新拉取
     await loadConnectors() // 刷新 current_shop_*
   }
 
@@ -161,8 +204,12 @@ export const useEweiStore = defineStore('ewei', () => {
     updateConnector,
     deleteConnector,
     login,
+    submitLogin,
+    refreshCaptcha,
+    getCapabilities,
     logout,
     listShops,
     switchShop,
+    clearConnectorCache,
   }
 })

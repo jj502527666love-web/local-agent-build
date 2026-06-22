@@ -521,9 +521,11 @@ CREATE TABLE IF NOT EXISTS ewei_connectors (
   base_url TEXT NOT NULL DEFAULT '',               -- 业务管理端域名，末尾带 /
   account TEXT NOT NULL DEFAULT '',                -- 登录账号（明文，列表 masked 展示）
   password_enc TEXT NOT NULL DEFAULT '',           -- 登录密码：v1:{iv}:{tag}:{ct} 加密
-  account_version TEXT NOT NULL DEFAULT '2.1.6',   -- web_site(账户)接口 version 头
-  shop_version TEXT NOT NULL DEFAULT '4.6.11',     -- shop_web(商品/上传)接口 version 头
-  current_shop_id INTEGER NOT NULL DEFAULT 0,      -- 当前选中门店主键
+  account_version TEXT NOT NULL DEFAULT '2.1.6',   -- web_site(账户)接口 version 头（仅 ewei 用）
+  shop_version TEXT NOT NULL DEFAULT '4.6.11',     -- shop_web(商品/上传)接口 version 头（仅 ewei 用）
+  platform TEXT NOT NULL DEFAULT 'ewei',           -- 对接平台：ewei / dianda…（多商城泛化，旧行默认 ewei）
+  extra_json TEXT NOT NULL DEFAULT '{}',           -- 各平台专属参数（如点大 cookie/remember）
+  current_shop_id INTEGER NOT NULL DEFAULT 0,      -- 当前选中门店主键（ewei 用；点大无需切店）
   current_shop_name TEXT NOT NULL DEFAULT '',
   is_default INTEGER NOT NULL DEFAULT 0,
   last_login_at TEXT NOT NULL DEFAULT '',
