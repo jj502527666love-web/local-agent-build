@@ -130,7 +130,7 @@
           >
             <div class="flex-1 min-w-0">
               <div class="text-sm text-text-primary truncate">{{ s.name }}</div>
-              <div class="text-[11px] text-text-tertiary">{{ s.status_text || '—' }} · {{ s.goods_count }} 件商品</div>
+              <div class="text-[11px] text-text-tertiary">{{ s.status_text || '—' }}<template v-if="s.goods_count > 0"> · {{ s.goods_count }} 件商品</template></div>
             </div>
             <span v-if="switchingShopId === s.id" class="text-[11px] text-primary-600">进入中…</span>
           </button>

@@ -32,9 +32,13 @@ export interface MallCapabilities {
   needsCaptcha: boolean
   /** 是否支持新增商品。 */
   supportsAddGoods: boolean
-  /** 是否支持「图集」改图(替换/追加)。全端云仅支持主图 → false。 */
+  /** 是否支持「图集」改图(替换/追加)。 */
   supportsGallery: boolean
-  /** 详情图载体：'html'(ewei 富文本) / 'blocks'(点大块状 JSON)。 */
+  /** 是否支持「详情图」改图(替换/追加)。 */
+  supportsDetailImage: boolean
+  /** 是否支持「SKU 图」改图（多规格规格图）。 */
+  supportsOptionThumb: boolean
+  /** 详情图载体：'html'(ewei/全端云 富文本) / 'blocks'(点大块状 JSON)。 */
   detailFormat: 'html' | 'blocks'
 }
 

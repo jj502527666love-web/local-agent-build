@@ -243,10 +243,18 @@ export function resolveCredentials(
 } | null {
   const row = getConnector(id)
   if (!row) return null
+  // 密文用本机 device-id 派生密钥 AES-GCM 加密；换设备/重装/数据迁移会导致 device-id 变化，
+  // 解密认证失败会抛 "Unsupported state or unable to authenticate data"。转成可操作提示。
+  let password: string
+  try {
+    password = decryptSecret(row.password_enc)
+  } catch {
+    throw new Error('连接器密码无法解密（本机密钥已变化，常见于更换设备、重装应用或数据迁移）。请点该连接器的「编辑」重新输入一次密码并保存，然后再登录。')
+  }
   return {
     base_url: row.base_url,
     account: row.account,
-    password: decryptSecret(row.password_enc),
+    password,
     account_version: row.account_version,
     shop_version: row.shop_version,
     platform: row.platform || 'ewei',

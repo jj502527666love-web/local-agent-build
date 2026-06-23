@@ -209,8 +209,8 @@ async function loadDetail(): Promise<void> {
 // ---- 图位 ----
 const slotOptions = [
   { key: 'mainThumb', short: '主图', multi: false, detail: false, needsOption: false, hint: '替换商品主图（首图）。生成或选好图后，下方点「应用到主图」。' },
-  { key: 'galleryReplace', short: '替换', multi: true, detail: false, needsOption: false, hint: '用所选图整组替换商品图集。' },
-  { key: 'galleryAppend', short: '追加', multi: true, detail: false, needsOption: false, hint: '把所选图追加到现有图集末尾。' },
+  { key: 'galleryReplace', short: '替换', multi: true, detail: false, needsOption: false, hint: '用所选图整组替换商品轮播图。' },
+  { key: 'galleryAppend', short: '追加', multi: true, detail: false, needsOption: false, hint: '把所选图追加到现有轮播图末尾。' },
   { key: 'detailReplace', short: '替换', multi: true, detail: true, needsOption: false, hint: '用所选图【整段替换】商品详情内容（清空旧详情）。' },
   { key: 'detailAppend', short: '追加', multi: true, detail: true, needsOption: false, hint: '把所选图追加到详情末尾。' },
   { key: 'optionThumb', short: 'SKU 图', multi: false, detail: false, needsOption: true, hint: '替换某个规格(SKU)的图。' },
@@ -219,18 +219,17 @@ type SlotKey = (typeof slotOptions)[number]['key']
 const slotGroups = computed<{ name: string; items: SlotKey[] }[]>(() => {
   const groups: { name: string; items: SlotKey[] }[] = [
     { name: '', items: ['mainThumb'] },
-    { name: '图集', items: ['galleryReplace', 'galleryAppend'] },
+    { name: '轮播图', items: ['galleryReplace', 'galleryAppend'] },
     { name: '详情图', items: ['detailReplace', 'detailAppend'] },
     { name: 'SKU 图', items: ['optionThumb'] },
   ]
-  // 点大/全端云：详情为块状结构、SKU 改图暂未支持 → 隐藏这两组图位
+  // 按各平台能力位显隐图位组，避免「点了才报错」
   let result = groups
-  if (caps.value?.detailFormat === 'blocks') {
-    result = result.filter((g) => g.name !== '详情图' && g.name !== 'SKU 图')
-  }
-  // 全端云仅支持主图：无图集能力时隐藏「图集」组，避免点了才报错
-  if (caps.value && !caps.value.supportsGallery) {
-    result = result.filter((g) => g.name !== '图集')
+  const c = caps.value
+  if (c) {
+    if (!c.supportsGallery) result = result.filter((g) => g.name !== '轮播图')
+    if (!c.supportsDetailImage) result = result.filter((g) => g.name !== '详情图')
+    if (!c.supportsOptionThumb) result = result.filter((g) => g.name !== 'SKU 图')
   }
   return result
 })
@@ -247,8 +246,8 @@ const aiScopeKey = computed(() => `ewei:${goodsId}:${isDetailSlot.value ? 'detai
 const currentSlotLabel = computed(() => {
   const map: Record<SlotKey, string> = {
     mainThumb: '主图',
-    galleryReplace: '图集',
-    galleryAppend: '图集',
+    galleryReplace: '轮播图',
+    galleryAppend: '轮播图',
     detailReplace: '详情图',
     detailAppend: '详情图',
     optionThumb: 'SKU 图',
@@ -275,7 +274,19 @@ const currentImages = computed<string[]>(() => {
     const o = detail.value?.options?.find((x: any) => Number(x.id) === target.optionId)
     return o?.thumb ? [previewOf(o.thumb)] : ['']
   }
-  return [] // 详情图位无逐图预览，用 detailImgCount 提示
+  if (target.slot === 'detailReplace' || target.slot === 'detailAppend') {
+    // 详情图位逐图预览：从详情 HTML(content) 抽出 <img src>。改图后 loadDetail 刷新即更新。
+    const html = String(g.content || '')
+    const urls: string[] = []
+    const re = /<img[^>]+src=["']([^"']+)["']/gi
+    let m: RegExpExecArray | null
+    while ((m = re.exec(html))) {
+      const u = previewOf(m[1])
+      if (u) urls.push(u)
+    }
+    return urls
+  }
+  return []
 })
 
 // ---- 已选图池 ----
@@ -378,15 +389,31 @@ async function onApply(): Promise<void> {
   applyDone.value = false
   progressText.value = ''
   try {
-    await ewei().invoke('replaceGoodsImage', {
+    const res = (await ewei().invoke('replaceGoodsImage', {
       connectorId,
       goodsId,
       slot: target.slot,
       optionId: target.slot === 'optionThumb' ? target.optionId : undefined,
       images: picked.value.map((p) => p.localPath),
-    })
+    })) as { ok: boolean; uploaded?: Array<{ url: string }> }
     applyDone.value = true
     picked.value = []
+    // 主图替换成功：用新图即时刷新展示用缩略图。header/主图位优先取 currentGoods.thumb，不更新它
+    // 会一直显示列表暂存的旧图。previewOf 同时处理新图的绝对URL(全端云/点大)与相对路径(ewei)。
+    if (target.slot === 'mainThumb') {
+      const newThumb = previewOf(res?.uploaded?.[0]?.url || '')
+      const cur = store.currentGoods
+      if (newThumb && cur && cur.id === goodsId) {
+        store.setCurrentGoods({ ...cur, thumb: newThumb })
+        // 同步列表缓存，返回门店商品列表时该商品也显示新图
+        const ls = store.getGoodsListState(connectorId)
+        const item = ls?.goods?.find((x: any) => Number(x.id) === goodsId)
+        if (item) {
+          item.thumb = newThumb
+          store.setGoodsListState(connectorId, { ...ls })
+        }
+      }
+    }
     await loadDetail()
   } catch (e: any) {
     applyError.value = e?.message || '应用失败'

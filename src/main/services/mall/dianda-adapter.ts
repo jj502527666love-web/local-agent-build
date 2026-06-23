@@ -29,7 +29,7 @@ import type {
 class DiandaError extends Error {
   code: number
   constructor(code: number, message: string) {
-    super(message || `点大接口错误(${code})`)
+    super(message || `商城接口错误(${code})`)
     this.name = 'DiandaError'
     this.code = code
   }
@@ -169,7 +169,7 @@ async function requestJson(connectorId: string, route: string, opts: ReqOptions)
   const res = await rawFetch(connectorId, route, opts)
   if (res.status >= 300 && res.status < 400) {
     getSession(connectorId).loggedIn = false
-    throw new DiandaError(-10000, '登录态已失效，请重新登录（点大需重新输入验证码）')
+    throw new DiandaError(-10000, '登录态已失效，请重新登录（需重新输入验证码）')
   }
   const text = await res.text()
   let json: any
@@ -178,7 +178,7 @@ async function requestJson(connectorId: string, route: string, opts: ReqOptions)
   } catch {
     // 非 JSON 多半是被重定向回登录页的 HTML
     getSession(connectorId).loggedIn = false
-    throw new DiandaError(-10000, '登录态已失效，请重新登录（点大需重新输入验证码）')
+    throw new DiandaError(-10000, '登录态已失效，请重新登录（需重新输入验证码）')
   }
   return json
 }
@@ -200,6 +200,8 @@ const diandaAdapter: MallAdapter = {
     needsCaptcha: true,
     supportsAddGoods: false,
     supportsGallery: true,
+    supportsDetailImage: true, // 块状 JSON 详情：可追加/替换 picture 块
+    supportsOptionThumb: false,
     detailFormat: 'blocks',
   },
 
@@ -304,7 +306,9 @@ const diandaAdapter: MallAdapter = {
   },
 
   async getGoodsDetail(connectorId: string, goodsId: number): Promise<MallGoodsDetail> {
-    const product = await fetchProduct(connectorId, goodsId)
+    // 走 getproduct(直读 DB 行)：name/pic/pics/detail/guigedata 一次取齐，比解析编辑页 HTML 可靠。
+    const { product, guigedataRaw, detail } = await fetchGuige(connectorId, goodsId)
+    if (!product || !product.id) throw new DiandaError(-1, '未能读取商品数据（请重试或检查登录态）')
     const pics = String(product.pics || '')
       .split(',')
       .map((s) => s.trim())
@@ -315,8 +319,9 @@ const diandaAdapter: MallAdapter = {
       title: String(product.name || ''),
       thumb: String(product.pic || ''),
       thumbs: pics,
-      content: '', // 点大详情是块状 JSON（见 capabilities.detailFormat='blocks'），暂不在此预览
-      has_option: hasRealOption(product.guigedata) ? 1 : 0,
+      // 详情含图数：块状详情转成 <img>，让 detailImgCount 正确（改图后 loadDetail 刷新即更新，不再显示旧值）
+      content: diandaDetailToHtml(detail),
+      has_option: hasRealOption(guigedataRaw) ? 1 : 0,
     }
     return { goods, options: [], specs: [] }
   },
@@ -325,10 +330,7 @@ const diandaAdapter: MallAdapter = {
     const { connectorId, goodsId, slot, images } = args
     if (!images || !images.length) throw new DiandaError(-1, '没有可应用的图片')
     if (slot === 'optionThumb') {
-      throw new DiandaError(-1, '点大多规格 SKU 图替换暂未支持（待补测多规格保存字段）')
-    }
-    if (slot === 'detailReplace' || slot === 'detailAppend') {
-      throw new DiandaError(-1, '点大详情图为块状结构，详情图替换暂未支持（待实现块状详情）')
+      throw new DiandaError(-1, '多规格 SKU 图替换暂未支持')
     }
 
     const taskId = Math.random().toString(16).slice(2, 10)
@@ -344,13 +346,17 @@ const diandaAdapter: MallAdapter = {
       // 1) 先取编辑页全部表单字段 + 商品对象作为全量回提基底（点大 save 是全量替换，缺字段静默清空）。
       //    params 用 URLSearchParams：同名多值字段(如门店绑定 info[bind_mendian_ids][])经 append 完整保留。
       broadcastProgress({ taskId, goodsId, phase: 'saving', message: '读取商品现状…' })
-      const { params, product } = await harvestEditForm(connectorId, goodsId)
-      // 多规格商品的 save 字段展开(option[N]/specs/guigedata)尚未实测，全量替换下可能清空 SKU → 所有图位整体拒绝
-      if (hasRealOption(product?.guigedata)) {
-        throw new DiandaError(-1, '点大多规格商品改图暂未支持（多规格保存字段待补测，已中止以避免误删 SKU）')
-      }
+      const { params } = await harvestEditForm(connectorId, goodsId)
       if (!params.get('info[name]')) {
         throw new DiandaError(-1, '未能读取商品完整数据，已中止以避免误删（请重试或检查登录态）')
+      }
+      // 重建 SKU(option[ks]) + specs：点大 save 全量替换、按 ks 匹配 shop_guige 后 delete id NOT IN(newggids)。
+      // 静态表单只有模板 option(已在 harvest 排除)，真实 SKU 必须从 getproduct 取回逐条重建——
+      // 否则全量保存会清空规格/价格/库存（单规格也同样中招，这是原全量保存的隐患）。
+      const { gglist, guigedataRaw, lvprice, detail: currentDetail } = await fetchGuige(connectorId, goodsId)
+      const skuCount = applyGuigeReconstruction(params, gglist, guigedataRaw, lvprice)
+      if (skuCount === 0) {
+        throw new DiandaError(-1, '未能读取商品规格(SKU)数据，已中止以避免清空规格，请重试或用商城后台处理')
       }
 
       // 2) 上传新图（点大上传走商户后台存储，返回绝对 URL）
@@ -371,6 +377,10 @@ const diandaAdapter: MallAdapter = {
       } else if (slot === 'galleryAppend') {
         const cur = (params.get('info[pics]') || '').split(',').map((s) => s.trim()).filter(Boolean)
         params.set('info[pics]', [...cur, ...urls].join(','))
+      } else if (slot === 'detailReplace' || slot === 'detailAppend') {
+        // 详情图：以 getproduct 取回的 product.detail(块状JSON 原文)为基底追加/替换图片块。
+        // 不能用 harvest 的 info[detail]——编辑页无该静态元素，取不到、送空会被服务端丢弃。
+        params.set('info[detail]', buildDetailContent(currentDetail, urls, slot === 'detailReplace'))
       }
 
       // 4) 整体回提
@@ -396,7 +406,7 @@ const diandaAdapter: MallAdapter = {
   },
 
   async addGoods(): Promise<{ goodsId: number }> {
-    throw new DiandaError(-1, '点大暂不支持在桌面端新增商品')
+    throw new DiandaError(-1, '该商城暂不支持在桌面端新增商品')
   },
 }
 
@@ -460,17 +470,25 @@ async function uploadImage(connectorId: string, localPath: string): Promise<Ewei
   }
 }
 
-/** 取单品完整数据：解析编辑页内嵌的 `var product = {...}`。 */
-async function fetchProduct(connectorId: string, goodsId: number): Promise<any> {
-  const res = await rawFetch(connectorId, `ShopProduct/edit/id/${goodsId}`, { method: 'GET' })
-  if (res.status >= 300 && res.status < 400) {
-    getSession(connectorId).loggedIn = false
-    throw new DiandaError(-10000, '登录态已失效，请重新登录')
+/**
+ * 从编辑页 HTML 构建商品对象。点大编辑页的商品数据在【服务端渲染的表单 input】
+ * （info[name]/info[pic]/info[pics]）与【var guigedataList(规格组)】里，而**不是** `var product = {...}`
+ * ——页面里那句 `var product = res.product` 是「选择产品」弹层回调 choosepro2(res) 里的语句、
+ * 与商品数据无关（旧实现 extractJsVar('product') 错配到它，导致 getGoodsDetail 必然报「未能解析商品数据」）。
+ */
+function buildProductFromEditPage(html: string, goodsId: number): any {
+  const map = new Map<string, string>()
+  for (const [name, value] of extractFormEntries(html)) {
+    if (!map.has(name)) map.set(name, value)
   }
-  const html = await res.text()
-  const product = extractJsVar(html, 'product')
-  if (!product) throw new DiandaError(-1, '未能解析商品数据（编辑页结构可能变更）')
-  return product
+  return {
+    id: goodsId,
+    name: map.get('info[name]') || '',
+    pic: map.get('info[pic]') || '',
+    pics: map.get('info[pics]') || '',
+    // 规格组：var guigedataList = [{title,items:[...]}]，hasRealOption 据此判多规格
+    guigedata: extractJsVar(html, 'guigedataList') || [],
+  }
 }
 
 /**
@@ -490,13 +508,152 @@ async function harvestEditForm(
   const html = await res.text()
   const params = new URLSearchParams()
   for (const [name, value] of extractFormEntries(html)) params.append(name, value)
-  const product = extractJsVar(html, 'product')
-  // 详情(info[detail])可能由 JS 从 var product 注入而非静态 value；缺则从 product 补，避免清空详情
-  if (!params.has('info[detail]') && product && product.detail !== undefined) {
-    params.append('info[detail]', typeof product.detail === 'string' ? product.detail : JSON.stringify(product.detail))
+  // 商品对象从表单 + var guigedataList 构建（编辑页无 `var product = {...}` 数据对象，
+  // 那句 var product = res.product 是选择产品弹层回调，旧实现 extractJsVar('product') 取不到 →
+  // product 恒为 null → 多规格守卫 hasRealOption(null)=false 失效，多规格商品会裸跑全量替换清 SKU）。
+  const product = buildProductFromEditPage(html, goodsId)
+  // 详情 info[detail] 不是静态表单字段——它在 <script id="content" name="info[detail]"> 里(DIY设计器初始数据)，
+  // 提交时本由 geteditordata() 重新序列化。harvest 不含它会导致全量替换清空详情。从脚本块取原始内容兜底保留。
+  if (!params.has('info[detail]')) {
+    const m = html.match(/<script[^>]*\bname=["']info\[detail\]["'][^>]*>([\s\S]*?)<\/script>/i)
+    if (m) params.append('info[detail]', m[1])
   }
   if (!params.has('id')) params.append('id', String(goodsId))
   return { params, product }
+}
+
+/**
+ * 取商品的真实 SKU（按 ks 键的 shop_guige 行）+ 规格结构（guigedata 原文）+ 是否启用会员价。
+ * 走 `ShopProduct/getproduct`（POST proid）——服务端直读 shop_guige + shop_product.guigedata，
+ * 比解析编辑页 HTML 可靠（编辑页无 guigedataList 变量，SKU 表是 JS 动态建的）。
+ */
+async function fetchGuige(
+  connectorId: string,
+  goodsId: number,
+): Promise<{ product: any; gglist: Record<string, any>; guigedataRaw: string; lvprice: boolean; detail: string }> {
+  const json = await requestJson(connectorId, 'ShopProduct/getproduct', {
+    method: 'POST',
+    form: { proid: String(goodsId) },
+  })
+  const product = json?.product || {}
+  const gglist: Record<string, any> = json?.gglist && typeof json.gglist === 'object' ? json.gglist : {}
+  // specs 直接回提商品现有 guigedata 原文（保持规格结构不变；SKU 保留靠 option[ks] 按 ks 匹配，与 specs 无关）
+  const guigedataRaw =
+    typeof product.guigedata === 'string' && product.guigedata
+      ? product.guigedata
+      : JSON.stringify(json?.guigedata ?? [])
+  // 详情(detail)：编辑页无 info[detail] 静态元素（由 DIY 设计器 JS 提交时生成），harvest 抓不到。
+  // 必须以 getproduct 返回的 product.detail(块状 JSON 原文) 作改图基底，否则送非法内容会被 geteditorcontent 丢弃。
+  const detail = typeof product.detail === 'string' ? product.detail : ''
+  return { product, gglist, guigedataRaw, lvprice: Number(product.lvprice) === 1, detail }
+}
+
+/** 点大块状详情 → 含 <img> 的 HTML（仅供桌面端统计「详情图含 N 张图」用，改图后刷新即更新）。 */
+function diandaDetailToHtml(detail: string): string {
+  const decoded = decodeHtml(detail || '').trim()
+  if (!decoded) return ''
+  if (!decoded.startsWith('[')) return decoded // 纯 HTML 旧详情已含 <img>
+  let blocks: any[]
+  try {
+    blocks = JSON.parse(decoded)
+  } catch {
+    return ''
+  }
+  if (!Array.isArray(blocks)) return ''
+  const imgs: string[] = []
+  for (const b of blocks) {
+    if (b && Array.isArray(b.data)) {
+      for (const d of b.data) {
+        if (d && typeof d.imgurl === 'string' && d.imgurl) imgs.push(`<img src="${d.imgurl}"/>`)
+      }
+    }
+  }
+  return imgs.join('')
+}
+
+/**
+ * 把真实 SKU 逐条重建成 option[ks][...] 字段 + specs，append 进全量回提的 params。
+ * 字段集忠实复刻服务端 save 读取的键（name/pic/market_price/cost_price/sell_price/weight/
+ * barcode/givescore/stock/limit_start，启用会员价时附 sell_price_<等级id>）。返回重建出的 SKU 条数。
+ * 服务端按 ks 匹配 shop_guige 行 → 逐条 update 保留 id、循环后 delete id NOT IN(newggids)：
+ * 只要每个现有 ks 都提交，全部 SKU 原样保留（单/多规格同理）。
+ */
+function applyGuigeReconstruction(
+  params: URLSearchParams,
+  gglist: Record<string, any>,
+  guigedataRaw: string,
+  lvprice: boolean,
+): number {
+  let n = 0
+  for (const ks of Object.keys(gglist)) {
+    const row = gglist[ks] || {}
+    const set = (sub: string, val: any): void =>
+      params.append(`option[${ks}][${sub}]`, val === undefined || val === null ? '' : String(val))
+    set('name', row.name ?? '')
+    set('pic', row.pic ?? '')
+    set('market_price', row.market_price ?? 0)
+    set('cost_price', row.cost_price ?? 0)
+    set('sell_price', row.sell_price ?? 0)
+    set('weight', row.weight ?? 0)
+    set('barcode', row.barcode ?? '')
+    set('givescore', row.givescore ?? '')
+    set('stock', row.stock ?? 0)
+    set('limit_start', row.limit_start ?? 0)
+    if (lvprice && row.lvprice_data) {
+      let lv: any = row.lvprice_data
+      if (typeof lv === 'string') {
+        try {
+          lv = JSON.parse(lv)
+        } catch {
+          lv = {}
+        }
+      }
+      if (lv && typeof lv === 'object') {
+        for (const lvid of Object.keys(lv)) set(`sell_price_${lvid}`, lv[lvid] ?? 0)
+      }
+    }
+    n++
+  }
+  params.append('specs', guigedataRaw || '')
+  return n
+}
+
+/** 点大 DIY 详情设计器的 picture(图片)块。多张图放进同一块的 data 数组。 */
+function makePictureBlock(urls: string[]): any {
+  const uid = (p: string): string => p + Date.now() + Math.floor(Math.random() * 1e6)
+  return {
+    id: uid('M'),
+    temp: 'picture',
+    params: {
+      bgcolor: '#FFFFFF', margin_x: '0', margin_y: '0', padding_x: '0', padding_y: '0', borderradius: '0',
+      quanxian: { all: false }, platform: { all: false }, mendian: { all: true }, mendian_sort: 'sort',
+    },
+    data: urls.map((u) => ({ id: uid('P'), imgurl: u, hrefurl: '' })),
+    other: '',
+    content: '',
+  }
+}
+
+/**
+ * 在现有详情上追加/替换图片。current = <script id=content> 原始内容(可能含 HTML 实体)。
+ * 块状 JSON 详情 → 加/替 picture 块；纯 HTML 旧详情 → 加/替 <img>。块状解析失败则中止(防破坏详情)。
+ */
+function buildDetailContent(current: string, urls: string[], replace: boolean): string {
+  const decoded = decodeHtml(current || '').trim()
+  if (decoded.startsWith('[')) {
+    let blocks: any[]
+    try {
+      const p = JSON.parse(decoded)
+      if (!Array.isArray(p)) throw new Error('not array')
+      blocks = p
+    } catch {
+      throw new DiandaError(-1, '该商品详情为块状结构但解析失败，已中止以避免破坏详情，请用商城后台编辑详情')
+    }
+    const pic = makePictureBlock(urls)
+    return JSON.stringify(replace ? [pic] : [...blocks, pic])
+  }
+  const imgs = urls.map((u) => `<p><img src="${u}" style="max-width:100%"/></p>`).join('')
+  return replace ? imgs : decoded + imgs
 }
 
 /**
@@ -510,8 +667,9 @@ function extractFormEntries(html: string): Array<[string, string]> {
   const want = (name: string): boolean =>
     name === 'id' ||
     name.startsWith('info[') ||
-    name.startsWith('option[') ||
-    name === 'specs' ||
+    // 注意：option[*] 与 specs 故意【不】从静态表单收集——静态页里只有 JS 用的模板行
+    // （name 形如 option['+ks+'][...]），真实 SKU 由 getproduct 取回后在 replaceGoodsImage 里逐条重建。
+    // 误收模板会让服务端 save 的 `delete id not in(newggids)` 清空真实规格/价格/库存。
     name.startsWith('ggname') ||
     name.startsWith('commissiondata') ||
     name.startsWith('commissionpingjidata') ||

@@ -4,8 +4,8 @@
 //   第1层(/admin)：登录 POST /admin/login/login(username/password/captcha,每次验证码)→{code:"20000",data:{secret:JWT}}
 //     之后带头 authorization-token: Bearer <JWT>；验证码 /admin/login/captcha；项目列表 /admin/applet/userIndex。
 //   第2层(/index, we7)：商品列表 /index/duoproducts/index?appletid=N(JS渲染)；编辑器 /index/duoproducts/add.html?
-//     appletid=N&newsid=<proid>(JS渲染重型表单,checkinfo校验)；图片上传 /index/duoproducts/imgupload.html?uniacid=N
-//     字段 uploadfile[]→[{"url":"<绝对COS URL>"}]；保存 POST /index/duoproducts/save.html?appletid=N&newsid=<proid>
+//     appletid=N&newsid=<proid>(JS渲染重型表单,checkinfo校验)；图片上传走媒体库端点 POST /pic/upImage?uniacid=N&gid=0
+//     字段 uploadfile0，响应 {code:0,data:[{url,pid}]}(code:0=成功，绝对COS URL)；保存 POST /index/duoproducts/save.html?appletid=N&newsid=<proid>
 //     (112字段);主图(列表显示)=commonuploadpic1、轮播=imgsrcs[]。
 //
 // 实现策略：we7 编辑器/列表是 JS 渲染的重型表单，纯协议复刻不出 112 字段渲染态。故：
@@ -13,7 +13,12 @@
 //     与下面的 BrowserWindow 同分区共享会话）。
 //   - 列商品/改图：用【隐藏 BrowserWindow(同分区)】加载真实页面，executeJavaScript 读渲染态/驱动编辑器保存——
 //     设 commonuploadpic1 + checkinfo()通过 + 序列化 FormData POST save.html。
-// 改图当前支持 mainThumb(主图,列表显示)；图集/详情/SKU/多规格(SKU)整体守卫拒绝(防全量替换清字段)。
+// 改图支持 mainThumb(主图)/图集(imgsrcs[])/详情(UEditor product_txt)。
+// 多规格(use_more==1)：主图/轮播/详情改图已放开——SKU 由编辑器 checkinfo()->ggzbc() 打包进隐藏字段
+//   #biaogedata(JSON.stringify(allarrone))，规格组进 #ggzjsons/#typelen/#typesarr，提交前 .shukdd(valarr) 名
+//   被清空。前提是 getDuoTypeValues(在 changeType 内) 已把现有 SKU 载入 allarrone，故改图前主动触发并等待就绪
+//   (前置安全闸)、保存前断言 #biaogedata 非空(后置安全闸)，任一不满足即中止、绝不清空 SKU。SKU 图(规格图片)
+//   仍不支持(supportsOptionThumb:false，需逐 valarr{i}[9] 替换，更复杂)。
 //
 // 【2026-06-23 真实账号 HTTP/DB 实测修正的三处致命点(纯代码审查不可见)】：
 //   1. 验证码是 JSON：admin/login/captcha 回 {data:{image_data:"data:image/png;base64..",key:".."}}，
@@ -41,6 +46,7 @@
 import { BrowserWindow, session as electronSession } from 'electron'
 import { readFileSync } from 'fs'
 import { getAbsolutePath } from '../image-generation'
+import { makeUploadThumbnail } from '../thumbnail-upload'
 import * as connectorService from '../ewei-connectors'
 import type {
   MallAdapter,
@@ -58,7 +64,7 @@ import type {
 class QdyunError extends Error {
   code: number
   constructor(code: number | string, message: string) {
-    super(message || `全端云接口错误(${code})`)
+    super(message || `商城接口错误(${code})`)
     this.name = 'QdyunError'
     this.code = Number(code) || -1
   }
@@ -125,15 +131,14 @@ async function ensureWe7Session(connectorId: string, appletId: number): Promise<
   let set = we7Bridged.get(connectorId)
   if (set && set.has(appletId)) return
   const cacheKey = await getCacheKey(connectorId)
-  if (!cacheKey) throw new QdyunError(-1, '全端云会话已失效，请重新登录')
+  if (!cacheKey) throw new QdyunError(-1, '商城登录已失效，请重新登录')
   const r = await sfetch(connectorId, 'index/datashow/index.html', {
     query: { appletid: appletId, cache_key: cacheKey },
+    noXrw: true, // 页面导航：不带 x-requested-with，成功回 text/html、失败 302 跳 /new_plat
   })
-  // 成功为 200 text/html(datashow 页面)；失败(check_login=false)会重定向到 /new_plat，
-  // 或因带 x-requested-with 头而回 JSON 错误({code,msg})——两者都视为桥接失败。
-  const ct = (r.headers.get('content-type') || '').toLowerCase()
-  if (r.status >= 400 || r.url.includes('new_plat') || ct.includes('json')) {
-    throw new QdyunError(-1, '建立全端云商户后台会话失败，请重新登录')
+  // 成功为 200 text/html(datashow 页面)；失败(check_login=false)会重定向到 /new_plat 登录页
+  if (r.status >= 400 || r.url.includes('new_plat')) {
+    throw new QdyunError(-1, '建立商城后台会话失败，请重新登录')
   }
   if (!set) {
     set = new Set()
@@ -154,6 +159,9 @@ interface ReqOptions {
   form?: Record<string, string>
   formData?: FormData
   auth?: boolean
+  /** 不带 x-requested-with：用于页面导航类请求(如 datashow 建会话)——带该头 ThinkPHP 会把
+   *  成功页面也包成 JSON 字符串(content-type:application/json)，干扰成败判定。 */
+  noXrw?: boolean
 }
 
 /** 走分区 session.fetch（cookie 自动管理，与 BrowserWindow 同分区共享）。 */
@@ -161,12 +169,15 @@ async function sfetch(connectorId: string, route: string, opts: ReqOptions = {})
   let url = baseUrl(connectorId) + route.replace(/^\//, '')
   if (opts.query) {
     const qs = Object.entries(opts.query)
-      .filter(([, v]) => v !== undefined && v !== '')
+      // 只丢 undefined/null，保留空字符串：全端云 userIndex 要求 key 参数必须存在
+      // （哪怕为空），过滤掉会导致服务端报 "Undefined index: key"。
+      .filter(([, v]) => v !== undefined && v !== null)
       .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
       .join('&')
     if (qs) url += (url.includes('?') ? '&' : '?') + qs
   }
-  const headers: Record<string, string> = { 'x-requested-with': 'XMLHttpRequest' }
+  const headers: Record<string, string> = {}
+  if (!opts.noXrw) headers['x-requested-with'] = 'XMLHttpRequest'
   let body: any
   if (opts.formData) {
     body = opts.formData
@@ -283,8 +294,10 @@ const qdyunAdapter: MallAdapter = {
     needsShopSwitch: true, // applet/项目选择，复用「选门店」UI
     needsCaptcha: true,
     supportsAddGoods: false,
-    supportsGallery: false, // 仅支持主图，图集/详情/SKU 守卫拒绝
-    detailFormat: 'blocks',
+    supportsGallery: true, // 轮播 imgsrcs[]
+    supportsDetailImage: true, // 详情 UEditor 富文本(product_txt)
+    supportsOptionThumb: false, // 多规格 SKU 图守卫拒绝
+    detailFormat: 'html',
   },
 
   async beginLogin(connectorId: string): Promise<MallBeginLoginResult> {
@@ -352,11 +365,16 @@ const qdyunAdapter: MallAdapter = {
     })
     const json = await r.json()
     if (String(json.code) !== SUCCESS_CODE) throw new QdyunError(json.code, json.msg || '获取项目失败')
-    const rows: any[] = json.data?.list || json.data?.data || (Array.isArray(json.data) ? json.data : [])
+    // 真实结构（实测）：{code,data:{lists:{total,data:[...applet]}}}；兼容其它形态兜底
+    const rows: any[] =
+      json.data?.lists?.data ||
+      json.data?.list ||
+      json.data?.data ||
+      (Array.isArray(json.data?.lists) ? json.data.lists : Array.isArray(json.data) ? json.data : [])
     const list: MallShop[] = rows.map((p: any) => ({
       id: Number(p.uniacid ?? p.appletid ?? p.id),
       name: String(p.name ?? p.title ?? ''),
-      logo: String(p.logo ?? p.icon ?? ''),
+      logo: String(p.thumb ?? p.logo ?? p.icon ?? ''),
       status: Number(p.status) || 0,
       showstatus: p.showstatus ?? '',
       status_text: String(p.status_text ?? p.expire_text ?? ''),
@@ -364,7 +382,7 @@ const qdyunAdapter: MallAdapter = {
       is_root: 0,
       days: String(p.days ?? ''),
     }))
-    return { list, count: Number(json.data?.total ?? json.data?.count ?? list.length) }
+    return { list, count: Number(json.data?.lists?.total ?? json.data?.total ?? json.data?.count ?? list.length) }
   },
 
   async switchShop(connectorId: string, shopId: number, shopName = ''): Promise<{ ok: boolean }> {
@@ -396,7 +414,11 @@ const qdyunAdapter: MallAdapter = {
         for(var t=0;t<tds.length;t++){ var tx=(tds[t].textContent||'').trim();
           if(!title && tx.length>1 && !/^[0-9.￥¥]+$/.test(tx) && tds[t].querySelector('img')===null) title=tx.slice(0,40);
           if(!price && /^[￥¥]?[0-9]+(\\.[0-9]+)?$/.test(tx)) price=tx.replace(/[￥¥]/,''); }
-        out.push({ id:proid, title:title, thumb:pic, status:1, has_option:0, selling_type:0, type:0, price:price });
+        // 多规格识别：列表服务端渲染了 data-type={use_more}(库存/价格单元格,1=多规格)，兜底看 .badge-info “多”徽标
+        var useMore=''; var dt=tr.querySelector('[data-type]'); if(dt) useMore=(dt.getAttribute('data-type')||'').trim();
+        var hasOpt = useMore==='1' ? 1 : 0;
+        if(!hasOpt){ var bi=tr.querySelector('.badge-info'); if(bi && (bi.textContent||'').trim()==='多') hasOpt=1; }
+        out.push({ id:proid, title:title, thumb:pic, status:1, has_option:hasOpt, selling_type:0, type:0, price:price });
       }
       // 去重(同 proid 多行取首)
       var seen={}; var uniq=[];
@@ -420,10 +442,12 @@ const qdyunAdapter: MallAdapter = {
     const js = `(async function(){
       function q(s){return document.querySelector(s);}
       var deadline=Date.now()+18000;
-      while(Date.now()<deadline){ var t=q('#proTitle'); var w2=q('#w2'); if(t&&t.value&&w2&&w2.options.length>1) break; await new Promise(function(r){setTimeout(r,300)}); }
+      while(Date.now()<deadline){ var t=q('#proTitle'); var w2=q('#w2'); if(t&&t.value&&w2&&w2.options.length>1&&window.ue&&window.ue.isReady) break; await new Promise(function(r){setTimeout(r,300)}); }
       function val(n){var e=document.querySelector("[name='"+n+"']"); return e?String(e.value||''):'';}
       var imgs=[]; document.querySelectorAll("[name='imgsrcs[]']").forEach(function(e){ if(e.value) imgs.push(e.value); });
-      return { title:(q('#proTitle')?q('#proTitle').value:''), thumb:val('commonuploadpic1'), thumbs:imgs, use_more:val('use_more') };
+      // 详情(UEditor)内容：用于桌面端「详情图含 N 张图」统计，改图后刷新即更新。尽力读，未就绪给空。
+      var detail=''; try{ if(window.ue && window.ue.getContent) detail=String(window.ue.getContent()||''); }catch(e){}
+      return { title:(q('#proTitle')?q('#proTitle').value:''), thumb:val('commonuploadpic1'), thumbs:imgs, use_more:val('use_more'), detail:detail };
     })()`
     let data: any = {}
     try {
@@ -437,18 +461,19 @@ const qdyunAdapter: MallAdapter = {
       title: String(data.title || ''),
       thumb: String(data.thumb || ''),
       thumbs: Array.isArray(data.thumbs) ? data.thumbs : [],
-      content: '',
+      content: String(data.detail || ''), // 详情 HTML（含 <img>）→ EweiGoodsImageView 统计「详情图含 N 张图」
       has_option: hasRealOption(data.use_more) ? 1 : 0,
     }
     return { goods, options: [], specs: [] }
   },
 
-  // 上传：we7 imgupload，字段 uploadfile[] → 绝对 COS URL
+  // 上传：媒体库 /pic/upImage，字段 uploadfile0 → 绝对 COS URL
   async replaceGoodsImage(args: ReplaceGoodsImageArgs): Promise<{ ok: boolean; uploaded: EweiUploadResult[] }> {
     const { connectorId, goodsId, slot, images } = args
     if (!images || !images.length) throw new QdyunError(-1, '没有可应用的图片')
-    if (slot !== 'mainThumb') {
-      throw new QdyunError(-1, '全端云目前仅支持替换主图（图集/详情/SKU 因 we7 编辑器结构特殊待补）')
+    const SUPPORTED = ['mainThumb', 'galleryReplace', 'galleryAppend', 'detailReplace', 'detailAppend']
+    if (!SUPPORTED.includes(slot)) {
+      throw new QdyunError(-1, '该图位暂不支持（多规格 SKU 图需用商城后台处理）')
     }
     const appletId = getSession(connectorId).appletId
     if (!appletId) throw new QdyunError(-1, '请先选择项目')
@@ -463,10 +488,11 @@ const qdyunAdapter: MallAdapter = {
         broadcastProgress({ goodsId, phase: 'uploading', current: i, total: images.length, message: `上传第 ${i + 1}/${images.length} 张` })
         uploaded.push(await uploadImage(connectorId, appletId, images[i]))
       }
-      const newUrl = uploaded[0].url
-      connectorService.updateImageLog(logId, { status: 'uploaded', newPaths: uploaded.map((u) => u.url) })
+      const urls = uploaded.map((u) => u.url)
+      connectorService.updateImageLog(logId, { status: 'uploaded', newPaths: urls })
 
-      // 2) 隐藏窗口加载编辑器 → 设主图 commonuploadpic1 + checkinfo() + 序列化 FormData POST save.html
+      // 2) 隐藏窗口加载编辑器 → 按图位修改(主图commonuploadpic1 / 轮播imgsrcs[] / 详情UEditor)
+      //    + checkinfo() + 序列化 FormData POST save.html
       broadcastProgress({ goodsId, phase: 'saving', message: '写回商品…' })
       const js = `(async function(){
         function q(s){return document.querySelector(s);}
@@ -483,23 +509,63 @@ const qdyunAdapter: MallAdapter = {
         var form=q('#form_sample_2')||q('form[action*=save]');
         if(!form) return {ok:false,msg:'编辑器表单未加载完成'};
         var w2=q('#w2');
-        if(!w2 || !w2.value){ return {ok:false,msg:'该商品在全端云后台未设置"所属分类"(保存强制要求分类)，请先在全端云为其设置分类后再改图'}; }
+        if(!w2 || !w2.value){ return {ok:false,msg:'该商品在商城后台未设置"所属分类"(保存强制要求分类)，请先在商城后台为其设置分类后再改图'}; }
         var t=q('#proTitle'); if(!t || !t.value) return {ok:false,msg:'该商品缺少名称，无法保存'};
         var um=q("input[name='use_more']:checked")||q("[name='use_more']");
-        if(um && String(um.value)==='1'){ return {ok:false,msg:'该商品为多规格(SKU)商品，桌面端改图暂不支持(避免全量保存清空规格/价格/库存)，请用全端云后台处理'}; }
+        var isMulti = !!(um && String(um.value)==='1');
+        if(isMulti){
+          // 多规格(SKU)：改图走全量保存，SKU 由编辑器 checkinfo()->ggzbc() 打包进 #biaogedata。
+          // 必须先确保 getDuoTypeValues 已把现有 SKU 载入 allarrone(并渲染出 valarr{i} 输入)，
+          // 否则 ggzbc 会打包空数组 → 保存时清空规格/价格/库存。allarrone 初值为 []，
+          // 仅 changeType() 内的 AJAX 会填充，故此处主动触发并等待就绪(前置安全闸)。
+          try{ if((typeof allarrone==='undefined'||!allarrone.length) && typeof changeType==='function') changeType(); }catch(x){}
+          var skuDeadline=Date.now()+20000;
+          while(Date.now()<skuDeadline){
+            if(typeof allarrone!=='undefined' && allarrone.length>0 && q("input[name='valarr0']")) break;
+            await new Promise(function(r){setTimeout(r,300)});
+          }
+          if(typeof allarrone==='undefined' || !allarrone.length || !q("input[name='valarr0']")){
+            return {ok:false,msg:'多规格(SKU)数据未能加载完成，为避免保存时清空规格已中止，请重试，或用商城后台处理该商品'};
+          }
+        }
+        if(!window.ue || !window.ue.isReady) return {ok:false,msg:'商品详情编辑器未就绪，请重试'};
+        try{ window.ue.sync(); }catch(x){}
+        var SLOT=${JSON.stringify(slot)};
+        var URLS=${JSON.stringify(urls)};
+        // ---- 按图位修改 ----
+        if(SLOT==='mainThumb'){
+          var NEW=URLS[0]; var set=0;
+          document.querySelectorAll("[name='commonuploadpic1']").forEach(function(e){ e.value=NEW; e.setAttribute('value',NEW); set++; });
+          if(set===0) return {ok:false,msg:'未找到主图字段(commonuploadpic1)'};
+          var pv=q('.thumbnail.commonuploadpic1 img'); if(pv) pv.setAttribute('src',NEW);
+        } else if(SLOT==='galleryReplace' || SLOT==='galleryAppend'){
+          var zs=q('#imgzs'); if(!zs) return {ok:false,msg:'未找到轮播容器'};
+          if(SLOT==='galleryReplace'){ zs.querySelectorAll('.thumbnail').forEach(function(e){ e.remove(); }); }
+          URLS.forEach(function(u){
+            var d=document.createElement('div'); d.className='thumbnail';
+            var inp=document.createElement('input'); inp.type='text'; inp.name='imgsrcs[]'; inp.value=u; inp.setAttribute('hidden','hidden');
+            var im=document.createElement('img'); im.src=u; d.appendChild(inp); d.appendChild(im); zs.appendChild(d);
+          });
+        } else if(SLOT==='detailReplace' || SLOT==='detailAppend'){
+          var html=URLS.map(function(u){ return '<p><img src="'+u+'" style="max-width:100%"/></p>'; }).join('');
+          if(SLOT==='detailReplace'){ window.ue.setContent(html); } else { window.ue.setContent(html, true); }
+          try{ window.ue.sync(); }catch(x){}
+        } else { return {ok:false,msg:'不支持的图位'}; }
+        // ---- 修改后再做轮播可序列化守卫(防全量替换丢图) ----
         var shownSlide=document.querySelectorAll('#imgzs .thumbnail').length;
         if(shownSlide===0) return {ok:false,msg:'该商品缺少轮播图，保存要求至少一张轮播图'};
         var namedSlide=document.querySelectorAll("#imgzs [name='imgsrcs[]']").length;
-        if(namedSlide<shownSlide){ return {ok:false,msg:'轮播图存在无法安全序列化的项(可能为已上传图对象)，为避免保存时丢图已中止，请用全端云后台或可见编辑器处理该商品'}; }
-        if(!window.ue || !window.ue.isReady) return {ok:false,msg:'商品详情编辑器未就绪，请重试'};
-        try{ window.ue.sync(); }catch(x){}
-        var NEW=${JSON.stringify(newUrl)};
-        var set=0;
-        document.querySelectorAll("[name='commonuploadpic1']").forEach(function(e){ e.value=NEW; e.setAttribute('value',NEW); set++; });
-        if(set===0) return {ok:false,msg:'未找到主图字段(commonuploadpic1)'};
-        var pv=q('.thumbnail.commonuploadpic1 img'); if(pv) pv.setAttribute('src',NEW);
+        if(namedSlide<shownSlide){ return {ok:false,msg:'轮播图存在无法安全序列化的项(可能为已上传图对象)，为避免保存时丢图已中止，请用商城后台处理该商品'}; }
         var ci=(typeof window.checkinfo==='function') ? window.checkinfo() : undefined;
-        if(ci===false){ return {ok:false,msg:'保存校验未通过：商品仍有缺失的必填项，请在全端云后台补全后再改图'}; }
+        if(ci===false){ return {ok:false,msg:'保存校验未通过：商品仍有缺失的必填项，请在商城后台补全后再改图'}; }
+        if(isMulti){
+          // checkinfo() 已调 ggzbc() 把 SKU 打包进 #biaogedata；保存前断言其非空(后置安全闸)，
+          // 空则中止，绝不提交清空 SKU 的请求。
+          var bg=q('#biaogedata'); var sku=[]; try{ sku=JSON.parse((bg&&bg.value)||'[]'); }catch(e){}
+          if(!Array.isArray(sku) || sku.length===0){
+            return {ok:false,msg:'多规格(SKU)数据打包异常(为空)，已中止保存以避免清空规格，请用商城后台处理该商品'};
+          }
+        }
         var fd=new FormData(form); var p=new URLSearchParams();
         var it=fd.entries(),e;
         while(!(e=it.next()).done){ if(typeof e.value[1]==='string') p.append(e.value[0], e.value[1]); }
@@ -512,7 +578,6 @@ const qdyunAdapter: MallAdapter = {
       if (!result || !result.ok) {
         throw new QdyunError(result?.code ?? -1, result?.msg || '保存失败')
       }
-      void newUrl
       connectorService.updateImageLog(logId, { status: 'done' })
       broadcastProgress({ goodsId, phase: 'done', message: '已应用到商品' })
       return { ok: true, uploaded }
@@ -528,7 +593,7 @@ const qdyunAdapter: MallAdapter = {
     return []
   },
   async addGoods(): Promise<{ goodsId: number }> {
-    throw new QdyunError(-1, '全端云暂不支持在桌面端新增商品')
+    throw new QdyunError(-1, '该商城暂不支持在桌面端新增商品')
   },
 }
 
@@ -547,27 +612,57 @@ function broadcastProgress(p: any): void {
   }
 }
 
+/** 按魔数识别图片真实格式（决定 Blob 的 MIME 与文件名后缀）。 */
+function detectImage(buf: Buffer): { mime: string; ext: string } {
+  if (buf.length >= 4 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47)
+    return { mime: 'image/png', ext: 'png' }
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return { mime: 'image/jpeg', ext: 'jpg' }
+  if (buf.length >= 3 && buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) return { mime: 'image/gif', ext: 'gif' }
+  if (buf.length >= 12 && buf.toString('ascii', 8, 12) === 'WEBP') return { mime: 'image/webp', ext: 'webp' }
+  return { mime: 'image/png', ext: 'png' }
+}
+
+const MAX_UPLOAD_SIDE = 2400 // 超过则等比压缩，兜底服务端「文件超出限制」(各项目上传大小上限不同)
+
 async function uploadImage(connectorId: string, appletId: number, localPath: string): Promise<EweiUploadResult> {
   const abs = getAbsolutePath(localPath)
-  const buf = readFileSync(abs)
-  const name = abs.split(/[\\/]/).pop() || 'image.png'
-  const fd = new FormData()
-  fd.append('uploadfile[]', new Blob([new Uint8Array(buf)]), name)
-  const res = await sfetch(connectorId, 'index/duoproducts/imgupload.html', {
-    method: 'POST',
-    query: { uniacid: appletId },
-    formData: fd,
-  })
+  let buf: Buffer<ArrayBufferLike> = readFileSync(abs)
+  const rawName = abs.split(/[\\/]/).pop() || 'image'
+  // 真实上传走媒体库端点 /pic/upImage(实测)，字段名 uploadfile0；旧 imgupload.html 在开启远程附件时会
+  // foreach 报错(已废弃)。Blob 必须带 MIME，否则发出去是 application/octet-stream → 服务端「文件格式不正确」。
+  const send = async (b: Buffer): Promise<any> => {
+    const { mime, ext } = detectImage(b)
+    const name = (rawName.replace(/\.[^.]*$/, '') || 'image') + '.' + ext
+    const fd = new FormData()
+    fd.append('uploadfile0', new Blob([new Uint8Array(b)], { type: mime }), name)
+    const res = await sfetch(connectorId, 'pic/upImage', { method: 'POST', query: { uniacid: appletId, gid: 0 }, formData: fd })
+    return JSON.parse(await res.text())
+  }
   let json: any
   try {
-    json = JSON.parse(await res.text())
+    json = await send(buf)
   } catch {
     throw new QdyunError(-1, '上传响应异常')
   }
-  // 成功为数组 [{"url":"<绝对URL>"}]；失败为 {code,msg}
-  const url = Array.isArray(json) ? json[0]?.url : json?.url || json?.data?.url
-  if (!url) throw new QdyunError(json?.code ?? -1, json?.msg || '上传失败')
-  return { path: String(url), url: String(url), width: 0, height: 0, id: 0 }
+  // 文件过大兜底：服务端报「文件超出限制」等→等比压成 JPEG 重试一次(各项目上传上限不同，详情大图常超限)
+  if (Number(json.code) !== 0 && /超出|过大|限制|large|size|big|exceed/i.test(String(json.msg || ''))) {
+    const jpeg = makeUploadThumbnail(buf, MAX_UPLOAD_SIDE, 85)
+    if (jpeg) {
+      buf = jpeg
+      try {
+        json = await send(buf)
+      } catch {
+        /* 重试响应异常则沿用上一次错误 */
+      }
+    }
+  }
+  // 成功为 {code:0, data:[{url,pid}]}（注意 code:0 是成功）；失败 {code:!0, msg}
+  if (Number(json.code) !== 0) {
+    throw new QdyunError(json?.code ?? -1, json?.msg || '上传失败')
+  }
+  const url = json.data?.[0]?.url || json.url
+  if (!url) throw new QdyunError(-1, '上传成功但未返回图片地址')
+  return { path: String(url), url: String(url), width: 0, height: 0, id: Number(json.data?.[0]?.pid) || 0 }
 }
 
 export { qdyunAdapter }

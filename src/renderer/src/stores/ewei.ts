@@ -37,6 +37,9 @@ export interface MallCapabilities {
   needsShopSwitch: boolean
   needsCaptcha: boolean
   supportsAddGoods: boolean
+  supportsGallery: boolean
+  supportsDetailImage: boolean
+  supportsOptionThumb: boolean
   detailFormat: 'html' | 'blocks'
 }
 

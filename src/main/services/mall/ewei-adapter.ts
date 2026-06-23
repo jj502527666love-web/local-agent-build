@@ -9,6 +9,8 @@ export const eweiAdapter: MallAdapter = {
     needsCaptcha: false,
     supportsAddGoods: true,
     supportsGallery: true,
+    supportsDetailImage: true,
+    supportsOptionThumb: true,
     detailFormat: 'html',
   },
 
@@ -17,7 +19,7 @@ export const eweiAdapter: MallAdapter = {
     return { needCaptcha: false, result }
   },
   async submitLogin(): Promise<MallBeginLoginResult> {
-    throw new Error('eweishop 登录无需验证码')
+    throw new Error('该商城登录无需验证码')
   },
 
   logout: (connectorId) => ewei.logout(connectorId),

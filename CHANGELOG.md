@@ -6,6 +6,23 @@
 
 ---
 
+## [0.9.3] - 2026-06-23
+
+> **店铺商品图：多规格商品改图 + 详情图预览**。放开多规格(SKU)商品的主图/轮播/详情改图（基于服务端逐 SKU 重建，保存时完整保留规格/价格/库存），修复一处「全量保存可能误清 SKU」隐患与一处「详情图替换静默失败」；详情图位补齐逐图预览。本版**仅桌面端改动**（mall 适配器 + 改图视图），云控端/授权端无关联改动。**面向用户记录（`shared/changelog.ts`）按要求不出现底层平台品牌名。**
+
+### 新增
+
+- **dianda 多规格改图（含修复清 SKU 隐患）**：`replaceGoodsImage` 不再用静态编辑页的模板 `option[`（`name="option['+ks+'][..]"`）——这些是 JS 模板、误收会让服务端 `delete id NOT IN(newggids)` 清空真实 SKU。改为 `fetchGuige`（`ShopProduct/getproduct` POST proid → `{product,gglist(按ks键),guigedata,detail}`）+ `applyGuigeReconstruction` 逐 ks 重建 `option[ks][name/pic/market_price/cost_price/sell_price/weight/barcode/givescore/stock/limit_start]`(+lvprice 时 `sell_price_<lvid>`) + `specs`=原 guigedata；`extractFormEntries` 排除 `option[`/`specs`。原「多规格守卫 `hasRealOption(product.guigedata)`」因编辑页无 `guigedataList`、product.guigedata 恒 `[]` 实为失效（单/多规格改图均会清 SKU），现按 ks 逐条 update 保留 id。真机实测 dianda 单规格 8287 改主图/轮播/详情后 SKU(库存1010) 不变。
+- **qdyun 多规格改图**：硬守卫改「双安全闸就绪门控」——前置主动 `changeType()` 触发 `getDuoTypeValues`、等 `allarrone` 就绪（`valarr0` 渲染），后置断言 `#biaogedata` 非空，任一不满足即中止、绝不发清空请求。SKU 由编辑器 `checkinfo()->ggzbc()` 打包进 `#biaogedata`。真机实测 80-SKU 商品 28605 改详情后 SKU 全保留（生产日志证保存模型为 `delete id NOT IN(biaogedata里id) + 重建`）。
+- **列表多规格徽标**：`qdyun listGoods` 抓取 JS 读列表行 `data-type={use_more}`(原硬编码 `has_option:0`)，兜底 `.badge-info` "多"；dianda 列表 `SELECT *` 本就回 `guigedata`、`hasRealOption` 解析，列表卡片显示「多规格」徽标。
+- **详情图逐图预览**：`EweiGoodsImageView` `currentImages` 对详情图位从 `goods.content` 抽 `<img src>` 渲染缩略图（改图后 `loadDetail` 刷新即更新）。
+
+### 修复
+
+- **dianda 详情图替换静默失败**：编辑页无 `info[detail]` 静态元素（DIY 设计器 JS 提交时 `field['info[detail]']=编辑器.getContent()` 生成），harvest 取不到→送 HTML `<p><img>` 被服务端 `geteditorcontent` 当非法块丢弃（"保存成功却没改"）。改以 getproduct 的 `product.detail`(块状 JSON 原文)为基底，`buildDetailContent` 走块分支追加 picture 块。
+- **dianda `getGoodsDetail` 改用 getproduct**：原解析编辑页 `var guigedataList`（实际不存在）→ `has_option` 恒 0、`content` 恒空；改后 name/pic/pics/detail/guigedata 一次取齐，`diandaDetailToHtml` 把块状详情转 `<img>` 使详情计数/预览正确。移除孤儿函数 `fetchProduct`。
+- **qdyun `getGoodsDetail` 补详情内容**：隐藏窗口 JS 增读 `window.ue.getContent()`（等 UEditor 就绪），`content` 带回详情 HTML，使详情计数/预览正确（原 `content:''`）。
+
 ## [0.9.2] - 2026-06-22
 
 > **「店铺商品图」多商城泛化 + 三处缺陷修复**：把原本写死单一商城的「店铺商品图」泛化为可扩展多商城（连接器加 `platform` 维度 + `MallAdapter` 适配器抽象 + 按平台分发），并修复切换店铺串数据、本地图库缺分页、画布列表缺分页三处问题。**面向用户的更新记录（`shared/changelog.ts`）按要求只描述用户可感知的变化、不出现任何底层平台品牌名。**
