@@ -72,6 +72,15 @@ class QdyunError extends Error {
 
 const SUCCESS_CODE = '20000'
 const PARTITION = (id: string): string => 'persist:mall-qdyun-' + id
+
+// 隐藏窗口超时预算（保存链路）：外层必须 ≥ 内层各等待点上限之和 + 裕量，否则外层先超时 destroy 窗口、
+// reject 泛化「页面操作超时」，把内层 SKU 安全闸/一致断言的精确中止文案掩盖（原 35s < 25+20=45s 即此 bug）。
+const QD_READY_MS = 25000 // 编辑器就绪等待上限（内层）
+const QD_SKU_MS = 20000 // 多规格 SKU 载入等待上限（内层）
+const QD_SAVE_WINDOW_MS = QD_READY_MS + QD_SKU_MS + 8000 // 保存窗口外层超时(=53s)
+
+// 同一连接器的改图串行队列：隐藏窗口共享持久化分区，并发改图会串扰会话/DOM，逐 connector 串行化。
+const saveQueues = new Map<string, Promise<unknown>>()
 function ses(id: string): Electron.Session {
   return electronSession.fromPartition(PARTITION(id))
 }
@@ -236,8 +245,12 @@ function withTimeout<T>(p: Promise<T>, ms: number, onTimeout: () => void): Promi
 /** 在隐藏 BrowserWindow(同分区,带 we7 会话)里加载 url 并执行 js，返回 js 结果。 */
 async function runInWindow(connectorId: string, route: string, js: string, timeoutMs = 30000): Promise<any> {
   const url = baseUrl(connectorId) + route.replace(/^\//, '')
+  // 可见首跑调试：QDYUN_DEBUG_VISIBLE=1 时显示隐藏窗口 + 开 DevTools 并放宽超时，
+  // 便于在「用户愿意改动的真实商品」上首次验证 happy-path（默认关，生产不弹窗）。
+  const debugVisible = process.env.QDYUN_DEBUG_VISIBLE === '1'
+  const effTimeout = debugVisible ? Math.max(timeoutMs, 300000) : timeoutMs
   const win = new BrowserWindow({
-    show: false,
+    show: debugVisible,
     width: 1280,
     height: 900,
     webPreferences: {
@@ -248,6 +261,13 @@ async function runInWindow(connectorId: string, route: string, js: string, timeo
     },
   })
   const wc = win.webContents
+  if (debugVisible) {
+    try {
+      wc.openDevTools({ mode: 'detach' })
+    } catch {
+      /* ignore */
+    }
+  }
   try {
     // 把「加载+等待 did-finish-load+执行 JS」整体纳入超时——否则页面挂死时
     // await loaded 永不返回，隐藏窗口与上层 IPC Promise 双双泄漏。
@@ -276,7 +296,7 @@ async function runInWindow(connectorId: string, route: string, js: string, timeo
       await loaded
       return await wc.executeJavaScript(js, true)
     })()
-    return await withTimeout(run, timeoutMs, () => {
+    return await withTimeout(run, effTimeout, () => {
       if (!win.isDestroyed()) win.destroy()
     })
   } finally {
@@ -354,6 +374,12 @@ const qdyunAdapter: MallAdapter = {
 
   async logout(connectorId: string): Promise<void> {
     connectorService.setExtra(connectorId, { qd_token: null, qd_applet: null })
+    clearSession(connectorId)
+  },
+
+  // 删除连接器/换设备时清本地会话（含 Electron 持久化分区，防 cookie+JWT 磁盘残留串台）。
+  // bare clearSession 经词法作用域指向上面的模块级函数（非本方法）。
+  clearSession(connectorId: string): void {
     clearSession(connectorId)
   },
 
@@ -467,126 +493,17 @@ const qdyunAdapter: MallAdapter = {
     return { goods, options: [], specs: [] }
   },
 
-  // 上传：媒体库 /pic/upImage，字段 uploadfile0 → 绝对 COS URL
-  async replaceGoodsImage(args: ReplaceGoodsImageArgs): Promise<{ ok: boolean; uploaded: EweiUploadResult[] }> {
-    const { connectorId, goodsId, slot, images } = args
-    if (!images || !images.length) throw new QdyunError(-1, '没有可应用的图片')
-    const SUPPORTED = ['mainThumb', 'galleryReplace', 'galleryAppend', 'detailReplace', 'detailAppend']
-    if (!SUPPORTED.includes(slot)) {
-      throw new QdyunError(-1, '该图位暂不支持（多规格 SKU 图需用商城后台处理）')
-    }
-    const appletId = getSession(connectorId).appletId
-    if (!appletId) throw new QdyunError(-1, '请先选择项目')
-
-    const logId = connectorService.createImageLog({ connectorId, shopId: appletId, goodsId, goodsTitle: '', slot, oldValue: null })
-    try {
-      // 0) 建立 we7 会话（上传 imgupload 与保存 save 都走 /index，需先桥接）
-      await ensureWe7Session(connectorId, appletId)
-      // 1) 上传新图
-      const uploaded: EweiUploadResult[] = []
-      for (let i = 0; i < images.length; i++) {
-        broadcastProgress({ goodsId, phase: 'uploading', current: i, total: images.length, message: `上传第 ${i + 1}/${images.length} 张` })
-        uploaded.push(await uploadImage(connectorId, appletId, images[i]))
-      }
-      const urls = uploaded.map((u) => u.url)
-      connectorService.updateImageLog(logId, { status: 'uploaded', newPaths: urls })
-
-      // 2) 隐藏窗口加载编辑器 → 按图位修改(主图commonuploadpic1 / 轮播imgsrcs[] / 详情UEditor)
-      //    + checkinfo() + 序列化 FormData POST save.html
-      broadcastProgress({ goodsId, phase: 'saving', message: '写回商品…' })
-      const js = `(async function(){
-        function q(s){return document.querySelector(s);}
-        function ready(){
-          if(typeof window.$==='undefined') return false;
-          var f=q('#form_sample_2')||q('form[action*=save]');
-          var t=q('#proTitle'); var w2=q('#w2'); var thumb=q("[name='commonuploadpic1']");
-          var slide=document.querySelectorAll('#imgzs .thumbnail');
-          var ueOk=window.ue && window.ue.isReady;
-          return !!(f && t && t.value && w2 && thumb && thumb.value && slide.length>0 && ueOk);
-        }
-        var deadline=Date.now()+25000;
-        while(Date.now()<deadline){ if(ready()) break; await new Promise(function(r){setTimeout(r,300)}); }
-        var form=q('#form_sample_2')||q('form[action*=save]');
-        if(!form) return {ok:false,msg:'编辑器表单未加载完成'};
-        var w2=q('#w2');
-        if(!w2 || !w2.value){ return {ok:false,msg:'该商品在商城后台未设置"所属分类"(保存强制要求分类)，请先在商城后台为其设置分类后再改图'}; }
-        var t=q('#proTitle'); if(!t || !t.value) return {ok:false,msg:'该商品缺少名称，无法保存'};
-        var um=q("input[name='use_more']:checked")||q("[name='use_more']");
-        var isMulti = !!(um && String(um.value)==='1');
-        if(isMulti){
-          // 多规格(SKU)：改图走全量保存，SKU 由编辑器 checkinfo()->ggzbc() 打包进 #biaogedata。
-          // 必须先确保 getDuoTypeValues 已把现有 SKU 载入 allarrone(并渲染出 valarr{i} 输入)，
-          // 否则 ggzbc 会打包空数组 → 保存时清空规格/价格/库存。allarrone 初值为 []，
-          // 仅 changeType() 内的 AJAX 会填充，故此处主动触发并等待就绪(前置安全闸)。
-          try{ if((typeof allarrone==='undefined'||!allarrone.length) && typeof changeType==='function') changeType(); }catch(x){}
-          var skuDeadline=Date.now()+20000;
-          while(Date.now()<skuDeadline){
-            if(typeof allarrone!=='undefined' && allarrone.length>0 && q("input[name='valarr0']")) break;
-            await new Promise(function(r){setTimeout(r,300)});
-          }
-          if(typeof allarrone==='undefined' || !allarrone.length || !q("input[name='valarr0']")){
-            return {ok:false,msg:'多规格(SKU)数据未能加载完成，为避免保存时清空规格已中止，请重试，或用商城后台处理该商品'};
-          }
-        }
-        if(!window.ue || !window.ue.isReady) return {ok:false,msg:'商品详情编辑器未就绪，请重试'};
-        try{ window.ue.sync(); }catch(x){}
-        var SLOT=${JSON.stringify(slot)};
-        var URLS=${JSON.stringify(urls)};
-        // ---- 按图位修改 ----
-        if(SLOT==='mainThumb'){
-          var NEW=URLS[0]; var set=0;
-          document.querySelectorAll("[name='commonuploadpic1']").forEach(function(e){ e.value=NEW; e.setAttribute('value',NEW); set++; });
-          if(set===0) return {ok:false,msg:'未找到主图字段(commonuploadpic1)'};
-          var pv=q('.thumbnail.commonuploadpic1 img'); if(pv) pv.setAttribute('src',NEW);
-        } else if(SLOT==='galleryReplace' || SLOT==='galleryAppend'){
-          var zs=q('#imgzs'); if(!zs) return {ok:false,msg:'未找到轮播容器'};
-          if(SLOT==='galleryReplace'){ zs.querySelectorAll('.thumbnail').forEach(function(e){ e.remove(); }); }
-          URLS.forEach(function(u){
-            var d=document.createElement('div'); d.className='thumbnail';
-            var inp=document.createElement('input'); inp.type='text'; inp.name='imgsrcs[]'; inp.value=u; inp.setAttribute('hidden','hidden');
-            var im=document.createElement('img'); im.src=u; d.appendChild(inp); d.appendChild(im); zs.appendChild(d);
-          });
-        } else if(SLOT==='detailReplace' || SLOT==='detailAppend'){
-          var html=URLS.map(function(u){ return '<p><img src="'+u+'" style="max-width:100%"/></p>'; }).join('');
-          if(SLOT==='detailReplace'){ window.ue.setContent(html); } else { window.ue.setContent(html, true); }
-          try{ window.ue.sync(); }catch(x){}
-        } else { return {ok:false,msg:'不支持的图位'}; }
-        // ---- 修改后再做轮播可序列化守卫(防全量替换丢图) ----
-        var shownSlide=document.querySelectorAll('#imgzs .thumbnail').length;
-        if(shownSlide===0) return {ok:false,msg:'该商品缺少轮播图，保存要求至少一张轮播图'};
-        var namedSlide=document.querySelectorAll("#imgzs [name='imgsrcs[]']").length;
-        if(namedSlide<shownSlide){ return {ok:false,msg:'轮播图存在无法安全序列化的项(可能为已上传图对象)，为避免保存时丢图已中止，请用商城后台处理该商品'}; }
-        var ci=(typeof window.checkinfo==='function') ? window.checkinfo() : undefined;
-        if(ci===false){ return {ok:false,msg:'保存校验未通过：商品仍有缺失的必填项，请在商城后台补全后再改图'}; }
-        if(isMulti){
-          // checkinfo() 已调 ggzbc() 把 SKU 打包进 #biaogedata；保存前断言其非空(后置安全闸)，
-          // 空则中止，绝不提交清空 SKU 的请求。
-          var bg=q('#biaogedata'); var sku=[]; try{ sku=JSON.parse((bg&&bg.value)||'[]'); }catch(e){}
-          if(!Array.isArray(sku) || sku.length===0){
-            return {ok:false,msg:'多规格(SKU)数据打包异常(为空)，已中止保存以避免清空规格，请用商城后台处理该商品'};
-          }
-        }
-        var fd=new FormData(form); var p=new URLSearchParams();
-        var it=fd.entries(),e;
-        while(!(e=it.next()).done){ if(typeof e.value[1]==='string') p.append(e.value[0], e.value[1]); }
-        var r=await fetch(form.getAttribute('action'),{method:'POST',headers:{'x-requested-with':'XMLHttpRequest','content-type':'application/x-www-form-urlencoded;charset=UTF-8'},body:p.toString()});
-        var txt=await r.text(); var j={}; try{ j=JSON.parse(txt); }catch(x){}
-        var okSave=(r.status>=200&&r.status<300)&&(Number(j.code)===1);
-        return { ok:okSave, code:j.code, status:j.status, msg:String(j.msg||txt.slice(0,150)), url:j.url };
-      })()`
-      const result = await runInWindow(connectorId, `index/duoproducts/add.html?appletid=${appletId}&newsid=${goodsId}`, js, 35000)
-      if (!result || !result.ok) {
-        throw new QdyunError(result?.code ?? -1, result?.msg || '保存失败')
-      }
-      connectorService.updateImageLog(logId, { status: 'done' })
-      broadcastProgress({ goodsId, phase: 'done', message: '已应用到商品' })
-      return { ok: true, uploaded }
-    } catch (e: any) {
-      const msg = e?.message || '替换失败'
-      connectorService.updateImageLog(logId, { status: 'failed', error: msg })
-      broadcastProgress({ goodsId, phase: 'error', message: msg })
-      throw e
-    }
+  // 上传：媒体库 /pic/upImage，字段 uploadfile0 → 绝对 COS URL。
+  // 包装：同 connector 串行执行（隐藏窗口共享持久化分区，并发改图会串扰会话/DOM），实际逻辑在 doReplaceGoodsImage。
+  replaceGoodsImage(args: ReplaceGoodsImageArgs): Promise<{ ok: boolean; uploaded: EweiUploadResult[] }> {
+    const prev = saveQueues.get(args.connectorId) ?? Promise.resolve()
+    const task = prev.catch(() => {}).then(() => doReplaceGoodsImage(args))
+    saveQueues.set(args.connectorId, task)
+    // 队尾清理：本任务仍是队尾时移除条目，避免 Map 残留（被后续 set 覆盖亦无妨）。
+    task.catch(() => {}).finally(() => {
+      if (saveQueues.get(args.connectorId) === task) saveQueues.delete(args.connectorId)
+    })
+    return task
   },
 
   async listGoodsCategories(): Promise<MallCategory[]> {
@@ -595,6 +512,161 @@ const qdyunAdapter: MallAdapter = {
   async addGoods(): Promise<{ goodsId: number }> {
     throw new QdyunError(-1, '该商城暂不支持在桌面端新增商品')
   },
+}
+
+/** 改图实际实现（由 replaceGoodsImage 在 per-connector 串行队列内调用）。 */
+async function doReplaceGoodsImage(args: ReplaceGoodsImageArgs): Promise<{ ok: boolean; uploaded: EweiUploadResult[] }> {
+  const { connectorId, goodsId, slot, images } = args
+  if (!images || !images.length) throw new QdyunError(-1, '没有可应用的图片')
+  const SUPPORTED = ['mainThumb', 'galleryReplace', 'galleryAppend', 'detailReplace', 'detailAppend']
+  if (!SUPPORTED.includes(slot)) {
+    throw new QdyunError(-1, '该图位暂不支持（多规格 SKU 图需用商城后台处理）')
+  }
+  const appletId = getSession(connectorId).appletId
+  if (!appletId) throw new QdyunError(-1, '请先选择项目')
+
+  let failedLogged = false
+  const logId = connectorService.createImageLog({ connectorId, shopId: appletId, goodsId, goodsTitle: '', slot, oldValue: null })
+  try {
+    // 0) 建立 we7 会话（上传与保存都走 /index，需先桥接）
+    await ensureWe7Session(connectorId, appletId)
+    // 1) 上传新图
+    const uploaded: EweiUploadResult[] = []
+    for (let i = 0; i < images.length; i++) {
+      broadcastProgress({ goodsId, phase: 'uploading', current: i, total: images.length, message: `上传第 ${i + 1}/${images.length} 张` })
+      uploaded.push(await uploadImage(connectorId, appletId, images[i]))
+    }
+    const urls = uploaded.map((u) => u.url)
+    connectorService.updateImageLog(logId, { status: 'uploaded', newPaths: urls })
+
+    // 2) 隐藏窗口加载编辑器 → 按图位修改(主图commonuploadpic1 / 轮播imgsrcs[] / 详情UEditor)
+    //    + checkinfo() + 序列化 FormData POST save.html。每个失败返回带 stage/diag 便于定位。
+    broadcastProgress({ goodsId, phase: 'saving', message: '写回商品…' })
+    const js = `(async function(){
+      function q(s){return document.querySelector(s);}
+      function ready(){
+        if(typeof window.$==='undefined') return false;
+        var f=q('#form_sample_2')||q('form[action*=save]');
+        var t=q('#proTitle'); var w2=q('#w2'); var thumb=q("[name='commonuploadpic1']");
+        var slide=document.querySelectorAll('#imgzs .thumbnail');
+        var ueOk=window.ue && window.ue.isReady;
+        return !!(f && t && t.value && w2 && thumb && thumb.value && slide.length>0 && ueOk);
+      }
+      function diag(){ return { jq:typeof window.$!=='undefined', ue:!!window.ue, ueReady:!!(window.ue&&window.ue.isReady), w2:!!(q('#w2')&&q('#w2').value), title:!!(q('#proTitle')&&q('#proTitle').value), thumb:!!(q("[name='commonuploadpic1']")&&q("[name='commonuploadpic1']").value), href:String(location.href||'').slice(0,120) }; }
+      var deadline=Date.now()+${QD_READY_MS};
+      while(Date.now()<deadline){ if(ready()) break; await new Promise(function(r){setTimeout(r,300)}); }
+      var form=q('#form_sample_2')||q('form[action*=save]');
+      if(!form) return {ok:false,stage:'ready',msg:'编辑器表单未加载完成',diag:diag()};
+      var oldThumb=(q("[name='commonuploadpic1']")||{}).value||'';
+      var title=(q('#proTitle')||{}).value||'';
+      var w2=q('#w2');
+      if(!w2 || !w2.value){ return {ok:false,stage:'category',msg:'该商品在商城后台未设置"所属分类"(保存强制要求分类)，请先在商城后台为其设置分类后再改图',title:title,oldThumb:oldThumb}; }
+      var t=q('#proTitle'); if(!t || !t.value) return {ok:false,stage:'title',msg:'该商品缺少名称，无法保存',title:title,oldThumb:oldThumb};
+      var um=q("input[name='use_more']:checked")||q("[name='use_more']");
+      var isMulti = !!(um && String(um.value)==='1');
+      var skuBefore=0;
+      if(isMulti){
+        // 多规格(SKU)：改图走全量保存，SKU 由编辑器 checkinfo()->ggzbc() 打包进 #biaogedata。
+        // 必须先确保 getDuoTypeValues 已把现有 SKU 载入 allarrone(并渲染出 valarr{i} 输入)，否则
+        // ggzbc 会打包空数组 → 保存时清空规格/价格/库存。allarrone 初值 []，仅 changeType() 内 AJAX 填充。
+        try{ if((typeof allarrone==='undefined'||!allarrone.length) && typeof changeType==='function') changeType(); }catch(x){}
+        var skuDeadline=Date.now()+${QD_SKU_MS};
+        while(Date.now()<skuDeadline){
+          if(typeof allarrone!=='undefined' && allarrone.length>0 && q("input[name='valarr0']")) break;
+          await new Promise(function(r){setTimeout(r,300)});
+        }
+        if(typeof allarrone==='undefined' || !allarrone.length || !q("input[name='valarr0']")){
+          return {ok:false,stage:'sku_load',msg:'多规格(SKU)数据未能加载完成，为避免保存时清空规格已中止，请重试，或用商城后台处理该商品',title:title,oldThumb:oldThumb};
+        }
+        skuBefore = allarrone.length; // 改图前真实 SKU 数（后置超集断言基准）
+      }
+      if(!window.ue || !window.ue.isReady) return {ok:false,stage:'ue',msg:'商品详情编辑器未就绪，请重试',title:title,oldThumb:oldThumb};
+      try{ window.ue.sync(); }catch(x){}
+      var SLOT=${JSON.stringify(slot)};
+      var URLS=${JSON.stringify(urls)};
+      // ---- 按图位修改 ----
+      if(SLOT==='mainThumb'){
+        var NEW=URLS[0]; var set=0;
+        document.querySelectorAll("[name='commonuploadpic1']").forEach(function(e){ e.value=NEW; e.setAttribute('value',NEW); set++; });
+        if(set===0) return {ok:false,stage:'apply',msg:'未找到主图字段(commonuploadpic1)',title:title,oldThumb:oldThumb};
+        var pv=q('.thumbnail.commonuploadpic1 img'); if(pv) pv.setAttribute('src',NEW);
+      } else if(SLOT==='galleryReplace' || SLOT==='galleryAppend'){
+        var zs=q('#imgzs'); if(!zs) return {ok:false,stage:'apply',msg:'未找到轮播容器',title:title,oldThumb:oldThumb};
+        if(SLOT==='galleryReplace'){ zs.querySelectorAll('.thumbnail').forEach(function(e){ e.remove(); }); }
+        URLS.forEach(function(u){
+          var d=document.createElement('div'); d.className='thumbnail';
+          var inp=document.createElement('input'); inp.type='text'; inp.name='imgsrcs[]'; inp.value=u; inp.setAttribute('hidden','hidden');
+          var im=document.createElement('img'); im.src=u; d.appendChild(inp); d.appendChild(im); zs.appendChild(d);
+        });
+      } else if(SLOT==='detailReplace' || SLOT==='detailAppend'){
+        var html=URLS.map(function(u){ return '<p><img src="'+u+'" style="max-width:100%"/></p>'; }).join('');
+        if(SLOT==='detailReplace'){ window.ue.setContent(html); } else { window.ue.setContent(html, true); }
+        try{ window.ue.sync(); }catch(x){}
+      } else { return {ok:false,stage:'apply',msg:'不支持的图位',title:title,oldThumb:oldThumb}; }
+      // ---- 修改后再做轮播可序列化守卫(防全量替换丢图) ----
+      var shownSlide=document.querySelectorAll('#imgzs .thumbnail').length;
+      if(shownSlide===0) return {ok:false,stage:'guard',msg:'该商品缺少轮播图，保存要求至少一张轮播图',title:title,oldThumb:oldThumb};
+      var namedSlide=document.querySelectorAll("#imgzs [name='imgsrcs[]']").length;
+      if(namedSlide<shownSlide){ return {ok:false,stage:'guard',msg:'轮播图存在无法安全序列化的项(可能为已上传图对象)，为避免保存时丢图已中止，请用商城后台处理该商品',title:title,oldThumb:oldThumb}; }
+      var ci=(typeof window.checkinfo==='function') ? window.checkinfo() : undefined;
+      if(ci===false){ return {ok:false,stage:'checkinfo',msg:'保存校验未通过：商品仍有缺失的必填项，请在商城后台补全后再改图',title:title,oldThumb:oldThumb}; }
+      if(isMulti){
+        // checkinfo() 已调 ggzbc() 把 SKU 打包进 #biaogedata；后置安全闸：非空 + 数量不少于改图前(超集)，
+        // 否则中止，绝不提交清空/丢失 SKU 的请求。
+        var bg=q('#biaogedata'); var sku=[]; try{ sku=JSON.parse((bg&&bg.value)||'[]'); }catch(e){}
+        if(!Array.isArray(sku) || sku.length===0){
+          return {ok:false,stage:'sku_pack',msg:'多规格(SKU)数据打包异常(为空)，已中止保存以避免清空规格，请用商城后台处理该商品',title:title,oldThumb:oldThumb};
+        }
+        if(skuBefore>0 && sku.length<skuBefore){
+          return {ok:false,stage:'sku_pack',msg:'多规格(SKU)打包数量('+sku.length+')少于载入数量('+skuBefore+')，为避免丢失规格已中止保存，请重试或用商城后台处理该商品',title:title,oldThumb:oldThumb};
+        }
+      }
+      var fd=new FormData(form); var p=new URLSearchParams();
+      var it=fd.entries(),e;
+      while(!(e=it.next()).done){ if(typeof e.value[1]==='string') p.append(e.value[0], e.value[1]); }
+      var r=await fetch(form.getAttribute('action'),{method:'POST',headers:{'x-requested-with':'XMLHttpRequest','content-type':'application/x-www-form-urlencoded;charset=UTF-8'},body:p.toString()});
+      var txt=await r.text(); var j={}; try{ j=JSON.parse(txt); }catch(x){}
+      var okSave=(r.status>=200&&r.status<300)&&(Number(j.code)===1);
+      var kind='business';
+      if(!okSave){
+        if(/new_plat|请登录|重新登录|未登录|登录失效/.test(txt)) kind='session';
+        else if(/分类|规格|必填|不能为空|缺/.test(String(j.msg||''))) kind='data_incomplete';
+      }
+      return { ok:okSave, stage:'save', kind:kind, code:j.code, status:j.status, msg:String(j.msg||txt.slice(0,150)), url:j.url, title:title, oldThumb:oldThumb };
+    })()`
+    const result = await runInWindow(connectorId, `index/duoproducts/add.html?appletid=${appletId}&newsid=${goodsId}`, js, QD_SAVE_WINDOW_MS)
+    // 回填改前主图/标题（建日志时进编辑器前拿不到，进编辑器后从渲染态读到再写入审计日志）
+    if (result && (result.title || result.oldThumb)) {
+      connectorService.updateImageLog(logId, {
+        goodsTitle: String(result.title || ''),
+        oldValue: { thumb: String(result.oldThumb || '') },
+      })
+    }
+    if (!result || !result.ok) {
+      const kind = result?.kind || 'business'
+      // 会话失效：清 we7 桥接态，下次强制用 cache_key 重新 setLoginData 建 $_SESSION
+      if (kind === 'session') we7Bridged.delete(connectorId)
+      const diagStr = result?.diag ? ' | diag=' + JSON.stringify(result.diag) : ''
+      connectorService.updateImageLog(logId, {
+        status: 'failed',
+        error: `[stage:${result?.stage || 'unknown'}][kind:${kind}] ${result?.msg || '保存失败'}${diagStr}`,
+      })
+      failedLogged = true
+      const userMsg = kind === 'session' ? '商城登录已失效，请重新登录后再试' : result?.msg || '保存失败'
+      broadcastProgress({ goodsId, phase: 'error', message: userMsg })
+      throw new QdyunError(result?.code ?? -1, userMsg)
+    }
+    connectorService.updateImageLog(logId, { status: 'done' })
+    broadcastProgress({ goodsId, phase: 'done', message: '已应用到商品' })
+    return { ok: true, uploaded }
+  } catch (e: any) {
+    const msg = e?.message || '替换失败'
+    if (!failedLogged) {
+      connectorService.updateImageLog(logId, { status: 'failed', error: msg })
+      broadcastProgress({ goodsId, phase: 'error', message: msg })
+    }
+    throw e
+  }
 }
 
 // ---- 辅助 ----

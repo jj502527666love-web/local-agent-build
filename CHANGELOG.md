@@ -6,6 +6,31 @@
 
 ---
 
+## [0.9.5] - 2026-06-26
+
+> **店铺商品图：三商城改图数据安全加固 + qdyun 保存可靠性/可观测性 + 多商城健壮性与门控收口；并修复对话默认模型解析（精确到服务商 + 无权限回退）**。统一新增「改图前后 SKU 集合一致」断言、修正 qdyun 保存超时预算算反、把会话清理与平台分发收口、把 mall_key 收敛为三端单一来源、统一店铺商品图授权门控并补路由级守卫。**本版含配套云端改动（agent-build 授权双写收口、agent-admin mall_key 常量收敛），均向后兼容、独立部署。面向用户记录（`shared/changelog.ts`）按要求不出现底层平台品牌名。**
+
+### 修复
+
+- **三商城改图防误删 SKU（数据安全）**：新增 `services/mall/guards.ts`——`assertSkuSetConsistent`（after ⊇ before，只防删除不约束新增）+ `nonEmptySkuGuard`。各家原守卫只挡「完全读不到 SKU」，挡不住「读到但截断/重建漏项」，缺失的真实 SKU 会被服务端全量替换物理删除。现统一为前后置集合断言：
+  - `ewei-client.ts`：多规格保存后重拉 `getGoodsDetail`，断言 SKU id 集合未被删除（前置「每 option 必有 id」守卫之外补后置检测；检测非回滚）。
+  - `dianda-adapter.ts`：以 `fetchGuige` 的 `gglist` 键集为真实全集，断言重建写入的 `option[ks]` 覆盖全部 SKU；原 `skuCount===0` 改 `nonEmptySkuGuard`。
+  - `qdyun-adapter.ts`：注入 JS 捕获 `skuBefore=allarrone.length`，`#biaogedata` 打包后断言数量不少于改图前（非空之外加超集计数），取不到稳定数则降级非空。
+- **qdyun 保存超时预算算反**：保存隐藏窗口外层超时原 35s < 内层最坏（就绪 25s + SKU 载入 20s = 45s），会先 destroy 窗口、reject 泛化「页面操作超时」，掩盖内层 SKU 安全闸的精确中止文案。抽常量 `QD_SAVE_WINDOW_MS = QD_READY_MS(25s) + QD_SKU_MS(20s) + 8s = 53s`，内层 deadline 同源注入。
+- **对话默认模型解析增加授权校验（`src/renderer/src/views/chat/ChatView.vue` `resolveDefaultModel`）**：云控端「对话页面默认模型」下拉原 value 为裸 `model_id`，同一 model_id 多服务商时会多高亮并丢失服务商维度——云控端已改下拉 value 为复合 key `model_id#@provider_name`（随 agent-admin 1.6.24 发布）。桌面端 `resolveDefaultModel` 配套增加授权校验：云控端下发的默认模型若不在当前账号已授权列表（`modelStore.providers` 由 `myModels` 构建），不采用、回退到账号第一个已授权 chat 模型，避免出现列表里没有、还发不出消息的「幽灵模型」。两端独立部署、互相兼容。
+
+### 优化
+
+- **qdyun 保存可观测性 / 失败分层 / 串扰**：注入 JS 每个失败返回带 `stage`/`diag`；`save.html` 非 `code:1` 按响应文本/msg 分 `session`/`data_incomplete`/`business`，`session` 自动清 `we7Bridged` 触发下次用 cache_key 重建 `$_SESSION`；进编辑器后回填真实 `goodsTitle`/改前主图到审计日志（`ewei-connectors.updateImageLog` 增 `goodsTitle`/`oldValue` 可选补丁）；同 connector 改图串行队列（`saveQueues`）防隐藏窗口共享分区串扰；`QDYUN_DEBUG_VISIBLE=1` 可见首跑调试开关（显示窗口 + DevTools + 放宽超时，便于真机首次验证）。
+- **会话清理入适配器接口**：`MallAdapter` 增 `clearSession(connectorId)`，三适配器各实现复用模块级函数；`ipc deleteConnector` 改按连接器 platform 分发 `adapterForConnector(id).clearSession(id)`，删硬编码逐平台 import——新增商城实现 clearSession 即自动覆盖、不再易漏改。
+- **适配器分发更严格**：`registry.getAdapter` 保留「空/undefined → ewei」历史兼容，但明确非空却不在枚举（platform 拼错/脏数据）时抛错，不再静默用 ewei 协议去打别家商城域名。
+
+### 变更
+
+- **mall_key 三端单一来源**：新增 `src/shared/mall-keys.ts`（`MALL_KEYS as const` + `MallKey` + `mallPolicyKey`/`mallNameKey`）；`registry` 的 adapters 改 `Record<MallKey, MallAdapter>`（漏注册即 TS 编译报错）；renderer 平台列表派生自 `MALL_KEYS`，删除 `EweiConnectorsView` 内硬编码 `ALL_PLATFORMS`。
+- **店铺商品图授权门控收口**：`cloud-auth` 沉淀单一 `mallAllowed`/`anyMallAllowed`/`mallName` + `shops→平铺` 单向回填（云端只下发聚合时菜单/旧逻辑不再整片消失）；`/ewei` 四条路由加 `meta.requireAnyMall` + `main.ts` `beforeEach` 路由级守卫（补「菜单隐藏但 URL 直达」纵深）；`EweiConnectorsView` 改用 store 单一来源。
+- **配套云端改动（独立部署、向后兼容）**：agent-build 授权双写收口（`BuildClientController` 委托 `MallAuthorizationService::setAuthorization`/`getAuthorizationsBatch`，删 4 处手写 ewei 旧列双写与本地 `MALL_KEYS`，加契约单测）；agent-admin `EweiShopAuthorization` 增 `policyKey`/`settingKey`/`assertContractIntegrity`，`QuotaService` 默认值按 `MALL_KEYS` foreach 生成，`AppServiceProvider` 仅 local/testing 启动断言契约一致。
+
 ## [0.9.3] - 2026-06-23
 
 > **店铺商品图：多规格商品改图 + 详情图预览**。放开多规格(SKU)商品的主图/轮播/详情改图（基于服务端逐 SKU 重建，保存时完整保留规格/价格/库存），修复一处「全量保存可能误清 SKU」隐患与一处「详情图替换静默失败」；详情图位补齐逐图预览。本版**仅桌面端改动**（mall 适配器 + 改图视图），云控端/授权端无关联改动。**面向用户记录（`shared/changelog.ts`）按要求不出现底层平台品牌名。**

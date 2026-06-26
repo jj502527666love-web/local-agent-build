@@ -128,28 +128,28 @@ export const routes: RouteRecordRaw[] = [
         path: 'ewei',
         name: 'eweiConnectors',
         component: () => import('@/views/ewei/EweiConnectorsView.vue'),
-        meta: { title: '店铺商品图' }
+        meta: { title: '店铺商品图', requireAnyMall: true }
       },
       {
         // 某门店商品列表
         path: 'ewei/:connectorId/goods',
         name: 'eweiGoods',
         component: () => import('@/views/ewei/EweiGoodsListView.vue'),
-        meta: { title: '门店商品' }
+        meta: { title: '门店商品', requireAnyMall: true }
       },
       {
         // 新增商品
         path: 'ewei/:connectorId/goods/new',
         name: 'eweiGoodsCreate',
         component: () => import('@/views/ewei/EweiGoodsCreateView.vue'),
-        meta: { title: '新增商品' }
+        meta: { title: '新增商品', requireAnyMall: true }
       },
       {
         // 某商品的图片替换工作台
         path: 'ewei/:connectorId/goods/:goodsId/image',
         name: 'eweiGoodsImage',
         component: () => import('@/views/ewei/EweiGoodsImageView.vue'),
-        meta: { title: '商品图替换' }
+        meta: { title: '商品图替换', requireAnyMall: true }
       },
       {
         path: 'batch-gen',

@@ -187,27 +187,23 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useCloudAuthStore } from '@/stores/cloud-auth'
 import { useEweiStore, type EweiConnectorSummary, type EweiShop } from '@/stores/ewei'
+import { MALL_KEYS } from '@shared/mall-keys'
 
 const router = useRouter()
 const cloudAuth = useCloudAuthStore()
 const store = useEweiStore()
 
-// 页面门控与侧栏一致：任一商城被授权即可进入（dianda 单授权用户也能用）
+// 页面门控与侧栏一致：任一商城被授权即可进入（含 qdyun；按商城聚合 shops 优先、回退平铺 allow_{mall}_shop）
 const allowed = computed(
-  () => cloudAuth.permissions.allow_ewei_shop === true || cloudAuth.permissions.allow_dianda_shop === true,
+  () => mallAllowed('ewei') || mallAllowed('dianda') || mallAllowed('qdyun'),
 )
-// 某商城是否被授权（按商城聚合 shops 优先，回退平铺 allow_{mall}_shop）
+// 某商城是否被授权 —— 统一走 cloud-auth store 的单一来源（菜单/路由/View 一致）
 function mallAllowed(key: string): boolean {
-  const shops = (cloudAuth.permissions.shops || {}) as Record<string, any>
-  if (shops[key]) return shops[key].allowed === true
-  return cloudAuth.permissions['allow_' + key + '_shop'] === true
+  return cloudAuth.mallAllowed(key)
 }
-// 商城显示名（按商城）：云控端自定义，隐藏底层平台品牌；缺省「商城」
+// 商城显示名（按商城）—— 同走 store 单一来源
 function mallNameOf(key: string): string {
-  const shops = (cloudAuth.permissions.shops || {}) as Record<string, any>
-  if (shops[key]?.mall_name) return shops[key].mall_name
-  const flat = cloudAuth.permissions[`${key}_shop_mall_name`]
-  return (flat as string) || '商城'
+  return cloudAuth.mallName(key)
 }
 // 顶部说明用任一已授权商城名（缺省「商城」）
 const mallName = computed(() => mallNameOf('ewei') || mallNameOf('dianda') || '商城')
@@ -309,8 +305,7 @@ function connNeedsShop(c: EweiConnectorSummary): boolean {
 }
 // 可选平台（key 为协议标识，对用户隐藏品牌，标签用云控端自定义商城名）。
 // 仅展示「该用户被授权」的商城，避免越过二级门控创建未授权平台的连接器。
-const ALL_PLATFORMS = ['ewei', 'dianda', 'qdyun']
-const platformOptions = computed(() => ALL_PLATFORMS.filter((k) => mallAllowed(k)).map((k) => ({ key: k })))
+const platformOptions = computed(() => MALL_KEYS.filter((k) => mallAllowed(k)).map((k) => ({ key: k })))
 function platformLabel(key: string): string {
   return mallNameOf(key)
 }

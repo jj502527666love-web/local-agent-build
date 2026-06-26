@@ -39,8 +39,6 @@ import * as mattingProviderService from '../services/matting-providers'
 import * as eweiConnectorService from '../services/ewei-connectors'
 import * as eweiClient from '../services/ewei-client'
 import * as mallRegistry from '../services/mall/registry'
-import { clearSession as clearDiandaSession } from '../services/mall/dianda-adapter'
-import { clearSession as clearQdyunSession } from '../services/mall/qdyun-adapter'
 import * as cloudVideoService from '../services/cloud-video'
 import * as videoGenerationService from '../services/video-generation'
 import { fetchQuota as fetchMattingQuotaFromCloud } from '../services/cloud-matting'
@@ -1436,9 +1434,13 @@ export function registerIpcHandlers(): void {
     eweiConnectorService.updateConnector(id, data),
   )
   ipcMain.handle('ewei:deleteConnector', (_, id: string) => {
-    eweiClient.clearSession(id)
-    clearDiandaSession(id)
-    clearQdyunSession(id) // qdyun 用持久化分区，须显式清 cookie+JWT，否则磁盘残留
+    // 删除前清本地会话：按连接器 platform 分发到对应适配器的 clearSession（qdyun 会一并清持久化分区，
+    // 否则 cookie+JWT 磁盘残留串台）。新增商城只要实现 clearSession 即自动覆盖，无需改这里。
+    try {
+      adapterForConnector(id).clearSession(id)
+    } catch (e) {
+      console.error('[mall] clearSession on delete failed:', e)
+    }
     return eweiConnectorService.deleteConnector(id)
   })
   // 平台能力位（renderer 据此显隐「选门店」、是否走验证码登录）

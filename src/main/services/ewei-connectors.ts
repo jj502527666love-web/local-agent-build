@@ -352,7 +352,7 @@ export function createImageLog(input: {
 
 export function updateImageLog(
   id: string,
-  patch: { status?: string; newPaths?: string[]; error?: string },
+  patch: { status?: string; newPaths?: string[]; error?: string; goodsTitle?: string; oldValue?: any },
 ): void {
   const db = getDatabase()
   const sets: string[] = []
@@ -368,6 +368,15 @@ export function updateImageLog(
   if (patch.error !== undefined) {
     sets.push('error = ?')
     params.push((patch.error || '').slice(0, 500))
+  }
+  // 以下两项为后置补写：部分适配器（如 qdyun）建日志时拿不到 title/原值，进编辑器后再回填。
+  if (patch.goodsTitle !== undefined) {
+    sets.push('goods_title = ?')
+    params.push((patch.goodsTitle || '').slice(0, 255))
+  }
+  if (patch.oldValue !== undefined) {
+    sets.push('old_value_json = ?')
+    params.push(JSON.stringify(patch.oldValue ?? null))
   }
   if (!sets.length) return
   params.push(id)

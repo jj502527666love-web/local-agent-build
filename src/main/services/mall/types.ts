@@ -67,6 +67,8 @@ export interface MallAdapter {
   refreshCaptcha?(connectorId: string): Promise<MallCaptchaChallenge>
 
   logout(connectorId: string): Promise<void>
+  /** 清本地会话/缓存（删除连接器、换设备时调）。同步、不发网络请求，按平台清各自的内存态/cookie/分区。 */
+  clearSession(connectorId: string): void
   listShops(connectorId: string, page?: number, pagesize?: number): Promise<{ list: MallShop[]; count: number }>
   switchShop(connectorId: string, shopId: number, shopName?: string): Promise<{ ok: boolean }>
   listGoods(connectorId: string, params?: MallGoodsListParams): Promise<{ list: MallGoodsListItem[]; count: number }>

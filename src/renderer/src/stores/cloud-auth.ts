@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { cloudAuth, cloudClient, setCloudToken, getCloudToken, clearCloudAuth } from '@/utils/cloud-api'
+import { MALL_KEYS, mallPolicyKey, mallNameKey } from '@shared/mall-keys'
 
 const BALANCE_REFRESH_THROTTLE_MS = 5000
 const BALANCE_FOCUS_STALE_MS = 30000
@@ -58,6 +59,9 @@ export interface CloudPermissions {
   // 多商城泛化：点大商城（iappwx）的二级授权与自定义名（与 ewei 平级，下发同结构）。
   allow_dianda_shop: boolean
   dianda_shop_mall_name: string
+  // 多商城泛化：全端云商城（qdyun）的二级授权与自定义名（与 ewei/dianda 平级，下发同结构）。
+  allow_qdyun_shop: boolean
+  qdyun_shop_mall_name: string
   // 按商城聚合下发（推荐消费此结构）：{ [mall_key]: { allowed, mall_name, real_name } }。
   // 平铺的 allow_*_shop / *_shop_mall_name 为向后兼容保留。
   shops: Record<string, { allowed: boolean; mall_name: string; real_name?: string }>
@@ -169,6 +173,8 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
     ewei_shop_mall_name: '商城',
     allow_dianda_shop: false,
     dianda_shop_mall_name: '商城',
+    allow_qdyun_shop: false,
+    qdyun_shop_mall_name: '商城',
     shops: {},
   })
   const balances = ref<{ type: string; amount: number }[]>([])
@@ -276,6 +282,8 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
       ewei_shop_mall_name: '商城',
       allow_dianda_shop: false,
       dianda_shop_mall_name: '商城',
+      allow_qdyun_shop: false,
+      qdyun_shop_mall_name: '商城',
       shops: {},
     }
     window.api?.cloud?.setPermissions({
@@ -314,6 +322,7 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
       models.value = modelsRes.models || []
       quotas.value = quotaRes as CloudQuotas | null
       permissions.value = { ...permissions.value, ...(quotaRes?.policies || {}), ...(permRes.permissions || {}) }
+      backfillMallFlats()
       balances.value = balRes.balances || []
       lastBalanceRefreshAt = Date.now()
       try {
@@ -379,6 +388,7 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
       quotas.value = quotaRes as CloudQuotas | null
       if (quotaRes?.policies) {
         permissions.value = { ...permissions.value, ...(quotaRes.policies || {}) }
+        backfillMallFlats()
       }
       lastBalanceRefreshAt = Date.now()
     } catch (e: any) {
@@ -505,9 +515,42 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
     }
   }
 
+  // ===== 店铺商品图：按商城授权判定的单一来源（菜单 / 路由 / View 全走这里，消除平铺 vs 聚合漂移）=====
+  // 聚合 shops 优先（backend 已算 allowed = 二级 policy AND 一级授权），回退平铺 allow_{mall}_shop。
+  function mallAllowed(key: string): boolean {
+    const p = permissions.value as any
+    const shop = p?.shops?.[key]
+    if (shop && typeof shop.allowed === 'boolean') return shop.allowed
+    return p?.[mallPolicyKey(key)] === true
+  }
+  // 任一商城被授权（菜单 / 路由 requireAnyMall 用）。
+  const anyMallAllowed = computed(() => MALL_KEYS.some((k) => mallAllowed(k)))
+  // 商城显示名（云控端自定义，隐藏底层平台品牌；缺省「商城」）。
+  function mallName(key: string): string {
+    const p = permissions.value as any
+    const shop = p?.shops?.[key]
+    if (shop?.mall_name) return shop.mall_name
+    return (p?.[mallNameKey(key)] as string) || '商城'
+  }
+  // 聚合 shops → 平铺位单向回填：云端只下发聚合（不下发平铺）时，仍读平铺位的菜单/旧逻辑不致整片消失
+  // （backend 平铺与 shops.allowed 同值，同时下发时回填不改变结果）。
+  function backfillMallFlats(): void {
+    const p = permissions.value as any
+    const shops = p?.shops
+    if (!shops) return
+    for (const k of MALL_KEYS) {
+      const shop = shops[k]
+      if (shop && typeof shop.allowed === 'boolean') {
+        p[mallPolicyKey(k)] = shop.allowed
+        if (shop.mall_name) p[mallNameKey(k)] = shop.mall_name
+      }
+    }
+  }
+
   return {
     user, models, permissions, balances, quotas, billingRules, plans, announcement,
     isLoggedIn, loading, pendingBonus,
+    mallAllowed, anyMallAllowed, mallName,
     login, register, logout, fetchMe, fetchCloudData, refreshBalances, refreshBalancesThrottled, syncTokenState,
     changePassword, sendSmsCode, resetPassword, refreshToken, init, consumeBonus,
   }

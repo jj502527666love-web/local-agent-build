@@ -57,6 +57,12 @@ router.afterEach((to) => {
 // Auth guard: redirect to login if not authenticated
 router.beforeEach((to, from, next) => {
   const token = getCloudToken()
+  // 店铺商品图路由级守卫：需至少一个商城被授权（与侧栏菜单同源 anyMallAllowed），否则重定向到主页，
+  // 补齐「菜单隐藏但 URL 直达」的纵深（非安全边界，真实授权仍由云端校验）。
+  if (token && to.matched.some((r) => r.meta.requireAnyMall) && !useCloudAuthStore().anyMallAllowed) {
+    next('/chat')
+    return
+  }
   if (
     to.path === '/ewei' &&
     !from.path.startsWith('/ewei') &&

@@ -23,6 +23,7 @@ export const eweiAdapter: MallAdapter = {
   },
 
   logout: (connectorId) => ewei.logout(connectorId),
+  clearSession: (connectorId) => ewei.clearSession(connectorId),
   listShops: (connectorId, page, pagesize) => ewei.listShops(connectorId, page, pagesize),
   switchShop: (connectorId, shopId, shopName) => ewei.switchShop(connectorId, shopId, shopName),
   listGoods: (connectorId, params) => ewei.listGoods(connectorId, params),

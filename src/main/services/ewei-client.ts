@@ -5,6 +5,7 @@ import { BrowserWindow } from 'electron'
 import { getAbsolutePath } from './image-generation'
 import { makeUploadThumbnail } from './thumbnail-upload'
 import * as connectorService from './ewei-connectors'
+import { assertSkuSetConsistent } from './mall/guards'
 
 // ============================================================================
 // ewei 商城业务端 HTTP 客户端（无界面，主进程）。
@@ -569,6 +570,18 @@ export async function replaceGoodsImage(
     broadcastProgress({ taskId, goodsId, phase: 'saving', message: '写回商品…' })
     const data = buildEditPayload(detail, slot, uploaded, optionId)
     await request(connectorId, 'shop', 'goods/edit', { method: 'POST', json: { goods_id: goodsId, data } })
+
+    // 2.5) 多规格后置校验：回写本不应增减 SKU。buildEditPayload 已做前置守卫（每个 option 必有 id），
+    //      这里重拉详情断言 SKU id 集合未被删除（after ⊇ before），把「后端仍删了 SKU」从静默数据丢失
+    //      变成可见失败（只检测不回滚）。单规格无 SKU，跳过。
+    if (Number(detail.goods?.has_option) === 1) {
+      const after = await getGoodsDetail(connectorId, goodsId)
+      assertSkuSetConsistent(
+        'eweishop',
+        detail.options.map((o: any) => o.id),
+        (after.options || []).map((o: any) => o.id),
+      )
+    }
 
     connectorService.updateImageLog(logId, { status: 'done' })
     broadcastProgress({ taskId, goodsId, phase: 'done', message: '已应用到商品' })

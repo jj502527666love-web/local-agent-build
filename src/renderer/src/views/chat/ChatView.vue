@@ -981,15 +981,24 @@ watch(
  * 3. 都没有→返回空，让 chat-engine 报「未选择对话模型」
  */
 function resolveDefaultModel(): { provider_id: string; model_id: string } {
-  // 首选云控端下发默认：provider 固定 'cloud:default'，model_id 是裸值，要 upgrade 为复合 key
+  // 首选云控端下发默认：provider 固定 'cloud:default'，model_id 可能是裸值或复合 key
+  // （云控端新版本下发复合 key `model_id#@provider_name` 精确锁定服务商；老版本/老数据为裸值，
+  //  此处 upgradeToCompositeKey 会按用户已授权列表补成首选复合 key）。
   const cloud = siteConfigStore.chatDefaultModel
   if (cloud?.provider_id && cloud?.model_id) {
-    return {
-      provider_id: cloud.provider_id,
-      model_id: cloud.provider_id === 'cloud:default'
-        ? modelStore.upgradeToCompositeKey(cloud.model_id)
-        : cloud.model_id,
+    const candidate = cloud.provider_id === 'cloud:default'
+      ? modelStore.upgradeToCompositeKey(cloud.model_id)
+      : cloud.model_id
+    // 仅当用户对该默认模型【有权限且具备 chat 能力】时才采用。
+    // modelStore.providers 的可选模型由 cloudAuth.models（myModels=用户已授权列表）构建，
+    // 若云控端配置的默认模型不在其中（用户无权限），不返回它、继续走下面的兜底链，
+    // 避免给用户摆一个列表里都没有、还发不出消息的「幽灵模型」。
+    const prov = modelStore.providers.find((p) => p.id === cloud.provider_id)
+    const cloudType = modelStore.cloudTypeOf(cloud.provider_id, candidate)
+    if (prov && prov.models.includes(candidate) && hasCap(candidate, 'chat', cloudType)) {
+      return { provider_id: cloud.provider_id, model_id: candidate }
     }
+    // 无权限 / 不可用 → 落到兜底（用户第一个已授权 chat 模型）
   }
   // 兑底：本地所有 provider 里第一个 chat 类型模型
   // 与 ChatModelSwitcher 用同一套过滤规则（hasCap）保持一致，

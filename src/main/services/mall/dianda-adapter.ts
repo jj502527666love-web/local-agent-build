@@ -12,6 +12,7 @@ import { BrowserWindow } from 'electron'
 import { getAbsolutePath } from '../image-generation'
 import { makeUploadThumbnail } from '../thumbnail-upload'
 import * as connectorService from '../ewei-connectors'
+import { assertSkuSetConsistent, nonEmptySkuGuard } from './guards'
 import type {
   MallAdapter,
   MallBeginLoginResult,
@@ -273,6 +274,11 @@ const diandaAdapter: MallAdapter = {
     clearSession(connectorId)
   },
 
+  // 删除连接器/换设备时清本地会话。bare clearSession 经词法作用域指向上面的模块级函数（非本方法）。
+  clearSession(connectorId: string): void {
+    clearSession(connectorId)
+  },
+
   // 点大无门店切换：返回空列表，renderer 据 capabilities.needsShopSwitch=false 不展示选门店
   async listShops(): Promise<{ list: MallShop[]; count: number }> {
     return { list: [], count: 0 }
@@ -354,10 +360,16 @@ const diandaAdapter: MallAdapter = {
       // 静态表单只有模板 option(已在 harvest 排除)，真实 SKU 必须从 getproduct 取回逐条重建——
       // 否则全量保存会清空规格/价格/库存（单规格也同样中招，这是原全量保存的隐患）。
       const { gglist, guigedataRaw, lvprice, detail: currentDetail } = await fetchGuige(connectorId, goodsId)
-      const skuCount = applyGuigeReconstruction(params, gglist, guigedataRaw, lvprice)
-      if (skuCount === 0) {
-        throw new DiandaError(-1, '未能读取商品规格(SKU)数据，已中止以避免清空规格，请重试或用商城后台处理')
+      applyGuigeReconstruction(params, gglist, guigedataRaw, lvprice)
+      // 改图本不应增减 SKU：先挡「读不到任何 SKU」，再断言重建后写入的 option[ks] 覆盖全部真实 SKU
+      // （gglist 键即 getproduct 直读 shop_guige 的真实全集），漏项即中止，避免全量保存物理删除规格/价格/库存。
+      nonEmptySkuGuard('点大', Object.keys(gglist))
+      const afterKs = new Set<string>()
+      for (const k of params.keys()) {
+        const mk = k.match(/^option\[([^\]]+)\]/)
+        if (mk) afterKs.add(mk[1])
       }
+      assertSkuSetConsistent('点大', Object.keys(gglist), Array.from(afterKs))
 
       // 2) 上传新图（点大上传走商户后台存储，返回绝对 URL）
       const uploaded: EweiUploadResult[] = []
