@@ -95,7 +95,7 @@ onBeforeUnmount(() => {
 }
 .agreement-content :deep(li) { margin: 0.25em 0; }
 .agreement-content :deep(a) {
-  color: rgb(var(--color-primary-600, 79 70 229));
+  color: var(--color-primary-600, #e5652a);
   text-decoration: underline;
 }
 .agreement-content :deep(strong) { font-weight: 600; }

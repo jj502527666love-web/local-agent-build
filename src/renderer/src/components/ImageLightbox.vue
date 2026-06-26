@@ -546,12 +546,12 @@ onUnmounted(() => {
   color: var(--text-primary, #111827);
 }
 .lb-btn-active {
-  background: var(--primary-50, #eff6ff);
-  color: var(--primary-600, #2563eb);
+  background: var(--color-primary-50, #fff7f0);
+  color: var(--color-primary-600, #e5652a);
 }
 .lb-btn-active:hover {
-  background: var(--primary-100, #dbeafe);
-  color: var(--primary-700, #1d4ed8);
+  background: var(--color-primary-100, #ffedd5);
+  color: var(--color-primary-700, #c2491e);
 }
 
 /* Fade in/out */
