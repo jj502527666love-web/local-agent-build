@@ -775,8 +775,13 @@ export async function addGoods(connectorId: string, form: AddGoodsForm): Promise
     thumb: mainThumb,
     thumb_is_banner: '1',
     status: String(form.status ?? 1),
-    sale_time: '',
-    putaway_time: '',
+    // sale_time/putaway_time 是 `timestamp NOT NULL` 列，必须传 0 值日期而非空串：
+    // 收银台控制器只用 `?? '0000-00-00 00:00:00'` 兜底（兜得住 null，兜不住空串），
+    // 空串 '' 在严格模式 MySQL(STRICT_TRANS_TABLES) 下插 timestamp 会抛
+    // "Incorrect datetime value: ''" → 被框架记为 DB_ERROR → 返回「数据错误: [日志id]」。
+    // 0 值=不定时上架（sale_time 有值即「待出售」状态），与官方 actionGet 新建默认一致。
+    sale_time: '0000-00-00 00:00:00',
+    putaway_time: '0000-00-00 00:00:00',
     unit: form.unit || '',
     category_ids: form.categoryIds || [],
     goods_code: form.goodsCode || '',

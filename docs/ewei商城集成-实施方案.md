@@ -115,6 +115,8 @@ URL 拼接依据：`web_site/src/utils/util.js:20-31`（`shop/`、`utility/` 前
 - 失败：`error < 0` + `message`（登录失败可能带 `show_captcha`）。
 client 统一封装 `request(group, route, {method, query, body}) → Promise<平铺对象>`，`error !== 0` 抛 `EweiError(error, message)`。
 
+- **错误信息解码（排查必备）**：`数据错误: [N]` / `系统错误: [N]` 里的 **N 不是业务 id，是后端 `ShopErrorLog` 错误日志表的行 id**。来源是框架全局兜底 `common/base/controller/BaseController.php::runAction`：`catch(BaseException)`=业务校验异常 → 返回**可读消息**；`catch(Exception)` → 记 `ShopErrorLog`(DB_ERROR) → 返回 `error("数据错误: [{$errLog->id}]", -1)`；`catch(\Throwable)` → SYS_ERROR → `系统错误: [{id}]`。即「数据错误: [N]」=一个**未被业务校验拦住的 `Exception`（绝大多数是 `yii\db\Exception` SQL 错）**，真实 SQL 错误 + 堆栈存在那部署 DB 的 `ShopErrorLog` 第 N 行。拿不到对方库时，从「会抛 DB 异常的写入点」反推（见 §10 空串日期坑）。
+
 ### 3.4 密码加密（AES-128-CBC + ZeroPadding，必须 1:1 复刻）
 
 key/iv 为固定 16 字节常量（前后端硬编码一致）：`key='eweishop.aes_key'`、`iv='eweishop.aes_iv_'`。前端 `CryptoJS.AES.encrypt(明文, Utf8.parse(key), {iv, mode:CBC, padding:ZeroPadding}).toString()` 输出 Base64；后端 `openssl_decrypt(密文,'aes-128-cbc','eweishop.aes_key',OPENSSL_ZERO_PADDING,'eweishop.aes_iv_')`（`web_site/src/utils/util.js:170-184`、`common/models/user/User.php:309-313`）。
@@ -392,6 +394,7 @@ await uploadImage(buf, items[0].name)
 | 生图依赖云端登录态/配额 | 中 | ewei 视图前置校验云端已登录；失败可重试 |
 | 凭据明文泄露 | 高 | 用 `*_enc` 加密列 + 排除云同步 |
 | 改错副本（_internal/working/website 同名后端） | 低 | 正式后端只认 `F:\ewei\backend\client` |
+| 收银台建品向 `timestamp NOT NULL` 列（`sale_time`/`putaway_time`）传空串 `''` | 高 | 控制器 `$data['sale_time'] ?? '0000-00-00 00:00:00'` 只兜 `null`、**兜不住空串**；空串插 timestamp 在严格模式 MySQL(`STRICT_TRANS_TABLES`) 抛 `Incorrect datetime value: ''` → 框架记 DB_ERROR → 回显「数据错误: [日志id]」，非严格模式静默转零值（**故开发者本地不复现、别的独立部署才炸**，2026-06-27 实例）。**凡 ewei 写 `timestamp/date` 列一律传 `'0000-00-00 00:00:00'` 零值、不传空串**（零值=不定时上架，与官方 `checkstand actionGet` 新建默认一致；`addGoods` 的 `data.sale_time/putaway_time` 已固定零值） |
 
 ---
 
