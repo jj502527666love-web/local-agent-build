@@ -268,6 +268,10 @@ function runMigrations(): void {
   if (igCols.length > 0 && !igColNames.includes('raw_request')) {
     db.exec("ALTER TABLE image_generations ADD COLUMN raw_request TEXT NOT NULL DEFAULT ''")
   }
+  // 分辨率档位（1k/2k/4k）：持久化后「重新生成」才能精确复现原档位，否则静默回退默认 2K（v0.9.x+）
+  if (igCols.length > 0 && !igColNames.includes('tier_id')) {
+    db.exec("ALTER TABLE image_generations ADD COLUMN tier_id TEXT NOT NULL DEFAULT ''")
+  }
   if (igCols.length > 0) {
     db.exec('CREATE INDEX IF NOT EXISTS idx_image_generations_status_created ON image_generations(status, created_at DESC)')
   }

@@ -276,6 +276,17 @@ export const useCanvasStore = defineStore('canvas', () => {
           return { image_data: '', image_path: '' }
         case 'aiText':
           return { text: data.text || '', result: '', status: 'idle' }
+        case 'agentNode':
+          // 复制画布作为模板：保留节点级模型 / 人设 / 知识库选择，清空运行态
+          return {
+            text_provider_id: data.text_provider_id || '',
+            text_model_id: data.text_model_id || '',
+            system_prompt: data.system_prompt,
+            kb_category_ids: Array.isArray(data.kb_category_ids) ? data.kb_category_ids : [],
+            result: '',
+            status: 'idle',
+            error: ''
+          }
         case 'quickOrchestrator':
           return {
             mode: data.mode || 'product_workflow',

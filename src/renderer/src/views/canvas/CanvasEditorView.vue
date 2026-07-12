@@ -359,6 +359,7 @@ import { useWorkflowEngine } from './composables/useWorkflowEngine'
 
 import TextInputNode from './nodes/TextInputNode.vue'
 import AiTextNode from './nodes/AiTextNode.vue'
+import AgentNode from './nodes/AgentNode.vue'
 import QuickOrchestratorNode from './nodes/QuickOrchestratorNode.vue'
 import Text2ImgNode from './nodes/Text2ImgNode.vue'
 import Img2ImgNode from './nodes/Img2ImgNode.vue'
@@ -471,6 +472,7 @@ const currentLayoutDir = computed<'LR' | 'TB'>(() =>
 const customNodeTypes: Record<string, any> = {
   textInput: markRaw(TextInputNode),
   aiText: markRaw(AiTextNode),
+  agentNode: markRaw(AgentNode),
   quickOrchestrator: markRaw(QuickOrchestratorNode),
   reverse: markRaw(ReverseNode),
   imageRecognition: markRaw(ImageRecognitionNode),
@@ -742,12 +744,19 @@ const flowEdges = computed<Edge[]>(() =>
 // - anyRunning: true when workflowRunning OR any single node is running
 // Declared here (before handle menu state) so the watch below can safely reference it.
 const {
-  workflowRunning,
-  anyRunning,
+  isProjectRunning,
+  isProjectAnyRunning,
+  getProjectRefImageWarnings,
   runWorkflow: executeWorkflow,
-  cancelWorkflow,
-  refImageWarnings
+  cancelWorkflow: cancelWorkflowRaw
 } = useWorkflowEngine()
+// 只观察「本画布」的运行态：其它画布运行不再冻结/影响当前画布（态按 projectId 分片）
+const workflowRunning = computed(() => isProjectRunning(projectId.value))
+const anyRunning = computed(() => isProjectAnyRunning(projectId.value))
+const refImageWarnings = computed(() => getProjectRefImageWarnings(projectId.value))
+function cancelWorkflow(): boolean {
+  return cancelWorkflowRaw(projectId.value)
+}
 
 // === Handle click-to-create menu ===
 // Clicking (not dragging) a source handle opens a context menu listing:
@@ -1288,6 +1297,7 @@ function getDefaultNodeData(type: string): Record<string, any> {
   switch (type) {
     case 'textInput': return { text: '' }
     case 'aiText': return { text: '', result: '', status: 'idle' }
+    case 'agentNode': return { text_provider_id: '', text_model_id: '', kb_category_ids: [], result: '', status: 'idle', error: '' }
     case 'quickOrchestrator': return {
       mode: 'product_workflow',
       instruction: QUICK_PRODUCT_DEFAULT_INSTRUCTION,

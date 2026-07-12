@@ -97,6 +97,9 @@
                   <optgroup v-if="selectedModelGroups.recommended.length" label="推荐（生图）">
                     <option v-for="m in selectedModelGroups.recommended" :key="m" :value="m">{{ modelStore.optionLabel(selectedProviderId, m) }}</option>
                   </optgroup>
+                  <optgroup v-if="selectedModelGroups.others.length" label="其他可用">
+                    <option v-for="m in selectedModelGroups.others" :key="m" :value="m">{{ modelStore.optionLabel(selectedProviderId, m) }}</option>
+                  </optgroup>
                 </select>
                 <input v-if="selectedProviderId && !selectedProviderModels.length" v-model="selectedModelId" placeholder="输入模型名称" class="w-full mt-2 px-3 py-2 text-xs bg-surface-1 border border-surface-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500" />
               </div>
@@ -112,6 +115,9 @@
                   <option value="">-- 选择模型 --</option>
                   <optgroup v-if="optimizeModelGroups.recommended.length" label="推荐（对话）">
                     <option v-for="m in optimizeModelGroups.recommended" :key="m" :value="m">{{ modelStore.optionLabel(optimizeProviderId, m) }}</option>
+                  </optgroup>
+                  <optgroup v-if="optimizeModelGroups.others.length" label="其他可用">
+                    <option v-for="m in optimizeModelGroups.others" :key="m" :value="m">{{ modelStore.optionLabel(optimizeProviderId, m) }}</option>
                   </optgroup>
                 </select>
                 <input v-if="optimizeProviderId && !optimizeProviderModels.length" v-model="optimizeModelId" placeholder="输入模型名称" class="w-full mt-2 px-3 py-2 text-xs bg-surface-1 border border-surface-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500" />
@@ -633,6 +639,7 @@ function regenerate(gen: ImageGeneration) {
     modelProviderId: gen.model_provider_id,
     modelId: gen.model_id,
     size: gen.size,
+    tierId: gen.tier_id || undefined,
     quality: gen.quality,
     batchCount: 1
   })

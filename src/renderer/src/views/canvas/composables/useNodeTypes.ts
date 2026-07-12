@@ -22,6 +22,15 @@ export const NODE_TYPE_DEFS: NodeTypeDef[] = [
     inputs: [{ handle: 'input', dataType: 'text', required: true }],
     outputs: [{ handle: 'output', dataType: 'text' }]
   },
+  // 智能体节点：节点级对话模型 + 人设(系统提示词) + 本地知识库多选。执行时先对本地库做一次
+  // 直接检索并前置拼接到系统提示，再调对话模型；无技能/MCP/流式，契合画布同步单轮语义。
+  {
+    type: 'agentNode',
+    label: '智能体',
+    color: '#0284c7',
+    inputs: [{ handle: 'input', dataType: 'text', required: false }],
+    outputs: [{ handle: 'output', dataType: 'text' }]
+  },
   {
     type: 'quickOrchestrator',
     label: '快捷编排',

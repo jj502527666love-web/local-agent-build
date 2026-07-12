@@ -328,6 +328,7 @@ interface VideoModel {
   supported_resolutions: string[]
   supported_aspect_ratios: string[]
   max_reference_images: number
+  supported_ref_media?: string[]
   description: string
   skus: VideoSku[]
 }
@@ -454,6 +455,8 @@ const PROTOCOL_CAPABILITIES: Record<string, ProtocolCapability> = {
   seedance: { assetTypes: ['image', 'video', 'audio'], firstLastFrameByImage: false },
   veo: { assetTypes: ['image'], firstLastFrameByImage: true },
   grok: { assetTypes: ['image'], firstLastFrameByImage: false },
+  // 可灵：图生视频单图 + 首尾帧（image + image_tail），故支持 image 与首尾帧
+  kling: { assetTypes: ['image'], firstLastFrameByImage: true },
   openai_video: { assetTypes: ['image', 'video'], firstLastFrameByImage: false },
 }
 const DEFAULT_PROTOCOL_CAPABILITY: ProtocolCapability = { assetTypes: ['image'], firstLastFrameByImage: false }
@@ -462,6 +465,16 @@ function protocolCapability(protocol?: string): ProtocolCapability {
 }
 const ASSET_ACCEPT_MAP: Record<ProtocolAssetType, string> = { image: 'image/*', video: 'video/*', audio: 'audio/*' }
 const ASSET_TYPE_LABEL: Record<ProtocolAssetType, string> = { image: '图片', video: '视频', audio: '音频' }
+const VALID_ASSET_TYPES: ProtocolAssetType[] = ['image', 'video', 'audio']
+// 参考素材可选类型：优先用服务端下发的 supported_ref_media（与后端 allowedRefMedia 同源，
+// 保证前端可选与后端校验一致）；服务端未下发（旧后台）时回退协议默认能力表。
+const referenceAssetTypes = computed<ProtocolAssetType[]>(() => {
+  const fromModel = (selectedModel.value?.supported_ref_media || []).filter(
+    (t): t is ProtocolAssetType => VALID_ASSET_TYPES.includes(t as ProtocolAssetType)
+  )
+  if (fromModel.length) return fromModel
+  return protocolCapability(selectedModel.value?.provider_protocol).assetTypes
+})
 const orderedReferenceAssets = computed(() =>
   normalizeReferenceAssetList(referenceAssets.value, isFirstLastFrameMode.value)
 )
@@ -507,7 +520,7 @@ const referenceHint = computed(() => {
   const cap = protocolCapability(selectedModel.value?.provider_protocol)
   if (selectedMode.value === 'image_to_video') return cap.firstLastFrameByImage ? '图生视频支持 1-3 张参考图。' : '图生视频建议上传 1 张参考图。'
   if (selectedMode.value === 'first_last_frame') return cap.firstLastFrameByImage ? '首尾帧模式支持上传 1-2 张图片。' : '首尾帧模式建议上传首帧和尾帧 2 张图。'
-  const extra = cap.assetTypes.filter((t) => t !== 'image').map((t) => ASSET_TYPE_LABEL[t])
+  const extra = referenceAssetTypes.value.filter((t) => t !== 'image').map((t) => ASSET_TYPE_LABEL[t])
   return extra.length ? `可选。支持图片、${extra.join('、')}参考素材。` : '可选。当前模型仅支持图片参考素材。'
 })
 const referenceGuide = computed(() => {
@@ -515,7 +528,7 @@ const referenceGuide = computed(() => {
   if (orderedReferenceAssets.value.some((asset) => asset.asset_type === 'image')) return '多张参考图可在提示词中使用“参考图1、参考图2”指定对应关系。'
   return ''
 })
-const referenceAccept = computed(() => protocolCapability(selectedModel.value?.provider_protocol).assetTypes.map((t) => ASSET_ACCEPT_MAP[t]).join(','))
+const referenceAccept = computed(() => referenceAssetTypes.value.map((t) => ASSET_ACCEPT_MAP[t]).join(','))
 const monthQuotaLabel = computed(() => {
   const counter = cloudAuth.quotas?.usage_counters?.video_quota_per_month
   if (!counter || counter.unlimited || counter.limit <= 0) return '不限'
@@ -1094,7 +1107,7 @@ async function onPickReferences(event: Event) {
   try {
     for (const file of files) {
       const assetType = file.type.startsWith('video/') ? 'video' : file.type.startsWith('audio/') ? 'audio' : 'image'
-      const allowedTypes = protocolCapability(selectedModel.value?.provider_protocol).assetTypes
+      const allowedTypes = referenceAssetTypes.value
       if (!allowedTypes.includes(assetType as ProtocolAssetType)) {
         throw new Error('当前模型支持的参考素材：' + allowedTypes.map((t) => ASSET_TYPE_LABEL[t]).join('、'))
       }

@@ -195,31 +195,88 @@ async function applyVideoTaskToNode(nodeId: string, projectId: string, taskId: s
   if (status === 'done' && prevStatus !== 'done') refreshCloudBalances()
 }
 
-// Module-level singletons so all composable consumers share the same state.
-// - workflowRunning: true while runWorkflow owns the canvas
-// - activeSingleRuns: tracks node IDs currently running via executeSingleNode
-// - cancelRequested: soft-cancel flag; runWorkflow loop won't launch new tasks once true,
-//   but already-inflight tasks are allowed to finish so DB/state stays consistent.
-// - runningProjectId: which project the current workflow belongs to (for global badge)
-const workflowRunning = ref(false)
+// 画布执行态按 projectId 分片：一个画布运行不冻结/影响其它画布。多画布可各自并行排队，
+// 共享主进程生图并发闸（不在此层限制并发），UI 只观察各自画布的运行态。
+// - workflowRunningProjects: 有整画布工作流在跑的 projectId 集合（准入 + 各画布 UI 门控）
+// - cancelRequestedProjects: 已请求软取消的 projectId（取消只作用于本画布）
+// - activeSingleRunsByProject: projectId → 正在单独执行的 nodeId 集合（单节点门控 + 徽标计数）
+// - refImageWarningsByProject: projectId → 参考图读取失败聚合（各画布执行后各自 toast，互不混淆）
+type RefImageWarning = { nodeId: string; failed: number; total: number }
+const workflowRunningProjects = ref<Set<string>>(new Set())
+const cancelRequestedProjects = ref<Set<string>>(new Set())
+const activeSingleRunsByProject = ref<Map<string, Set<string>>>(new Map())
+const refImageWarningsByProject = ref<Map<string, RefImageWarning[]>>(new Map())
+// 以下两者无外部消费、仅内部记录（nodeId 全局唯一，并行画布互不冲突），保留不动
 const tasks = ref<WorkflowTask[]>([])
 const nodeStatuses = ref<Map<string, TaskStatus>>(new Map())
-const activeSingleRuns = ref<Set<string>>(new Set())
-const cancelRequested = ref(false)
-const runningProjectId = ref<string | null>(null)
-// 参考图读取失败聚合：每次 runWorkflow / executeSingleNode 开始时清空，
-// 上游 UI（CanvasEditorView）可在执行完成后读取并 toast 提示，避免静默吞掉部分失败
-const refImageWarnings = ref<Array<{ nodeId: string; failed: number; total: number }>>([])
 
-// Legacy alias kept for existing bindings (`workflowRunning` in view)
-const running = workflowRunning
+// Set/Map 装在 ref 里需整体重赋值才触发响应式
+function setProjectRunning(pid: string, on: boolean): void {
+  const next = new Set(workflowRunningProjects.value)
+  if (on) next.add(pid)
+  else next.delete(pid)
+  workflowRunningProjects.value = next
+}
+function setProjectCancel(pid: string, on: boolean): void {
+  const next = new Set(cancelRequestedProjects.value)
+  if (on) next.add(pid)
+  else next.delete(pid)
+  cancelRequestedProjects.value = next
+}
+function addSingleRun(pid: string, nodeId: string): void {
+  const map = new Map(activeSingleRunsByProject.value)
+  const set = new Set(map.get(pid) ?? [])
+  set.add(nodeId)
+  map.set(pid, set)
+  activeSingleRunsByProject.value = map
+}
+function removeSingleRun(pid: string, nodeId: string): void {
+  const map = new Map(activeSingleRunsByProject.value)
+  const set = new Set(map.get(pid) ?? [])
+  set.delete(nodeId)
+  if (set.size === 0) map.delete(pid)
+  else map.set(pid, set)
+  activeSingleRunsByProject.value = map
+}
+function clearProjectWarnings(pid: string): void {
+  const map = new Map(refImageWarningsByProject.value)
+  map.set(pid, [])
+  refImageWarningsByProject.value = map
+}
+function pushProjectWarning(pid: string, w: RefImageWarning): void {
+  const map = new Map(refImageWarningsByProject.value)
+  map.set(pid, [...(map.get(pid) ?? []), w])
+  refImageWarningsByProject.value = map
+}
+
+// —— 按 projectId 的选择器（各画布 UI 观察自己的运行态）——
+function isProjectRunning(projectId: string): boolean {
+  return workflowRunningProjects.value.has(projectId)
+}
+function isProjectAnyRunning(projectId: string): boolean {
+  return workflowRunningProjects.value.has(projectId) || (activeSingleRunsByProject.value.get(projectId)?.size ?? 0) > 0
+}
+function getProjectRefImageWarnings(projectId: string): RefImageWarning[] {
+  return refImageWarningsByProject.value.get(projectId) ?? []
+}
 
 function refreshCloudBalances() {
   useCloudAuthStore().refreshBalancesThrottled().catch(() => {})
 }
 
-// Derived flag: any execution in flight (workflow or any single node)
-const anyRunning = computed(() => workflowRunning.value || activeSingleRuns.value.size > 0)
+// 全局派生（跨画布徽标用）：任意画布在执行 / 任意整画布工作流 / 单节点执行总数 / 在跑的画布 id
+const anyRunningGlobal = computed(
+  () => workflowRunningProjects.value.size > 0 || [...activeSingleRunsByProject.value.values()].some((s) => s.size > 0)
+)
+const workflowRunningGlobal = computed(() => workflowRunningProjects.value.size > 0)
+const activeSingleRunCount = computed(() =>
+  [...activeSingleRunsByProject.value.values()].reduce((n, s) => n + s.size, 0)
+)
+const runningProjectIds = computed(() => {
+  const ids = new Set<string>(workflowRunningProjects.value)
+  for (const [pid, set] of activeSingleRunsByProject.value) if (set.size > 0) ids.add(pid)
+  return [...ids]
+})
 
 export function useWorkflowEngine() {
 
@@ -959,6 +1016,60 @@ export function useWorkflowEngine() {
         break
       }
 
+      case 'agentNode': {
+        const inputText = upstream.texts.join('\n') || node.data.text || ''
+        if (!inputText) throw new Error('智能体节点需要输入：请连接上游文本或在节点中填写')
+
+        const project = canvasStore.currentProject
+        // 节点级对话模型覆盖 > 画布默认文本模型
+        const providerId = node.data.text_provider_id || project?.text_provider_id || ''
+        const modelId = node.data.text_model_id || project?.text_model_id || ''
+        if (!providerId || !modelId) {
+          throw new Error('请为智能体节点选择对话模型，或在画布设置中配置默认文本模型')
+        }
+
+        await canvasStore.updateNode(nodeId, {
+          data: { ...node.data, status: 'running' }
+        })
+
+        // 本地知识库「直接检索」前置拼接（不经 LLM 工具循环）；检索失败降级为不带库、不阻塞
+        let kbContext = ''
+        const catIds = Array.isArray(node.data.kb_category_ids) ? node.data.kb_category_ids : []
+        if (catIds.length > 0) {
+          try {
+            const kbResp = await api().canvas.invoke('searchLocalKB', inputText, catIds, 5)
+            const hits = (kbResp?.results || []) as Array<{ source: string; content: string }>
+            if (hits.length > 0) {
+              kbContext = hits.map((h) => `【${h.source}】\n${h.content}`).join('\n\n')
+            }
+          } catch {
+            // 忽略检索异常，继续用纯模型生成
+          }
+        }
+
+        // 系统提示词 = 节点人设（可空）+ 知识库上下文（若命中）
+        const persona = String(node.data.system_prompt ?? '').trim()
+        const systemParts: string[] = []
+        if (persona) systemParts.push(persona)
+        if (kbContext) systemParts.push(`以下是知识库检索到的参考资料，回答时请优先依据这些内容：\n${kbContext}`)
+        const systemPrompt = systemParts.join('\n\n')
+
+        const messages: Array<{ role: 'system' | 'user'; content: string }> = systemPrompt
+          ? [
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: inputText }
+            ]
+          : [{ role: 'user', content: inputText }]
+
+        const result = await api().llm.invoke('call', providerId, modelId, messages, { notifyStream: false })
+
+        await canvasStore.updateNode(nodeId, {
+          data: { ...node.data, text: inputText, result: result || '', status: 'done' }
+        })
+        await recordUsage('chat', providerId, modelId)
+        break
+      }
+
       case 'text2img': {
         const project = canvasStore.currentProject
         if (!project?.image_provider_id || !project?.image_model_id) {
@@ -985,10 +1096,7 @@ export function useWorkflowEngine() {
           throw new Error(`参考图全部读取失败（${upstream.images.length} 张）：请检查上游参考图节点的文件是否仍然存在`)
         }
         if (failedRef > 0) {
-          refImageWarnings.value = [
-            ...refImageWarnings.value,
-            { nodeId, failed: failedRef, total: upstream.images.length }
-          ]
+          pushProjectWarning(projectId, { nodeId, failed: failedRef, total: upstream.images.length })
         }
 
         const genOptions: Record<string, any> = {
@@ -1058,10 +1166,7 @@ export function useWorkflowEngine() {
           throw new Error('参考图读取失败：请检查上游参考图节点是否有效')
         }
         if (failedRefImg > 0) {
-          refImageWarnings.value = [
-            ...refImageWarnings.value,
-            { nodeId, failed: failedRefImg, total: upstream.images.length }
-          ]
+          pushProjectWarning(projectId, { nodeId, failed: failedRefImg, total: upstream.images.length })
         }
 
         const genResults = await api().imageGen.invoke('generate', {
@@ -1151,10 +1256,7 @@ export function useWorkflowEngine() {
           throw new Error('参考图读取失败：请检查上游节点是否仍保留文件')
         }
         if (failedRefRev > 0) {
-          refImageWarnings.value = [
-            ...refImageWarnings.value,
-            { nodeId, failed: failedRefRev, total: 1 }
-          ]
+          pushProjectWarning(projectId, { nodeId, failed: failedRefRev, total: 1 })
         }
 
         // 压缩后再上传：上游生图节点产出常为 1024+ 超清 PNG，几 MB 的 dataURI 直接
@@ -1235,10 +1337,7 @@ export function useWorkflowEngine() {
           throw new Error('参考图读取失败：请检查上游节点是否仍保留文件')
         }
         if (failedRefRec > 0) {
-          refImageWarnings.value = [
-            ...refImageWarnings.value,
-            { nodeId, failed: failedRefRec, total: 1 }
-          ]
+          pushProjectWarning(projectId, { nodeId, failed: failedRefRec, total: 1 })
         }
 
         let compressedImage: string
@@ -1405,14 +1504,13 @@ export function useWorkflowEngine() {
   }
 
   async function runWorkflow(projectId: string): Promise<{ ok: boolean; message: string }> {
-    if (workflowRunning.value) return { ok: false, message: '工作流正在运行中' }
-    if (activeSingleRuns.value.size > 0) {
-      return { ok: false, message: '有节点正在单独执行，请稍候' }
+    if (isProjectRunning(projectId)) return { ok: false, message: '该画布的工作流正在运行中' }
+    if ((activeSingleRunsByProject.value.get(projectId)?.size ?? 0) > 0) {
+      return { ok: false, message: '该画布有节点正在单独执行，请稍候' }
     }
-    workflowRunning.value = true
-    cancelRequested.value = false
-    runningProjectId.value = projectId
-    refImageWarnings.value = []
+    setProjectRunning(projectId, true)
+    setProjectCancel(projectId, false)
+    clearProjectWarnings(projectId)
     const canvasStore = useCanvasStore()
 
     try {
@@ -1520,7 +1618,7 @@ export function useWorkflowEngine() {
       while (true) {
         // 软取消：不再启动新任务，但已 inflight 的让它跑完（保证 DB/state 一致）。
         // pending 状态的节点统一打 skipped 并写库，避免切回画布看到僵尸 pending。
-        if (cancelRequested.value) {
+        if (cancelRequestedProjects.value.has(projectId)) {
           for (const nodeId of allNodes) {
             if (statusMap.get(nodeId) === 'pending' && !inflight.has(nodeId)) {
               statusMap.set(nodeId, 'skipped')
@@ -1593,26 +1691,33 @@ export function useWorkflowEngine() {
       }
       return { ok: false, message: e?.message || '工作流执行失败' }
     } finally {
-      workflowRunning.value = false
-      cancelRequested.value = false
-      runningProjectId.value = null
+      setProjectRunning(projectId, false)
+      setProjectCancel(projectId, false)
     }
   }
 
   /** 软取消当前工作流：不再启动新节点，已 inflight 让它跑完保证 DB/state 一致。
    * 仅对 runWorkflow 生效；executeSingleNode 没有循环结构，无法中途打断（fetch 已发） */
-  function cancelWorkflow(): boolean {
-    if (!workflowRunning.value) return false
-    cancelRequested.value = true
+  function cancelWorkflow(projectId: string): boolean {
+    if (!workflowRunningProjects.value.has(projectId)) return false
+    setProjectCancel(projectId, true)
+    return true
+  }
+
+  /** 全局停止所有在跑的画布工作流（跨页面徽标用）。 */
+  function cancelAllWorkflows(): boolean {
+    const pids = [...workflowRunningProjects.value]
+    if (pids.length === 0) return false
+    for (const pid of pids) setProjectCancel(pid, true)
     return true
   }
 
   async function executeSingleNode(nodeId: string, projectId: string) {
-    // Block if workflow is running, or this node is already running via single-execution
-    if (workflowRunning.value) return
-    if (activeSingleRuns.value.has(nodeId)) return
-    // 单节点执行入口也清空一次警告聚合，避免与上一次工作流的 warnings 混淆
-    refImageWarnings.value = []
+    // 仅当「本画布」在跑整工作流、或该节点已在单独执行时阻止（不受其它画布运行影响）
+    if (isProjectRunning(projectId)) return
+    if (activeSingleRunsByProject.value.get(projectId)?.has(nodeId)) return
+    // 单节点执行入口也清空一次本画布的警告聚合，避免与上一次执行的 warnings 混淆
+    clearProjectWarnings(projectId)
     const canvasStore = useCanvasStore()
     const node = canvasStore.nodes.find((n) => n.id === nodeId)
     if (!node) return
@@ -1626,10 +1731,8 @@ export function useWorkflowEngine() {
       return
     }
 
-    // Track in the module-level singleton so the workflow button and sibling nodes can observe it
-    const next = new Set(activeSingleRuns.value)
-    next.add(nodeId)
-    activeSingleRuns.value = next
+    // 登记到本画布的单节点执行集合，供本画布的按钮门控与徽标计数观察
+    addSingleRun(projectId, nodeId)
     try {
       await executeNode(nodeId, projectId)
     } catch (e: any) {
@@ -1637,9 +1740,7 @@ export function useWorkflowEngine() {
         data: { ...node.data, status: 'error', error: toFriendlyNodeError(e, '未知错误') }
       })
     } finally {
-      const cleared = new Set(activeSingleRuns.value)
-      cleared.delete(nodeId)
-      activeSingleRuns.value = cleared
+      removeSingleRun(projectId, nodeId)
     }
   }
 
@@ -1656,7 +1757,7 @@ export function useWorkflowEngine() {
     const intervalMs = 6000
     const deadline = Date.now() + 30 * 60 * 1000
     while (Date.now() < deadline) {
-      if (cancelRequested.value) return
+      if (cancelRequestedProjects.value.has(projectId)) return
       await new Promise((r) => setTimeout(r, intervalMs))
       let task: any = null
       try {
@@ -1741,7 +1842,7 @@ export function useWorkflowEngine() {
       data: { ...(latest?.data || node.data), cloud_task_id: task.id, status: 'running', progress: Number(task.progress) || 1 }
     })
     try { await syncVideoRecordForNode(task, projectId, nodeId) } catch { /* 首次落盘失败不阻塞，轮询会重试 */ }
-    if (workflowRunning.value) {
+    if (isProjectRunning(projectId)) {
       // 工作流批量执行：等待视频完成，下游节点才能拿到产物
       await waitVideoTaskTerminal(nodeId, projectId, task.id)
     } else {
@@ -1924,17 +2025,19 @@ export function useWorkflowEngine() {
   }
 
   return {
-    running,
-    workflowRunning,
-    activeSingleRuns,
-    anyRunning,
-    cancelRequested,
-    runningProjectId,
-    refImageWarnings,
-    tasks,
-    nodeStatuses,
+    // 按 projectId 的选择器（各画布 UI 只观察自己的运行态）
+    isProjectRunning,
+    isProjectAnyRunning,
+    getProjectRefImageWarnings,
+    // 全局派生（跨画布徽标）
+    anyRunningGlobal,
+    workflowRunningGlobal,
+    activeSingleRunCount,
+    runningProjectIds,
+    // 执行 / 取消
     runWorkflow,
     cancelWorkflow,
+    cancelAllWorkflows,
     executeSingleNode,
     attachVideoTaskPolling
   }

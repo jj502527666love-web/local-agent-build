@@ -178,8 +178,26 @@ function createWindow(): BrowserWindow {
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url)
+    try {
+      const proto = new URL(details.url).protocol
+      if (['http:', 'https:', 'mailto:', 'tel:'].includes(proto)) shell.openExternal(details.url)
+    } catch { /* 非法/危险协议(javascript:/data: 等)忽略 */ }
     return { action: 'deny' }
+  })
+
+  // 全局兜底：拦截「原地导航」到外站。普通 <a href>（无 target）点击触发的是 will-navigate 而非
+  // window.open，setWindowOpenHandler 拦不到；不拦则渲染窗口会跳离 SPA、被生产 CSP 拦资源→白屏，
+  // 且无边框窗口无返回键回不来。仅放行 SPA 自身导航（dev 渲染源 / prod file:// / HMR / reload）。
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    const rendererUrl = process.env['ELECTRON_RENDERER_URL']
+    const isDevRenderer = is.dev && !!rendererUrl && url.startsWith(rendererUrl)
+    const isLocalFile = url.startsWith('file://')
+    if (isDevRenderer || isLocalFile) return
+    event.preventDefault()
+    try {
+      const proto = new URL(url).protocol
+      if (['http:', 'https:', 'mailto:', 'tel:'].includes(proto)) shell.openExternal(url)
+    } catch { /* 非法/危险协议忽略 */ }
   })
 
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {

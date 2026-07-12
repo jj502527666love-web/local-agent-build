@@ -93,7 +93,7 @@
             type="button"
             class="text-[11px] font-medium hover:underline"
             @click="goToRunningCanvas"
-            :title="canvasRunningProjectId ? '回到正在运行的画布' : '画布有节点在生成'"
+            :title="canvasRunningProjectIds.length ? '回到正在运行的画布' : '画布有节点在生成'"
           >画布生成中{{ canvasActiveCount > 0 ? ` (${canvasActiveCount})` : '' }}</button>
           <button
             v-if="canvasWorkflowRunning"
@@ -171,24 +171,25 @@ const pageTitle = computed(() => (route.meta?.title as string) || '')
 // 画布任务全局徽标：useWorkflowEngine 是 module-level singleton，
 // MainLayout 内 mount 时取到的就是任何位置（节点 / CanvasEditorView）共享的状态。
 const {
-  anyRunning: canvasAnyRunning,
-  workflowRunning: canvasWorkflowRunning,
-  activeSingleRuns: canvasActiveSingleRuns,
-  runningProjectId: canvasRunningProjectId,
-  cancelWorkflow: cancelCanvasWorkflow
+  anyRunningGlobal: canvasAnyRunning,
+  workflowRunningGlobal: canvasWorkflowRunning,
+  activeSingleRunCount: canvasActiveSingleRunCount,
+  runningProjectIds: canvasRunningProjectIds,
+  cancelAllWorkflows: cancelCanvasWorkflow
 } = useWorkflowEngine()
 
 const canvasActiveCount = computed(() => {
   // workflow 模式下统计所有节点过于复杂，简化为：workflow 模式不显示数字、单节点模式显示数量
   if (canvasWorkflowRunning.value) return 0
-  return canvasActiveSingleRuns.value.size
+  return canvasActiveSingleRunCount.value
 })
 
 const isCanvasRoute = computed(() => route.path.startsWith('/canvas'))
 
 function goToRunningCanvas() {
-  if (canvasRunningProjectId.value) {
-    router.push(`/canvas/${canvasRunningProjectId.value}`)
+  const pid = canvasRunningProjectIds.value[0]
+  if (pid) {
+    router.push(`/canvas/${pid}`)
   } else {
     router.push('/canvas')
   }

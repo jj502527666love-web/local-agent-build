@@ -34,11 +34,28 @@ interface Rgb {
 const WHITE: Rgb = { r: 255, g: 255, b: 255 }
 const BLACK: Rgb = { r: 0, g: 0, b: 0 }
 
-function hexToRgb(hex: string): Rgb | null {
-  const m = /^#?([0-9a-fA-F]{6})$/.exec((hex || '').trim())
-  if (!m) return null
-  const n = parseInt(m[1], 16)
-  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 }
+function hexToRgb(input: string): Rgb | null {
+  const s = (input || '').trim()
+  // 6 位 hex：#RRGGBB / RRGGBB
+  const hex6 = /^#?([0-9a-fA-F]{6})$/.exec(s)
+  if (hex6) {
+    const n = parseInt(hex6[1], 16)
+    return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 }
+  }
+  // rgb()/rgba() 字符串：兼容后台 antd v6 曾把 ColorPicker 存成 rgb(...) 的历史脏值（无需重存即生效）
+  const rgb = /^rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})/i.exec(s)
+  if (rgb) {
+    const clamp = (v: number): number => Math.max(0, Math.min(255, Math.round(v)))
+    return { r: clamp(+rgb[1]), g: clamp(+rgb[2]), b: clamp(+rgb[3]) }
+  }
+  // 3 位 hex：#RGB → #RRGGBB
+  const hex3 = /^#?([0-9a-fA-F]{3})$/.exec(s)
+  if (hex3) {
+    const c = hex3[1]
+    const n = parseInt(c[0] + c[0] + c[1] + c[1] + c[2] + c[2], 16)
+    return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 }
+  }
+  return null
 }
 
 function rgbToHex({ r, g, b }: Rgb): string {

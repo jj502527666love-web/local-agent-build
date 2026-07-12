@@ -1331,6 +1331,17 @@ async function onMessagesClick(e: MouseEvent) {
     previewImage.value = img.src
     return
   }
+  // 普通 markdown 链接：拦截原地导航，改用系统浏览器打开。否则点击会让渲染窗口从 SPA 跳走
+  // 加载外站，生产 CSP(default-src 'self') 拦掉外站资源→白屏，且无边框窗口无返回键回不来。
+  const anchor = target.closest('a[href]') as HTMLAnchorElement | null
+  if (anchor) {
+    const href = anchor.getAttribute('href') || ''
+    if (/^(https?:|mailto:|tel:)/i.test(href)) {
+      e.preventDefault()
+      ;(window as any).api.shell.openExternal(href)
+      return
+    }
+  }
   // Markdown 代码块右上角「复制」按钮：用事件委托替代 inline onclick，
   // 因为生产 CSP（main/index.ts 的 script-src 'self'）不允许 inline handler。
   const copyBtn = target.closest('.copy-btn[data-action="copy-code"]') as HTMLButtonElement | null

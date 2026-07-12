@@ -1,24 +1,31 @@
 <template>
-  <div class="inline-flex items-center gap-1.5" role="radiogroup" aria-label="分辨率档位">
-    <button
-      v-for="tier in tiers"
-      :key="tier.id"
-      type="button"
-      role="radio"
-      :aria-checked="tier.id === modelValue"
-      :disabled="disabled"
-      :class="buttonClass(tier.id === modelValue)"
-      :title="tier.note ? `${tier.label}（${tier.note}）` : tier.label"
-      @click="onPick(tier.id)"
-    >
-      <span class="font-medium leading-none">{{ tier.label }}</span>
-    </button>
+  <div class="inline-flex flex-col gap-1">
+    <div class="inline-flex items-center gap-1.5" role="radiogroup" aria-label="分辨率档位">
+      <button
+        v-for="tier in tiers"
+        :key="tier.id"
+        type="button"
+        role="radio"
+        :aria-checked="tier.id === modelValue"
+        :disabled="disabled"
+        :class="buttonClass(tier.id === modelValue)"
+        :title="tier.note ? `${tier.label}（${tier.note}）` : tier.label"
+        @click="onPick(tier.id)"
+      >
+        <span class="font-medium leading-none">{{ tier.label }}</span>
+      </button>
+    </div>
+    <!-- 实际出图尺寸回显：接近方形比例选 4K 会被总像素上限收窄（如 1:1 4K→2880×2880），此处如实告知 -->
+    <div v-if="showResolved && resolved" class="text-[10px] leading-none text-text-tertiary">
+      实际 {{ resolved.pixels }}
+      <span v-if="resolved.clamped" class="text-amber-600 dark:text-amber-400">· 已按模型能力域自动调整</span>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, watch } from 'vue'
-import { getAvailableResolutionTiers, ensureValidTierIdForSize } from '@shared/image-size'
+import { getAvailableResolutionTiers, ensureValidTierIdForSize, getResolvedPixelsForSizeTier } from '@shared/image-size'
 
 interface Props {
   /** 当前选中的档位 id（1k/2k/4k） */
@@ -29,11 +36,14 @@ interface Props {
   disabled?: boolean
   /** 按钮尺寸：sm = 节点内紧凑，md = 生图页标准 */
   size?: 'sm' | 'md'
+  /** 是否在按钮下方回显「实际出图尺寸 / 已自动调整」（需配合 sizeValue） */
+  showResolved?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
   disabled: false,
-  size: 'md'
+  size: 'md',
+  showResolved: true
 })
 
 const emit = defineEmits<{
@@ -41,6 +51,11 @@ const emit = defineEmits<{
 }>()
 
 const tiers = computed(() => getAvailableResolutionTiers(props.modelId, props.sizeValue))
+
+// 实际出图像素与是否被能力域收窄（size 不可解析时为 null，回显自动隐藏）
+const resolved = computed(() =>
+  props.sizeValue ? getResolvedPixelsForSizeTier(props.modelId, props.sizeValue, props.modelValue) : null
+)
 
 /**
  * 模型切换后当前选中档位可能不再合法（如从 gpt-image-2 的 4K 切到只支持 1K/2K 的模型），

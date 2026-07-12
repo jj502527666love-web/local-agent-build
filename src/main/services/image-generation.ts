@@ -295,6 +295,8 @@ export interface ImageGeneration {
   model_id: string
   size: string
   quality: string
+  /** 分辨率档位 id（1k/2k/4k）：重新生成时复现原档位，避免静默回退默认 2K */
+  tier_id: string
   result_path: string
   result_url: string
   status: string
@@ -1440,6 +1442,8 @@ function insertGeneration(data: {
   model_id: string
   size: string
   quality: string
+  /** 分辨率档位 id（1k/2k/4k）：重新生成时复现原档位 */
+  tier_id?: string
   result_path: string
   result_url: string
   status: string
@@ -1450,8 +1454,8 @@ function insertGeneration(data: {
   const db = getDatabase()
   const now = new Date().toISOString()
   db.prepare(
-    `INSERT INTO image_generations (id, session_id, prompt, revised_prompt, ref_images, model_provider_id, model_id, size, quality, result_path, result_url, status, error, raw_request, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO image_generations (id, session_id, prompt, revised_prompt, ref_images, model_provider_id, model_id, size, quality, tier_id, result_path, result_url, status, error, raw_request, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     data.id,
     data.session_id,
@@ -1462,6 +1466,7 @@ function insertGeneration(data: {
     data.model_id,
     data.size,
     data.quality,
+    data.tier_id || '',
     data.result_path,
     data.result_url,
     data.status,
@@ -1580,6 +1585,7 @@ export async function generateImages(
       model_id: options.modelId,
       size: options.size,
       quality,
+      tier_id: options.tierId,
       result_path: '',
       result_url: '',
       status: 'pending',

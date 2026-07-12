@@ -560,6 +560,21 @@ export function resolveSizeToPixels(size: string, opts?: ResolveOptions): string
 }
 
 /**
+ * UI 回显用：给定模型 / size / 分辨率档位，返回「实际出图像素」与是否被能力域自动调整（clamped）。
+ * clamped=true 常见于接近方形比例选 4K 时被单张总像素上限收窄（如 1:1 4K→2880×2880），
+ * 用于向用户回显实际出图尺寸，消除「选了 4K 却没生效」的误解。size 不可解析时返回 null。
+ */
+export function getResolvedPixelsForSizeTier(
+  modelId: string | undefined,
+  size: string,
+  tierId?: string
+): { pixels: string; clamped: boolean } | null {
+  const r = resolveSizeToPixelsDetailed(size, { modelId, tierId })
+  if (!r) return null
+  return { pixels: r.pixels, clamped: !!r.clamped }
+}
+
+/**
  * UI 层校验：size 是否可被 resolveSizeToPixels 解析。
  * 包含预设、自定义比例、自定义像素三类合法值。
  */

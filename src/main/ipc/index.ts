@@ -683,6 +683,14 @@ export function registerIpcHandlers(): void {
     return { success: false, path: resolved, error: 'target and parent both missing' }
   })
   ipcMain.handle('shell:openExternal', async (_, url: string) => {
+    // 主进程侧协议白名单（纵深防御）：只把 http(s)/mailto/tel 交系统默认程序，
+    // 拦掉 javascript:/data:/file: 等危险协议，避免渲染层绕过后被利用
+    try {
+      const proto = new URL(String(url)).protocol
+      if (!['http:', 'https:', 'mailto:', 'tel:'].includes(proto)) return false
+    } catch {
+      return false
+    }
     const { shell } = require('electron')
     return shell.openExternal(url)
   })
@@ -1094,6 +1102,11 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('canvas:saveNodeFrames', (_, projectId: string, nodeId: string, frames: Array<{ id: string; dataUrl: string }>) =>
     canvasService.saveNodeFrames(projectId, nodeId, Array.isArray(frames) ? frames : [])
   )
+  // 画布智能体节点：本地知识库「直接检索」（不经对话工具循环），返回命中片段供节点前置拼接
+  ipcMain.handle('canvas:searchLocalKB', async (_, query: string, categoryIds: string[], topK?: number) => {
+    const { searchLocalKb } = await import('../services/kb-local-search')
+    return searchLocalKb(String(query || ''), Array.isArray(categoryIds) ? categoryIds : [], Number(topK) || 5)
+  })
   ipcMain.handle('canvas:listCharacters', (_, projectId: string) => canvasService.listCharacters(projectId))
   ipcMain.handle('canvas:createCharacter', (_, projectId: string, data: any) => canvasService.createCharacter(projectId, data || {}))
   ipcMain.handle('canvas:deleteCharacter', (_, id: string) => canvasService.deleteCharacter(id))

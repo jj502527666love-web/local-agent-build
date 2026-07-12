@@ -16,6 +16,8 @@ export interface ImageGeneration {
   model_id: string
   size: string
   quality: string
+  /** 分辨率档位 id（1k/2k/4k）：重新生成时复现原档位，避免静默回退默认 2K */
+  tier_id: string
   result_path: string
   result_url: string
   status: string
@@ -296,6 +298,7 @@ export const useImageGenStore = defineStore('imageGen', () => {
             model_id: '',
             size: '',
             quality: '',
+            tier_id: '',
             result_path: '',
             result_url: '',
             status: 'generating',
@@ -346,6 +349,7 @@ export const useImageGenStore = defineStore('imageGen', () => {
             model_id: '',
             size: '',
             quality: '',
+            tier_id: '',
             result_path: '',
             result_url: '',
             status: 'error',
