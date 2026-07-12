@@ -1021,11 +1021,9 @@ export function useWorkflowEngine() {
         if (!inputText) throw new Error('智能体节点需要输入：请连接上游文本或在节点中填写')
 
         const project = canvasStore.currentProject
-        // 节点级对话模型覆盖 > 画布默认文本模型
-        const providerId = node.data.text_provider_id || project?.text_provider_id || ''
-        const modelId = node.data.text_model_id || project?.text_model_id || ''
-        if (!providerId || !modelId) {
-          throw new Error('请为智能体节点选择对话模型，或在画布设置中配置默认文本模型')
+        // 统一使用画布设置里的默认文本模型（不再节点级选模型）
+        if (!project?.text_provider_id || !project?.text_model_id) {
+          throw new Error('请先在画布设置中配置文本模型')
         }
 
         await canvasStore.updateNode(nodeId, {
@@ -1061,12 +1059,12 @@ export function useWorkflowEngine() {
             ]
           : [{ role: 'user', content: inputText }]
 
-        const result = await api().llm.invoke('call', providerId, modelId, messages, { notifyStream: false })
+        const result = await api().llm.invoke('call', project.text_provider_id, project.text_model_id, messages, { notifyStream: false })
 
         await canvasStore.updateNode(nodeId, {
           data: { ...node.data, text: inputText, result: result || '', status: 'done' }
         })
-        await recordUsage('chat', providerId, modelId)
+        await recordUsage('chat', project.text_provider_id, project.text_model_id)
         break
       }
 

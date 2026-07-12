@@ -1297,7 +1297,7 @@ function getDefaultNodeData(type: string): Record<string, any> {
   switch (type) {
     case 'textInput': return { text: '' }
     case 'aiText': return { text: '', result: '', status: 'idle' }
-    case 'agentNode': return { text_provider_id: '', text_model_id: '', kb_category_ids: [], result: '', status: 'idle', error: '' }
+    case 'agentNode': return { kb_category_ids: [], result: '', status: 'idle', error: '' }
     case 'quickOrchestrator': return {
       mode: 'product_workflow',
       instruction: QUICK_PRODUCT_DEFAULT_INSTRUCTION,

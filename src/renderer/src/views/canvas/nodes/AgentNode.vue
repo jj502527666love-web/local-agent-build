@@ -9,36 +9,6 @@
       </button>
     </div>
     <div class="node-body">
-      <!-- 对话模型（折叠）：留空走画布默认文本模型 -->
-      <div class="mb-2">
-        <button
-          @click.stop="showModel = !showModel"
-          :disabled="data.locked"
-          class="w-full flex items-center justify-between gap-1.5 px-1 py-0.5 text-[10px] text-text-tertiary hover:text-text-secondary transition-colors disabled:opacity-50"
-        >
-          <span class="flex items-center gap-1">
-            <svg class="w-2.5 h-2.5 transition-transform" :class="{ 'rotate-90': showModel }" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" /></svg>
-            对话模型
-          </span>
-          <span class="text-[9px] opacity-70">{{ modelStatusLabel }}</span>
-        </button>
-        <div v-if="showModel" class="mt-1.5 space-y-1.5">
-          <select v-model="providerModel" @change="onProviderChange" :disabled="data.locked" class="node-textarea nodrag w-full text-[11px]">
-            <option value="">使用画布默认</option>
-            <option v-for="p in modelStore.providers" :key="p.id" :value="p.id">{{ p.name }}</option>
-          </select>
-          <select v-if="providerModel" v-model="modelModel" @change="saveModel" :disabled="data.locked" class="node-textarea nodrag w-full text-[11px]">
-            <option value="">-- 选择模型 --</option>
-            <optgroup v-if="modelOptions.recommended.length" label="推荐（对话）">
-              <option v-for="m in modelOptions.recommended" :key="m" :value="m">{{ modelStore.optionLabel(providerModel, m) }}</option>
-            </optgroup>
-            <optgroup v-if="modelOptions.others.length" label="其他可用">
-              <option v-for="m in modelOptions.others" :key="m" :value="m">{{ modelStore.optionLabel(providerModel, m) }}</option>
-            </optgroup>
-          </select>
-        </div>
-      </div>
-
       <!-- 人设 / 系统提示词（折叠） -->
       <div class="mb-2">
         <button
@@ -117,52 +87,28 @@
 import { ref, computed, inject, watch, onMounted } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
 import { useCanvasStore } from '@/stores/canvas'
-import { useModelStore } from '@/stores/models'
 import { useKnowledgeStore } from '@/stores/knowledge'
 import { useWorkflowEngine } from '../composables/useWorkflowEngine'
-import { groupAndSort } from '@/utils/model-caps'
-import { getHintsSync } from '@/utils/model-usage-hints'
 import PromptTextarea from '@/components/PromptTextarea.vue'
 
 type HandleClickHandler = (e: MouseEvent, nodeId: string, handleId: string, dataType: 'text' | 'image') => void
 
 const props = defineProps<{ data: Record<string, any> }>()
 const canvasStore = useCanvasStore()
-const modelStore = useModelStore()
 const knowledgeStore = useKnowledgeStore()
 const { executeSingleNode } = useWorkflowEngine()
 const onHandleClick = inject<HandleClickHandler | null>('onHandleClick', null)
 
-const showModel = ref(false)
 const showSystemPrompt = ref(false)
 const showKb = ref(false)
 
-// 节点字段本地镜像（Vue Flow 节点 props 可能整体替换，用 ref + watch 同步更稳）
-const providerModel = ref<string>(props.data.text_provider_id || '')
-const modelModel = ref<string>(props.data.text_model_id || '')
+// 人设本地镜像（对话模型统一走画布设置，节点不再单独选模型）
 const systemPromptModel = ref<string>(props.data.system_prompt ?? '')
-
-watch(() => props.data.text_provider_id, (v) => { providerModel.value = v || '' })
-watch(() => props.data.text_model_id, (v) => { modelModel.value = v || '' })
 watch(() => props.data.system_prompt, (v) => { systemPromptModel.value = v ?? '' })
 
 const categories = computed(() => knowledgeStore.categories)
 onMounted(() => { if (!knowledgeStore.categories.length) knowledgeStore.fetchCategories() })
 
-const currentProvider = computed(() => modelStore.providers.find((p) => p.id === providerModel.value) || null)
-const modelOptions = computed(() => {
-  if (!currentProvider.value) return { recommended: [] as string[], others: [] as string[] }
-  return groupAndSort(currentProvider.value.models, 'chat', {
-    cloudTypeOf: (mid: string) => modelStore.cloudTypeOf(currentProvider.value!.id, mid),
-    usageHints: getHintsSync('chat', currentProvider.value.id)
-  })
-})
-
-const modelStatusLabel = computed(() => {
-  if (!providerModel.value) return '画布默认'
-  if (!modelModel.value) return '未选模型'
-  return '已自定义'
-})
 const systemPromptStatusLabel = computed(() => {
   const v = props.data.system_prompt
   return v === undefined || v === '' ? '未设置' : '已设置'
@@ -175,13 +121,6 @@ const kbStatusLabel = computed(() => {
 function persist(patch: Record<string, any>): void {
   if (!props.data.nodeId) return
   canvasStore.updateNode(props.data.nodeId, { data: { ...props.data, ...patch } })
-}
-function onProviderChange(): void {
-  modelModel.value = ''
-  persist({ text_provider_id: providerModel.value, text_model_id: '' })
-}
-function saveModel(): void {
-  persist({ text_model_id: modelModel.value })
 }
 function saveSystemPrompt(): void {
   persist({ system_prompt: systemPromptModel.value })
