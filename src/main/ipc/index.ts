@@ -286,6 +286,10 @@ export function registerIpcHandlers(): void {
         notifyStream?: boolean
         timeoutMs?: number
         temperature?: number
+        // 画布智能体等工具循环用：透传 function-calling 工具定义；returnToolCalls=true 时
+        // 返回完整 { content, tool_calls, finish_reason }，否则维持只返回 content 字符串（不破坏旧调用方）
+        tools?: any[]
+        returnToolCalls?: boolean
       }
     ) => {
       const {
@@ -295,7 +299,9 @@ export function registerIpcHandlers(): void {
         stream = true,
         notifyStream,
         timeoutMs,
-        temperature
+        temperature,
+        tools,
+        returnToolCalls
       } = opts ?? {}
 
       const ac = new AbortController()
@@ -325,11 +331,15 @@ export function registerIpcHandlers(): void {
             response_format,
             temperature,
             notifyStream,
+            tools,
             signal: ac.signal
           },
           win
         )
-        return result.content
+        // 工具循环调用方需要 tool_calls，其余调用方保持只拿 content 字符串（向后兼容）
+        return returnToolCalls
+          ? { content: result.content, tool_calls: result.tool_calls, finish_reason: result.finish_reason }
+          : result.content
       } finally {
         if (timer) clearTimeout(timer)
         if (requestId) llmAbortMap.delete(requestId)
@@ -1106,6 +1116,12 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('canvas:searchLocalKB', async (_, query: string, categoryIds: string[], topK?: number) => {
     const { searchLocalKb } = await import('../services/kb-local-search')
     return searchLocalKb(String(query || ''), Array.isArray(categoryIds) ? categoryIds : [], Number(topK) || 5)
+  })
+  // 画布助手对话持久化：按画布存/取一个 JSON blob（刷新/重开画布后载回）
+  ipcMain.handle('canvas:getAgentChat', (_, projectId: string) => canvasService.getAgentChat(String(projectId)))
+  ipcMain.handle('canvas:saveAgentChat', (_, projectId: string, data: string) => {
+    canvasService.saveAgentChat(String(projectId), String(data || ''))
+    return true
   })
   ipcMain.handle('canvas:listCharacters', (_, projectId: string) => canvasService.listCharacters(projectId))
   ipcMain.handle('canvas:createCharacter', (_, projectId: string, data: any) => canvasService.createCharacter(projectId, data || {}))

@@ -2037,6 +2037,9 @@ export function useWorkflowEngine() {
     cancelWorkflow,
     cancelAllWorkflows,
     executeSingleNode,
-    attachVideoTaskPolling
+    attachVideoTaskPolling,
+    // 无副作用的连通性校验：供画布智能体 canvas_run 做运行前自检（dry pre-flight），
+    // 不像 runWorkflow 会切换运行态
+    validateConnectivity
   }
 }

@@ -47,6 +47,16 @@
             <p class="text-[10px] text-text-disabled mt-1.5">作为风格前缀拼接到每次生图提示词前（用 --- 分隔约束与主题）</p>
           </div>
         </div>
+        <!-- 画布助手（AI 副驾）：用自然语言搭建/修改/运行画布 -->
+        <button
+          @click="toggleCopilot"
+          class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border rounded-lg transition-colors"
+          :class="showCopilot ? 'border-sky-300 text-sky-600 bg-sky-50 dark:bg-sky-900/20' : 'border-surface-3 text-text-secondary hover:bg-surface-2'"
+          title="画布助手：用自然语言搭建 / 修改 / 运行画布"
+        >
+          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.625 12a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm3.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm3.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0ZM21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 0 1-2.555-.337A5.972 5.972 0 0 1 5.41 20.97a5.969 5.969 0 0 1-.474-.065 4.48 4.48 0 0 0 .978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25Z" /></svg>
+          AI 助手
+        </button>
         <!-- AI Orchestrate -->
         <button
           v-if="showGlobalAiOrchestrate"
@@ -154,6 +164,8 @@
       </div>
     </div>
 
+    <!-- 画布区 + 画布助手面板：横向并排 -->
+    <div class="flex-1 flex min-h-0">
     <!-- Vue Flow Canvas -->
     <div class="flex-1 relative" ref="canvasWrapRef">
       <VueFlow
@@ -210,6 +222,18 @@
           }"
         ></div>
       </VueFlow>
+    </div>
+      <!-- 画布助手：右侧可折叠对话面板。用 v-if 保证 currentProject 存在，用 v-show 切换显隐——
+           收起面板不卸载组件，从而保留会话历史与跨轮撤销栈；仅切画布/离开路由才真卸载。 -->
+      <CanvasCopilotPanel
+        v-if="canvasStore.currentProject"
+        v-show="showCopilot"
+        :project-id="projectId"
+        :get-selection="getAgentSelection"
+        :layout="agentLayout"
+        :on-apply="onAgentApply"
+        @close="showCopilot = false"
+      />
     </div>
 
     <Teleport to="body">
@@ -352,7 +376,8 @@ import { useModelStore } from '@/stores/models'
 import { useHandoffStore } from '@/stores/handoff'
 import { groupAndSort } from '@/utils/model-caps'
 import { warmHintsCache, getHintsSync } from '@/utils/model-usage-hints'
-import { NODE_TYPE_DEFS, getHandleType, getNodeTypeDef, type NodeTypeDef } from './composables/useNodeTypes'
+import { NODE_TYPE_DEFS, getNodeTypeDef, type NodeTypeDef } from './composables/useNodeTypes'
+import { getDefaultNodeData, isForbiddenCombination, canConnect } from './utils/node-schema'
 import { useAutoLayout } from './composables/useAutoLayout'
 import type { LayoutSnapshot } from './composables/useAutoLayout'
 import { useWorkflowEngine } from './composables/useWorkflowEngine'
@@ -380,6 +405,7 @@ import CharacterRefNode from './nodes/CharacterRefNode.vue'
 import DeletableEdge from './edges/DeletableEdge.vue'
 import HandleCreateMenu from './components/HandleCreateMenu.vue'
 import AiOrchestrateDialog from './components/AiOrchestrateDialog.vue'
+import CanvasCopilotPanel from './components/CanvasCopilotPanel.vue'
 import PromptTextarea from '@/components/PromptTextarea.vue'
 import { IMAGE_PROMPT_MAX_LENGTH } from '@shared/prompt-limits'
 
@@ -391,6 +417,26 @@ const handoff = useHandoffStore()
 const showGlobalAiOrchestrate = false
 
 const projectId = computed(() => route.params.id as string)
+
+// 画布助手（AI 副驾）面板开关与注入
+const showCopilot = ref(false)
+function toggleCopilot() {
+  showCopilot.value = !showCopilot.value
+  // 面板开合改变画布可用宽度，下一帧适应视图
+  nextTick(() => vfFitView({ padding: 0.2 }))
+}
+/** 供画布助手读取当前选中的节点 id */
+function getAgentSelection(): string[] {
+  return (getSelectedNodes.value || []).map((n: any) => n.id)
+}
+/** 供画布助手触发自动整理布局（沿用画布记忆的方向） */
+async function agentLayout(): Promise<void> {
+  await onAutoLayout(canvasStore.currentProject?.layout_direction === 'TB' ? 'TB' : 'LR')
+}
+/** 画布助手每轮动作后：适应视图让用户看到变化 */
+function onAgentApply(): void {
+  nextTick(() => vfFitView({ padding: 0.2 }))
+}
 
 const editingTitle = ref(false)
 const vueFlowKey = ref(0)
@@ -496,7 +542,6 @@ const customEdgeTypes: Record<string, any> = {
 }
 
 const nodeTypes: NodeTypeDef[] = NODE_TYPE_DEFS
-const QUICK_PRODUCT_DEFAULT_INSTRUCTION = '根据参考图，产品是XXXXXX，生成一套产品的多张电商主图，展现产品的不同角度和不同场景的实景。多张电商详情图，分别使用图文的形式突出产品的材质质感、卖点和使用场景等。'
 
 // Settings — unified model grouping via shared util
 const hintsTick = ref(0)
@@ -803,13 +848,8 @@ function onHandleClick(
 
 provide('onHandleClick', onHandleClick)
 
-// Domain rule mirror of isValidConnection() for the click-to-create path.
-// Keeps both creation paths in sync — if we ever add more forbidden pairs,
-// update both this helper and isValidConnection together.
-function isForbiddenCombination(srcNodeType: string | undefined, targetNodeType: string): boolean {
-  if (srcNodeType === 'refImage' && targetNodeType === 'imageResult') return true
-  return false
-}
+// isForbiddenCombination / canConnect / getDefaultNodeData 已下沉到 ./utils/node-schema，
+// 由画布编辑器与画布智能体工具共用同一份真源。
 
 // Compatible new-node candidates, with the resolved input handle we'll auto-connect to.
 const handleMenuCandidates = computed(() => {
@@ -1020,21 +1060,11 @@ watch(
 )
 
 // Connection validation
+// VueFlow 连线校验薄封装：解析出源/目标节点后委托给共享的 canConnect（同一份规则）。
 function isValidConnection(connection: Connection): boolean {
-  if (!connection.source || !connection.target) return false
-  if (connection.source === connection.target) return false
-
   const sourceNode = canvasStore.nodes.find((n) => n.id === connection.source)
   const targetNode = canvasStore.nodes.find((n) => n.id === connection.target)
-  if (!sourceNode || !targetNode) return false
-
-  // Block refImage → imageResult direct connection (no meaningful purpose)
-  if (sourceNode.type === 'refImage' && targetNode.type === 'imageResult') return false
-
-  const sourceType = getHandleType(sourceNode.type, connection.sourceHandle || 'output', 'output')
-  const targetType = getHandleType(targetNode.type, connection.targetHandle || 'input', 'input')
-
-  return sourceType === targetType
+  return canConnect(sourceNode, connection.sourceHandle, targetNode, connection.targetHandle).ok
 }
 
 // Event handlers
@@ -1293,77 +1323,6 @@ function closeCanvasContextMenu() {
   canvasContextMenu.value.visible = false
 }
 
-function getDefaultNodeData(type: string): Record<string, any> {
-  switch (type) {
-    case 'textInput': return { text: '' }
-    case 'aiText': return { text: '', result: '', status: 'idle' }
-    case 'agentNode': return { kb_category_ids: [], result: '', status: 'idle', error: '' }
-    case 'quickOrchestrator': return {
-      mode: 'product_workflow',
-      instruction: QUICK_PRODUCT_DEFAULT_INSTRUCTION,
-      count: 4,
-      main_count: 4,
-      detail_count: 3,
-      size: '1:1',
-      main_size: '1:1',
-      detail_size: '4:5',
-      tier_id: '2k',
-      quality: 'auto',
-      require_reference: false,
-      detail_consistency_enabled: false,
-      outputContent: '',
-      plan_json: null,
-      created_node_ids: [],
-      created_edge_ids: [],
-      status: 'idle',
-      error: ''
-    }
-    // 图片反推：默认 general / cn；vision_* 留空表示走画布设置默认视觉模型
-    case 'reverse': return {
-      vision_provider_id: '',
-      vision_model_id: '',
-      style_preset: 'general',
-      output_lang: 'cn',
-      custom_prompt: '',
-      result: '',
-      status: 'idle',
-      error: ''
-    }
-    case 'imageRecognition': return {
-      vision_provider_id: '',
-      vision_model_id: '',
-      result: '',
-      status: 'idle',
-      error: ''
-    }
-    case 'text2img': return { model_provider_id: '', model_id: '', size: '1:1', tier_id: '2k', quality: 'auto', status: 'idle', generation_id: '', result_path: '' }
-    case 'img2img': return { model_provider_id: '', model_id: '', size: '1:1', tier_id: '2k', quality: 'auto', status: 'idle', generation_id: '', result_path: '' }
-    case 'refImage': return { image_data: '', image_path: '' }
-    case 'imageResult': return { generation_id: '', result_path: '', result_url: '' }
-    case 'promptSlice': return { rows: [] }
-    // v0.6.9+ AI 抠图节点：默认走云接口；用户在「模型服务 → 抠图接口」加了默认接口时自动直连阿里
-    case 'matting': return {
-      matting_source: 'cloud',
-      matting_provider_id: '',
-      status: 'idle',
-      result_path: '',
-      matting_task_id: '',
-      error: ''
-    }
-    case 'aiVideo': return {
-      model_id: '', mode: '', duration_seconds: 0, resolution: '', aspect_ratio: '', prompt: '',
-      sku_key: '', status: 'idle', progress: 0, error: '', cloud_task_id: '', video_url: '', cover_url: '', result_path: ''
-    }
-    case 'videoResult': return {}
-    case 'videoInput': return { video_path: '' }
-    case 'videoFrames': return { mode: 'uniform', count: 4, intervalSec: 2, frames: [], status: 'idle', error: '' }
-    case 'videoReverse': return { mode: 'prompt', output_lang: 'cn', frameLimit: 8, vision_provider_id: '', vision_model_id: '', result: '', status: 'idle', error: '' }
-    case 'storyboard': return { mode: 'novel', text: '', shots: [], status: 'idle', error: '' }
-    case 'createCharacter': return { name: '', description: '', result_path: '', character_id: '', status: 'idle', error: '' }
-    case 'characterRef': return { character_id: '', character_name: '', image_path: '' }
-    default: return {}
-  }
-}
 
 // Title editing
 function startEditTitle() {

@@ -355,6 +355,16 @@ function runMigrations(): void {
     CREATE INDEX IF NOT EXISTS idx_canvas_characters_project ON canvas_characters(project_id);
   `)
 
+  // 画布助手（AI 副驾）对话记录：按画布持久化一个 JSON blob（含可见消息 + 模型上下文），
+  // 刷新页面 / 重开画布后载回。撤销栈按设计不持久（引用会话内节点 id，跨重载易悬空）。
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS canvas_agent_chat (
+      project_id TEXT PRIMARY KEY,
+      data TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `)
+
   // conversations: 「智能体不再绑定模型」改造（v0.6.5+）
   // 每个会话独立记忆模型：新建会话从云控端默认拉取，用户输入框切换持久写回
   // 旧库的 conversation 行为：active_model_* 为空字符串，sendMessage 时按回退链解析

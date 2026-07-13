@@ -361,7 +361,23 @@ export function deleteProject(id: string): boolean {
   const result = db.prepare('DELETE FROM canvas_projects WHERE id = ?').run(id)
   // Cascade: drop the entire canvas image directory for this project
   deleteProjectImageDir(id)
+  // Cascade: 清理画布助手对话记录
+  db.prepare('DELETE FROM canvas_agent_chat WHERE project_id = ?').run(id)
   return result.changes > 0
+}
+
+// === 画布助手对话持久化（按画布一个 JSON blob；载回可见消息 + 模型上下文） ===
+
+export function getAgentChat(projectId: string): string | null {
+  const row = getDatabase().prepare('SELECT data FROM canvas_agent_chat WHERE project_id = ?').get(projectId) as any
+  return row?.data ?? null
+}
+
+export function saveAgentChat(projectId: string, data: string): void {
+  getDatabase().prepare(
+    `INSERT INTO canvas_agent_chat (project_id, data, updated_at) VALUES (?, ?, datetime('now'))
+     ON CONFLICT(project_id) DO UPDATE SET data = excluded.data, updated_at = datetime('now')`
+  ).run(projectId, String(data || ''))
 }
 
 // === Nodes ===
