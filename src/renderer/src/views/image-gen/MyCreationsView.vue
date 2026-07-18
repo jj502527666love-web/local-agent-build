@@ -77,6 +77,7 @@
               <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18 18 6M6 6l12 12" /></svg>
             </button>
             <img v-if="item.result_path" :src="localFileUrl(item.result_path, true)" loading="lazy" decoding="async" class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
+            <div v-if="(item as any).ai_mark_removed && !selectMode" class="absolute top-1.5 left-1.5 z-10 pointer-events-none"><ProcessedBadge /></div>
             <div v-else class="w-full h-full flex items-center justify-center">
               <svg class="w-10 h-10 text-text-disabled" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909M3.75 21h16.5A2.25 2.25 0 0 0 22.5 18.75V5.25A2.25 2.25 0 0 0 20.25 3H3.75A2.25 2.25 0 0 0 1.5 5.25v13.5A2.25 2.25 0 0 0 3.75 21Z" /></svg>
             </div>
@@ -196,6 +197,7 @@ import { useHandoffStore } from '@/stores/handoff'
 import UploadInspirationDialog from '@/components/UploadInspirationDialog.vue'
 import ImageLightbox from '@/components/ImageLightbox.vue'
 import CreationDetailModal from '@/components/CreationDetailModal.vue'
+import ProcessedBadge from '@/components/ProcessedBadge.vue'
 
 const cloudAuth = useCloudAuthStore()
 const modelStore = useModelStore()
@@ -217,6 +219,8 @@ interface ImageGeneration {
   error: string
   /** 失败诊断快照（脱敏后 JSON 字符串）。本视图仅展示 status='done' 的记录，此字段始终为空，仅为类型一致性保留 */
   raw_request: string
+  /** 去AI标记：该图是否经过去AI标记处理（1=已处理），用于打「已处理」角标 */
+  ai_mark_removed?: number
   created_at: string
 }
 
