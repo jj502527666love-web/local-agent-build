@@ -159,12 +159,14 @@ import AnnouncementBar from '@/components/AnnouncementBar.vue'
 import ExpiryGlobalBanner from '@/components/ExpiryGlobalBanner.vue'
 import SidebarBalanceBadge from '@/components/SidebarBalanceBadge.vue'
 import { useCloudAuthStore } from '@/stores/cloud-auth'
+import { useSiteConfigStore } from '@/stores/site-config'
 import { cloudClient } from '@/utils/cloud-api'
 import { appName, appAbbr, appIconUrl } from '@/utils/branding'
 
 const route = useRoute()
 const router = useRouter()
 const cloudAuth = useCloudAuthStore()
+const siteConfig = useSiteConfigStore()
 const lowBalance = useLowBalanceStore()
 const pageTitle = computed(() => (route.meta?.title as string) || '')
 
@@ -223,8 +225,8 @@ const allNavItems = [
       { path: '/image-to-prompt', label: '图片反推', icon: IconImage2Prompt },
       { path: '/ai-matting', label: '快速抠图', icon: IconImageMatting, requireAnyPermission: ['allow_image_matting', 'allow_custom_matting_provider'] },
       { path: '/fine-matting', label: '精细抠图', icon: IconFineMatting, requireAnyPermission: ['allow_fine_matting'] },
-      // 去AI标记：默认全部用户不可见，需按用户/分组/套餐授权 allow_ai_mark_removal 后才显示
-      { path: '/image-toolkit/remove-ai-mark', label: '去AI标记', icon: IconImageToolkit, requireAnyPermission: ['allow_ai_mark_removal'] },
+      // 去AI标记：显示由系统设置的全局开关控制（下发 site-config.features.aiMarkRemoval）；能否使用另由权限判定
+      { path: '/image-toolkit/remove-ai-mark', label: '去AI标记', icon: IconImageToolkit, requireSiteFeature: 'aiMarkRemoval' },
       { path: '/canvas', label: '流式画布', icon: IconCanvas },
       { path: '/ai-video', label: 'AI 视频', icon: IconVideoGen }
     ]
@@ -313,6 +315,10 @@ function passesPermissionFilter(item: any): boolean {
     )
     if (!anyTrue) return false
   }
+  // 站点级功能显示开关（如去AI标记，由系统设置全局控制、经 site-config 下发；与个人权限无关）
+  if (item.requireSiteFeature && !(siteConfig.features as any)[item.requireSiteFeature]) {
+    return false
+  }
   return true
 }
 
@@ -321,7 +327,7 @@ const navItems = computed(() => {
   // 叶子项：先过功能权限；权限项（模型服务 / AI 抠图）不受菜单配置影响；其余按云端 override 隐藏/改名
   const applyLeaf = (item: any): any | null => {
     if (!passesPermissionFilter(item)) return null
-    if (item.requireAnyPermission || item.requirePermission) return item
+    if (item.requireAnyPermission || item.requirePermission || item.requireSiteFeature) return item
     const o = cfg[item.path]
     if (o && o.visible === false) return null
     if (o && o.title) return { ...item, label: o.title }

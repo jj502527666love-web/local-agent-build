@@ -27,6 +27,13 @@ export interface PaymentAvailability {
   xunhupay: boolean
 }
 
+export interface FeatureFlags {
+  /** 去AI标记 显示开关：开=对所有用户显示入口 */
+  aiMarkRemoval: boolean
+  /** 去AI标记 全局可用开关：开=所有能看到入口的用户免授权即可使用 */
+  aiMarkRemovalUseAll: boolean
+}
+
 export interface RegisterAvailability {
   enabled: boolean
   // 注册短信验证开关：开启后注册需手机号 + 短信验证码
@@ -108,6 +115,7 @@ export interface ThemeConfig {
 
 const DEFAULT_LABELS: CurrencyLabels = { token: '金币', credit: '积分' }
 const DEFAULT_PAYMENT: PaymentAvailability = { wechat: true, tianque: true, xunhupay: false }
+const DEFAULT_FEATURES: FeatureFlags = { aiMarkRemoval: false, aiMarkRemovalUseAll: false }
 const DEFAULT_REGISTER: RegisterAvailability = { enabled: true, sms_verify_enabled: false }
 const DEFAULT_FORGOT_PASSWORD: ForgotPasswordAvailability = { enabled: false }
 const DEFAULT_PLANS_STORE: PlansStoreAvailability = { enabled: true }
@@ -123,6 +131,7 @@ const DEFAULT_THEME: ThemeConfig = { primary_color: DEFAULT_PRIMARY }
 
 const STORAGE_KEY = 'site_config_currency'
 const PAYMENT_STORAGE_KEY = 'site_config_payment'
+const FEATURES_STORAGE_KEY = 'site_config_features'
 const REGISTER_STORAGE_KEY = 'site_config_register'
 const FORGOT_PASSWORD_STORAGE_KEY = 'site_config_forgot_password'
 const PLANS_STORE_STORAGE_KEY = 'site_config_plans_store'
@@ -174,6 +183,28 @@ function readPaymentCache(): PaymentAvailability {
 function writePaymentCache(p: PaymentAvailability) {
   try {
     localStorage.setItem(PAYMENT_STORAGE_KEY, JSON.stringify(p))
+  } catch {
+    // 静默失败
+  }
+}
+
+function readFeaturesCache(): FeatureFlags {
+  try {
+    const raw = localStorage.getItem(FEATURES_STORAGE_KEY)
+    if (!raw) return { ...DEFAULT_FEATURES }
+    const parsed = JSON.parse(raw)
+    return {
+      aiMarkRemoval: typeof parsed?.aiMarkRemoval === 'boolean' ? parsed.aiMarkRemoval : DEFAULT_FEATURES.aiMarkRemoval,
+      aiMarkRemovalUseAll: typeof parsed?.aiMarkRemovalUseAll === 'boolean' ? parsed.aiMarkRemovalUseAll : DEFAULT_FEATURES.aiMarkRemovalUseAll,
+    }
+  } catch {
+    return { ...DEFAULT_FEATURES }
+  }
+}
+
+function writeFeaturesCache(f: FeatureFlags) {
+  try {
+    localStorage.setItem(FEATURES_STORAGE_KEY, JSON.stringify(f))
   } catch {
     // 静默失败
   }
@@ -392,6 +423,7 @@ export const useSiteConfigStore = defineStore('siteConfig', () => {
   // 启动时先用 localStorage 缓存，避免首屏闪烁默认文案
   const labels = ref<CurrencyLabels>(readCache())
   const payment = ref<PaymentAvailability>(readPaymentCache())
+  const features = ref<FeatureFlags>(readFeaturesCache())
   const register = ref<RegisterAvailability>(readRegisterCache())
   const forgotPassword = ref<ForgotPasswordAvailability>(readForgotPasswordCache())
   const plansStore = ref<PlansStoreAvailability>(readPlansStoreCache())
@@ -438,6 +470,16 @@ export const useSiteConfigStore = defineStore('siteConfig', () => {
         }
         payment.value = nextPayment
         writePaymentCache(nextPayment)
+      }
+
+      // features 字段为后加，老后端不带时保持当前值
+      if (data?.features && typeof data.features === 'object') {
+        const nextFeatures: FeatureFlags = {
+          aiMarkRemoval: !!data.features.ai_mark_removal,
+          aiMarkRemovalUseAll: !!data.features.ai_mark_removal_use_all,
+        }
+        features.value = nextFeatures
+        writeFeaturesCache(nextFeatures)
       }
 
       if (data?.register && typeof data.register === 'object') {
@@ -544,5 +586,5 @@ export const useSiteConfigStore = defineStore('siteConfig', () => {
     fetch()
   }
 
-  return { labels, payment, register, forgotPassword, plansStore, recharge, agreements, chatDefaultModel, customerService, loginBackground, theme, hasAnyPayment, hasAnyRecharge, loading, lastFetchedAt, labelOf, fetch, init }
+  return { labels, payment, features, register, forgotPassword, plansStore, recharge, agreements, chatDefaultModel, customerService, loginBackground, theme, hasAnyPayment, hasAnyRecharge, loading, lastFetchedAt, labelOf, fetch, init }
 })

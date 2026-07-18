@@ -23,14 +23,12 @@
       本功能仅在本地清除图片的元数据与溯源标识（C2PA / EXIF / XMP / 中国 AIGC 标签等），不修改画面像素，对 Google SynthID 等像素级水印无法去除。处理会直接修改所选图片文件；部分地区对去除 AI 生成标识有法律限制，请自行合规使用。
     </div>
 
-    <div v-if="!hasPermission" class="flex-1 flex items-center justify-center text-center px-6">
-      <div class="max-w-sm">
-        <div class="text-sm text-text-primary mb-1">当前账号未开通去AI标记功能</div>
-        <div class="text-xs text-text-tertiary">请联系管理员在云控端为你的账号或所在分组开通后使用。</div>
-      </div>
+    <!-- 未授权使用：入口可见（由全局开关控制），但当前账号无使用权限，提示开通 -->
+    <div v-if="!canUse" class="px-4 py-2 bg-surface-2 border-b border-surface-3 text-[11px] text-text-secondary leading-relaxed flex-shrink-0">
+      当前账号未开通「去AI标记」的使用权限，可先浏览下方支持范围说明；如需使用，请联系管理员在云控端为你的账号或所在分组开通。
     </div>
 
-    <div v-else class="flex flex-1 overflow-hidden min-h-0">
+    <div class="flex flex-1 overflow-hidden min-h-0">
       <!-- Left: 支持范围说明（诚实三档） -->
       <div class="w-64 bg-surface-0 border-r border-surface-3 overflow-y-auto p-3 space-y-4 flex-shrink-0">
         <div>
@@ -113,6 +111,7 @@ import { useHandoffStore } from '@/stores/handoff'
 import ImageSourcePickerDialog from '@/components/ImageSourcePickerDialog.vue'
 import { loadAsDataUri, type LoadedImage } from '@/utils/image-source'
 import { useCloudAuthStore } from '@/stores/cloud-auth'
+import { useSiteConfigStore } from '@/stores/site-config'
 
 interface MarkItem extends LoadedImage {
   scanning: boolean
@@ -137,6 +136,7 @@ interface ProcessResult extends ScanResult {
 const router = useRouter()
 const handoff = useHandoffStore()
 const cloudAuth = useCloudAuthStore()
+const siteConfig = useSiteConfigStore()
 
 const images = ref<MarkItem[]>([])
 const processing = ref(false)
@@ -146,8 +146,9 @@ const pickerVisible = ref(false)
 const NOTICE_KEY = 'ai_mark_removal_notice_v1'
 const showNotice = ref(false)
 
-const hasPermission = computed(() => Boolean((cloudAuth.permissions as any)?.allow_ai_mark_removal))
-const canRun = computed(() => hasPermission.value && images.value.length > 0 && !processing.value && images.value.some((i) => !i.processed && i.markLabels.length > 0))
+// 能否使用：系统设置「全局可用」开 → 所有人可用；否则需被授权 allow_ai_mark_removal
+const canUse = computed(() => Boolean(siteConfig.features?.aiMarkRemovalUseAll) || Boolean((cloudAuth.permissions as any)?.allow_ai_mark_removal))
+const canRun = computed(() => canUse.value && images.value.length > 0 && !processing.value && images.value.some((i) => !i.processed && i.markLabels.length > 0))
 
 const TIERS = [
   {
