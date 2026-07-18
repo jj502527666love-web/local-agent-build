@@ -272,8 +272,18 @@ function runMigrations(): void {
   if (igCols.length > 0 && !igColNames.includes('tier_id')) {
     db.exec("ALTER TABLE image_generations ADD COLUMN tier_id TEXT NOT NULL DEFAULT ''")
   }
+  // 去AI标记：该图是否经过「去AI标记」本地处理（1=已处理），用于在创作记录/图库缩略图上打角标
+  if (igCols.length > 0 && !igColNames.includes('ai_mark_removed')) {
+    db.exec('ALTER TABLE image_generations ADD COLUMN ai_mark_removed INTEGER NOT NULL DEFAULT 0')
+  }
   if (igCols.length > 0) {
     db.exec('CREATE INDEX IF NOT EXISTS idx_image_generations_status_created ON image_generations(status, created_at DESC)')
+  }
+
+  // gallery_items: 去AI标记处理标志（1=已处理），用于图库缩略图角标
+  const giCols = db.prepare("PRAGMA table_info(gallery_items)").all() as any[]
+  if (giCols.length > 0 && !giCols.some((c: any) => c.name === 'ai_mark_removed')) {
+    db.exec('ALTER TABLE gallery_items ADD COLUMN ai_mark_removed INTEGER NOT NULL DEFAULT 0')
   }
 
   db.exec(`

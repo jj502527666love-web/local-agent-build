@@ -10,9 +10,10 @@
         </div>
 
         <div class="px-6 py-5">
-          <div v-if="(!status || status === 'pending') && availableMethodCount === 2" class="grid grid-cols-2 gap-2 mb-4">
+          <div v-if="(!status || status === 'pending') && availableMethodCount >= 2" class="grid gap-2 mb-4" :class="availableMethodCount >= 3 ? 'grid-cols-3' : 'grid-cols-2'">
             <button v-if="siteConfig.payment.wechat" type="button" class="py-2 text-xs font-medium rounded-lg border transition-colors" :class="paymentMethod === 'wechat' ? 'border-primary-600 bg-primary-50 text-primary-700' : 'border-surface-3 text-text-secondary hover:bg-surface-2'" :disabled="creating || switching" @click="switchMethod('wechat')">微信支付</button>
             <button v-if="siteConfig.payment.tianque" type="button" class="py-2 text-xs font-medium rounded-lg border transition-colors" :class="paymentMethod === 'tianque' ? 'border-primary-600 bg-primary-50 text-primary-700' : 'border-surface-3 text-text-secondary hover:bg-surface-2'" :disabled="creating || switching" @click="switchMethod('tianque')">微信/支付宝</button>
+            <button v-if="siteConfig.payment.xunhupay" type="button" class="py-2 text-xs font-medium rounded-lg border transition-colors" :class="paymentMethod === 'xunhupay' ? 'border-primary-600 bg-primary-50 text-primary-700' : 'border-surface-3 text-text-secondary hover:bg-surface-2'" :disabled="creating || switching" @click="switchMethod('xunhupay')">扫码支付</button>
           </div>
 
           <div v-if="availableMethodCount === 0" class="flex flex-col items-center justify-center py-10 text-center">
@@ -107,7 +108,7 @@ const pollErrorTip = ref('')
 const qrCanvas = ref<HTMLCanvasElement | null>(null)
 const info = ref<{ base: number; bonus: number; total: number }>({ base: 0, bonus: 0, total: 0 })
 
-const paymentMethod = ref<'wechat' | 'tianque'>('wechat')
+const paymentMethod = ref<'wechat' | 'tianque' | 'xunhupay'>('wechat')
 const switching = ref(false)
 
 const balanceLabel = computed(() => (props.payload?.balance_type === 'token' ? siteConfig.labels.token : siteConfig.labels.credit))
@@ -115,9 +116,10 @@ const availableMethodCount = computed(() => {
   let n = 0
   if (siteConfig.payment.wechat) n++
   if (siteConfig.payment.tianque) n++
+  if (siteConfig.payment.xunhupay) n++
   return n
 })
-const scanHint = computed(() => (paymentMethod.value === 'wechat' ? '请使用微信扫码支付' : '微信 / 支付宝 / 云闪付 / 数字人民币 扫码支付'))
+const scanHint = computed(() => (paymentMethod.value === 'wechat' ? '请使用微信扫码支付' : paymentMethod.value === 'xunhupay' ? '请使用微信 / 支付宝 扫码支付' : '微信 / 支付宝 / 云闪付 / 数字人民币 扫码支付'))
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 let countdownTimer: ReturnType<typeof setInterval> | null = null
@@ -141,9 +143,10 @@ function formatNum(v: number): string {
   if (!v) return '0'
   return Number.isInteger(v) ? String(v) : Number(v).toFixed(2)
 }
-function pickDefaultMethod(): 'wechat' | 'tianque' | null {
+function pickDefaultMethod(): 'wechat' | 'tianque' | 'xunhupay' | null {
   if (siteConfig.payment.wechat) return 'wechat'
   if (siteConfig.payment.tianque) return 'tianque'
+  if (siteConfig.payment.xunhupay) return 'xunhupay'
   return null
 }
 
@@ -199,7 +202,9 @@ function startPolling() {
     try {
       const data = paymentMethod.value === 'wechat'
         ? await cloudClient.getOrder(orderNo.value)
-        : await cloudClient.syncTianqueOrder(orderNo.value)
+        : paymentMethod.value === 'xunhupay'
+          ? await cloudClient.syncXunhupayOrder(orderNo.value)
+          : await cloudClient.syncTianqueOrder(orderNo.value)
       consecutiveFails = 0
       pollErrorTip.value = ''
       applyOrderUpdate(data)
@@ -242,7 +247,9 @@ async function handleRefresh() {
   try {
     const data = paymentMethod.value === 'wechat'
       ? await cloudClient.getOrder(orderNo.value)
-      : await cloudClient.syncTianqueOrder(orderNo.value)
+      : paymentMethod.value === 'xunhupay'
+        ? await cloudClient.syncXunhupayOrder(orderNo.value)
+        : await cloudClient.syncTianqueOrder(orderNo.value)
     pollErrorTip.value = ''
     consecutiveFails = 0
     applyOrderUpdate(data)
@@ -307,7 +314,7 @@ function handleClose() {
   }
 }
 
-async function switchMethod(m: 'wechat' | 'tianque') {
+async function switchMethod(m: 'wechat' | 'tianque' | 'xunhupay') {
   if (m === paymentMethod.value || switching.value || creating.value) return
   switching.value = true
   try {
@@ -327,7 +334,7 @@ async function ensureOrder() {
   if (!props.payload) return
   const def = pickDefaultMethod()
   if (!def) { resetState(); return }
-  if ((paymentMethod.value === 'wechat' && !siteConfig.payment.wechat) || (paymentMethod.value === 'tianque' && !siteConfig.payment.tianque)) {
+  if ((paymentMethod.value === 'wechat' && !siteConfig.payment.wechat) || (paymentMethod.value === 'tianque' && !siteConfig.payment.tianque) || (paymentMethod.value === 'xunhupay' && !siteConfig.payment.xunhupay)) {
     paymentMethod.value = def
   }
   resetState()
@@ -338,7 +345,9 @@ async function ensureOrder() {
     else if (props.payload.amount) body.amount = props.payload.amount
     const data: any = paymentMethod.value === 'wechat'
       ? await cloudClient.createRechargeOrder(body)
-      : await cloudClient.createRechargeOrderTianque(body)
+      : paymentMethod.value === 'xunhupay'
+        ? await cloudClient.createRechargeOrderXunhupay(body)
+        : await cloudClient.createRechargeOrderTianque(body)
     orderNo.value = data.order_no
     codeUrl.value = data.code_url
     amount.value = data.amount

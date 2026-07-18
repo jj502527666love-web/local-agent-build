@@ -219,6 +219,8 @@ CREATE TABLE IF NOT EXISTS image_generations (
   error TEXT NOT NULL DEFAULT '',
   -- 失败诊断用：发送给上游 API 的原始请求快照（脱敏后 JSON 字符串）；成功记录通常为空
   raw_request TEXT NOT NULL DEFAULT '',
+  -- 去AI标记：该图是否经过「去AI标记」本地处理（1=已处理），用于创作记录/图库角标
+  ai_mark_removed INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (session_id) REFERENCES image_sessions(id) ON DELETE CASCADE
 );
@@ -361,6 +363,8 @@ CREATE TABLE IF NOT EXISTS gallery_items (
   source TEXT NOT NULL DEFAULT 'file',
   folder_root TEXT NOT NULL DEFAULT '',
   folder_recursive INTEGER NOT NULL DEFAULT 0,
+  -- 去AI标记：该图是否经过「去AI标记」本地处理（1=已处理），用于图库缩略图角标
+  ai_mark_removed INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (category_id) REFERENCES gallery_categories(id) ON DELETE CASCADE
 );

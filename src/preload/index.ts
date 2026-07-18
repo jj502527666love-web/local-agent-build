@@ -180,6 +180,11 @@ const api = {
       return () => ipcRenderer.off('fineMatting:progress', handler)
     },
   },
+  // 去AI标记（本地清除元数据/溯源标识，按次计费）
+  aiMarkRemoval: {
+    invoke: (channel: string, ...args: unknown[]) =>
+      ipcRenderer.invoke(`aiMarkRemoval:${channel}`, ...args),
+  },
   ewei: {
     invoke: (channel: string, ...args: unknown[]) =>
       ipcRenderer.invoke(`ewei:${channel}`, ...args),

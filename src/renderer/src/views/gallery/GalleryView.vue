@@ -75,6 +75,8 @@
             loading="lazy"
             decoding="async"
           />
+          <!-- 去AI标记「已处理」角标 -->
+          <div v-if="(item as any).ai_mark_removed && !selectMode" class="absolute top-1.5 left-1.5 z-10 pointer-events-none"><ProcessedBadge /></div>
           <!-- Select checkbox -->
           <div
             v-if="selectMode"
@@ -284,6 +286,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useGalleryStore, type GalleryCategory, type GalleryItem } from '@/stores/gallery'
 import ImageLightbox from '@/components/ImageLightbox.vue'
+import ProcessedBadge from '@/components/ProcessedBadge.vue'
 
 const router = useRouter()
 const api = () => (window as any).api

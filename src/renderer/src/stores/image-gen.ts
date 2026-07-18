@@ -29,6 +29,8 @@ export interface ImageGeneration {
    * 由 ErrorDetailDialog 展示与一键复制，便于用户贴给排错方定位字段/协议问题。
    */
   raw_request: string
+  /** 去AI标记：该图是否经过「去AI标记」本地处理（1=已处理），用于创作记录/图库角标 */
+  ai_mark_removed?: number
   created_at: string
 }
 

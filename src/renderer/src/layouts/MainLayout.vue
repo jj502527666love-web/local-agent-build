@@ -223,6 +223,8 @@ const allNavItems = [
       { path: '/image-to-prompt', label: '图片反推', icon: IconImage2Prompt },
       { path: '/ai-matting', label: '快速抠图', icon: IconImageMatting, requireAnyPermission: ['allow_image_matting', 'allow_custom_matting_provider'] },
       { path: '/fine-matting', label: '精细抠图', icon: IconFineMatting, requireAnyPermission: ['allow_fine_matting'] },
+      // 去AI标记：默认全部用户不可见，需按用户/分组/套餐授权 allow_ai_mark_removal 后才显示
+      { path: '/image-toolkit/remove-ai-mark', label: '去AI标记', icon: IconImageToolkit, requireAnyPermission: ['allow_ai_mark_removal'] },
       { path: '/canvas', label: '流式画布', icon: IconCanvas },
       { path: '/ai-video', label: 'AI 视频', icon: IconVideoGen }
     ]

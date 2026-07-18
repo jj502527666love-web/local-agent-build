@@ -6,6 +6,25 @@
 
 ---
 
+## [0.9.8] - 2026-07-18
+
+> **新增「去AI标记」本地图像功能（云控端门控 + 按次计费）+ 接入「虎皮椒」扫码支付渠道**。面向用户记录见 `shared/changelog.ts`。本版含配套云端改动（agent-admin 1.6.28：去AI标记计费端点与权限门控、虎皮椒支付后端），两端独立部署、向后兼容。
+>
+> 注：`0.9.6` / `0.9.7` 仅维护了面向用户的 `shared/changelog.ts`，本研发档案未逐版回填，本条不补历史缺口。
+
+### 新增
+
+- **「去AI标记」功能（`views/image-toolkit/RemoveAiMarkView.vue` + `main/services/ai-mark-removal.ts` + `shared/strip-image-metadata.ts`）**：本地无损剥离图片的元数据 / 溯源标识（EXIF / XMP / ICC / PNG 文本 / C2PA `caBX` / 中国 AIGC 标签）。`strip-image-metadata.ts` 新增 `scanAiMarks`（识别命中标记类别 + 尽力识别来源厂商）与 `stripAiMarksBytes`（原地剥字节），PNG DROP 集补 `caBX` 实现「全量」。页面按三档（可靠清除 / 尽力削弱 / 无法去除）诚实展示可清除的 AI 模型标记，含常驻风险提示行 + 首次使用须知弹窗（只阴影不遮罩）。
+- **按次计费与权限门控**：主进程 `cloud-ai-mark.ts` 处理成功后回调云端 `gateway/watermark-removal/charge` 扣费（`request_id` 幂等）；菜单入口 `layouts/MainLayout.vue` 按 `allow_ai_mark_removal` 门控（默认无权限即隐藏，配合整页 `hasPermission` + `canRun` 二次校验），权限键随 `stores/cloud-auth.ts` 下发。
+- **「已处理」角标（`components/ProcessedBadge.vue`）**：`image_generations` / `gallery_items` 加 `ai_mark_removed` 列（`main/database` 幂等迁移 + `resources/schema.sql`），处理后原地写回并置位；接入 AI 生图页、图库、创作详情三处缩略图。
+- **「虎皮椒」扫码支付渠道（`components/{PaymentDialog,RechargeDialog}.vue` + `stores/site-config.ts` + `utils/cloud-api.ts`）**：`PaymentAvailability` 加 `xunhupay`，新增 `createXunhupayOrder` / `upgradePlanXunhupay` / `createRechargeOrderXunhupay` / `syncXunhupayOrder`；两个支付弹窗加第三渠道「扫码支付」按钮（切换器支持 ≥2 渠道三列），下单 / 轮询 / 兜底同步三路分派，套餐购买 / 升级 / 充值三条链路可用。
+
+### 修复
+
+- **去AI标记角标路径不匹配（`main/services/ai-mark-removal.ts`）**：`image_generations.result_path` 存的是相对 dataDir 的正斜杠路径，原用绝对路径匹配导致创作页角标永不点亮；改为「绝对 / 绝对正斜杠 / 相对」三变体匹配。
+- **去AI标记原地覆盖非原子**：改临时文件 + `rename` 原子替换，避免写入中途崩溃截断原图。
+- **扫码支付文案夸大（`{PaymentDialog,RechargeDialog}.vue`）**：虎皮椒渠道的扫码提示原沿用天阙文案「微信 / 支付宝 / 云闪付 / 数字人民币」，改为如实的「微信 / 支付宝」。
+
 ## [0.9.5] - 2026-06-26
 
 > **店铺商品图：三商城改图数据安全加固 + qdyun 保存可靠性/可观测性 + 多商城健壮性与门控收口；并修复对话默认模型解析（精确到服务商 + 无权限回退）**。统一新增「改图前后 SKU 集合一致」断言、修正 qdyun 保存超时预算算反、把会话清理与平台分发收口、把 mall_key 收敛为三端单一来源、统一店铺商品图授权门控并补路由级守卫。**本版含配套云端改动（agent-build 授权双写收口、agent-admin mall_key 常量收敛），均向后兼容、独立部署。面向用户记录（`shared/changelog.ts`）按要求不出现底层平台品牌名。**

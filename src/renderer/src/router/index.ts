@@ -206,6 +206,12 @@ export const routes: RouteRecordRaw[] = [
         meta: { title: 'GIF 制作' }
       },
       {
+        path: 'image-toolkit/remove-ai-mark',
+        name: 'imageToolkitRemoveAiMark',
+        component: () => import('@/views/image-toolkit/RemoveAiMarkView.vue'),
+        meta: { title: '去AI标记' }
+      },
+      {
         path: 'inspiration',
         name: 'inspiration',
         component: () => import('@/views/image-gen/InspirationView.vue'),

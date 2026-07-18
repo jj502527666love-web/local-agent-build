@@ -24,6 +24,7 @@ export interface CurrencyLabels {
 export interface PaymentAvailability {
   wechat: boolean
   tianque: boolean
+  xunhupay: boolean
 }
 
 export interface RegisterAvailability {
@@ -106,7 +107,7 @@ export interface ThemeConfig {
 }
 
 const DEFAULT_LABELS: CurrencyLabels = { token: '金币', credit: '积分' }
-const DEFAULT_PAYMENT: PaymentAvailability = { wechat: true, tianque: true }
+const DEFAULT_PAYMENT: PaymentAvailability = { wechat: true, tianque: true, xunhupay: false }
 const DEFAULT_REGISTER: RegisterAvailability = { enabled: true, sms_verify_enabled: false }
 const DEFAULT_FORGOT_PASSWORD: ForgotPasswordAvailability = { enabled: false }
 const DEFAULT_PLANS_STORE: PlansStoreAvailability = { enabled: true }
@@ -163,6 +164,7 @@ function readPaymentCache(): PaymentAvailability {
     return {
       wechat: typeof parsed?.wechat === 'boolean' ? parsed.wechat : DEFAULT_PAYMENT.wechat,
       tianque: typeof parsed?.tianque === 'boolean' ? parsed.tianque : DEFAULT_PAYMENT.tianque,
+      xunhupay: typeof parsed?.xunhupay === 'boolean' ? parsed.xunhupay : DEFAULT_PAYMENT.xunhupay,
     }
   } catch {
     return { ...DEFAULT_PAYMENT }
@@ -411,7 +413,7 @@ export const useSiteConfigStore = defineStore('siteConfig', () => {
   })
 
   /** 存在可用的支付通道 */
-  const hasAnyPayment = computed(() => payment.value.wechat || payment.value.tianque)
+  const hasAnyPayment = computed(() => payment.value.wechat || payment.value.tianque || payment.value.xunhupay)
 
   /** 存在任一可充值类型（金币 / 积分），用于控制充值入口显隐 */
   const hasAnyRecharge = computed(() => recharge.value.token || recharge.value.credit)
@@ -432,6 +434,7 @@ export const useSiteConfigStore = defineStore('siteConfig', () => {
         const nextPayment: PaymentAvailability = {
           wechat: !!data.payment.wechat,
           tianque: !!data.payment.tianque,
+          xunhupay: !!data.payment.xunhupay,
         }
         payment.value = nextPayment
         writePaymentCache(nextPayment)

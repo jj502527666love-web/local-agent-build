@@ -46,6 +46,7 @@ interface Window {
         }) => void,
       ) => () => void
     }
+    aiMarkRemoval: { invoke: (channel: string, ...args: unknown[]) => Promise<unknown> }
     videoGen: {
       invoke: (channel: string, ...args: unknown[]) => Promise<unknown>
       onUpdated: (callback: (data: unknown) => void) => () => void

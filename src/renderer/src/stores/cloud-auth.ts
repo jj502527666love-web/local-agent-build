@@ -51,6 +51,8 @@ export interface CloudPermissions {
   // 精细抠图（抠抠图 koukoutu）：是否允许（关闭后桌面端「精细抠图」入口隐藏）+ 月配额（张，0=不限）
   allow_fine_matting: boolean
   fine_matting_quota_per_month: number
+  // 去AI标记：是否允许（默认 false，关闭后桌面端「去AI标记」入口隐藏）。本地处理但按次计费。
+  allow_ai_mark_removal: boolean
   // 店铺商品图：开启后桌面端侧栏「店铺商品图」入口可见。默认 false（默认拒绝），
   // 云控端在「桌面端设置 → 店铺商品图」按用户/分组放开；生图仍走现有云端积分计费，不额外计费。
   allow_ewei_shop: boolean
@@ -166,6 +168,8 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
     image_matting_quota_per_month: 100,
     allow_fine_matting: true,
     fine_matting_quota_per_month: 100,
+    // 去AI标记默认关闭：默认全部用户不可见，需云控端按用户/分组/套餐授权后下发 true
+    allow_ai_mark_removal: false,
     // 默认 false（默认拒绝）：仅当云控端被授权管理端开放该功能、且用户被授权时，云控端才下发 true。
     // 未更新 / 未授权的云控端不返回此键 → 保持 false → 桌面端不显示「店铺商品图」入口。
     allow_ewei_shop: false,
@@ -278,6 +282,7 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
       image_matting_quota_per_month: 100,
       allow_fine_matting: true,
       fine_matting_quota_per_month: 100,
+      allow_ai_mark_removal: false,
       allow_ewei_shop: false,
       ewei_shop_mall_name: '商城',
       allow_dianda_shop: false,

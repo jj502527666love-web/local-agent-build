@@ -325,11 +325,16 @@ export const cloudClient = {
   createTianqueOrder: (planId: number) => request('POST', '/client/orders/tianque', { plan_id: planId }),
   upgradePlanTianque: (fromUserPlanId: number, planId: number) => request('POST', '/client/orders/tianque/upgrade', { from_user_plan_id: fromUserPlanId, plan_id: planId }),
   syncTianqueOrder: (orderNo: string) => request('POST', `/client/orders/${orderNo}/tianque-sync`),
+  // 订单：创建 / 同步（虎皮椒聚合支付通道，有异步 notify，同时保留主动轮询 sync 兜底）
+  createXunhupayOrder: (planId: number) => request('POST', '/client/orders/xunhupay', { plan_id: planId }),
+  upgradePlanXunhupay: (fromUserPlanId: number, planId: number) => request('POST', '/client/orders/xunhupay/upgrade', { from_user_plan_id: fromUserPlanId, plan_id: planId }),
+  syncXunhupayOrder: (orderNo: string) => request('POST', `/client/orders/${orderNo}/xunhupay-sync`),
 
   getRechargeConfig: () => request('GET', '/client/recharge/config'),
   desktopMenu: () => request('GET', '/client/desktop-menu'),
   createRechargeOrder: (data: Record<string, any>) => request('POST', '/client/recharge/order', data),
   createRechargeOrderTianque: (data: Record<string, any>) => request('POST', '/client/recharge/order/tianque', data),
+  createRechargeOrderXunhupay: (data: Record<string, any>) => request('POST', '/client/recharge/order/xunhupay', data),
   // 公告：当前启用的排序最高的一条公告；无公告时 announcement=null
   currentAnnouncement: () => request('GET', '/client/announcement/current'),
   oemChannelProfile: () => request('GET', '/client/oem-channel/profile'),

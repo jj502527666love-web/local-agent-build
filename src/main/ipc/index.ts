@@ -44,6 +44,8 @@ import * as videoGenerationService from '../services/video-generation'
 import { fetchQuota as fetchMattingQuotaFromCloud } from '../services/cloud-matting'
 import * as fineMattingService from '../services/fine-matting'
 import { fetchQuota as fetchFineMattingQuotaFromCloud } from '../services/cloud-fine-matting'
+import * as aiMarkRemovalService from '../services/ai-mark-removal'
+import { chargeWatermarkRemoval } from '../services/cloud-ai-mark'
 import { parseDocumentFromBuffer, readFileSmart } from '../services/document-parser'
 import {
   setCloudToken,
@@ -1448,6 +1450,15 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('fineMatting:deleteTask', (_, id: string) => fineMattingService.deleteTask(id))
   // 拉云控端精细抠图配额 + 三档价 + 阈值。用于桌面端 FineMattingView 顶部 banner + 按尺寸预估
   ipcMain.handle('fineMatting:fetchCloudQuota', () => fetchFineMattingQuotaFromCloud())
+
+  // === 去AI标记（本地清除元数据/溯源标识，按次计费）===
+  // scan：仅识别命中标记（不修改）；process：原地去除并在记录里打「已处理」标记；charge：云端按次扣费
+  ipcMain.handle('aiMarkRemoval:scan', (_, paths: string[]) => aiMarkRemovalService.scanFiles(paths))
+  ipcMain.handle('aiMarkRemoval:process', (_, paths: string[]) => aiMarkRemovalService.processFiles(paths))
+  ipcMain.handle('aiMarkRemoval:markGeneration', (_, id: string) => aiMarkRemovalService.markGenerationRemoved(id))
+  ipcMain.handle('aiMarkRemoval:charge', (_, payload: { request_id: string; marks?: string; image_count?: number }) =>
+    chargeWatermarkRemoval(payload),
+  )
 
   // === 店铺商品图：多商城连接器（按连接器 platform 经 registry 分发到 ewei/dianda 适配器）===
   // 凭据脱敏一律在本 IPC 层完成：明文密码 / session / cookie 永不下发 renderer。

@@ -1,7 +1,8 @@
 <template>
   <div class="fixed inset-0 z-50 flex items-center justify-center" @click.self="emit('close')">
     <div class="w-[min(1180px,calc(100vw-48px))] h-[min(760px,calc(100vh-48px))] bg-surface-0 rounded-2xl shadow-[0_0_30px_rgba(0,0,0,0.12)] border border-surface-3 overflow-hidden flex">
-      <div class="flex-1 min-w-0 bg-surface-2 flex items-center justify-center p-5">
+      <div class="flex-1 min-w-0 bg-surface-2 flex items-center justify-center p-5 relative">
+        <div v-if="(item as any).ai_mark_removed" class="absolute top-3 left-3 z-10 pointer-events-none"><ProcessedBadge label="已去AI标记" /></div>
         <button
           v-if="item.result_path"
           type="button"
@@ -121,6 +122,7 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
+import ProcessedBadge from './ProcessedBadge.vue'
 
 export interface CreationDetailItem {
   id: string

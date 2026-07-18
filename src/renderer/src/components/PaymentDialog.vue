@@ -23,10 +23,11 @@
         </div>
 
         <div class="px-6 py-5">
-          <!-- 支付方式切换器：pending 状态下可切换，已支付或已关闭后隐藏；只在有 2 个可用渠道时显示 -->
+          <!-- 支付方式切换器：pending 状态下可切换，已支付或已关闭后隐藏；有 2 个及以上可用渠道时显示 -->
           <div
-            v-if="(!status || status === 'pending') && availableMethodCount === 2"
-            class="grid grid-cols-2 gap-2 mb-4"
+            v-if="(!status || status === 'pending') && availableMethodCount >= 2"
+            class="grid gap-2 mb-4"
+            :class="availableMethodCount >= 3 ? 'grid-cols-3' : 'grid-cols-2'"
           >
             <button
               v-if="siteConfig.payment.wechat"
@@ -51,6 +52,18 @@
               @click="switchMethod('tianque')"
             >
               微信/支付宝
+            </button>
+            <button
+              v-if="siteConfig.payment.xunhupay"
+              type="button"
+              class="py-2 text-xs font-medium rounded-lg border transition-colors"
+              :class="paymentMethod === 'xunhupay'
+                ? 'border-primary-600 bg-primary-50 text-primary-700'
+                : 'border-surface-3 text-text-secondary hover:bg-surface-2'"
+              :disabled="creating || switching"
+              @click="switchMethod('xunhupay')"
+            >
+              扫码支付
             </button>
           </div>
 
@@ -278,7 +291,7 @@ const qrCanvas = ref<HTMLCanvasElement | null>(null)
 
 // 支付方式：微信走 Native 扫码，天阙走聚合主扫（同一二维码支持多渠道）。
 // 实际可选项由 siteConfig.payment.{wechat,tianque} 决定（云控后台开关）。
-const paymentMethod = ref<'wechat' | 'tianque'>('wechat')
+const paymentMethod = ref<'wechat' | 'tianque' | 'xunhupay'>('wechat')
 const switching = ref(false)
 const isUpgrade = computed(() => !!props.fromUserPlanId)
 
@@ -286,13 +299,15 @@ const availableMethodCount = computed(() => {
   let n = 0
   if (siteConfig.payment.wechat) n++
   if (siteConfig.payment.tianque) n++
+  if (siteConfig.payment.xunhupay) n++
   return n
 })
 
 /** 选首个启用的渠道作为默认值（拉取 publicConfig 后调用） */
-function pickDefaultMethod(): 'wechat' | 'tianque' | null {
+function pickDefaultMethod(): 'wechat' | 'tianque' | 'xunhupay' | null {
   if (siteConfig.payment.wechat) return 'wechat'
   if (siteConfig.payment.tianque) return 'tianque'
+  if (siteConfig.payment.xunhupay) return 'xunhupay'
   return null
 }
 
@@ -312,7 +327,9 @@ const successHint = computed(() => {
 const scanHint = computed(() =>
   paymentMethod.value === 'wechat'
     ? '请使用微信扫码支付'
-    : '微信 / 支付宝 / 云闪付 / 数字人民币 扫码支付'
+    : paymentMethod.value === 'xunhupay'
+      ? '请使用微信 / 支付宝 扫码支付'
+      : '微信 / 支付宝 / 云闪付 / 数字人民币 扫码支付'
 )
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
@@ -412,9 +429,12 @@ function startPolling() {
     try {
       // 微信：被动轮询本地状态（服务端有异步 notify 同步）
       // 天阙：主动调同步接口推动服务端查天阙 + 同步本地
+      // 虎皮椒：有异步 notify，但同时主动 sync 兜底（notify 未达时仍能结算）
       const data = paymentMethod.value === 'wechat'
         ? await cloudClient.getOrder(orderNo.value)
-        : await cloudClient.syncTianqueOrder(orderNo.value)
+        : paymentMethod.value === 'xunhupay'
+          ? await cloudClient.syncXunhupayOrder(orderNo.value)
+          : await cloudClient.syncTianqueOrder(orderNo.value)
       consecutiveFails = 0
       pollErrorTip.value = ''
       applyOrderUpdate(data)
@@ -453,7 +473,9 @@ async function handleRefresh() {
   try {
     const data = paymentMethod.value === 'wechat'
       ? await cloudClient.getOrder(orderNo.value)
-      : await cloudClient.syncTianqueOrder(orderNo.value)
+      : paymentMethod.value === 'xunhupay'
+        ? await cloudClient.syncXunhupayOrder(orderNo.value)
+        : await cloudClient.syncTianqueOrder(orderNo.value)
     pollErrorTip.value = ''
     consecutiveFails = 0
     applyOrderUpdate(data)
@@ -510,7 +532,7 @@ function handleClose() {
  * 支付方式切换：如现有 pending 订单先关闭，然后重新创建。
  * 避免同一用户同一 plan 同时有两个未完成订单。
  */
-async function switchMethod(m: 'wechat' | 'tianque') {
+async function switchMethod(m: 'wechat' | 'tianque' | 'xunhupay') {
   if (m === paymentMethod.value || switching.value || creating.value) return
   switching.value = true
   try {
@@ -569,7 +591,8 @@ async function ensureOrder() {
   // 当前选中渠道若被后台关闭，自动切到可用的那个
   if (
     (paymentMethod.value === 'wechat' && !siteConfig.payment.wechat) ||
-    (paymentMethod.value === 'tianque' && !siteConfig.payment.tianque)
+    (paymentMethod.value === 'tianque' && !siteConfig.payment.tianque) ||
+    (paymentMethod.value === 'xunhupay' && !siteConfig.payment.xunhupay)
   ) {
     paymentMethod.value = defaultMethod
   }
@@ -587,10 +610,14 @@ async function ensureOrder() {
     const data = isUpgrade.value
       ? paymentMethod.value === 'wechat'
         ? (await cloudClient.upgradePlan(props.fromUserPlanId!, props.planId)) as OrderResponse
-        : (await cloudClient.upgradePlanTianque(props.fromUserPlanId!, props.planId)) as OrderResponse
+        : paymentMethod.value === 'xunhupay'
+          ? (await cloudClient.upgradePlanXunhupay(props.fromUserPlanId!, props.planId)) as OrderResponse
+          : (await cloudClient.upgradePlanTianque(props.fromUserPlanId!, props.planId)) as OrderResponse
       : paymentMethod.value === 'wechat'
         ? (await cloudClient.createOrder(props.planId)) as OrderResponse
-        : (await cloudClient.createTianqueOrder(props.planId)) as OrderResponse
+        : paymentMethod.value === 'xunhupay'
+          ? (await cloudClient.createXunhupayOrder(props.planId)) as OrderResponse
+          : (await cloudClient.createTianqueOrder(props.planId)) as OrderResponse
     orderNo.value = data.order_no
     codeUrl.value = data.code_url
     amount.value = data.amount
