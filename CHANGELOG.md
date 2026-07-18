@@ -6,16 +6,16 @@
 
 ---
 
-## [0.9.8] - 2026-07-18
+## [0.9.9] - 2026-07-18
 
-> **新增「去AI标记」本地图像功能（云控端门控 + 按次计费）+ 接入「虎皮椒」扫码支付渠道**。面向用户记录见 `shared/changelog.ts`。本版含配套云端改动（agent-admin 1.6.28：去AI标记计费端点与权限门控、虎皮椒支付后端），两端独立部署、向后兼容。
+> **新增「去AI标记」本地图像功能 + 接入「虎皮椒」扫码支付渠道；去AI标记门控改为「显示 / 使用」分离**。面向用户记录见 `shared/changelog.ts`。本版含配套云端改动（agent-admin 1.6.28：去AI标记计费端点 + 虎皮椒支付后端；1.6.29：去AI标记显示 / 使用门控分离 + 「全局可用」开关），两端独立部署、向后兼容。
 >
-> 注：`0.9.6` / `0.9.7` 仅维护了面向用户的 `shared/changelog.ts`，本研发档案未逐版回填，本条不补历史缺口。
+> 注：`0.9.6` / `0.9.7` 仅维护了面向用户的 `shared/changelog.ts`；`0.9.8` 仅推 build 未发布，其内容并入本版。本研发档案未逐版回填历史缺口。
 
 ### 新增
 
 - **「去AI标记」功能（`views/image-toolkit/RemoveAiMarkView.vue` + `main/services/ai-mark-removal.ts` + `shared/strip-image-metadata.ts`）**：本地无损剥离图片的元数据 / 溯源标识（EXIF / XMP / ICC / PNG 文本 / C2PA `caBX` / 中国 AIGC 标签）。`strip-image-metadata.ts` 新增 `scanAiMarks`（识别命中标记类别 + 尽力识别来源厂商）与 `stripAiMarksBytes`（原地剥字节），PNG DROP 集补 `caBX` 实现「全量」。页面按三档（可靠清除 / 尽力削弱 / 无法去除）诚实展示可清除的 AI 模型标记，含常驻风险提示行 + 首次使用须知弹窗（只阴影不遮罩）。
-- **按次计费与权限门控**：主进程 `cloud-ai-mark.ts` 处理成功后回调云端 `gateway/watermark-removal/charge` 扣费（`request_id` 幂等）；菜单入口 `layouts/MainLayout.vue` 按 `allow_ai_mark_removal` 门控（默认无权限即隐藏，配合整页 `hasPermission` + `canRun` 二次校验），权限键随 `stores/cloud-auth.ts` 下发。
+- **按次计费 + 显示 / 使用分离门控**：主进程 `cloud-ai-mark.ts` 处理成功后回调云端 `gateway/watermark-removal/charge` 扣费（`request_id` 幂等）；菜单**显示**由系统设置全局开关控制（`stores/site-config.ts` 的 `features.aiMarkRemoval`，`layouts/MainLayout.vue` 新增 `requireSiteFeature` 门控机制），**能否使用**由「全局可用」开关（`features.aiMarkRemovalUseAll`）或个人授权 `allow_ai_mark_removal` 判定（页面 `canUse`），无使用权限则页面可浏览但禁用「去除」按钮并提示开通。
 - **「已处理」角标（`components/ProcessedBadge.vue`）**：`image_generations` / `gallery_items` 加 `ai_mark_removed` 列（`main/database` 幂等迁移 + `resources/schema.sql`），处理后原地写回并置位；接入 AI 生图页、图库、创作详情三处缩略图。
 - **「虎皮椒」扫码支付渠道（`components/{PaymentDialog,RechargeDialog}.vue` + `stores/site-config.ts` + `utils/cloud-api.ts`）**：`PaymentAvailability` 加 `xunhupay`，新增 `createXunhupayOrder` / `upgradePlanXunhupay` / `createRechargeOrderXunhupay` / `syncXunhupayOrder`；两个支付弹窗加第三渠道「扫码支付」按钮（切换器支持 ≥2 渠道三列），下单 / 轮询 / 兜底同步三路分派，套餐购买 / 升级 / 充值三条链路可用。
 
