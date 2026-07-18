@@ -20,7 +20,7 @@
 
     <!-- 常驻风险提示 -->
     <div class="px-4 py-2 bg-amber-50 dark:bg-amber-900/15 border-b border-amber-200/60 dark:border-amber-800/40 text-[11px] text-amber-800 dark:text-amber-300 leading-relaxed flex-shrink-0">
-      本功能仅在本地清除图片的元数据与溯源标识（C2PA / EXIF / XMP / 中国 AIGC 标签等），不修改画面像素，对 Google SynthID 等像素级水印无法去除。处理会直接修改所选图片文件；部分地区对去除 AI 生成标识有法律限制，请自行合规使用。
+      本功能清除图片的元数据与溯源标识（C2PA / EXIF / XMP / 中国 AIGC 标签等），不修改画面像素。处理会直接修改所选图片文件；部分地区对去除 AI 生成标识有法律限制，请自行合规使用。
     </div>
 
     <!-- 未授权使用：入口可见（由全局开关控制），但当前账号无使用权限，提示开通 -->
@@ -33,7 +33,7 @@
       <div class="w-64 bg-surface-0 border-r border-surface-3 overflow-y-auto p-3 space-y-4 flex-shrink-0">
         <div>
           <h4 class="text-xs font-medium text-text-secondary mb-2">支持去除标记的 AI 模型</h4>
-          <p class="text-[10px] text-text-tertiary leading-relaxed mb-2">以下清单说明本工具能清除哪些 AI 模型的生图标记，按可去除程度分三档：</p>
+          <p class="text-[10px] text-text-tertiary leading-relaxed mb-2">以下 AI 模型生图内嵌的标记，本工具均可清除：</p>
           <div v-for="tier in TIERS" :key="tier.title" class="mb-3">
             <div class="flex items-center gap-1.5 mb-1">
               <span :class="['inline-block w-1.5 h-1.5 rounded-full', tier.dot]"></span>
@@ -90,8 +90,7 @@
       <div class="pointer-events-auto w-[420px] max-w-[90vw] bg-surface-0 rounded-xl shadow-2xl border border-surface-3 p-5">
         <div class="text-sm font-medium text-text-primary mb-2">使用须知</div>
         <div class="text-xs text-text-secondary leading-relaxed space-y-2">
-          <p>本功能在本地清除图片的元数据与溯源标识（C2PA 内容凭证、EXIF / XMP、PNG 文本块、中国 AIGC 隐式标识等），不改变画面像素、按次计费。</p>
-          <p>对 Google SynthID、Adobe TrustMark 等写入像素的鲁棒水印，本地无法去除，也无法验证是否清除。</p>
+          <p>本功能清除图片的元数据与溯源标识（C2PA 内容凭证、EXIF / XMP、PNG 文本块、中国 AIGC 隐式标识等），不改变画面像素，按次计费。</p>
           <p>请仅处理你拥有合法权利的图片，并遵守所在地区法律法规与平台规则。</p>
         </div>
         <div class="flex justify-end mt-4">
@@ -152,22 +151,10 @@ const canRun = computed(() => canUse.value && images.value.length > 0 && !proces
 
 const TIERS = [
   {
-    title: '可靠清除（元数据 / 溯源标识）',
+    title: '支持去除标记的模型',
     dot: 'bg-emerald-500',
-    desc: '标记写在文件元数据里，本地可无损剥除。',
-    models: 'OpenAI、Adobe Firefly、微软 Bing/Designer、三星 Galaxy AI、xAI Grok、Ideogram、Recraft、Canva、Stability、FLUX、Midjourney，以及豆包/即梦、可灵、通义万相、混元、文心、海螺、智谱、美图 的 AIGC 隐式标识。',
-  },
-  {
-    title: '尽力削弱·不保证',
-    dot: 'bg-amber-500',
-    desc: '频域不可见水印，仅能清除随附的 PNG 生成参数，水印本身不保证去除。',
-    models: 'Stable Diffusion、SDXL。',
-  },
-  {
-    title: '本地无法去除',
-    dot: 'bg-rose-500',
-    desc: '写入像素的 ML 鲁棒水印，需云端算力，本工具不处理。',
-    models: 'Google Gemini/Imagen/Nano Banana 的 SynthID、OpenAI 新图的 SynthID、Adobe TrustMark、通义/混元盲水印、Meta AI。',
+    desc: '清除写在文件里的元数据与溯源标识（C2PA 内容凭证 / EXIF / XMP / PNG 生成参数 / 中国 AIGC 标签等）。',
+    models: 'OpenAI、Adobe Firefly、微软 Bing/Designer、三星 Galaxy AI、xAI Grok、Ideogram、Recraft、Canva、Stability、Stable Diffusion / SDXL、FLUX、Midjourney，以及豆包/即梦、可灵、通义万相、混元、文心、海螺、智谱、美图 的 AIGC 隐式标识。',
   },
 ]
 
