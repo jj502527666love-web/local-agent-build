@@ -42,8 +42,9 @@ interface Runtime {
   typingTickets: Map<string, { ticket: string; expiresAt: number }>
   /** 桥发起的引擎轮次（conversationId → requestId），stop 时精确取消（不误伤桌面端同会话的轮次） */
   activeRounds: Map<string, string>
-  /** 已发送到微信的会话消息水位线（conversationId → 最后已发消息的 created_at） */
-  lastSentByConv: Map<string, string>
+  /** 已发送到微信的 assistant 消息 id 集合（按会话）。不用 created_at 水位线：
+   *  同一轮内多条消息常共享同一毫秒（conversation.ts 注释确认），> 比较会把同毫秒的后继消息整批跳过 */
+  sentIdsByConv: Map<string, Set<string>>
   /** 异步补发 watcher（conversationId → AbortController）：生图等 fire-and-forget 追加消息的补发窗口 */
   replyWatchers: Map<string, AbortController>
   loopDone: Promise<void> | null
@@ -181,7 +182,7 @@ export async function startClawbotBridge(): Promise<void> {
     seenIds: new Set(),
     typingTickets: new Map(),
     activeRounds: new Map(),
-    lastSentByConv: new Map(),
+    sentIdsByConv: new Map(),
     replyWatchers: new Map(),
     loopDone: null
   }
@@ -466,10 +467,14 @@ async function processOne(rt: Runtime, connectionId: string, peerId: string, msg
   rt.replyWatchers.get(conversationId)?.abort()
   rt.replyWatchers.delete(conversationId)
 
-  // 初始化水位线（仅首次）：只发「本轮及以后」的新消息，会话历史不补发（防首轮把全部历史刷给用户）
-  if (!rt.lastSentByConv.has(conversationId)) {
-    const history = getMessages(conversationId)
-    rt.lastSentByConv.set(conversationId, history[history.length - 1]?.created_at || '')
+  // 初始化已发集合（仅首次）：把会话历史里的 assistant 消息全部标记为已发，
+  // 本轮只发「之后新增」的消息（防首轮把全部历史刷给用户）
+  if (!rt.sentIdsByConv.has(conversationId)) {
+    const baseline = new Set<string>()
+    for (const m of getMessages(conversationId)) {
+      if (m.role === 'assistant') baseline.add(m.id)
+    }
+    rt.sentIdsByConv.set(conversationId, baseline)
   }
 
   // 4. typing 开始（失败不影响主流程）
@@ -518,7 +523,7 @@ async function processOne(rt: Runtime, connectionId: string, peerId: string, msg
 }
 
 /**
- * 把水位线之后的新 assistant 消息逐条发给微信（含 [Error]/中断标记转译、日限额拦截）。
+ * 把未发过的 assistant 消息逐条发给微信（按消息 id 去重；含 [Error]/中断标记转译、日限额拦截）。
  * 返回成功发送的条数；发送失败中断后续（保序）。
  */
 async function flushNewAssistantMessages(
@@ -529,9 +534,14 @@ async function flushNewAssistantMessages(
   contextToken: string,
   conversationId: string
 ): Promise<number> {
-  const lastSent = rt.lastSentByConv.get(conversationId) || ''
+  let sentIds = rt.sentIdsByConv.get(conversationId)
+  if (!sentIds) {
+    sentIds = new Set<string>()
+    rt.sentIdsByConv.set(conversationId, sentIds)
+  }
+  const sentIdSet: Set<string> = sentIds
   const pending = getMessages(conversationId).filter(
-    (m) => m.role === 'assistant' && (m.created_at || '') > lastSent && String(m.content || '').trim()
+    (m) => m.role === 'assistant' && String(m.content || '').trim() && !sentIdSet.has(m.id)
   )
   let sent = 0
   for (const m of pending) {
@@ -568,7 +578,15 @@ async function flushNewAssistantMessages(
         },
         text
       )
-      rt.lastSentByConv.set(conversationId, m.created_at || new Date().toISOString())
+      sentIdSet.add(m.id)
+      // 防无界增长：超 500 时丢弃最早的一半（Set 按插入序迭代）
+      if (sentIdSet.size > 500) {
+        let drop = 250
+        for (const id of sentIdSet) {
+          if (drop-- <= 0) break
+          sentIdSet.delete(id)
+        }
+      }
       sent++
     } catch (e) {
       store.insertLog({
@@ -588,7 +606,8 @@ async function flushNewAssistantMessages(
 
 /**
  * 异步补发 watcher：引擎 resolve 后仍有后台任务（生图等）在跑，其结果以 appendMessage 稍后落库。
- * 窗口期最长 180s，每 3s 检查一次；连续 12s 无新消息且已过 30s 则提前结束。
+ * 窗口期最长 180s（生图标称 30-90s，留足余量），每 3s 检查一次；
+ * 仅当连续 30s 无新消息且已接近窗口末尾（≥150s）才提前结束——不能提前退，否则慢图必丢。
  */
 function scheduleReplyWatcher(
   rt: Runtime,
@@ -613,7 +632,7 @@ function scheduleReplyWatcher(
       } else {
         silentRounds++
       }
-      if (silentRounds >= 4 && Date.now() - startedAt >= 30_000) break
+      if (silentRounds >= 10 && Date.now() - startedAt >= 150_000) break
     }
     if (rt.replyWatchers.get(conversationId) === ctrl) rt.replyWatchers.delete(conversationId)
   })().catch((e) => console.error('[clawbot] reply watcher failed:', e))
