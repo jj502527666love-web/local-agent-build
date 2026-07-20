@@ -155,11 +155,13 @@ import IconVideoCreation from '@/components/icons/IconVideoCreation.vue'
 import IconCanvasSquare from '@/components/icons/IconCanvasSquare.vue'
 import IconImageToolkit from '@/components/icons/IconImageToolkit.vue'
 import IconEweiShop from '@/components/icons/IconEweiShop.vue'
+import IconClawbot from '@/components/icons/IconClawbot.vue'
 import AnnouncementBar from '@/components/AnnouncementBar.vue'
 import ExpiryGlobalBanner from '@/components/ExpiryGlobalBanner.vue'
 import SidebarBalanceBadge from '@/components/SidebarBalanceBadge.vue'
 import { useCloudAuthStore } from '@/stores/cloud-auth'
 import { useSiteConfigStore } from '@/stores/site-config'
+import { useClawbotStore } from '@/stores/clawbot'
 import { cloudClient } from '@/utils/cloud-api'
 import { appName, appAbbr, appIconUrl } from '@/utils/branding'
 
@@ -209,6 +211,8 @@ const allNavItems = [
   { path: '/chat', label: '对话', icon: IconChat },
   { path: '/bots', label: '智能体', icon: IconBot },
   { path: '/knowledge', label: '知识库', icon: IconKnowledge },
+  // 微信 ClawBot：本地功能（扫码绑定微信，消息桥接进对话），不走云端权限门控
+  { path: '/clawbot', label: '微信 ClawBot', icon: IconClawbot },
   // v0.6.9+「模型服务」并入了「视频模型」+「抠图接口」tab，因此可见性改成
   // OR 关系：自定义模型/视频模型/抠图接口任一权限开启即可见。
   // 视频模型独立顶级菜单已下线（重定向到 /models?tab=video）。
@@ -273,6 +277,12 @@ onMounted(async () => {
   } catch {
     menuOverrides.value = {}
   }
+})
+
+// 微信 ClawBot：app 级常驻监听（幂等）装在主布局而非 ClawbotView——
+// 否则用户未打开过 ClawBot 页时，微信轮次完成无法联动刷新对话页/会话列表
+onMounted(() => {
+  useClawbotStore().initClawbotListeners()
 })
 
 /**

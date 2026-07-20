@@ -9,12 +9,15 @@ let lastRefreshFailureWasAuth = false
 interface CloudPermissions {
   allow_custom_provider: boolean
   allow_custom_embedding: boolean
+  /** 微信 ClawBot 使用权限（默认 false 拒绝；只控制能否使用，菜单显隐走菜单配置） */
+  allow_clawbot?: boolean
 }
 
 // 默认：未登录状态下，本地能力（自定义模型/向量）保持可用，避免破坏旧用户体验
 let cloudPermissions: CloudPermissions = {
   allow_custom_provider: false,
   allow_custom_embedding: true,
+  allow_clawbot: false,
 }
 
 export interface CloudEmbeddingModel {
@@ -223,6 +226,11 @@ export function getAllowCustomProvider(): boolean {
 
 export function getAllowCustomEmbedding(): boolean {
   return cloudPermissions.allow_custom_embedding
+}
+
+/** 微信 ClawBot 使用权限：缺键（老云控端不下发）按 false 处理（默认拒绝） */
+export function getAllowClawbot(): boolean {
+  return cloudPermissions.allow_clawbot === true
 }
 
 export function setCloudEmbeddingModels(models: CloudEmbeddingModel[]): void {

@@ -198,6 +198,23 @@ const api = {
       return () => ipcRenderer.off('ewei:progress', handler)
     },
   },
+  // 微信 ClawBot 桥：状态广播（含登录状态机）与微信轮次完成通知
+  clawbot: {
+    invoke: (channel: string, ...args: unknown[]) =>
+      ipcRenderer.invoke(`clawbot:${channel}`, ...args),
+    /** 连接/登录状态广播；payload = ClawbotState。返回 unsubscribe。 */
+    onStatus: (callback: (data: unknown) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, data: unknown) => callback(data)
+      ipcRenderer.on('clawbot:status', handler)
+      return () => ipcRenderer.off('clawbot:status', handler)
+    },
+    /** 一轮微信对话完成；payload = { connectionId, peerId, conversationId, summary }。返回 unsubscribe。 */
+    onPeerMessage: (callback: (data: unknown) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, data: unknown) => callback(data)
+      ipcRenderer.on('clawbot:peerMessage', handler)
+      return () => ipcRenderer.off('clawbot:peerMessage', handler)
+    },
+  },
   videoGen: {
     invoke: (channel: string, ...args: unknown[]) =>
       ipcRenderer.invoke(`videoGen:${channel}`, ...args),

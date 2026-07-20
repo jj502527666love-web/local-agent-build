@@ -622,3 +622,53 @@ CREATE TABLE IF NOT EXISTS deck_icon_vectors (
   embedding_dim   INTEGER NOT NULL DEFAULT 384,
   embedding       BLOB
 );
+
+-- ============================================================
+-- 微信 ClawBot(iLink) 桥接 3 表  (参见 docs/微信ClawBot对接-开发计划.md)
+-- bot_token 与 matting_providers 同策略: AES-256-GCM 加密存(device-id 派生 key), 不参与云同步。
+-- ============================================================
+
+-- 微信 ClawBot 连接（一行为一个扫码绑定的微信 Bot；首期 UI 只暴露单连接）
+CREATE TABLE IF NOT EXISTS clawbot_connections (
+  id TEXT PRIMARY KEY,
+  ilink_bot_id TEXT NOT NULL DEFAULT '',      -- xxx@im.bot，每次扫码登录会变，更新而非新建
+  ilink_user_id TEXT NOT NULL DEFAULT '',     -- 扫码者微信 id
+  baseurl TEXT NOT NULL DEFAULT '',           -- confirmed 返回的 baseurl（可覆盖默认域名）
+  bot_token_enc TEXT NOT NULL DEFAULT '',     -- bot_token 密文：v1:{iv}:{tag}:{ct}
+  bot_id TEXT NOT NULL DEFAULT '',            -- 绑定的本地智能体 bots.id
+  enabled INTEGER NOT NULL DEFAULT 1,         -- 总开关
+  status TEXT NOT NULL DEFAULT 'offline',     -- offline/connecting/online/paused/expired
+  get_updates_buf TEXT NOT NULL DEFAULT '',   -- 长轮询游标，每轮持久化，重启续传
+  paused_until TEXT NOT NULL DEFAULT '',      -- errcode=-14 后的暂停截止时刻（ISO）
+  last_error TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- 微信联系人 → 本地会话映射（上下文连续性靠它）
+CREATE TABLE IF NOT EXISTS clawbot_peers (
+  id TEXT PRIMARY KEY,
+  connection_id TEXT NOT NULL DEFAULT '',     -- clawbot_connections.id
+  peer_id TEXT NOT NULL DEFAULT '',           -- 微信 from_user_id（如 o9cq80xxx@im.wechat）
+  conversation_id TEXT NOT NULL DEFAULT '',   -- 映射的本地会话 conversations.id
+  last_context_token TEXT NOT NULL DEFAULT '',-- 最新入站消息的 context_token（回复必用最新）
+  last_message_at TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(connection_id, peer_id)
+);
+CREATE INDEX IF NOT EXISTS idx_clawbot_peers_conn ON clawbot_peers(connection_id);
+
+-- 消息流水（UI 日志页 + 排障），定期清理
+CREATE TABLE IF NOT EXISTS clawbot_logs (
+  id TEXT PRIMARY KEY,
+  connection_id TEXT NOT NULL DEFAULT '',
+  peer_id TEXT NOT NULL DEFAULT '',
+  direction TEXT NOT NULL DEFAULT 'in',       -- in/out
+  msg_type TEXT NOT NULL DEFAULT 'text',      -- text/image/file/voice/video/system
+  summary TEXT NOT NULL DEFAULT '',           -- 内容摘要（截断 200 字）
+  status TEXT NOT NULL DEFAULT 'ok',          -- ok/error/dropped
+  error TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_clawbot_logs_created ON clawbot_logs(created_at);

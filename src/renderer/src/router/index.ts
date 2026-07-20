@@ -152,6 +152,13 @@ export const routes: RouteRecordRaw[] = [
         meta: { title: '商品图替换', requireAnyMall: true }
       },
       {
+        // 微信 ClawBot：扫码绑定微信，联系人消息桥接到本地智能体对话
+        path: 'clawbot',
+        name: 'clawbot',
+        component: () => import('@/views/clawbot/ClawbotView.vue'),
+        meta: { title: '微信 ClawBot' }
+      },
+      {
         path: 'batch-gen',
         name: 'batchGen',
         component: () => import('@/views/image-gen/BatchGenView.vue'),

@@ -53,6 +53,9 @@ export interface CloudPermissions {
   fine_matting_quota_per_month: number
   // 去AI标记：是否允许（默认 false，关闭后桌面端「去AI标记」入口隐藏）。本地处理但按次计费。
   allow_ai_mark_removal: boolean
+  // 微信 ClawBot：是否允许使用（默认 false 默认拒绝）。仅控制「能否使用」；
+  // 菜单显隐由云控端「桌面端设置 → 菜单配置」管理（默认显示），与此权限解耦。
+  allow_clawbot: boolean
   // 店铺商品图：开启后桌面端侧栏「店铺商品图」入口可见。默认 false（默认拒绝），
   // 云控端在「桌面端设置 → 店铺商品图」按用户/分组放开；生图仍走现有云端积分计费，不额外计费。
   allow_ewei_shop: boolean
@@ -170,6 +173,9 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
     fine_matting_quota_per_month: 100,
     // 去AI标记默认关闭：默认全部用户不可见，需云控端按用户/分组/套餐授权后下发 true
     allow_ai_mark_removal: false,
+    // 微信 ClawBot：默认 false（默认拒绝），仅控制「能否使用」；
+    // 菜单显示不受此权限控制（由云控端「桌面端设置 → 菜单配置」管理，默认显示）。
+    allow_clawbot: false,
     // 默认 false（默认拒绝）：仅当云控端被授权管理端开放该功能、且用户被授权时，云控端才下发 true。
     // 未更新 / 未授权的云控端不返回此键 → 保持 false → 桌面端不显示「店铺商品图」入口。
     allow_ewei_shop: false,
@@ -283,6 +289,7 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
       allow_fine_matting: true,
       fine_matting_quota_per_month: 100,
       allow_ai_mark_removal: false,
+      allow_clawbot: false,
       allow_ewei_shop: false,
       ewei_shop_mall_name: '商城',
       allow_dianda_shop: false,
@@ -350,6 +357,7 @@ export const useCloudAuthStore = defineStore('cloudAuth', () => {
       window.api?.cloud?.setPermissions({
         allow_custom_provider: permissions.value.allow_custom_provider,
         allow_custom_embedding: permissions.value.allow_custom_embedding,
+        allow_clawbot: permissions.value.allow_clawbot,
       })
       // 同步云端 embedding 模型清单到主进程，用于 vectorize 路由 + Settings UI 渲染
       const embeddingModels = (modelsRes.models || [])

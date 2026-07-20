@@ -635,6 +635,50 @@ function runMigrations(): void {
   if (eweiCols.length > 0 && !eweiColNames.includes('extra_json')) {
     db.exec("ALTER TABLE ewei_connectors ADD COLUMN extra_json TEXT NOT NULL DEFAULT '{}'")
   }
+
+  // 微信 ClawBot(iLink) 桥接 3 表幂等建表（旧库升级路径）。完整字段语义见 resources/schema.sql。
+  // 与 ewei_connectors 同策略：凭据本地加密、排除云同步（见 services/sync/registry.ts）。
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS clawbot_connections (
+      id TEXT PRIMARY KEY,
+      ilink_bot_id TEXT NOT NULL DEFAULT '',
+      ilink_user_id TEXT NOT NULL DEFAULT '',
+      baseurl TEXT NOT NULL DEFAULT '',
+      bot_token_enc TEXT NOT NULL DEFAULT '',
+      bot_id TEXT NOT NULL DEFAULT '',
+      enabled INTEGER NOT NULL DEFAULT 1,
+      status TEXT NOT NULL DEFAULT 'offline',
+      get_updates_buf TEXT NOT NULL DEFAULT '',
+      paused_until TEXT NOT NULL DEFAULT '',
+      last_error TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS clawbot_peers (
+      id TEXT PRIMARY KEY,
+      connection_id TEXT NOT NULL DEFAULT '',
+      peer_id TEXT NOT NULL DEFAULT '',
+      conversation_id TEXT NOT NULL DEFAULT '',
+      last_context_token TEXT NOT NULL DEFAULT '',
+      last_message_at TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(connection_id, peer_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_clawbot_peers_conn ON clawbot_peers(connection_id);
+    CREATE TABLE IF NOT EXISTS clawbot_logs (
+      id TEXT PRIMARY KEY,
+      connection_id TEXT NOT NULL DEFAULT '',
+      peer_id TEXT NOT NULL DEFAULT '',
+      direction TEXT NOT NULL DEFAULT 'in',
+      msg_type TEXT NOT NULL DEFAULT 'text',
+      summary TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'ok',
+      error TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_clawbot_logs_created ON clawbot_logs(created_at);
+  `)
 }
 
 export function closeDatabase(): void {

@@ -6,6 +6,28 @@
 
 ---
 
+## [1.0.0] - 2026-07-20
+
+> **新增「微信 ClawBot」**（微信扫码绑定，联系人消息桥接进本地智能体对话并回发）**+ 拼图拼接「长图竖拼 / 长图横拼」**（首尾相连模板）。面向用户记录见 `shared/changelog.ts`。
+>
+> 注：本版合并了开发过程中未发布的 0.10.0（微信 ClawBot）与 0.10.1（长图拼接）两个内部版本，为 0.9.9 之后的首个发布版本。本版含配套云端改动（agent-admin 1.6.30：`allow_clawbot` 权限键 + 菜单配置新增 `/clawbot` 项），两端独立部署、向后兼容——老云控端不下发该权限键时，桌面端按默认拒绝处理（菜单可见、功能锁定）。
+
+### 微信 ClawBot
+
+- **iLink 协议层（`main/services/clawbot/ilink-{api,cdn,types}.ts`）**：微信官方 ClawBot（iLink）协议自研实现——扫码登录状态机（二维码刷新 / 数字配对码 / IDC 重定向 / confirmed 凭据落库）、`getupdates` 35s 长轮询（游标持久化续传、失败 2s/30s 退避）、`sendmessage` / `getuploadurl` / `getconfig` / `sendtyping` 七端点；媒体 AES-128-ECB 加解密（两编码兼容）与 CDN 加密上传（`x-encrypted-param` 响应头取参、4xx 停 5xx 重试）。
+- **对话桥（`main/services/clawbot/clawbot-bridge.ts`）**：主进程常驻服务。微信消息按联系人 FIFO 串行注入 `chat-engine.sendMessage`（window=null 纯后台跑、回复落本地库），完成后按「水位线」把本轮全部新 assistant 消息逐条回发微信（一轮多条回复不丢；含生图等 fire-and-forget 异步追加消息的 180s 补发窗口，生图结果也会以图片消息发到微信）；微信会话与桌面端新建会话行为一致，预填默认对话模型与生图模型（老会话回填），生图不再由 LLM 自由选服务商；按联系人映射本地会话（上下文连续，「清空上下文」可重置）；`[Error]`/中断标记转译为中文提示；日发送限额（默认 450 条）+ 发送间隔 ≥1s 风控；errcode=-14 登录态失效先暂停 60 分钟自动重试、再失效则系统通知重扫；启动 / 账号热切换 / 退出 / 登出全生命周期挂接。
+- **桥内工具自动审批白名单**：`chat-engine.SendMessageOptions` 新增 `approvalDecider`（仅 window=null 时生效，不传则保持 fail-closed，渲染层零影响）。默认自动批准：工作区内文件读写、内置小工具；默认拒绝：命令执行、非只读 MCP、deck_* 等一切未点名工具；白名单可在页面调整（`settings.clawbot_approval_whitelist`）。
+- **多媒体双向（`main/services/clawbot/clawbot-{inbound,outbound}.ts`）**：入站——微信图片下载解密 + 压缩（≤1024px jpeg 0.8）转 image 附件走现有多模态链路；文档（pdf/docx/xlsx/txt/md 等）解密后经 `parseDocumentFromBuffer` 转文本注入（>8000 字符自动 RAG）；语音用微信侧 ASR 文本降级、视频降级提示；引用消息文本拼入上下文。出站——markdown 降级清洗（剥标题/斜体标记、图片语法抽出单独发图、链接转纯文本）、长文按 1800 字分段、回复中的生图产物（`local-file://`）还原读盘经微信 CDN 加密上传后以图片消息回传。
+- **管理界面（`views/clawbot/ClawbotView.vue` + `stores/clawbot.ts` + 侧栏入口）**：连接状态灯、扫码登录卡（qrcode 渲染 + 配对码输入）、智能体绑定（任选现有智能体或一键新建默认「微信助手」；**单绑定**——已绑定后不显示新建按钮，换绑用下拉）、审批白名单开关、联系人会话映射列表、消息流水日志（保留 7 天）。微信轮次完成时对话页实时联动刷新。
+- **使用权限门控（显示 / 使用分离）**：菜单默认显示，显隐/改名由云控端「桌面端设置 → 菜单配置」管理；能否使用由权限 `allow_clawbot` 控制（默认拒绝，云控端「用户中心 → 权限管理」按用户/分组/套餐开通）。无权限时桌面端页面可浏览但全部变更操作禁用；主进程对变更类 IPC 强制拦截（`clawbot-ipc.ts`），无权限时桥不启动（`clawbot-bridge.ts` 守卫 + `cloud:setPermissions` 联动启停）。
+- **数据（账号库新增 `clawbot_connections` / `clawbot_peers` / `clawbot_logs` 三表，`schema.sql` + `runMigrations` 双写）**：`bot_token` AES-256-GCM 加密存（device-id 派生 key，换机需重扫）；三表不注册云同步。
+
+### 图像处理·长图拼接
+
+- **长图竖拼 / 长图横拼模板（`views/image-toolkit/CollageView.vue`）**：与既有「统一槽位 + cover 裁剪」宫格类模板不同，长图模板让每张图保持原始宽高比——竖拼按统一宽度等比缩放、高度自然累加；横拼按统一高度等比缩放、宽度自然累加（默认使总宽 ≈ 输出宽度）。不裁剪、不变形、无白边；图片数量不限；间距 / 外边距 / 圆角调 0 即无缝首尾相连。
+- **「只缩不放大」开关**：长图模式下勾选后以最窄（竖拼）/ 最矮（横拼）那张为基准，只缩不放、保清晰度；不勾选则窄图放大到统一基准、边缘对齐。该开关与「填满裁剪（cover）」按模板类型互斥显示（长图槽位宽高比=图片宽高比，cover/contain 退化相同结果）。
+- **超大画布防爆保护**：长图累加尺寸超过 16000px 时按比例自动收窄基准，避免浏览器 canvas 单维度上限导致导出失败。
+
 ## [0.9.9] - 2026-07-18
 
 > **新增「去AI标记」本地图像功能 + 接入「虎皮椒」扫码支付渠道；去AI标记门控改为「显示 / 使用」分离**。面向用户记录见 `shared/changelog.ts`。本版含配套云端改动（agent-admin 1.6.28：去AI标记计费端点 + 虎皮椒支付后端；1.6.29：去AI标记显示 / 使用门控分离 + 「全局可用」开关），两端独立部署、向后兼容。

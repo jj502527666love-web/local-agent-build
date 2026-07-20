@@ -9,6 +9,7 @@ import { cancelAllGenerations, cleanupStaleGenerations } from './image-generatio
 import { cancelAllChats, clearAllLastTurnOverrides } from './chat-engine'
 import { bumpEpoch } from './account-epoch'
 import { stopSyncScheduler, onAccountReady } from './sync'
+import { startClawbotBridge, stopClawbotBridge, clawbotStartupMaintenance } from './clawbot/clawbot-bridge'
 
 // === 账号本地数据隔离：目录上下文 ===
 //
@@ -220,6 +221,8 @@ function performAccountSwitchHotSwap(targetKey: string, targetDir: string): void
   try { stopAutoDownloadScheduler() } catch (e) { console.error('[account] stop scheduler failed:', e) }
   try { stopSyncScheduler() } catch (e) { console.error('[account] stop sync scheduler failed:', e) }
   try { stopAllMcpServers() } catch (e) { console.error('[account] stop mcp failed:', e) }
+  // 停微信 ClawBot 桥（长轮询/发送队列），防止旧账号凭据在新库上继续收发
+  try { stopClawbotBridge() } catch (e) { console.error('[account] stop clawbot failed:', e) }
   // 清空 chat-engine 内的 stash，避免上一账号会话的 overrides 残留串到新账号
   try { clearAllLastTurnOverrides() } catch (e) { console.error('[account] clear last-turn overrides failed:', e) }
   try { closeDatabase() } catch (e) { console.error('[account] close db failed:', e) }
@@ -233,6 +236,9 @@ function performAccountSwitchHotSwap(targetKey: string, targetDir: string): void
   // 此刻新账号尚未发起任何新生成（reload 后才会），不会误伤；与正常启动的 cleanupStaleGenerations 等价。
   try { cleanupStaleGenerations() } catch (e) { console.error('[account] cleanup stale generations failed:', e) }
   try { startAutoDownloadScheduler() } catch (e) { console.error('[account] restart scheduler failed:', e) }
+  // 微信 ClawBot 桥：新账号库僵尸清理 + 重启长轮询（热切换不重启进程，启动级清理必须在此补做）
+  try { clawbotStartupMaintenance() } catch (e) { console.error('[account] clawbot maintenance failed:', e) }
+  try { void startClawbotBridge().catch((e) => console.error('[account] start clawbot failed:', e)) } catch (e) { console.error('[account] start clawbot failed:', e) }
 
   // reload 所有窗口渲染层：renderer 重新 init() 加载新账号数据（token 在 localStorage 不丢）
   for (const win of BrowserWindow.getAllWindows()) {

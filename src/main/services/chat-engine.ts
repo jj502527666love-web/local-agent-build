@@ -297,7 +297,8 @@ function requestToolApproval(
   toolCall: any,
   parsedArgs: any,
   preview: FileWritePreview | FileReadPreview | null,
-  signal: AbortSignal
+  signal: AbortSignal,
+  approvalDecider?: (req: { name: string; args: any }) => boolean
 ): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
     const requestId = uuid()
@@ -332,6 +333,17 @@ function requestToolApproval(
     signal.addEventListener('abort', onAbort, { once: true })
     if (window) {
       window.webContents.send('chat:toolApproval', payload)
+    } else if (approvalDecider) {
+      // 无窗口但调用方注入了审批决策器（如微信 ClawBot 桥的自动审批白名单）：
+      // 由决策器判定，抛错按拒绝处理（fail closed）
+      let decided = false
+      try {
+        decided = approvalDecider({ name: payload.tool, args: parsedArgs }) === true
+      } catch {
+        decided = false
+      }
+      cleanup()
+      resolve(decided)
     } else {
       // No window to ask: fail closed
       cleanup()
@@ -626,6 +638,12 @@ export interface SendMessageOptions {
   overrideSkillIds?: string[]
   overrideMcpIds?: string[]
   overridePromptSkillDirs?: string[]
+  /**
+   * 无窗口（后台/桥接）场景的工具审批决策器：返回 true=批准，false=拒绝。
+   * 仅在 window=null 时生效；不传则保持 fail-closed（需要审批的工具全部自动拒绝）。
+   * 微信 ClawBot 桥用它实现「桥内自动审批白名单」（见 services/clawbot/clawbot-bridge.ts）。
+   */
+  approvalDecider?: (req: { name: string; args: any }) => boolean
 }
 
 // 缓存每个会话最近一轮 sendMessage 的 overrides，供 regenerate/continue/edit 复用
@@ -1431,7 +1449,7 @@ export async function sendMessage(
           pauseDeadline()
           let approved: boolean
           try {
-            approved = await requestToolApproval(window, options.conversationId, toolCall, parsedArgs, preview, signal)
+            approved = await requestToolApproval(window, options.conversationId, toolCall, parsedArgs, preview, signal, options.approvalDecider)
           } finally {
             resumeDeadline()
           }

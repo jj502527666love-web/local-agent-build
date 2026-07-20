@@ -72,9 +72,13 @@
               <button @click="bgColor = '#000000'" class="text-[10px] text-text-tertiary hover:text-text-secondary">黑</button>
               <button @click="bgColor = '#f3f4f6'" class="text-[10px] text-text-tertiary hover:text-text-secondary">灰</button>
             </div>
-            <label class="flex items-center gap-1.5 cursor-pointer">
+            <label v-if="!isStitch" class="flex items-center gap-1.5 cursor-pointer">
               <input type="checkbox" v-model="cropToFill" class="w-3 h-3 accent-primary-600" />
               <span class="text-[11px] text-text-secondary">填满裁剪（cover）</span>
+            </label>
+            <label v-if="isStitch" class="flex items-center gap-1.5 cursor-pointer">
+              <input type="checkbox" v-model="noUpscale" class="w-3 h-3 accent-primary-600" />
+              <span class="text-[11px] text-text-secondary">只缩不放大（保清晰度）</span>
             </label>
           </div>
         </div>
@@ -140,7 +144,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, onMounted, nextTick } from 'vue'
+import { ref, watch, onMounted, nextTick, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useHandoffStore } from '@/stores/handoff'
 import ImageSourcePickerDialog from '@/components/ImageSourcePickerDialog.vue'
@@ -148,7 +152,7 @@ import GallerySaveDialog from '@/components/GallerySaveDialog.vue'
 import { loadAsDataUri, type LoadedImage } from '@/utils/image-source'
 import { useGalleryStore } from '@/stores/gallery'
 
-type Template = 'horizontal' | 'vertical' | 'grid2x2' | 'grid3x3' | 'mosaic'
+type Template = 'horizontal' | 'vertical' | 'grid2x2' | 'grid3x3' | 'mosaic' | 'vStitch' | 'hStitch'
 
 const router = useRouter()
 const handoff = useHandoffStore()
@@ -167,6 +171,11 @@ const radius = ref(8)
 const outputWidth = ref(1600)
 const bgColor = ref('#ffffff')
 const cropToFill = ref(true)
+// 长图模式（vStitch/hStitch）专属：勾选后图片只缩不放（以最窄/最矮那张为基准，保清晰度）；
+// 不勾选则窄图会被放大到统一基准（边缘对齐，可能损失清晰度）
+const noUpscale = ref(false)
+// 长图模式判定：这两个模板槽位宽高比=图片宽高比，cover/contain 数学上退化相同结果，「填满裁剪」对其无效
+const isStitch = computed(() => template.value === 'vStitch' || template.value === 'hStitch')
 const exporting = ref(false)
 const toast = ref('')
 const pickerVisible = ref(false)
@@ -186,6 +195,8 @@ const imageElCache = new Map<string, HTMLImageElement>()
 const templates: Array<{ id: Template; label: string; preview: string }> = [
   { id: 'horizontal', label: '横拼', preview: '<rect x="3" y="10" width="8" height="12" rx="1"/><rect x="12" y="10" width="8" height="12" rx="1"/><rect x="21" y="10" width="8" height="12" rx="1"/>' },
   { id: 'vertical', label: '竖拼', preview: '<rect x="10" y="3" width="12" height="8" rx="1"/><rect x="10" y="12" width="12" height="8" rx="1"/><rect x="10" y="21" width="12" height="8" rx="1"/>' },
+  { id: 'vStitch', label: '长图竖拼', preview: '<rect x="9" y="2" width="14" height="7" rx="1"/><rect x="9" y="11" width="14" height="11" rx="1"/><rect x="9" y="24" width="14" height="6" rx="1"/>' },
+  { id: 'hStitch', label: '长图横拼', preview: '<rect x="2" y="9" width="7" height="14" rx="1"/><rect x="11" y="9" width="11" height="14" rx="1"/><rect x="24" y="9" width="6" height="14" rx="1"/>' },
   { id: 'grid2x2', label: '2×2', preview: '<rect x="4" y="4" width="11" height="11" rx="1"/><rect x="17" y="4" width="11" height="11" rx="1"/><rect x="4" y="17" width="11" height="11" rx="1"/><rect x="17" y="17" width="11" height="11" rx="1"/>' },
   { id: 'grid3x3', label: '九宫格', preview: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="12" y="3" width="7" height="7" rx="1"/><rect x="21" y="3" width="7" height="7" rx="1"/><rect x="3" y="12" width="7" height="7" rx="1"/><rect x="12" y="12" width="7" height="7" rx="1"/><rect x="21" y="12" width="7" height="7" rx="1"/><rect x="3" y="21" width="7" height="7" rx="1"/><rect x="12" y="21" width="7" height="7" rx="1"/><rect x="21" y="21" width="7" height="7" rx="1"/>' },
   { id: 'mosaic', label: '马赛克', preview: '<rect x="3" y="3" width="14" height="14" rx="1"/><rect x="19" y="3" width="10" height="6" rx="1"/><rect x="19" y="11" width="10" height="6" rx="1"/><rect x="3" y="19" width="6" height="10" rx="1"/><rect x="11" y="19" width="6" height="10" rx="1"/><rect x="19" y="19" width="10" height="10" rx="1"/>' }
@@ -201,7 +212,7 @@ onMounted(async () => {
   await loadPaths(payload.paths)
 })
 
-watch([template, gap, padding, radius, outputWidth, bgColor, cropToFill, images], async () => {
+watch([template, gap, padding, radius, outputWidth, bgColor, cropToFill, noUpscale, images], async () => {
   await nextTick()
   redraw()
 }, { deep: true })
@@ -218,6 +229,9 @@ async function loadPaths(paths: string[]) {
 function setTemplate(t: Template) {
   template.value = t
   // 模板切换不强制裁掉多余图片：grid2x2 选 5 张时多出来的会忽略；用户可手动删除
+  if (t === 'vStitch' || t === 'hStitch') {
+    showToast('长图模式：间距 / 外边距 / 圆角调 0 即无缝首尾相连')
+  }
 }
 
 function addMore() {
@@ -265,6 +279,7 @@ function setSlotTransform(idx: number, patch: Partial<{ offsetX: number; offsetY
  * 根据模板计算每张图的画布坐标。
  * 所有模板都按 outputWidth 给定的目标宽度排版，画布高度由模板决定。
  * 多余图片（数量超过模板槽位）会被忽略，不显示在拼图里。
+ * 例外：长图横拼（hStitch）的画布宽度由内容决定（≈ outputWidth），长图模板不忽略任何图片。
  */
 function computeLayout(): { canvasW: number; canvasH: number; slots: Slot[] } {
   const W = outputWidth.value
@@ -274,7 +289,12 @@ function computeLayout(): { canvasW: number; canvasH: number; slots: Slot[] } {
 
   const t = template.value
   const slots: Slot[] = []
+  let canvasW = W
   let canvasH = 0
+
+  // 防爆保护：浏览器 canvas 单维度上限（Chrome 16384~32767），长图模式累加尺寸可能超限，
+  // 超限时按比例收窄基准，保证 toDataURL 能成功导出
+  const MAX_DIM = 16000
 
   if (t === 'horizontal') {
     const n = images.value.length
@@ -296,6 +316,50 @@ function computeLayout(): { canvasW: number; canvasH: number; slots: Slot[] } {
       slots.push({ x: P, y: P + i * (cellH + G), w: inner, h: cellH })
     }
     canvasH = P * 2 + n * cellH + (n - 1) * G
+  } else if (t === 'vStitch') {
+    // 长图竖拼（首尾相连）：每张图等比缩放到统一宽度，高度按各自宽高比自然累加
+    // 宽度基准：默认 = 内容宽度 inner（窄图会放大）；「只缩不放大」= inner 与最窄图宽取小
+    const n = images.value.length
+    let basisW = inner
+    if (noUpscale.value && n > 0) {
+      let minW = Infinity
+      for (const img of images.value) minW = Math.min(minW, img.width)
+      if (Number.isFinite(minW)) basisW = Math.min(inner, minW)
+    }
+    // 防爆：总高超限则按比率收窄基准宽
+    let totalH = P * 2 + G * Math.max(0, n - 1)
+    for (const img of images.value) totalH += basisW * (img.height / img.width)
+    if (totalH > MAX_DIM) basisW = Math.max(50, Math.floor((basisW * MAX_DIM) / totalH))
+    let y = P
+    for (const img of images.value) {
+      const h = basisW * (img.height / img.width)
+      slots.push({ x: P + (inner - basisW) / 2, y, w: basisW, h })
+      y += h + G
+    }
+    canvasH = n > 0 ? y - G + P : P * 2
+  } else if (t === 'hStitch') {
+    // 长图横拼（首尾相连）：每张图等比缩放到统一高度，宽度按各自宽高比自然累加
+    // 高度基准：默认使总宽 ≈ outputWidth；「只缩不放大」再与最矮图高取小
+    const n = images.value.length
+    let ratioSum = 0
+    let minH = Infinity
+    for (const img of images.value) {
+      ratioSum += img.width / img.height
+      minH = Math.min(minH, img.height)
+    }
+    let basisH = ratioSum > 0 ? (inner - G * Math.max(0, n - 1)) / ratioSum : inner
+    if (noUpscale.value && Number.isFinite(minH)) basisH = Math.min(basisH, minH)
+    // 防爆：总宽超限则按比率收窄基准高
+    const totalW = P * 2 + G * Math.max(0, n - 1) + basisH * ratioSum
+    if (totalW > MAX_DIM) basisH = Math.max(50, Math.floor((basisH * MAX_DIM) / totalW))
+    let x = P
+    for (const img of images.value) {
+      const w = basisH * (img.width / img.height)
+      slots.push({ x, y: P, w, h: basisH })
+      x += w + G
+    }
+    canvasW = n > 0 ? x - G + P : W
+    canvasH = P * 2 + basisH
   } else if (t === 'grid2x2') {
     const cellW = (inner - G) / 2
     const cellH = cellW // 方形
@@ -326,7 +390,7 @@ function computeLayout(): { canvasW: number; canvasH: number; slots: Slot[] } {
     canvasH = P * 2 + big + G + u
   }
 
-  return { canvasW: W, canvasH: Math.round(canvasH), slots }
+  return { canvasW: Math.round(canvasW), canvasH: Math.round(canvasH), slots }
 }
 
 // ---- Render ----

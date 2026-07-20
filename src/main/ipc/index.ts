@@ -57,15 +57,18 @@ import {
   getPreferredCloudEmbeddingModel,
   getActiveCloudEmbeddingModelId,
   getAllowCustomEmbedding,
+  getAllowClawbot,
   setCloudModels,
 } from '../services/cloud-token'
 import { getDeviceId } from '../services/device-id'
-import { setActiveAccount } from '../services/account-context'
+import { setActiveAccount, isAccountReady } from '../services/account-context'
 import * as syncService from '../services/sync'
 import * as deviceSettingsService from '../services/device-settings'
 import { uploadInspiration as uploadInspirationToCloud } from '../services/cloud-inspiration'
 import { runInEpoch } from '../services/account-epoch'
 import { registerDeckIpc } from '../services/deck/deck-ipc'
+import { registerClawbotIpc } from '../services/clawbot/clawbot-ipc'
+import { startClawbotBridge, stopClawbotBridge } from '../services/clawbot/clawbot-bridge'
 
 // 用账号代次（epoch）包裹每个 IPC handler 的执行：handler 及其 await / fire-and-forget 子任务
 // 都运行在「当前账号代次」的 AsyncLocalStorage 上下文中。账号热切换后，旧 handler 触发的残留
@@ -88,6 +91,8 @@ export function registerIpcHandlers(): void {
   syncService.initSyncModule()
   // === AI Deck(设计/PPT/视频) ===
   registerDeckIpc(ipcMain)
+  // === 微信 ClawBot 桥 ===
+  registerClawbotIpc(ipcMain)
   // === Model Providers ===
   ipcMain.handle('model:list', () => modelProviderService.listModelProviders())
   ipcMain.handle('model:get', (_, id: string) => modelProviderService.getModelProvider(id))
@@ -1334,9 +1339,36 @@ export function registerIpcHandlers(): void {
     } catch (e) {
       console.error('[sync] onAuthChanged failed:', e)
     }
+    // 登录态变化联动微信 ClawBot 桥：登出（模型走云网关必败）即停；登录后幂等启动。
+    try {
+      if (token) {
+        // 未登录完成账号初始化前不碰库（否则会在 root 误建库）
+        if (isAccountReady()) {
+          void startClawbotBridge().catch((e) => console.error('[clawbot] start on login failed:', e))
+        }
+      } else {
+        stopClawbotBridge()
+      }
+    } catch (e) {
+      console.error('[clawbot] auth-changed hook failed:', e)
+    }
   })
   ipcMain.handle('cloud:getToken', () => getCloudToken())
-  ipcMain.handle('cloud:setPermissions', (_, perms: Record<string, any>) => setCloudPermissions(perms))
+  ipcMain.handle('cloud:setPermissions', (_, perms: Record<string, any>) => {
+    setCloudPermissions(perms)
+    // 微信 ClawBot 使用权限变化联动桥：无权即停（正在收发的轮次一并取消），有权幂等启动
+    try {
+      if (getAllowClawbot()) {
+        if (isAccountReady()) {
+          void startClawbotBridge().catch((e) => console.error('[clawbot] start on permission failed:', e))
+        }
+      } else {
+        stopClawbotBridge()
+      }
+    } catch (e) {
+      console.error('[clawbot] permission-changed hook failed:', e)
+    }
+  })
   ipcMain.handle('cloud:getDeviceId', () => getDeviceId())
   // 账号切换：写账号目录映射；目录变化时主进程运行中热切换（关旧库开新库 + reload 渲染层，不重启进程）。
   // 用未包裹的 electronIpcMain 注册：本 handler 是切换编排本身，bumpEpoch 后需以新代次开库，不能停在旧代次上下文。

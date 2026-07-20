@@ -18,6 +18,7 @@ import { startAutoDownloadScheduler, stopAutoDownloadScheduler } from './service
 import { initAccountContext, isAccountReady } from './services/account-context'
 import { runInEpoch } from './services/account-epoch'
 import { getDeviceSetting, setDeviceSetting } from './services/device-settings'
+import { startClawbotBridge, stopClawbotBridge, clawbotStartupMaintenance } from './services/clawbot/clawbot-bridge'
 
 if (is.dev) {
   process.env['ELECTRON_DISABLE_SECURITY_WARNINGS'] = 'true'
@@ -389,6 +390,11 @@ if (gotSingleInstanceLock) {
       runBackupStartupTasks().catch((e) => console.error('Backup startup error:', e))
       startAutoDownloadScheduler()
 
+      // 微信 ClawBot 桥：僵尸状态清理（connecting/paused 是进程级暂态）+ 日志 pruning +
+      // 凭据存在且启用时自动起 getupdates 长轮询（关窗到托盘后继续收发消息靠它）
+      try { clawbotStartupMaintenance() } catch (e) { console.error('[clawbot] maintenance failed:', e) }
+      void startClawbotBridge().catch((e) => console.error('[clawbot] start failed:', e))
+
       // 后台预热 enabled 的 MCP 服务：避免首次对话调用工具时才现拉起进程 + 60s 握手造成长时间无响应。
       // 延后到 UI 起来后再拉，避免与启动期关键 IO 抢资源；fire-and-forget，失败只记状态（MCP 页可见）。
       setTimeout(() => {
@@ -506,6 +512,7 @@ app.on('before-quit', () => {
   isQuitting = true
   stopAutoDownloadScheduler()
   stopAllMcpServers()
+  try { stopClawbotBridge() } catch {}
   closeDatabase()
   try { tray?.destroy() } catch {}
   tray = null
