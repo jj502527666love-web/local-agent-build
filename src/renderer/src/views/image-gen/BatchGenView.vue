@@ -14,7 +14,6 @@
                 @click="showPresetPopup = !showPresetPopup"
                 class="px-1.5 py-0.5 rounded text-[10px] text-text-tertiary hover:text-primary-600 hover:bg-surface-2 transition-colors"
               >预设</button>
-              <StylePresetPicker v-model="stylePresetId" />
             </div>
             <div class="flex items-center gap-1.5">
               <button
@@ -40,6 +39,10 @@
             :max-length="IMAGE_PROMPT_MAX_LENGTH"
             placeholder="所有参考图的默认提示词..."
           />
+          <!-- 风格选择单独一排：标题行空间让给优化按钮 -->
+          <div class="mt-1.5">
+            <StylePresetPicker v-model="stylePresetId" />
+          </div>
           <div v-if="optimizing" class="flex items-center gap-1.5 mt-1 text-[10px] text-text-tertiary">
             <svg class="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
             正在优化提示词...

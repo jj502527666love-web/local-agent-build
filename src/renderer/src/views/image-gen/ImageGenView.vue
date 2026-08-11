@@ -14,7 +14,6 @@
                       @click="showPresetPopup = !showPresetPopup"
                       class="rounded-lg border border-surface-3 bg-surface-1 px-2.5 py-1 text-[11px] font-medium text-text-secondary transition-colors hover:border-primary-300 hover:bg-surface-2 hover:text-primary-600"
                     >预设</button>
-                    <StylePresetPicker v-model="stylePresetId" />
                   </div>
                   <div class="flex items-center gap-2">
                     <button
@@ -40,6 +39,10 @@
                   :max-length="IMAGE_PROMPT_MAX_LENGTH"
                   placeholder="描述你想要生成的图片..."
                 />
+                <!-- 风格选择单独一排：标题行空间让给优化按钮，避免风格名把按钮挤变形 -->
+                <div class="mt-1.5">
+                  <StylePresetPicker v-model="stylePresetId" />
+                </div>
                 <div v-if="optimizing" class="flex items-center gap-1.5 mt-1 text-[10px] text-text-tertiary">
                   <svg class="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
                   正在优化提示词...
