@@ -78,7 +78,12 @@ const previewImage = ref<string | null>(null)
 // 富文本是 v-html 注入的，图片点击走容器事件委托
 function onContentClick(e: MouseEvent) {
   const img = (e.target as HTMLElement).closest('img') as HTMLImageElement | null
-  if (img?.src) previewImage.value = img.src
+  if (img?.src) {
+    // 命中图片只开预览：preventDefault 阻断外层 <a>（带链图片形态）的默认导航，
+    // 否则一次点击会同时开大图和跳系统浏览器
+    e.preventDefault()
+    previewImage.value = img.src
+  }
 }
 
 // 20 字预览：以 title 为主；超过 20 字截断 + …。
@@ -91,6 +96,9 @@ const preview = computed(() => {
 
 // ESC 关闭弹窗：符合一般对话框交互习惯
 function onKeydown(e: KeyboardEvent) {
+  // Lightbox 大图打开时 Esc 只关最上层（Lightbox 自身的 keydown 处理），
+  // 公告弹窗保持——否则一次 Esc 两层弹窗全关，回不到公告
+  if (previewImage.value) return
   if (e.key === 'Escape' && open.value) {
     open.value = false
   }

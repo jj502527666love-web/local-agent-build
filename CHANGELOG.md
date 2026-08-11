@@ -49,7 +49,8 @@
 - **路由兜底（`router/index.ts`）**：新增 `:pathMatch(.*)*` catch-all 重定向 `/chat`——自定义菜单 internal 目标配错（拼写错误/指向下线路由）时回退对话页，不再白屏死胡同。
 - **配套云控端改动（agent-admin 1.6.31 增量 2）**：「菜单配置」页新增「自定义菜单」管理区块，存储 `system_settings.desktop_menu_custom_items`（JSON，无 migration），详见 agent-admin CHANGELOG。
 - **复查修复（两轮独立对抗审查确认）**：合并前过滤脏数据（target_type 非法/目标为空直接丢弃，防死菜单）；自定义 internal 项 active 手动判定（`isCustomInternalActive`：带 query 目标按 fullPath 精确匹配，防与内置同 path 菜单双高亮）；`pathMatches` 剥 query/锚点（否则带 query 目标永不命中组高亮与自动展开）；菜单 key 加 `custom:` 前缀（防与内置 path 撞 `:key`）；打开失败经 `nativeDialog.alert` 可见反馈。
-- **公告弹窗支持图片（`AnnouncementBar.vue`，增量 4）**：公告富文本内的 `<img>` 按容器等比缩放居中渲染（此前无 img 样式会溢出弹窗），点击图片打开 Lightbox 大图预览（缩放/拖动）。公告插图由云控端富文本编辑器上传维护、随 content 下发（agent-admin 1.6.31 增量 3），接口契约不变、老云控端公告无图时展示不受影响。配套：`ImageLightbox` 层级从 `z-[100]` 提至 `z-[9600]`——公告弹窗为 `z-[9500]`，原层级下大图预览会被公告弹窗盖住（画布右键菜单 `z-[9998]` 与 Lightbox 不会同时打开，无冲突）。
+- **公告弹窗支持图片（`AnnouncementBar.vue`，增量 4）**：公告富文本内的 `<img>` 按容器等比缩放居中渲染（此前无 img 样式会溢出弹窗），点击图片打开 Lightbox 大图预览（缩放/拖动）。公告插图由云控端富文本编辑器上传维护、随 content 下发（agent-admin 1.6.31 增量 3），接口契约不变、老云控端公告无图时展示不受影响。配套：`ImageLightbox` 层级从 `z-[100]` 提至 `z-[9600]`——公告弹窗为 `z-[9500]`，原层级下大图预览会被公告弹窗盖住（画布右键菜单 `z-[9998]` 与 Lightbox 不会同时打开，无冲突）。二轮复查修复：Lightbox 打开时 Esc 只关大图不关公告弹窗（`previewImage` 门控）；带链接图片（`<a><img>`）点击只开预览不再同时跳浏览器（preventDefault）。
+- **账单明细识别套餐余量调整（`BalanceLogsDialog.vue`）**：`plan_adjust` 变动类型补中文文案「套餐余量调整」与筛选项（管理员在云控端把充值计入套餐余量后，用户账单可见）。
 
 ---
 
