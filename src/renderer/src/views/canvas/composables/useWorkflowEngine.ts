@@ -1,6 +1,8 @@
 import { ref, computed } from 'vue'
 import { useCanvasStore } from '@/stores/canvas'
 import { useCloudAuthStore } from '@/stores/cloud-auth'
+import { useStylePresetStore } from '@/stores/style-presets'
+import { composePromptWithStyle } from '@shared/style-prompt'
 import { recordUsage } from '@/utils/model-usage-hints'
 import { getNodeTypeDef } from './useNodeTypes'
 import { extractJson } from '@shared/json-extract'
@@ -28,6 +30,18 @@ function toFriendlyNodeError(e: any, fallback: string): string {
     window.dispatchEvent(new CustomEvent('cloud-low-balance', { detail: {} }))
   }
   return translateError(raw)
+}
+
+// 风格预设：按节点 style_id 取云端分发的提示词片段；未拉取过先拉一次，
+// 拉取失败 / id 已被云端删除或停用都降级为空串（按「无风格」继续执行，不阻塞流程）。
+async function resolveStyleFragment(styleId: unknown): Promise<string> {
+  const id = Number(styleId)
+  if (!Number.isFinite(id) || id <= 0) return ''
+  const store = useStylePresetStore()
+  if (!store.loaded) {
+    try { await store.fetchStyles() } catch { /* 失败按无风格处理 */ }
+  }
+  return store.byId(id)?.prompt_fragment || ''
 }
 
 export interface WorkflowTask {
@@ -133,7 +147,8 @@ async function dataUriToFile(dataUri: string, name: string): Promise<File> {
     bytes = new Uint8Array(decoded.length)
     for (let i = 0; i < decoded.length; i++) bytes[i] = decoded.charCodeAt(i)
   }
-  return new File([bytes], name, { type: mime })
+  // new Uint8Array(length) 必为真 ArrayBuffer（非 SharedArrayBuffer），断言仅满足 TS 5.7+ 的 BlobPart 泛型约束
+  return new File([bytes as BlobPart], name, { type: mime })
 }
 
 /** 画布参考图（相对路径 / dataURI）→ 读取 → 上传云端 → 返回 https URL；失败抛错以中止提交。 */
@@ -869,6 +884,9 @@ export function useWorkflowEngine() {
               size,
               tier_id: tier,
               quality,
+              // 快捷编排上选的风格预设继承到每个文生图节点：
+              // 风格在生成时统一拼接，LLM 方案与本地兜底方案都生效，且可逐节点再调整
+              style_id: Number(node.data.style_id) > 0 ? Number(node.data.style_id) : null,
               style_anchor: group.styleAnchor,
               quick_group_type: group.type,
               status: 'idle',
@@ -1077,8 +1095,10 @@ export function useWorkflowEngine() {
         const globalPrompt = (project.system_prompt || '').trim()
         const rawPrompt = (upstream.texts.join('\n') || '').trim()
         if (!rawPrompt) throw new Error('文生图节点需要提示词：请连接文本输入或 AI 文本节点')
+        // 风格预设片段拼在主题后（全端统一规则：风格片段永远在最后）
+        const themedPrompt = composePromptWithStyle(rawPrompt, await resolveStyleFragment(node.data.style_id))
         // 用 "\n\n---\n\n" 分隔全局风格前缀与本次主题，便于模型区分约束与主题
-        const prompt = globalPrompt ? `${globalPrompt}\n\n---\n\n${rawPrompt}` : rawPrompt
+        const prompt = globalPrompt ? `${globalPrompt}\n\n---\n\n${themedPrompt}` : themedPrompt
 
         await canvasStore.updateNode(nodeId, {
           data: { ...node.data, status: 'running' }
@@ -1149,10 +1169,12 @@ export function useWorkflowEngine() {
         if (!rawPromptImg && !globalPromptImg) {
           throw new Error('图生图节点需要提示词：请连接文本输入、在节点中填写描述或在画布全局提示词中配置')
         }
+        // 风格预设片段拼在主题后（与文生图节点同一规则）
+        const themedPromptImg = composePromptWithStyle(rawPromptImg, await resolveStyleFragment(node.data.style_id))
         const prompt =
-          globalPromptImg && rawPromptImg
-            ? `${globalPromptImg}\n\n---\n\n${rawPromptImg}`
-            : globalPromptImg || rawPromptImg
+          globalPromptImg && themedPromptImg
+            ? `${globalPromptImg}\n\n---\n\n${themedPromptImg}`
+            : globalPromptImg || themedPromptImg
 
         await canvasStore.updateNode(nodeId, {
           data: { ...node.data, status: 'running' }

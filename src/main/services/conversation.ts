@@ -21,6 +21,8 @@ export interface Conversation {
   // - 仍空时让 LLM 自行 list_providers（保持向后兼容）
   active_image_provider_id: string
   active_image_model_id: string
+  /** 用户手动改名后置 1：自动标题生成（第 1/5 条消息）不再覆盖用户命名 */
+  title_locked: number
   created_at: string
   updated_at: string
 }
@@ -122,10 +124,24 @@ export function createConversation(
   return getConversation(id)!
 }
 
-export function updateConversationTitle(id: string, title: string): void {
+export function updateConversationTitle(id: string, title: string, opts?: { manual?: boolean }): void {
   const db = getDatabase()
   const now = new Date().toISOString()
-  db.prepare('UPDATE conversations SET title=?, updated_at=? WHERE id=?').run(title, now, id)
+  if (opts?.manual) {
+    // 手动改名落 title_locked，自动标题生成不再覆盖
+    db.prepare('UPDATE conversations SET title=?, title_locked=1, updated_at=? WHERE id=?').run(title, now, id)
+  } else {
+    db.prepare('UPDATE conversations SET title=?, updated_at=? WHERE id=?').run(title, now, id)
+  }
+}
+
+/** 按角色计数（标题/摘要生成的守卫前置：绝大多数轮次不需要全量读消息体） */
+export function countConversationMessages(conversationId: string): { user: number; userAssistant: number } {
+  const db = getDatabase()
+  const row = db
+    .prepare("SELECT SUM(CASE WHEN role='user' THEN 1 ELSE 0 END) AS u, SUM(CASE WHEN role IN ('user','assistant') THEN 1 ELSE 0 END) AS ua FROM messages WHERE conversation_id=?")
+    .get(conversationId) as any
+  return { user: Number(row?.u || 0), userAssistant: Number(row?.ua || 0) }
 }
 
 /**

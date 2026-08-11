@@ -29,6 +29,13 @@ const pendingChoices = new Map<string, PendingChoice>()
 // 真要取消用对话面板「中止」按钮（abort signal 会立即 resolve(null)）。
 const CHOICE_TIMEOUT_MS = 30 * 60_000
 
+// 卡片等待期间暂停对话引擎的 30min 硬上限计时（与审批卡同待遇）：
+// 钩子由 chat-engine 单向注册（本模块不反向 import，避免循环依赖）
+let deadlineHooks: { pause: (conversationId: string) => void; resume: (conversationId: string) => void } | null = null
+export function registerDeadlineHooks(hooks: { pause: (conversationId: string) => void; resume: (conversationId: string) => void }): void {
+  deadlineHooks = hooks
+}
+
 /**
  * 挂起当前工具执行，等待用户对卡片作出选择。
  * @returns 用户选择；超时 / abort / 显式取消时返回 null。
@@ -38,7 +45,13 @@ export function requestUserChoice(
   requestId: string,
   signal?: AbortSignal
 ): Promise<ChoiceResponse | null> {
+  deadlineHooks?.pause(conversationId)
   return new Promise<ChoiceResponse | null>((resolve) => {
+    // resolve 出口统一包装：任何路径（应答/超时/中止/取消）结束等待时恢复硬上限计时
+    const resolveAndResume = (v: ChoiceResponse | null): void => {
+      deadlineHooks?.resume(conversationId)
+      resolve(v)
+    }
     const cleanup = (): void => {
       pendingChoices.delete(requestId)
       signal?.removeEventListener('abort', onAbort)
@@ -58,7 +71,7 @@ export function requestUserChoice(
         ctx.resolve(null)
       }
     }, CHOICE_TIMEOUT_MS)
-    pendingChoices.set(requestId, { conversationId, resolve, cleanup })
+    pendingChoices.set(requestId, { conversationId, resolve: resolveAndResume, cleanup })
     if (signal?.aborted) {
       onAbort()
       return

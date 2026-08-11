@@ -27,6 +27,7 @@ import * as inspirationService from '../services/inspiration'
 import * as creativeTemplateService from '../services/creative-template'
 import * as cloudCreativeTemplateService from '../services/cloud-creative-template'
 import * as cloudCreativeTemplateSubmitService from '../services/cloud-creative-template-submit'
+import * as stylePresetService from '../services/style-preset'
 import * as cloudAgentMarketService from '../services/cloud-agent-market'
 import * as cloudAgentSubmitService from '../services/cloud-agent-submit'
 import * as botAvatarService from '../services/bot-avatar'
@@ -160,6 +161,7 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('bot:saveAvatar', (_, dataUrl: string) => botAvatarService.saveAvatarFromDataUrl(dataUrl))
   // 智能体市场：公开拉取 + 保存到本地
   ipcMain.handle('bot:listMarket', (_, options?) => cloudAgentMarketService.fetchMarketAgents(options))
+  ipcMain.handle('bot:listMarketCategories', () => cloudAgentMarketService.fetchMarketCategories())
   ipcMain.handle('bot:getMarket', (_, id: number) => cloudAgentMarketService.fetchMarketAgent(id))
   ipcMain.handle('bot:importFromMarket', (_, cloudAgent) => cloudAgentMarketService.importAgentAsLocal(cloudAgent))
   // 投稿 / 状态轮询 / 撤回 / 评分
@@ -186,7 +188,7 @@ export function registerIpcHandlers(): void {
     ) => conversationService.createConversation(botId, title, initialModel, initialImageModel)
   )
   ipcMain.handle('chat:updateTitle', (_, id: string, title: string) =>
-    conversationService.updateConversationTitle(id, title)
+    conversationService.updateConversationTitle(id, title, { manual: true })
   )
   // 切换会话使用的模型（输入框左下角下拉触发）。每个会话独立持久化。
   ipcMain.handle(
@@ -339,13 +341,16 @@ export function registerIpcHandlers(): void {
             temperature,
             notifyStream,
             tools,
-            signal: ac.signal
+            signal: ac.signal,
+            // 带上 requestId 让 chat:stream 增量事件可被渲染层按请求过滤订阅
+            // （画布智能体等工具循环的流式渲染据此区分自己的轮次，不干扰对话主链路）
+            streamContext: requestId ? { requestId } : undefined
           },
           win
         )
         // 工具循环调用方需要 tool_calls，其余调用方保持只拿 content 字符串（向后兼容）
         return returnToolCalls
-          ? { content: result.content, tool_calls: result.tool_calls, finish_reason: result.finish_reason }
+          ? { content: result.content, tool_calls: result.tool_calls, finish_reason: result.finish_reason, reasoning: result.reasoning }
           : result.content
       } finally {
         if (timer) clearTimeout(timer)
@@ -636,6 +641,47 @@ export function registerIpcHandlers(): void {
   })
 
   // === Shell ===
+  // 已打开的外部页面窗口（按 URL 单例聚焦；窗口 closed 时剔除）。注册函数只执行一次，模块语义正确。
+  const externalMenuWindows = new Map<string, InstanceType<typeof BrowserWindow>>()
+
+  /**
+   * https 证书预检（Node tls，独立于 Chromium 网络栈——进程级 ignore-certificate-errors 不影响）。
+   * 返回 'ok'（证书有效）/ 'cert'（证书校验失败，应拦截）/ 'network'（网络类失败，交给 loadURL 错误反馈）。
+   */
+  function checkExternalCertificate(hostname: string, port: number): Promise<'ok' | 'cert' | 'network'> {
+    const tls = require('tls')
+    return new Promise((resolve) => {
+      let settled = false
+      const done = (r: 'ok' | 'cert' | 'network') => {
+        if (!settled) {
+          settled = true
+          resolve(r)
+        }
+      }
+      try {
+        const socket = tls.connect(
+          { host: hostname, port, servername: hostname, rejectUnauthorized: true },
+          () => {
+            socket.end()
+            done('ok')
+          }
+        )
+        socket.setTimeout(8000, () => {
+          socket.destroy()
+          done('network')
+        })
+        socket.on('error', (e: any) => {
+          const code = String(e?.code || '')
+          const text = `${code} ${e?.message || ''}`
+          // 证书类失败特征：CERT_* / UNABLE_TO_* / DEPTH_* / expired / self signed 等
+          done(/cert|unable|depth|expired|self.?signed/i.test(text) ? 'cert' : 'network')
+        })
+      } catch {
+        done('network')
+      }
+    })
+  }
+
   ipcMain.handle('shell:openPath', async (_, path: string) => {
     const { shell } = require('electron')
     const { existsSync } = require('fs')
@@ -710,6 +756,102 @@ export function registerIpcHandlers(): void {
     }
     const { shell } = require('electron')
     return shell.openExternal(url)
+  })
+  // 云控端自定义菜单「应用内窗口」打开方式：以独立隔离 BrowserWindow 加载外部页面。
+  // 安全基线：无 preload（页面拿不到任何特权 API）、nodeIntegration 关、contextIsolation + sandbox 开；
+  // session 用独立持久分区（与主窗口 defaultSession 隔离 cookie/缓存——也因此不受主窗口
+  // onHeadersReceived 注入的 SPA CSP 影响，外部页面按其自身响应头正常加载）。
+  ipcMain.handle('shell:openExternalWindow', async (_, url: string, title?: string) => {
+    let parsed: URL
+    try {
+      parsed = new URL(String(url))
+    } catch {
+      return { success: false, error: 'invalid url' }
+    }
+    if (!['http:', 'https:'].includes(parsed.protocol)) {
+      return { success: false, error: 'only http(s) allowed' }
+    }
+    const { shell } = require('electron')
+    // 同一 URL 已开窗则聚焦不新建（防连点同菜单项开 N 个相同窗口）
+    const existing = externalMenuWindows.get(url)
+    if (existing && !existing.isDestroyed()) {
+      if (existing.isMinimized()) existing.restore()
+      existing.focus()
+      return { success: true, reused: true }
+    }
+    // https 证书预检：进程级 ignore-certificate-errors 开关存在期间，窗口内加载任意外站的
+    // 证书错误（过期/自签/被劫持）会被静默放行——Node tls 独立于 Chromium 网络栈，不受该开关影响，
+    // 在开窗前先做一次真实校验。网络类失败（DNS/超时）不拦截，交给 loadURL 的错误反馈处理。
+    if (parsed.protocol === 'https:') {
+      const cert = await checkExternalCertificate(parsed.hostname, Number(parsed.port) || 443)
+      if (cert === 'cert') {
+        return { success: false, error: '该站点的 HTTPS 证书无效或已过期，为安全起见已阻止打开' }
+      }
+    }
+    const win = new BrowserWindow({
+      width: 1100,
+      height: 760,
+      title: (title && String(title).slice(0, 60)) || parsed.hostname,
+      autoHideMenuBar: true,
+      // 原生标题栏（frame 默认 true）：外部页面窗口的最小化/关闭/拖拽交给系统，亦与主 SPA 视觉区隔
+      webPreferences: {
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+        partition: 'persist:external-menu-pages'
+      }
+    })
+    externalMenuWindows.set(url, win)
+    win.on('closed', () => {
+      if (externalMenuWindows.get(url) === win) externalMenuWindows.delete(url)
+    })
+    // 固定窗口标题为管理端配置值（默认行为会被页面 document.title 经 page-title-updated 覆盖）
+    win.on('page-title-updated', (e) => e.preventDefault())
+    // 窗口内导航守卫：同 host（含其子域）放行窗内导航，其余一律交系统浏览器——
+    // 防止窗内被带去无关站点（用户对应用内窗口的信任高于浏览器地址栏场景）。
+    // will-navigate（用户点击/JS 跳转）与 will-redirect（服务端 302 逐跳）都要挂——
+    // 只挂前者会被「目标页 302 到外域」绕过（短链、SSO、域名迁移场景）。
+    // 注：跨域 SSO 登录跳转会在浏览器打开，属可接受的保守行为。
+    const allowedHost = parsed.hostname
+    const isAllowedNav = (navUrl: string): boolean => {
+      try {
+        const u = new URL(navUrl)
+        if (!['http:', 'https:'].includes(u.protocol)) return false
+        return u.hostname === allowedHost || u.hostname.endsWith('.' + allowedHost)
+      } catch {
+        return false
+      }
+    }
+    const navGuard = (event: any, navUrl: string) => {
+      if (isAllowedNav(navUrl)) return
+      event.preventDefault()
+      try {
+        const p = new URL(navUrl).protocol
+        if (['http:', 'https:', 'mailto:', 'tel:'].includes(p)) shell.openExternal(navUrl)
+      } catch { /* 非法协议忽略 */ }
+    }
+    win.webContents.on('will-navigate', navGuard)
+    win.webContents.on('will-redirect', navGuard)
+    // window.open / target=_blank：一律系统浏览器（窗口内只允许同域原地导航）
+    win.webContents.setWindowOpenHandler((details) => {
+      try {
+        const p = new URL(details.url).protocol
+        if (['http:', 'https:', 'mailto:', 'tel:'].includes(p)) shell.openExternal(details.url)
+      } catch { /* 非法协议忽略 */ }
+      return { action: 'deny' }
+    })
+    win.loadURL(url).catch((e: any) => {
+      // 加载失败（DNS/超时/证书错误等）：关窗并给可见反馈，避免白屏窗口留着用户不知所措
+      console.error('[shell:openExternalWindow] loadURL failed:', url, e?.message || e)
+      try {
+        if (!win.isDestroyed()) win.close()
+      } catch { /* 窗口已销毁则忽略 */ }
+      try {
+        const { dialog } = require('electron')
+        dialog.showErrorBox('无法打开页面', `加载外部页面失败：${url}\n${e?.message || e}`)
+      } catch { /* dialog 不可用时静默 */ }
+    })
+    return { success: true }
   })
 
   // === Image Generation Sessions ===
@@ -872,6 +1014,11 @@ export function registerIpcHandlers(): void {
   )
   ipcMain.handle('creativeTemplate:cloudGet', (_, id: number) =>
     cloudCreativeTemplateService.fetchCloudTemplate(id)
+  )
+
+  // 风格预设（云端分发，拉取失败自动回落本地缓存）
+  ipcMain.handle('stylePreset:list', () =>
+    stylePresetService.getStylePresets()
   )
   ipcMain.handle('creativeTemplate:submitToCloud', (_, params: { templateId: string; cloudCategoryId: number }) =>
     cloudCreativeTemplateSubmitService.submitCreativeTemplate(params)

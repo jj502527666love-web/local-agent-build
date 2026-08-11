@@ -20,7 +20,8 @@ import {
   patchNodeData,
   queryNodes,
   listActualOutputHandles,
-  getNodeCapabilities
+  getNodeCapabilities,
+  isAgentWritableDataKey
 } from '../utils/node-schema'
 import { serializeCanvasForLLM } from '../utils/canvas-snapshot'
 import type { UndoManager, EdgeSnapshot, NodeSnapshot, InverseOp } from './canvas-undo'
@@ -125,6 +126,37 @@ export function createCanvasTools(ctx: CanvasToolContext): {
     label: labelOf(n),
     status: (n.data?.status as string) || 'idle'
   })
+
+  /** 四元组完全相同的既有连线（与编辑器 handle 菜单的 dup 守卫同款判定） */
+  const findDupEdge = (srcId: string, sh: string, tgtId: string, th: string): CanvasEdge | undefined =>
+    projEdges().find(
+      (e) =>
+        e.source_node_id === srcId &&
+        e.source_handle === sh &&
+        e.target_node_id === tgtId &&
+        e.target_handle === th
+    )
+
+  /**
+   * 动态输出节点的输出口存在性硬校验：output-{id} 必须由真实子项（rows/frames/shots）
+   * 派生。canConnect 只对前缀做宽松放行（编辑器 UI 用），智能体臆造的 handle 会让
+   * 运行期取数静默 miss（边存在但不传任何数据），故写库前必须硬拦。
+   * 返回 null=合法，否则为人类可读的错误原因。
+   */
+  const checkDynamicSourceHandle = (srcNode: CanvasNode, sh: string): string | null => {
+    const def = getNodeTypeDef(srcNode.type)
+    if (!def?.dynamicOutputs) return null
+    const rows: any[] = (srcNode.data?.rows || srcNode.data?.frames || srcNode.data?.shots || []) as any[]
+    const ids = rows.map((r) => r?.id).filter((id) => id != null)
+    if (ids.length === 0) {
+      return `「${labelOf(srcNode)}」是动态输出节点，当前没有任何子项（rows 为空），还没有可连的输出口；请先在节点 data 中配置子项（每个子项需显式带 id），再按 output-{子项id} 连线`
+    }
+    const valid = ids.map((id) => `output-${id}`)
+    if (!valid.includes(sh)) {
+      return `输出口 ${sh} 不存在于「${labelOf(srcNode)}」；当前真实输出口：${valid.join('、')}（可用 canvas_list_dynamic_handles 复核）`
+    }
+    return null
+  }
 
   // 快捷方式节点：智能体应亲手用基础节点搭建，不应外包给这些"用户手动快捷方式"
   const SHORTCUT_TYPES = new Set(['quickOrchestrator', 'agentNode'])
@@ -498,6 +530,17 @@ export function createCanvasTools(ctx: CanvasToolContext): {
             const th = e.targetHandle || 'input'
             const verdict = canConnect(src, sh, tgt, th)
             if (!verdict.ok) throw new Error(`连线 ${e.source}→${e.target} 非法：${verdict.reason}`)
+            // 动态输出口存在性硬校验（防臆造 output-x，运行期静默丢数据）
+            const srcNode = findNode(src.id)
+            if (srcNode) {
+              const dynErr = checkDynamicSourceHandle(srcNode, sh)
+              if (dynErr) throw new Error(`连线 ${e.source}→${e.target} 非法：${dynErr}`)
+            }
+            // 重复连线去重（编辑器有 dup 守卫，智能体侧同款）
+            if (findDupEdge(src.id, sh, tgt.id, th)) {
+              warnings.push(`连线 ${e.source}(${sh})→${e.target}(${th}) 已存在，跳过重复创建`)
+              continue
+            }
             const edge = await ctx.store.addEdge(projectId, {
               source_node_id: src.id, source_handle: sh, target_node_id: tgt.id, target_handle: th
             })
@@ -524,10 +567,24 @@ export function createCanvasTools(ctx: CanvasToolContext): {
         if (!node) return { ok: false, error: `节点不存在：${args.nodeId}` }
         const partial = args.data && typeof args.data === 'object' ? args.data : {}
         const capFields = getNodeCapabilities().find((c) => c.type === node.type)?.fields.map((f) => f.key) || []
-        const allowed = new Set<string>([...Object.keys(getDefaultNodeData(node.type)), ...capFields])
-        const warnings = Object.keys(partial).filter((k) => !allowed.has(k)).map((k) => `字段 ${k} 不在 ${node.type} 的已知字段内`)
+        // 白名单 = 能力目录登记字段 ∪ （默认 data 键 − 引擎专属键），与 node-schema 契约对齐
+        const allowed = new Set<string>([
+          ...Object.keys(getDefaultNodeData(node.type)).filter((k) => k === 'status' || isAgentWritableDataKey(k, undefined)),
+          ...capFields
+        ])
+        // 引擎专属字段（运行态/产物）硬拦：剔除并告警，防伪造 status/产物路径
+        const blockedKeys = Object.keys(partial).filter((k) => !isAgentWritableDataKey(k, partial[k]))
+        const cleanedPartial: Record<string, any> = { ...partial }
+        for (const k of blockedKeys) delete cleanedPartial[k]
+        const warnings = [
+          ...blockedKeys.map((k) => `字段 ${k} 由执行引擎管理，已忽略（不允许手动设置）`),
+          ...Object.keys(cleanedPartial).filter((k) => !allowed.has(k)).map((k) => `字段 ${k} 不在 ${node.type} 的已知字段内`)
+        ]
+        if (Object.keys(cleanedPartial).length === 0) {
+          return { ok: false, error: '没有可写入的字段（所给字段均为引擎管理的运行态/产物字段）', warnings }
+        }
         const oldData = JSON.parse(JSON.stringify(node.data || {}))
-        const merged = patchNodeData(node.data, partial)
+        const merged = patchNodeData(node.data, cleanedPartial)
         await ctx.store.updateNode(node.id, { data: merged })
         ctx.undo.record({ label: `修改节点「${labelOf(node)}」`, ops: [{ kind: 'restoreNodeData', nodeId: node.id, data: oldData }] })
         return { ok: true, nodeId: node.id, warnings }
@@ -540,6 +597,12 @@ export function createCanvasTools(ctx: CanvasToolContext): {
         const th = args.targetHandle || 'input'
         const verdict = canConnect(src, sh, tgt, th)
         if (!verdict.ok) return { ok: false, error: verdict.reason }
+        // 动态输出口存在性硬校验（防臆造 output-x，运行期静默丢数据）
+        const dynErr = checkDynamicSourceHandle(src!, sh)
+        if (dynErr) return { ok: false, error: dynErr }
+        // 重复连线去重：已存在相同四元组则直接返回既有 edgeId，不新建
+        const dup = findDupEdge(src!.id, sh, tgt!.id, th)
+        if (dup) return { ok: true, edgeId: dup.id, duplicated: true, note: '已存在相同连线，未重复创建' }
         const edge = await ctx.store.addEdge(projectId, {
           source_node_id: src!.id, source_handle: sh, target_node_id: tgt!.id, target_handle: th
         })

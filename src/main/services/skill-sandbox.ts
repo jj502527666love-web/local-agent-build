@@ -159,7 +159,7 @@ function resolveTimeout(timeoutMs?: number): number {
     : DEFAULT_TIMEOUT_MS
 }
 
-function createShellOps(sandboxRoot?: string, timeoutMs?: number, unrestricted?: boolean) {
+function createShellOps(sandboxRoot?: string, timeoutMs?: number, unrestricted?: boolean, signal?: AbortSignal) {
   const defaultTimeout = resolveTimeout(timeoutMs)
   return {
     exec: (cmd: string, options?: { cwd?: string; timeout?: number }) => {
@@ -177,6 +177,8 @@ function createShellOps(sandboxRoot?: string, timeoutMs?: number, unrestricted?:
     // （最长可达 180s）阻塞 Electron 主进程事件循环导致整个 App / 全部会话冻结。
     // 返回 Promise，RUN_COMMAND_IMPL 已改为 await 调用；executeSkillSandbox 的
     // Promise.race 超时此时也真正生效（同步 execSync 下 race 形同虚设）。
+    // signal 贯穿：取消时 exec 的 signal 选项会 kill 子进程（Windows 为 TerminateProcess，
+    // 不保证杀子进程树），调用方随 executeSkillSandbox 的 abort 赛跑立即释放
     execStructured: (cmd: string, options?: { cwd?: string; timeout?: number }): Promise<{
       exit_code: number
       stdout: string
@@ -195,7 +197,8 @@ function createShellOps(sandboxRoot?: string, timeoutMs?: number, unrestricted?:
             timeout,
             encoding: 'utf-8',
             maxBuffer: 2 * 1024 * 1024,
-            windowsHide: true
+            windowsHide: true,
+            ...(signal ? { signal } : {})
           },
           (err: any, stdout: string, stderr: string) => {
             if (err) {
@@ -228,7 +231,8 @@ export async function executeSkillSandbox(
   args: Record<string, any>,
   sandboxRoot?: string,
   timeoutMs?: number,
-  unrestricted?: boolean
+  unrestricted?: boolean,
+  signal?: AbortSignal
 ): Promise<SkillExecutionResult> {
   const t0 = Date.now()
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -236,7 +240,7 @@ export async function executeSkillSandbox(
   try {
     const fileOps = createFileOps(sandboxRoot, unrestricted)
     const executionTimeout = resolveTimeout(timeoutMs)
-    const shellOps = createShellOps(sandboxRoot, executionTimeout, unrestricted)
+    const shellOps = createShellOps(sandboxRoot, executionTimeout, unrestricted, signal)
 
     // 在受限 vm context 中执行技能代码,隔离主进程 process / require / module / global 等,
     // 仅暴露白名单能力(args / fs / shell / fetch / crypto + 常用 Web/Node 全局)。相比 new Function:
@@ -277,7 +281,18 @@ export async function executeSkillSandbox(
       timer = setTimeout(() => reject(new Error(`执行超时 (${executionTimeout}ms)`)), executionTimeout)
     })
 
-    const result = await Promise.race([resultPromise, timeoutPromise])
+    // abort 赛跑：取消时立即释放等待（vm 内纯 JS 无法强杀，但 shell.exec 子进程经 signal 被杀，
+    // 调用方不再阻塞至自然超时——此前点「停止」后最长还要等 180s）
+    const abortPromise = new Promise<never>((_, reject) => {
+      if (!signal) return
+      if (signal.aborted) {
+        reject(new Error('已中止'))
+        return
+      }
+      signal.addEventListener('abort', () => reject(new Error('已中止')), { once: true })
+    })
+
+    const result = await Promise.race([resultPromise, timeoutPromise, abortPromise])
     const duration = Date.now() - t0
 
     return { success: true, result, duration }

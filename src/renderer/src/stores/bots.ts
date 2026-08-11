@@ -57,6 +57,9 @@ export interface MarketAgent {
   tool_approval: ToolApproval
   enable_image_gen: number
   tags: string[]
+  /** 市场分类（云控端 agent_categories）；null/undefined=未分类 */
+  category_id?: number | null
+  category_name?: string
   download_count: number
   rating_avg: number
   rating_count: number
@@ -67,6 +70,14 @@ export interface MarketAgent {
   // 当前用户是否已拥有
   is_owned: boolean
   created_at?: string
+}
+
+/** 市场分类（云控端 /public/agents/categories 下发） */
+export interface MarketCategory {
+  id: number
+  name: string
+  description?: string
+  sort_order?: number
 }
 
 export interface ImportFromMarketResult {
@@ -121,18 +132,30 @@ export const useBotStore = defineStore('bots', () => {
   const marketAgents = ref<MarketAgent[]>([])
   const marketLoading = ref(false)
   const marketTotal = ref(0)
+  const marketCategories = ref<MarketCategory[]>([])
 
-  async function fetchMarket(options?: { page?: number; pageSize?: number; search?: string }) {
-    marketLoading.value = true
+  async function fetchMarket(options?: { page?: number; pageSize?: number; search?: string; categoryId?: number; append?: boolean }) {
+    // append（无限滚动翻页）不触发整屏 loading，由调用方自管「加载更多」态
+    if (!options?.append) marketLoading.value = true
     try {
       const res = (await window.api.bot.invoke('listMarket', plain(options || {}))) as {
         items: MarketAgent[]
         total: number
       }
-      marketAgents.value = res.items || []
+      // append=true 用于无限滚动追加下一页；否则整体替换（搜索/切分类/刷新）
+      marketAgents.value = options?.append ? [...marketAgents.value, ...(res.items || [])] : (res.items || [])
       marketTotal.value = res.total || 0
     } finally {
-      marketLoading.value = false
+      if (!options?.append) marketLoading.value = false
+    }
+  }
+
+  async function fetchMarketCategories() {
+    try {
+      marketCategories.value = (await window.api.bot.invoke('listMarketCategories')) as MarketCategory[]
+    } catch {
+      // 分类接口不可用时静默降级（不显示分类行，列表仍可用）
+      marketCategories.value = []
     }
   }
 
@@ -181,7 +204,7 @@ export const useBotStore = defineStore('bots', () => {
 
   return {
     bots, loading, fetchBots, createBot, updateBot, deleteBot, saveAvatar,
-    marketAgents, marketLoading, marketTotal,
-    fetchMarket, importFromMarket, submitToMarket, withdrawSubmission, syncSubmissionStatus, rateAgent,
+    marketAgents, marketLoading, marketTotal, marketCategories,
+    fetchMarket, fetchMarketCategories, importFromMarket, submitToMarket, withdrawSubmission, syncSubmissionStatus, rateAgent,
   }
 })

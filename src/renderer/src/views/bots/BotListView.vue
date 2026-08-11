@@ -8,7 +8,7 @@
       <button v-if="activeTab === 'mine'" class="btn-primary" @click="openCreate">+ 新建智能体</button>
     </header>
 
-    <div class="page-body">
+    <div class="page-body" ref="pageBodyRef" @scroll="onPageScroll">
       <!-- ============ 我的智能体 ============ -->
       <template v-if="activeTab === 'mine'">
         <!-- Form -->
@@ -194,51 +194,72 @@
 
       <!-- ============ 智能体市场 ============ -->
       <template v-else>
-        <div class="flex items-center gap-2 mb-4 max-w-5xl">
+        <div class="flex items-center gap-2 mb-3 max-w-5xl">
           <input v-model="marketSearch" class="input-field flex-1" placeholder="搜索智能体名称或能力" @keyup.enter="loadMarket" />
           <button class="btn-secondary" @click="loadMarket">搜索</button>
         </div>
 
+        <!-- 分类筛选（云控端可见分类；无分类时不显示本行） -->
+        <div v-if="botStore.marketCategories.length" class="flex items-center gap-1.5 mb-4 max-w-5xl overflow-x-auto pb-0.5">
+          <button
+            v-for="cat in [{ id: null, name: '全部' }, ...botStore.marketCategories]"
+            :key="cat.id === null ? '__all__' : cat.id"
+            @click="selectCategory(cat.id)"
+            :class="[
+              'px-3 py-1 text-[11px] rounded-full border whitespace-nowrap transition-colors',
+              activeCategory === cat.id
+                ? 'border-primary-400 text-primary-600 bg-primary-50 dark:bg-primary-900/20'
+                : 'border-surface-3 text-text-tertiary hover:bg-surface-2 hover:text-text-secondary'
+            ]"
+          >{{ cat.name }}</button>
+        </div>
+
         <div v-if="botStore.marketLoading" class="text-center text-sm text-text-tertiary py-12">加载中...</div>
         <div v-else-if="!botStore.marketAgents.length" class="empty-state">
-          <p class="text-sm font-medium text-text-secondary mb-1">市场暂无智能体</p>
-          <p class="text-xs">云控端发布并上架后，这里会显示可添加的智能体</p>
+          <p class="text-sm font-medium text-text-secondary mb-1">{{ activeCategory || marketSearch ? '该筛选条件下暂无智能体' : '市场暂无智能体' }}</p>
+          <p class="text-xs">{{ activeCategory || marketSearch ? '换个分类或关键词试试' : '云控端发布并上架后，这里会显示可添加的智能体' }}</p>
         </div>
-        <div v-else class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 max-w-6xl">
-          <div v-for="a in botStore.marketAgents" :key="a.id" class="card p-4 flex flex-col">
-            <div class="rounded-lg overflow-hidden bg-surface-2 mb-3" style="aspect-ratio: 2/3;">
-              <img v-if="a.avatar" :src="a.avatar_thumb || a.avatar" loading="lazy" class="w-full h-full object-cover" />
-              <div v-else class="w-full h-full flex items-center justify-center text-text-tertiary text-4xl font-bold">{{ a.name.charAt(0) }}</div>
-            </div>
-            <div class="font-semibold text-sm text-text-primary truncate">{{ a.name }}</div>
-            <div class="text-xs text-text-tertiary mt-1 line-clamp-2 min-h-[2rem]">{{ a.description }}</div>
-            <div class="flex flex-wrap gap-1 my-2">
-              <span v-for="t in a.tags.slice(0, 3)" :key="t" class="status-badge bg-surface-2 text-text-secondary">{{ t }}</span>
-            </div>
-            <div class="flex items-center gap-3 text-[11px] text-text-tertiary mb-3">
-              <span class="inline-flex items-center gap-0.5">
-                <svg class="w-3.5 h-3.5 text-amber-400" viewBox="0 0 24 24" fill="currentColor"><path d="M11.48 3.5a.56.56 0 0 1 1.04 0l2.12 5.11a.56.56 0 0 0 .48.35l5.52.44c.5.04.7.66.32.99l-4.2 3.6a.56.56 0 0 0-.18.56l1.28 5.39a.56.56 0 0 1-.84.6l-4.72-2.88a.56.56 0 0 0-.59 0l-4.72 2.88a.56.56 0 0 1-.84-.6l1.28-5.39a.56.56 0 0 0-.18-.56l-4.2-3.6a.56.56 0 0 1 .32-.99l5.52-.44a.56.56 0 0 0 .48-.35L11.48 3.5Z" /></svg>
-                {{ a.rating_count ? a.rating_avg.toFixed(1) : '暂无' }}
-                <span v-if="a.rating_count">({{ a.rating_count }})</span>
-              </span>
-              <span>下载 {{ formatCount(a.download_count) }}</span>
-            </div>
-            <div class="mt-auto">
-              <div class="flex items-center gap-2 text-[11px] mb-2">
-                <span v-if="a.price > 0 && !a.is_owned" class="px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 font-medium">{{ a.price }} {{ labelOf(a.price_balance_type) }}</span>
-                <span v-else-if="a.price > 0 && a.is_owned" class="px-1.5 py-0.5 rounded bg-green-100 text-green-700 font-medium">已拥有</span>
-                <span v-else class="text-text-tertiary">免费</span>
+        <template v-else>
+          <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 max-w-6xl">
+            <div v-for="a in botStore.marketAgents" :key="a.id" class="card p-4 flex flex-col">
+              <div class="rounded-lg overflow-hidden bg-surface-2 mb-3" style="aspect-ratio: 2/3;">
+                <img v-if="a.avatar" :src="a.avatar_thumb || a.avatar" loading="lazy" class="w-full h-full object-cover" />
+                <div v-else class="w-full h-full flex items-center justify-center text-text-tertiary text-4xl font-bold">{{ a.name.charAt(0) }}</div>
               </div>
-              <div class="flex gap-2">
-                <button v-if="isSaved(a)" disabled class="flex-1 px-3 py-2 text-xs font-medium bg-surface-2 text-text-tertiary rounded-lg cursor-default">已添加</button>
-                <button v-else @click="saveToLocal(a)" :disabled="savingId === a.id" class="flex-1 px-3 py-2 text-xs font-medium bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors disabled:opacity-50">
-                  {{ savingId === a.id ? '添加中...' : (a.price > 0 && !a.is_owned ? '购买并添加' : '添加') }}
-                </button>
-                <button @click="openRate(a)" class="btn-ghost">评分</button>
+              <div class="font-semibold text-sm text-text-primary truncate">{{ a.name }}</div>
+              <div class="text-xs text-text-tertiary mt-1 line-clamp-2 min-h-[2rem]">{{ a.description }}</div>
+              <div class="flex flex-wrap gap-1 my-2">
+                <span v-if="a.category_name" class="status-badge bg-sky-50 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300">{{ a.category_name }}</span>
+                <span v-for="t in a.tags.slice(0, 3)" :key="t" class="status-badge bg-surface-2 text-text-secondary">{{ t }}</span>
+              </div>
+              <div class="flex items-center gap-3 text-[11px] text-text-tertiary mb-3">
+                <span class="inline-flex items-center gap-0.5">
+                  <svg class="w-3.5 h-3.5 text-amber-400" viewBox="0 0 24 24" fill="currentColor"><path d="M11.48 3.5a.56.56 0 0 1 1.04 0l2.12 5.11a.56.56 0 0 0 .48.35l5.52.44c.5.04.7.66.32.99l-4.2 3.6a.56.56 0 0 0-.18.56l1.28 5.39a.56.56 0 0 1-.84.6l-4.72-2.88a.56.56 0 0 0-.59 0l-4.72 2.88a.56.56 0 0 1-.84-.6l1.28-5.39a.56.56 0 0 0-.18-.56l-4.2-3.6a.56.56 0 0 1 .32-.99l5.52-.44a.56.56 0 0 0 .48-.35L11.48 3.5Z" /></svg>
+                  {{ a.rating_count ? a.rating_avg.toFixed(1) : '暂无' }}
+                  <span v-if="a.rating_count">({{ a.rating_count }})</span>
+                </span>
+                <span>下载 {{ formatCount(a.download_count) }}</span>
+              </div>
+              <div class="mt-auto">
+                <div class="flex items-center gap-2 text-[11px] mb-2">
+                  <span v-if="a.price > 0 && !a.is_owned" class="px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 font-medium">{{ a.price }} {{ labelOf(a.price_balance_type) }}</span>
+                  <span v-else-if="a.price > 0 && a.is_owned" class="px-1.5 py-0.5 rounded bg-green-100 text-green-700 font-medium">已拥有</span>
+                  <span v-else class="text-text-tertiary">免费</span>
+                </div>
+                <div class="flex gap-2">
+                  <button v-if="isSaved(a)" disabled class="flex-1 px-3 py-2 text-xs font-medium bg-surface-2 text-text-tertiary rounded-lg cursor-default">已添加</button>
+                  <button v-else @click="saveToLocal(a)" :disabled="savingId === a.id" class="flex-1 px-3 py-2 text-xs font-medium bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors disabled:opacity-50">
+                    {{ savingId === a.id ? '添加中...' : (a.price > 0 && !a.is_owned ? '购买并添加' : '添加') }}
+                  </button>
+                  <button @click="openRate(a)" class="btn-ghost">评分</button>
+                </div>
               </div>
             </div>
           </div>
-        </div>
+          <!-- 无限滚动：到底自动加载下一页（与灵感广场/云端模板一致） -->
+          <div v-if="marketLoadingMore" class="text-center text-xs text-text-tertiary py-4">加载中…</div>
+          <div v-else-if="!marketHasMore" class="text-center text-[11px] text-text-disabled py-4">已加载全部 {{ botStore.marketTotal }} 个智能体</div>
+        </template>
       </template>
     </div>
 
@@ -504,17 +525,66 @@ const marketLoaded = ref(false)
 const savingId = ref<number | null>(null)
 const lowBalance = reactive({ visible: false, balanceType: 'credit' as 'token' | 'credit', required: 0, available: 0 })
 
+// 分类筛选 + 真分页无限滚动（与灵感广场/云端模板同一交互语言）
+const activeCategory = ref<number | null>(null)
+const marketPage = ref(1)
+const MARKET_PAGE_SIZE = 24
+const marketLoadingMore = ref(false)
+const pageBodyRef = ref<HTMLElement | null>(null)
+const marketHasMore = computed(() => botStore.marketAgents.length < botStore.marketTotal)
+
 function labelOf(type: 'token' | 'credit'): string {
   return siteConfig.labelOf(type)
 }
 
 async function switchToMarket() {
   activeTab.value = 'market'
-  if (!marketLoaded.value) await loadMarket()
+  if (!marketLoaded.value) {
+    await Promise.all([
+      loadMarket(),
+      botStore.marketCategories.length ? Promise.resolve() : botStore.fetchMarketCategories(),
+    ])
+  }
 }
+// 搜索 / 切分类 / 首次进入：重置到第 1 页并整体替换列表
 async function loadMarket() {
   marketLoaded.value = true
-  await botStore.fetchMarket({ search: marketSearch.value })
+  marketPage.value = 1
+  await botStore.fetchMarket({
+    search: marketSearch.value,
+    categoryId: activeCategory.value ?? undefined,
+    page: 1,
+    pageSize: MARKET_PAGE_SIZE,
+  })
+  pageBodyRef.value?.scrollTo({ top: 0 })
+}
+// 下拉到底：追加下一页
+async function loadMoreMarket() {
+  if (marketLoadingMore.value || botStore.marketLoading || !marketHasMore.value || activeTab.value !== 'market') return
+  marketLoadingMore.value = true
+  const next = marketPage.value + 1
+  try {
+    await botStore.fetchMarket({
+      search: marketSearch.value,
+      categoryId: activeCategory.value ?? undefined,
+      page: next,
+      pageSize: MARKET_PAGE_SIZE,
+      append: true,
+    })
+    marketPage.value = next
+  } catch { /* 加载更多失败保持当前页码，下次滚动可重试 */ }
+  marketLoadingMore.value = false
+}
+function selectCategory(id: number | null): void {
+  if (activeCategory.value === id) return
+  activeCategory.value = id
+  void loadMarket()
+}
+function onPageScroll(): void {
+  if (activeTab.value !== 'market') return
+  const el = pageBodyRef.value
+  if (!el) return
+  if (el.scrollHeight - el.scrollTop - el.clientHeight < 240) void loadMoreMarket()
 }
 function isSaved(a: MarketAgent): boolean {
   return botStore.bots.some((b) => b.cloud_agent_id === a.id)

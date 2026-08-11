@@ -69,6 +69,12 @@
         <ResolutionTierPicker v-model="tier" size="sm" :model-id="projectImageModelId" :size-value="resolutionSizeValue" :disabled="data.locked || data.status === 'running'" />
       </div>
 
+      <div class="mb-2">
+        <label class="node-label">风格</label>
+        <StylePresetPicker v-model="stylePresetId" />
+        <p class="text-[9px] text-text-disabled mt-0.5 leading-relaxed">选中的风格会继承到展开出的每个文生图节点</p>
+      </div>
+
       <label v-if="mode !== 'product_workflow'" class="flex items-center gap-1.5 text-[10px] text-text-tertiary mb-2">
         <input v-model="requireReference" @change="saveData" type="checkbox" class="nodrag" :disabled="data.locked || data.status === 'running'" />
         使用上游参考图
@@ -121,6 +127,7 @@ import { useCanvasStore } from '@/stores/canvas'
 import { useWorkflowEngine } from '../composables/useWorkflowEngine'
 import ImageSizePicker from '@/components/ImageSizePicker.vue'
 import ResolutionTierPicker from '@/components/ResolutionTierPicker.vue'
+import StylePresetPicker from '@/components/StylePresetPicker.vue'
 import PromptTextarea from '@/components/PromptTextarea.vue'
 
 type HandleClickHandler = (e: MouseEvent, nodeId: string, handleId: string, dataType: 'text' | 'image') => void
@@ -142,6 +149,8 @@ const detailSize = ref(props.data.detail_size || '4:5')
 const tier = ref(props.data.tier_id || DEFAULT_TIER_ID)
 const requireReference = ref(Boolean(props.data.require_reference))
 const detailConsistencyEnabled = ref(Boolean(props.data.detail_consistency_enabled))
+// 风格预设 id（云端分发；null = 不使用风格，展开时继承到每个文生图节点）
+const stylePresetId = ref<number | null>(Number(props.data.style_id) > 0 ? Number(props.data.style_id) : null)
 const projectImageModelId = computed(() => canvasStore.currentProject?.image_model_id || '')
 const resolutionSizeValue = computed(() => {
   if (mode.value !== 'product_workflow') return size.value
@@ -196,7 +205,7 @@ const hasUpstreamText = computed(() => {
 watch(() => props.data.mode, (value) => { if (value && value !== mode.value) mode.value = value })
 watch(() => props.data.instruction, (value) => { if ((value || '') !== instruction.value) instruction.value = value || '' })
 watch(() => props.data.detail_consistency_enabled, (value) => { detailConsistencyEnabled.value = Boolean(value) })
-watch([size, mainSize, detailSize, tier], () => saveData())
+watch([size, mainSize, detailSize, tier, stylePresetId], () => saveData())
 
 function hasImageOutput(node: any): boolean {
   if (!node) return false
@@ -228,7 +237,8 @@ function saveData() {
       detail_size: detailSize.value,
       tier_id: tier.value,
       require_reference: requireReference.value,
-      detail_consistency_enabled: detailConsistencyEnabled.value
+      detail_consistency_enabled: detailConsistencyEnabled.value,
+      style_id: stylePresetId.value
     }
   })
 }

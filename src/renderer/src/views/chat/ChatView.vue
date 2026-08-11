@@ -85,9 +85,12 @@
                         <button @click="confirmEdit(msg.id)" class="px-3 py-1 text-xs rounded-lg bg-primary-600 text-white hover:bg-primary-700 transition-colors">保存并重发</button>
                       </div>
                     </div>
-                    <div v-else class="text-sm px-4 py-3 rounded-2xl rounded-br-md bg-primary-600 text-white whitespace-pre-wrap leading-relaxed select-text">
-                      {{ msg.content }}
-                    </div>
+                    <template v-else>
+                      <div :class="['text-sm px-4 py-3 rounded-2xl rounded-br-md text-white whitespace-pre-wrap leading-relaxed select-text', msg.failed ? 'bg-red-500/90' : 'bg-primary-600']">
+                        {{ msg.content }}
+                      </div>
+                      <div v-if="msg.failed" class="mt-1 text-[11px] text-red-500">发送失败，请重新发送</div>
+                    </template>
                   </div>
                   <template v-else>
                     <div v-if="msg._reasoning" class="mb-1.5">
@@ -122,7 +125,7 @@
                       :card="msg.card"
                       @submit="(payload) => onCardSubmit(msg, payload)"
                     />
-                    <div v-else class="text-sm px-4 py-3 rounded-2xl rounded-bl-md bg-surface-0 text-text-primary shadow-card prose prose-sm dark:prose-invert max-w-none select-text" v-html="renderMarkdown(msg.content || '...')"></div>
+                    <div v-else class="text-sm px-4 py-3 rounded-2xl rounded-bl-md bg-surface-0 text-text-primary shadow-card prose prose-sm dark:prose-invert max-w-none select-text" v-html="msg.id === '__live__' ? renderMarkdownLive(msg.content || '...') : renderMarkdown(msg.content || '...')"></div>
                     <!-- 从中断处继续生成（仅末条、被中断/报错、且当前未在流式时显示） -->
                     <button
                       v-if="msg.role === 'assistant' && msg.id === lastAssistantId && !chatStore.streaming && isContinuable(msg.content)"
@@ -368,8 +371,12 @@
                       />
                     </div>
                     <div class="flex items-center gap-2 flex-shrink-0">
-                      <button v-if="chatStore.streaming" @click="chatStore.cancel()" class="w-8 h-8 flex items-center justify-center bg-red-600 text-white rounded-lg hover:bg-red-700 transition-all flex-shrink-0" title="中断当前回复">
+                      <button v-if="chatStore.streaming && !chatStore.isCancelling()" @click="chatStore.cancel()" class="w-8 h-8 flex items-center justify-center bg-red-600 text-white rounded-lg hover:bg-red-700 transition-all flex-shrink-0" title="中断当前回复">
                         <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1.5" /></svg>
+                      </button>
+                      <button v-else-if="chatStore.isCancelling()" disabled class="h-8 px-2.5 flex items-center gap-1.5 bg-surface-2 text-text-tertiary rounded-lg cursor-not-allowed flex-shrink-0 text-[11px]" title="正在中断，等待当前工具收尾">
+                        <svg class="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                        中断中
                       </button>
                       <button v-else @click="send" :disabled="!inputText.trim() && !pendingAttachments.length" class="w-8 h-8 flex items-center justify-center bg-primary-600 text-white rounded-lg hover:bg-primary-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all flex-shrink-0" title="发送">
                         <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5" /></svg>
@@ -445,7 +452,7 @@
   </div>
 
   <!-- Image Preview -->
-  <ImageLightbox :src="previewImage" @close="previewImage = null" />
+  <ImageLightbox :src="previewImage" :on-locate="previewLocate" @close="previewImage = null" />
 
   <!-- Tool Approval Modal -->
   <div v-if="pendingApproval" class="fixed inset-0 z-50 flex items-center justify-center pointer-events-none">
@@ -521,7 +528,7 @@ import { useModelStore } from '@/stores/models'
 import { useCloudAuthStore } from '@/stores/cloud-auth'
 import { hasCap } from '@/utils/model-caps'
 import { useSiteConfigStore } from '@/stores/site-config'
-import { renderMarkdown } from '@/utils/markdown'
+import { renderMarkdown, renderMarkdownLive, resolveLocalFileTarget } from '@/utils/markdown'
 import { stripImageMetadata } from '@shared/strip-image-metadata'
 import { CLOUD_KEY_SEP, stripModelId } from '@shared/model-id'
 import GalleryPicker from '@/components/GalleryPicker.vue'
@@ -597,6 +604,16 @@ async function confirmEdit(id: string) {
   await chatStore.editMessage(id, text)
 }
 const previewImage = ref<string | null>(null)
+// 预览图为本地文件（local-file://）时给 Lightbox 传「打开所在文件夹」回调；
+// http(s)/data: 等远程或内联图无本地位置，返回 undefined——组件内对应按钮自动隐藏。
+const previewLocate = computed(() => {
+  const src = previewImage.value
+  if (!src || !src.startsWith('local-file:')) return undefined
+  return () => {
+    const p = resolveLocalFileTarget(src)
+    if (p) (window as any).api.shell.showItemInFolder(p)
+  }
+})
 const dispatchMenuId = ref<string | null>(null)
 interface FileWritePreview {
   type: 'file_write'
@@ -1328,7 +1345,25 @@ async function onMessagesClick(e: MouseEvent) {
   const target = e.target as HTMLElement
   const img = target.closest('.prose img') as HTMLImageElement | null
   if (img?.src) {
+    // 角标按钮与 img 平级（同在 .img-file-wrap 内），closest 沿祖先链找不到 img，不会误入此分支
     previewImage.value = img.src
+    return
+  }
+  // 「打开所在目录 / 浏览器打开」跳转按钮：必须先于 anchor 分支判断——
+  // linked image（[![图](local-file...)](https://...)）形态下角标按钮也在 <a> 内，
+  // 若 anchor 分支先命中，点定位按钮会被劫持成打开外部链接。按钮是显式操作控件，优先。
+  const btn = target.closest('.link-jump-btn') as HTMLElement | null
+  if (btn?.dataset?.link) {
+    const link = btn.dataset.link
+    const type = btn.dataset.linkType
+    if (type === 'external') {
+      ;(window as any).api.shell.openExternal(link)
+    } else if (type === 'localfile') {
+      const p = resolveLocalFileTarget(link)
+      if (p) (window as any).api.shell.showItemInFolder(p)
+    } else {
+      ;(window as any).api.shell.showItemInFolder(link)
+    }
     return
   }
   // 普通 markdown 链接：拦截原地导航，改用系统浏览器打开。否则点击会让渲染窗口从 SPA 跳走
@@ -1339,6 +1374,14 @@ async function onMessagesClick(e: MouseEvent) {
     if (/^(https?:|mailto:|tel:)/i.test(href)) {
       e.preventDefault()
       ;(window as any).api.shell.openExternal(href)
+      return
+    }
+    // local-file 协议链接（如 AI 输出 [查看文件](local-file://...)）：不拦截会让渲染窗口
+    // 原地导航去加载该文件、替换整个 SPA，改为在文件管理器中定位
+    if (/^local-file:/i.test(href)) {
+      e.preventDefault()
+      const p = resolveLocalFileTarget(href)
+      if (p) (window as any).api.shell.showItemInFolder(p)
       return
     }
   }
@@ -1362,16 +1405,6 @@ async function onMessagesClick(e: MouseEvent) {
       } catch { /* ignore */ }
     }
     return
-  }
-  const btn = target.closest('.link-jump-btn') as HTMLElement | null
-  if (btn?.dataset?.link) {
-    const link = btn.dataset.link
-    const type = btn.dataset.linkType
-    if (type === 'external') {
-      ;(window as any).api.shell.openExternal(link)
-    } else {
-      ;(window as any).api.shell.showItemInFolder(link)
-    }
   }
 }
 
@@ -1532,6 +1565,9 @@ onMounted(async () => {
   if (chatStore.currentConversationId) {
     await chatStore.selectConversation(chatStore.currentConversationId)
     loadDraftFor(chatStore.currentConversationId)
+    // 僵尸轮次恢复：渲染端 reload/托盘重开后主进程轮次可能仍在跑，重建流式态
+    //（续接后续流事件 + 恢复停止按钮；轮末由 round_done 事件收尾重拉）
+    void chatStore.resumeStreamingIfActive(chatStore.currentConversationId)
   }
 
   scrollToBottom()
@@ -1602,5 +1638,35 @@ onUnmounted(() => {
 .link-jump-icon {
   flex-shrink: 0;
   color: #e5652a;
+}
+
+/* local-file 图片的「打开所在目录」角标：默认隐藏，hover 图片时浮现在右上角 */
+.img-file-wrap {
+  position: relative;
+  display: inline-block;
+}
+/* .prose img 的上下 margin 会撑大 wrap 高度、让角标浮到图片上方的空白带里；
+   把垂直间距挪到包装层（特异性压过 .prose img），使 wrap 内容盒 = 图片盒，角标贴合图片右上角 */
+.prose .img-file-wrap {
+  margin: 8px 0;
+}
+.prose .img-file-wrap img {
+  margin: 0;
+}
+.img-file-wrap .link-jump-btn {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  margin-left: 0;
+  opacity: 0;
+  /* 透明时不得拦截图片点击（点击图片 = 预览），仅 hover 显示后才可点 */
+  pointer-events: none;
+  background: var(--surface-0, #fff);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+  transition: opacity 0.15s, background 0.15s, border-color 0.15s;
+}
+.img-file-wrap:hover .link-jump-btn {
+  opacity: 1;
+  pointer-events: auto;
 }
 </style>

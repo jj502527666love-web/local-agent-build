@@ -7,7 +7,7 @@
 
 import { readFile } from 'fs/promises'
 import { isAbsolute, relative, resolve } from 'path'
-import { buildOutboundMessage, getUploadUrl, sendMessage } from './ilink-api'
+import { assertSendResponse, buildOutboundMessage, getUploadUrl, sendMessage } from './ilink-api'
 import { prepareUpload, uploadEncryptedMedia } from './ilink-cdn'
 import { MESSAGE_ITEM_TYPE, UPLOAD_MEDIA_TYPE } from './ilink-types'
 import type { ClawbotConnection } from './clawbot-store'
@@ -41,12 +41,18 @@ function sendGate(): Promise<void> {
 export interface OutboundImage {
   alt: string
   url: string
+  /** 在原始消息图片序列中的下标（重试时派生 client_id 用——防失败子表重编号后与已发图片撞 id） */
+  origIdx?: number
 }
 
-/** 抽出 markdown 图片引用（![alt](url)），在清洗前调用 */
+/**
+ * 抽出 markdown 图片引用（![alt](url)），在清洗前调用。
+ * alt 用非贪婪 `[\s\S]*?`：LLM 补全的英文提示词常含 [4k] 等方括号标签，
+ * 旧的 `[^\]]*` 遇 ']' 即止导致整体失配——图不抽取且图片语法原样泄漏进微信。
+ */
 export function extractMarkdownImages(text: string): OutboundImage[] {
   const out: OutboundImage[] = []
-  const re = /!\[([^\]]*)\]\(([^)\s]+)\)/g
+  const re = /!\[([\s\S]*?)\]\(([^)\s]+)\)/g
   let m: RegExpExecArray | null
   while ((m = re.exec(text)) !== null) out.push({ alt: m[1] || '', url: m[2] })
   return out
@@ -59,8 +65,8 @@ export function extractMarkdownImages(text: string): OutboundImage[] {
  */
 export function stripMarkdownForWechat(text: string): string {
   let s = text
-  // 图片语法整体删除
-  s = s.replace(/!\[[^\]]*\]\([^)]+\)/g, '')
+  // 图片语法整体删除（与 extractMarkdownImages 同款正则，避免失配残留）
+  s = s.replace(/!\[([\s\S]*?)\]\(([^)\s]+)\)/g, '')
   // H1-H6 标题标记剥除（保留标题文字）
   s = s.replace(/^[ \t]*#{1,6}[ \t]+/gm, '')
   // CJK 斜体标记剥除：*含中日韩的文字* → 文字（粗体 ** 保留，与官方一致）
@@ -191,25 +197,28 @@ export interface SendContext {
   /** 该 peer 最新入站消息的 context_token（不可复用旧的） */
   contextToken: string
   signal?: AbortSignal
+  /** 逻辑消息幂等键（可选）：分段/重试/图片共享同一前缀派生 client_id
+   * （msgKey-t{N} / msgKey-i{N}），服务端可按 client_id 去重，防响应歧义重试造成重复投递 */
+  msgKey?: string
   /** 每成功发出一条（text/image）回调，用于写日志/计数 */
   onSent?: (kind: 'text' | 'image', summary: string) => void
 }
 
-async function sendTextSegment(ctx: SendContext, text: string): Promise<void> {
+async function sendTextSegment(ctx: SendContext, text: string, segIdx = 0): Promise<void> {
   const msg = buildOutboundMessage({
     toUserId: ctx.peerId,
     contextToken: ctx.contextToken,
-    itemList: [{ type: MESSAGE_ITEM_TYPE.TEXT, text_item: { text } }]
+    itemList: [{ type: MESSAGE_ITEM_TYPE.TEXT, text_item: { text } }],
+    clientId: ctx.msgKey ? `${ctx.msgKey}-t${segIdx}` : undefined
   })
   await sendGate()
   const resp = await sendMessage(ctx.conn.baseurl, ctx.token, msg, ctx.signal)
-  if (resp.ret !== undefined && resp.ret !== 0) {
-    throw new Error(`sendmessage ret=${resp.ret} ${resp.errmsg || ''}`.trim())
-  }
+  // 白名单断言：仅 ret===0（或 errcode===0）算确认送达；空 body/非零码抛错走重试
+  assertSendResponse(resp)
   ctx.onSent?.('text', text.slice(0, 200))
 }
 
-async function sendImage(ctx: SendContext, buf: Buffer): Promise<void> {
+async function sendImageOnce(ctx: SendContext, buf: Buffer, imgIdx = 0): Promise<void> {
   const prepared = prepareUpload(buf)
   const up = await getUploadUrl(ctx.conn.baseurl, ctx.token, {
     filekey: prepared.filekey,
@@ -221,6 +230,9 @@ async function sendImage(ctx: SendContext, buf: Buffer): Promise<void> {
     no_need_thumb: true,
     aeskey: prepared.aeskeyHex
   }, ctx.signal)
+  if (!up.upload_full_url && !up.upload_param) {
+    throw new Error('getuploadurl 响应缺少上传参数（未确认）')
+  }
   const encryptQueryParam = await uploadEncryptedMedia({
     uploadFullUrl: up.upload_full_url,
     uploadParam: up.upload_param,
@@ -241,37 +253,85 @@ async function sendImage(ctx: SendContext, buf: Buffer): Promise<void> {
         },
         mid_size: prepared.filesize
       }
-    }]
+    }],
+    clientId: ctx.msgKey ? `${ctx.msgKey}-i${imgIdx}` : undefined
   })
   await sendGate()
   const resp = await sendMessage(ctx.conn.baseurl, ctx.token, msg, ctx.signal)
-  if (resp.ret !== undefined && resp.ret !== 0) {
-    throw new Error(`sendmessage(image) ret=${resp.ret} ${resp.errmsg || ''}`.trim())
-  }
+  assertSendResponse(resp, 'sendmessage(image)')
   ctx.onSent?.('image', '[图片]')
+}
+
+/** 单张图发送：失败后隔 2s 重试一次（CDN/网络抖动），仍败向上抛 */
+async function sendImageWithRetry(ctx: SendContext, buf: Buffer, imgIdx = 0): Promise<void> {
+  try {
+    await sendImageOnce(ctx, buf, imgIdx)
+  } catch (e) {
+    if (ctx.signal?.aborted) throw e
+    await new Promise((r) => setTimeout(r, 2000))
+    await sendImageOnce(ctx, buf, imgIdx)
+  }
+}
+
+export interface OutboundSendResult {
+  /** 成功发出的文本分段数 */
+  textSegments: number
+  /** 加载/发送均失败的图片（由桥做图片级重试与降级；不再毒化整条消息重发文本） */
+  failedImages: OutboundImage[]
 }
 
 /**
  * 回复回发主入口：清洗 markdown → 分段发文字 → 抽取图片逐张上传发图。
- * 图片加载失败静默跳过（文字已先行送达）；发送失败向上抛（桥接层记日志并兜底）。
+ * 文本发送失败向上抛（桥整条重试）；图片失败不抛、收集进 failedImages（桥按图片级
+ * 幂等键重试，避免「图失败 → 整条重发 → 文本刷屏」的毒化循环）。
  */
-export async function sendOutboundReply(ctx: SendContext, rawText: string): Promise<void> {
+export async function sendOutboundReply(ctx: SendContext, rawText: string): Promise<OutboundSendResult> {
   const images = extractMarkdownImages(rawText)
   const cleaned = stripMarkdownForWechat(rawText)
   const segments = segmentText(cleaned)
-  for (const seg of segments) {
-    await sendTextSegment(ctx, seg)
+  for (let i = 0; i < segments.length; i++) {
+    await sendTextSegment(ctx, segments[i], i)
   }
-  for (const img of images.slice(0, MAX_OUTBOUND_IMAGES)) {
+  const failedImages: OutboundImage[] = []
+  for (let i = 0; i < Math.min(images.length, MAX_OUTBOUND_IMAGES); i++) {
+    const img = images[i]
     const buf = await loadImageBuffer(img.url)
-    if (!buf) continue
-    await sendImage(ctx, buf)
+    if (!buf) { failedImages.push({ ...img, origIdx: i }); continue }
+    try {
+      await sendImageWithRetry(ctx, buf, i)
+    } catch (e) {
+      console.warn('[clawbot] image send failed:', e instanceof Error ? e.message : e)
+      failedImages.push({ ...img, origIdx: i })
+    }
   }
+  return { textSegments: segments.length, failedImages }
+}
+
+/**
+ * 仅重发图片（文本已确认送达后的图片级重试），返回仍失败的图片。
+ * client_id 沿用 origIdx（与首发一致），不与已发图片撞 id。
+ */
+export async function sendImagesOnly(ctx: SendContext, images: OutboundImage[]): Promise<OutboundImage[]> {
+  const failed: OutboundImage[] = []
+  for (let i = 0; i < Math.min(images.length, MAX_OUTBOUND_IMAGES); i++) {
+    const img = images[i]
+    const idx = img.origIdx ?? i
+    const buf = await loadImageBuffer(img.url)
+    if (!buf) { failed.push({ ...img, origIdx: idx }); continue }
+    try {
+      await sendImageWithRetry(ctx, buf, idx)
+    } catch (e) {
+      console.warn('[clawbot] image resend failed:', e instanceof Error ? e.message : e)
+      failed.push({ ...img, origIdx: idx })
+    }
+  }
+  return failed
 }
 
 /** 简易纯文本发送（系统提示/错误兜底用） */
 export async function sendPlainText(ctx: SendContext, text: string): Promise<void> {
-  for (const seg of segmentText(text)) {
-    await sendTextSegment(ctx, seg)
+  const segments = segmentText(text)
+  for (let i = 0; i < segments.length; i++) {
+    await sendTextSegment(ctx, segments[i], i)
   }
 }

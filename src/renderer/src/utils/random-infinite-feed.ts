@@ -20,6 +20,10 @@ export interface RandomInfiniteFeed<T> {
   hasMore: ComputedRef<boolean>
   /** 重新设置全量数据：洗牌并把展示数量重置为 initial */
   setItems: (list: T[]) => void
+  /** 保持源顺序设置（不洗牌）：搜索/分类等检索场景用，保证结果可复现 */
+  setItemsOrdered: (list: T[]) => void
+  /** 手动「换一批」：重新洗牌（用户主动要新鲜感时才随机） */
+  reshuffle: () => void
   /** 手动加载下一批 */
   loadMore: () => void
   /** 绑定到底部哨兵元素的函数 ref（模板里 :ref="setSentinel"） */
@@ -58,6 +62,16 @@ export function useRandomInfiniteFeed<T>(options?: {
     limit.value = initial
   }
 
+  function setItemsOrdered(list: T[]): void {
+    pool.value = list.slice()
+    limit.value = initial
+  }
+
+  function reshuffle(): void {
+    pool.value = shuffle(pool.value)
+    limit.value = initial
+  }
+
   function loadMore(): void {
     if (limit.value < pool.value.length) {
       limit.value = Math.min(limit.value + step, pool.value.length)
@@ -86,5 +100,5 @@ export function useRandomInfiniteFeed<T>(options?: {
     observer = null
   })
 
-  return { items, total, hasMore, setItems, loadMore, setSentinel }
+  return { items, total, hasMore, setItems, setItemsOrdered, reshuffle, loadMore, setSentinel }
 }

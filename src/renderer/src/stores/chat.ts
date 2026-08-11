@@ -91,6 +91,8 @@ export interface Message {
   /** 交互卡片（ask_user / image_params）；null/缺省 = 普通消息。 */
   card?: MessageCard | null
   created_at: string
+  /** 发送失败标记（仅本地渲染态：主进程前置校验失败时保留的乐观气泡），不入库 */
+  failed?: boolean
   _toolLogs?: string[]
   _toolActive?: boolean
   _collapsed?: boolean
@@ -126,6 +128,10 @@ export interface StreamingState {
   toolLogs: string[]
   toolActive: boolean
   collapsed: boolean
+  /** token 合批缓冲：SSE delta 先进缓冲，30ms 定时合入 content（避免每 token 触发整列表重渲染） */
+  pendingContent?: string
+  /** 僵尸恢复标记：渲染端 reload 后重建的流式态（requestId 未知，事件匹配放宽） */
+  resumed?: boolean
 }
 
 /**
@@ -167,10 +173,44 @@ export const useChatStore = defineStore('chat', () => {
   const streamingStates = ref<Record<string, StreamingState>>({})
   /** 待审批的工具调用（per-conversation）。app 级常驻监听更新，切走/回来不丢。 */
   const pendingApprovals = ref<Record<string, ApprovalRequest>>({})
+  /** 已请求取消、等待主进程确认收尾的会话（「中断中」过渡态：不乐观解锁，防新旧轮并发） */
+  const cancellingConvIds = ref<Set<string>>(new Set())
+  /** token 合批定时器（per-conversation） */
+  const contentFlushTimers = new Map<string, ReturnType<typeof setTimeout>>()
   /** app 级常驻流式监听只装一次的幂等标志（store 单例，setup 仅执行一次）。 */
   let streamListenerReady = false
   /** app 级常驻审批监听只装一次的幂等标志。 */
   let approvalListenerReady = false
+
+  /** 立即把合批缓冲合入 content（状态切换/收尾前必须调用，防丢尾部 token） */
+  function flushContentNow(convId: string): void {
+    const t = contentFlushTimers.get(convId)
+    if (t) {
+      clearTimeout(t)
+      contentFlushTimers.delete(convId)
+    }
+    const st = streamingStates.value[convId]
+    if (st?.pendingContent) {
+      st.content += st.pendingContent
+      st.pendingContent = ''
+    }
+  }
+
+  /** 30ms 合批：SSE delta 先攒入缓冲，定时合入 content（每 token 一次重渲染 → 每批一次） */
+  function scheduleContentFlush(convId: string): void {
+    if (contentFlushTimers.has(convId)) return
+    const t = setTimeout(() => {
+      contentFlushTimers.delete(convId)
+      const st = streamingStates.value[convId]
+      if (!st) return
+      if (st.pendingContent) {
+        st.content += st.pendingContent
+        st.pendingContent = ''
+      }
+      if (currentConversationId.value === convId) streamContent.value = st.content
+    }, 30)
+    contentFlushTimers.set(convId, t)
+  }
 
   const streaming = computed(() =>
     currentConversationId.value ? streamingConvIds.value.has(currentConversationId.value) : false
@@ -413,20 +453,24 @@ export const useChatStore = defineStore('chat', () => {
       if (!convId) return
       const st = streamingStates.value[convId]
       if (!st) return
-      if (data.requestId && st.requestId !== data.requestId) return
-      if (canceledRequestIds.value.has(st.requestId) && data.type !== 'aborted') return
+      // 僵尸恢复态（requestId 未知）放行所有事件；正常态严格按 requestId 匹配
+      if (data.requestId && st.requestId && st.requestId !== data.requestId) return
+      if (canceledRequestIds.value.has(st.requestId) && data.type !== 'aborted' && data.type !== 'round_done') return
 
       switch (data.type) {
         case 'content':
           // 首个正文 token 到达 = 思考阶段结束，折叠思维链面板
           if (st.reasoningActive) st.reasoningActive = false
-          st.content += data.content || ''
+          // 合批：先攒缓冲，30ms 定时合入（每 token 一次整列表重渲染 → 每批一次）
+          st.pendingContent = (st.pendingContent || '') + (data.content || '')
+          scheduleContentFlush(convId)
           break
         case 'reasoning':
           st.reasoning += data.content || ''
           st.reasoningActive = true
           break
         case 'tool_start':
+          flushContentNow(convId)
           st.content = ''
           if (st.reasoningActive) st.reasoningActive = false
           st.toolActive = true
@@ -457,23 +501,47 @@ export const useChatStore = defineStore('chat', () => {
           if (st.toolLogs.length && st.toolLogs[st.toolLogs.length - 1].startsWith(HEARTBEAT_PREFIX)) {
             st.toolLogs.pop()
           }
+          flushContentNow(convId)
           st.content = ''
           break
         case 'aborted': {
+          flushContentNow(convId)
           if (st.reasoningActive) st.reasoningActive = false
           const marker = data.content || '[\u5df2\u4e2d\u65ad]'
           st.content = st.content ? `${st.content}\n\n${marker}` : marker
           break
         }
         case 'error': {
+          flushContentNow(convId)
           if (st.reasoningActive) st.reasoningActive = false
           const errLine = `[Error] ${translateError(data.error)}`
           st.content = st.content ? `${st.content}\n\n${errLine}` : errLine
           break
         }
+        case 'round_done': {
+          // 轮次真正结束：仅「渲染端无活跃 IPC」的僵尸恢复场景由它收尾
+          //（正常路径的清理在 runStreamedRequest 的 IPC resolve 后做）
+          if (!activeRequestIds.value[convId]) {
+            flushContentNow(convId)
+            if (currentConversationId.value === convId) {
+              void window.api.chat.invoke('getMessages', convId).then((rows: any) => {
+                if (currentConversationId.value === convId && Array.isArray(rows)) {
+                  messages.value = hydrateReasoning(rows as Message[])
+                }
+              }).catch(() => {})
+            }
+            delete streamingStates.value[convId]
+            streamingConvIds.value.delete(convId)
+            streamingConvIds.value = new Set(streamingConvIds.value)
+            cancellingConvIds.value.delete(convId)
+            cancellingConvIds.value = new Set(cancellingConvIds.value)
+            refreshCloudBalances()
+          }
+          break
+        }
       }
-      // 当前停在该会话时镜像给 streamContent，沿用现有 scrollToBottom 的 watch
-      if (currentConversationId.value === convId) streamContent.value = st.content
+      // 当前停在该会话时镜像给 streamContent（content 分支由合批 flush 自行镜像，此处跳过）
+      if (data.type !== 'content' && currentConversationId.value === convId) streamContent.value = st.content
     })
   }
 
@@ -544,9 +612,12 @@ export const useChatStore = defineStore('chat', () => {
   // 被 sendMessage / regenerate / editMessage 复用(invoke 回调决定具体调用哪个 IPC)。
   async function runStreamedRequest(
     convId: string,
-    invoke: (requestId: string) => Promise<any>
+    invoke: (requestId: string) => Promise<any>,
+    startedAt?: string
   ) {
     const requestId = createRequestId(convId)
+    // startedAt 由调用方在乐观气泡 push 之前捕获传入（否则跨毫秒边界时本轮气泡会被误判为旧消息）
+    const startedAtTs = startedAt || new Date().toISOString()
     const previousRequestId = activeRequestIds.value[convId]
     if (previousRequestId && previousRequestId !== requestId) {
       canceledRequestIds.value.add(previousRequestId)
@@ -580,6 +651,7 @@ export const useChatStore = defineStore('chat', () => {
     } finally {
       const isLatestRequest = activeRequestIds.value[convId] === requestId
       if (isLatestRequest) {
+        flushContentNow(convId)
         const st = streamingStates.value[convId]
         const localContent = st?.content || ''
         const localReasoning = st?.reasoning || ''
@@ -603,9 +675,19 @@ export const useChatStore = defineStore('chat', () => {
                 lastDb._reasoningActive = false
               }
             }
-            // 兜底：IPC 级失败导致主进程未落库本轮 assistant 时补一条本地错误消息，避免错误丢失
+            // 兜底：IPC 级失败（含主进程前置校验失败）导致本轮无任何新落库时——
+            // 保留用户消息（标发送失败）+ 补错误气泡，避免消息与错误双静默。
+            // 旧条件「末条非 assistant 或无 content」在有历史的会话中恒不成立（末条必为旧 assistant）。
             const lastDb = dbMessages[dbMessages.length - 1]
-            if (invokeErrorMsg && (!lastDb || lastDb.role !== 'assistant' || !lastDb.content)) {
+            const lastIsFreshAssistant = !!lastDb && lastDb.role === 'assistant' && lastDb.created_at >= startedAtTs
+            if (invokeErrorMsg && !lastIsFreshAssistant) {
+              // 主进程前置校验失败时用户消息从未落库：把乐观气泡补回并标失败
+              const pendingLocal = messages.value.filter((m) => m.id.startsWith('temp-user-') && m.created_at >= startedAtTs)
+              for (const m of pendingLocal) {
+                if (!dbMessages.some((d) => d.role === 'user' && d.content === m.content && d.created_at >= startedAtTs)) {
+                  dbMessages.push({ ...m, failed: true } as Message)
+                }
+              }
               dbMessages.push({
                 id: 'temp-error-' + Date.now(),
                 conversation_id: convId,
@@ -632,6 +714,8 @@ export const useChatStore = defineStore('chat', () => {
         activeRequestIds.value = next
         streamingConvIds.value.delete(convId)
         streamingConvIds.value = new Set(streamingConvIds.value)
+        cancellingConvIds.value.delete(convId)
+        cancellingConvIds.value = new Set(cancellingConvIds.value)
         refreshCloudBalances()
       }
     }
@@ -649,6 +733,9 @@ export const useChatStore = defineStore('chat', () => {
     const botId = currentBotId.value!
 
     // 乐观插入用户消息（主进程也会立即落库；切走切回靠 getMessages 拿回）
+    // startedAt 在 push 之前捕获并传入执行器：失败兜底按它判定「本轮新落库」，
+    // 若在执行器内捕获，跨毫秒边界时本轮乐观气泡会被误判为旧消息而丢失
+    const startedAt = new Date().toISOString()
     messages.value.push({
       id: 'temp-user-' + Date.now(),
       conversation_id: convId,
@@ -673,7 +760,7 @@ export const useChatStore = defineStore('chat', () => {
         ...(overrides?.mcpIds !== undefined ? { overrideMcpIds: overrides.mcpIds } : {}),
         ...(overrides?.promptSkillDirs !== undefined ? { overridePromptSkillDirs: overrides.promptSkillDirs } : {})
       })
-    )
+    , startedAt)
   }
 
   // 重新生成最后一轮回复(删除最后一条 user 及其后消息，用相同内容重发)
@@ -756,6 +843,12 @@ export const useChatStore = defineStore('chat', () => {
     return !!requestId && canceledRequestIds.value.has(requestId)
   }
 
+  /**
+   * 取消：进入「中断中」过渡态——不再乐观立即解锁。
+   * 乐观解锁的前提是「abort 毫秒级生效」，但工具执行阶段（沙箱命令等）abort 有延迟，
+   * 立即解锁会让用户在新轮与未收尾的旧轮并发写同一会话。改为标记 cancelling，
+   * 待主进程轮次真正结束（IPC resolve → runStreamedRequest finally / round_done）再清理。
+   */
   async function cancel(convId?: string) {
     const id = convId || currentConversationId.value
     if (!id) return false
@@ -764,14 +857,42 @@ export const useChatStore = defineStore('chat', () => {
       canceledRequestIds.value.add(requestId)
       canceledRequestIds.value = new Set(canceledRequestIds.value)
     }
-    // 乐观立即复位：移出 streaming 集合，输入框/中断按钮即刻恢复，不必干等主进程 IPC 最终 resolve。
-    // 半截内容已由主进程在中断时落库（含 [已中断] 标记），runStreamedRequest 的 finally 随后做
-    // live 气泡→DB 消息的 seamless swap（与后端 abort 透传到 MCP 调用的修复配合，间隔通常仅毫秒级）。
-    if (streamingConvIds.value.has(id)) {
-      streamingConvIds.value.delete(id)
-      streamingConvIds.value = new Set(streamingConvIds.value)
+    if (streamingConvIds.value.has(id) && !cancellingConvIds.value.has(id)) {
+      cancellingConvIds.value.add(id)
+      cancellingConvIds.value = new Set(cancellingConvIds.value)
     }
     return (await window.api.chat.invoke('cancel', id, requestId)) as boolean
+  }
+
+  /** 「中断中」过渡态查询（ChatView 据此把停止按钮变为禁用态文案） */
+  function isCancelling(convId?: string): boolean {
+    const id = convId || currentConversationId.value
+    return !!id && cancellingConvIds.value.has(id)
+  }
+
+  /**
+   * 僵尸轮次恢复：渲染端 reload/托盘重开后 pinia 清零，主进程轮次可能仍在跑。
+   * 选中会话时调用：命中主进程活跃轮次则重建流式态（续接后续流事件 + 恢复停止按钮），
+   * 轮末由 round_done 事件收尾重拉。
+   */
+  async function resumeStreamingIfActive(convId: string): Promise<void> {
+    if (!convId || streamingConvIds.value.has(convId)) return
+    try {
+      const active = await window.api.chat.invoke('isActive', convId)
+      if (!active) return
+      streamingStates.value[convId] = {
+        requestId: '',
+        content: '',
+        reasoning: '',
+        reasoningActive: false,
+        toolLogs: [],
+        toolActive: true,
+        collapsed: false,
+        resumed: true
+      }
+      streamingConvIds.value.add(convId)
+      streamingConvIds.value = new Set(streamingConvIds.value)
+    } catch { /* 查询失败忽略 */ }
   }
 
   return {
@@ -783,6 +904,8 @@ export const useChatStore = defineStore('chat', () => {
     streamContent,
     isConversationStreaming,
     isRequestCanceled,
+    isCancelling,
+    resumeStreamingIfActive,
     currentConversation,
     drafts,
     streamingStates,

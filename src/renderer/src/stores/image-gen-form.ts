@@ -31,6 +31,9 @@ export const useImageGenFormStore = defineStore('imageGenForm', () => {
   // 批量
   const batchCount = ref(1)
 
+  // 风格预设（云端分发；null = 不使用风格，提交时把片段拼到提示词尾部）
+  const stylePresetId = ref<number | null>(null)
+
   // 视图模式
   const viewMode = ref<'grid' | 'list'>('grid')
 
@@ -46,6 +49,7 @@ export const useImageGenFormStore = defineStore('imageGenForm', () => {
     selectedTier.value = DEFAULT_TIER_ID
     selectedQuality.value = DEFAULT_QUALITY_ID
     batchCount.value = 1
+    stylePresetId.value = null
     viewMode.value = 'grid'
   }
 
@@ -60,6 +64,7 @@ export const useImageGenFormStore = defineStore('imageGenForm', () => {
     selectedTier,
     selectedQuality,
     batchCount,
+    stylePresetId,
     viewMode,
     reset,
   }

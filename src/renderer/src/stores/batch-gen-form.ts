@@ -43,6 +43,9 @@ export const useBatchGenFormStore = defineStore('batchGenForm', () => {
   const defaultSize = ref('1:1')
   const defaultTier = ref<string>(DEFAULT_TIER_ID)
 
+  // 风格预设（云端分发；null = 不使用风格，作用于本批全部任务）
+  const stylePresetId = ref<number | null>(null)
+
   // 并发与运行态
   const concurrency = ref(2)
   const batchRunning = ref(false)
@@ -59,6 +62,7 @@ export const useBatchGenFormStore = defineStore('batchGenForm', () => {
     optimizeModelId.value = ''
     defaultSize.value = '1:1'
     defaultTier.value = DEFAULT_TIER_ID
+    stylePresetId.value = null
     concurrency.value = 2
     batchRunning.value = false
     tasks.value = []
@@ -73,6 +77,7 @@ export const useBatchGenFormStore = defineStore('batchGenForm', () => {
     optimizeModelId,
     defaultSize,
     defaultTier,
+    stylePresetId,
     concurrency,
     batchRunning,
     tasks,

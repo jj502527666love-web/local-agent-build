@@ -349,6 +349,27 @@ export function getNodeCapabilities(): NodeCapability[] {
 // 写入前轻校验
 // -----------------------------------------------------------------------------
 
+/**
+ * 引擎专属（运行态/产物）data 字段：由执行引擎写入，智能体不允许手动设置。
+ * 与 NODE_DATA_FIELDS 登记表「刻意排除运行态与产物字段」的契约对齐——此前创建/更新
+ * 白名单以 getDefaultNodeData 键为基底，这些字段被放行，模型可伪造 status:'done' 或
+ * 悬空 result_path 等（quickOrchestrator 会因此被幂等守卫静默跳过），故统一在此硬拦。
+ * 唯一例外：status:'idle' 放行（用于把 error 节点复位重跑）。
+ */
+export const ENGINE_OWNED_DATA_KEYS = new Set<string>([
+  'status', 'error', 'progress', 'result',
+  'result_path', 'result_url', 'generation_id',
+  'cloud_task_id', 'matting_task_id', 'video_url', 'cover_url',
+  'plan_json', 'created_node_ids', 'created_edge_ids', 'outputContent',
+  'image_data', 'frames', 'shots'
+])
+
+/** 该字段是否允许智能体写入：引擎字段一律拒绝，仅放行 status:'idle' 复位 */
+export function isAgentWritableDataKey(key: string, value: any): boolean {
+  if (!ENGINE_OWNED_DATA_KEYS.has(key)) return true
+  return key === 'status' && value === 'idle'
+}
+
 /** validateNodeData 结果：cleaned 为可安全写库的 data，warnings 收集被剔除/存疑项 */
 export interface ValidateResult {
   ok: boolean
@@ -381,6 +402,11 @@ export function validateNodeData(type: string, data: Record<string, any> | undef
   for (const [key, value] of Object.entries(input)) {
     if (!allowedKeys.has(key)) {
       warnings.push(`剔除未知字段：${key}`)
+      continue
+    }
+    // 引擎专属字段（运行态/产物）不接受模型写入，防伪造完成态/悬空产物路径
+    if (!isAgentWritableDataKey(key, value)) {
+      warnings.push(`字段 ${key} 由执行引擎管理，已忽略（不允许手动设置）`)
       continue
     }
     const allowed = enumMap.get(key)

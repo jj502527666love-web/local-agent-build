@@ -46,6 +46,10 @@
           :disabled="data.locked"
         />
       </div>
+      <div class="mb-2">
+        <label class="node-label">风格</label>
+        <StylePresetPicker v-model="stylePresetId" />
+      </div>
       <!-- Status & Result -->
       <div v-if="data.status === 'running'" class="flex items-center gap-1.5 text-[10px] text-amber-600 mb-2">
         <svg class="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
@@ -95,6 +99,7 @@ import ResolutionTierPicker from '@/components/ResolutionTierPicker.vue'
 import ImageLightbox from '@/components/ImageLightbox.vue'
 import { DEFAULT_TIER_ID } from '@shared/image-size'
 import PromptTextarea from '@/components/PromptTextarea.vue'
+import StylePresetPicker from '@/components/StylePresetPicker.vue'
 import { IMAGE_PROMPT_MAX_LENGTH } from '@shared/prompt-limits'
 
 type HandleClickHandler = (e: MouseEvent, nodeId: string, handleId: string, dataType: 'text' | 'image') => void
@@ -108,15 +113,17 @@ const onHandleClick = inject<HandleClickHandler | null>('onHandleClick', null)
 const size = ref(props.data.size || '1:1')
 const tier = ref<string>(props.data.tier_id || DEFAULT_TIER_ID)
 const prompt = ref(props.data.prompt || '')
+// 风格预设 id（云端分发；null = 不使用风格，执行时拼接到提示词尾部）
+const stylePresetId = ref<number | null>(Number(props.data.style_id) > 0 ? Number(props.data.style_id) : null)
 const previewSrc = ref<string | null>(null)
 
 // v-model driven: persist whenever the user picks a preset or confirms a custom value.
-watch([size, tier], () => saveData())
+watch([size, tier, stylePresetId], () => saveData())
 
 function saveData() {
   if (!props.data.nodeId) return
   canvasStore.updateNode(props.data.nodeId, {
-    data: { ...props.data, size: size.value, tier_id: tier.value, prompt: prompt.value }
+    data: { ...props.data, size: size.value, tier_id: tier.value, prompt: prompt.value, style_id: stylePresetId.value }
   })
 }
 

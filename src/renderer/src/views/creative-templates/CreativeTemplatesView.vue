@@ -25,6 +25,12 @@
           />
         </div>
         <button
+          v-if="activeTab === 'cloud'"
+          class="px-3 py-2 text-xs text-text-secondary hover:text-primary-600 border border-surface-3 rounded-lg bg-surface-0 hover:bg-surface-1 transition-colors"
+          title="重新随机排序，换一批模板看看"
+          @click="reshuffleCloudFeed"
+        >换一批</button>
+        <button
           v-if="activeTab === 'local' && cloudAuth.permissions.inspiration_uploader"
           class="px-3 py-2 text-xs text-text-secondary hover:text-primary-600 border border-surface-3 rounded-lg bg-surface-0 hover:bg-surface-1 transition-colors"
           :disabled="syncingSubmission"
@@ -438,15 +444,18 @@ const currentTemplates = computed<Array<CreativeTemplate | CloudCreativeTemplate
   return activeTab.value === 'local' ? store.templates : store.cloudTemplates
 })
 
-// 云端模板广场：前端随机排序 + 无限滚动（首屏 25，每次下拉 +20）
+// 云端模板广场：无限滚动（首屏 25，每次下拉 +20）
+// 排序策略：有搜索词时保序（检索要可复现），纯逛/切分类时随机（常看常新），随时可手动「换一批」
 const {
   items: cloudFeedItems,
   hasMore: cloudHasMore,
-  setItems: setCloudFeed,
+  setItems: setCloudFeedShuffled,
+  setItemsOrdered: setCloudFeedOrdered,
+  reshuffle: reshuffleCloudFeed,
   setSentinel: setCloudSentinel,
 } = useRandomInfiniteFeed<CloudCreativeTemplate>({ initial: 25, step: 20 })
 
-// 5 列瀑布流：对随机后的展示切片做 round-robin 分配，下拉追加时已有卡片不重排
+// 5 列瀑布流：对展示切片做 round-robin 分配，下拉追加时已有卡片不重排
 const CLOUD_COLUMN_COUNT = 5
 const cloudColumns = computed<CloudCreativeTemplate[][]>(() => {
   const cols: CloudCreativeTemplate[][] = Array.from({ length: CLOUD_COLUMN_COUNT }, () => [])
@@ -454,10 +463,14 @@ const cloudColumns = computed<CloudCreativeTemplate[][]>(() => {
   return cols
 })
 
-// 云端模板每次重新加载（进入 / 切分类 / 搜索）后重新洗牌
+// 云端模板每次重新加载后重置展示：搜索态保序（结果可对照），非搜索态随机（逛的新鲜感）
 watch(
   () => store.cloudTemplates,
-  (list) => setCloudFeed(Array.isArray(list) ? list.slice() : []),
+  (list) => {
+    const arr = Array.isArray(list) ? list.slice() : []
+    if (store.cloudSearch.trim()) setCloudFeedOrdered(arr)
+    else setCloudFeedShuffled(arr)
+  },
   { immediate: true }
 )
 

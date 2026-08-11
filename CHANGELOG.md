@@ -6,6 +6,52 @@
 
 ---
 
+## [1.1.0] - 未发布
+
+> **对话产出文件一键直达文件目录**（本条目为 1.1.0 增量记录之一；1.1.0 尚在研发中，对话主链路可靠性大修、画布助手流式化、智能体市场分页筛选、ClawBot 补发与幂等等其余增量仅维护了面向用户的 `shared/changelog.ts`，发版时归并整理）。
+
+### 新增
+
+- **对话产出文件一键直达目录（`utils/markdown.ts` + `views/chat/ChatView.vue`）**：assistant 消息渲染管线重写目标识别——
+  - **识别四类目标**：Windows 盘符路径（反斜杠 `C:\foo` / 正斜杠 `F:/foo`，core-tools 给 LLM 的 displayUrl 即正斜杠形态）、Unix 绝对路径（限定 Users/home/root/var/tmp/opt/data/Applications 根前缀）、`local-file://` 应用内协议文本、http(s) URL；命中后追加「打开所在目录 / 浏览器打开」小按钮，走既有 `shell:showItemInFolder` IPC（目标丢失自动 fallback 开父目录）。
+  - **local-file 图片 hover 角标**：生图产出消息（`![](local-file://img?p=...)`）包装 `span.img-file-wrap` + 角标按钮，悬停浮现、直达目录；角标透明时 `pointer-events: none` 不拦截图片点击预览。
+  - **ImageLightbox 接 `onLocate`**（此前抠图/图库等 8+ 视图已接，唯独 chat 裸用）：预览本地图时工具栏出现「打开所在文件夹」；`resolveLocalFileTarget` 解析 `?p=`（绝对路径直接用）/ `?rel=`（相对路径透传主进程拼数据目录，与协议解析基准一致）。
+  - **画布助手面板补齐消息点击委托**（`CanvasCopilotPanel.vue`，与 ChatView 同款）：此前该面板渲染出的跳转按钮点了无反应、链接点了白屏（无边框窗口无返回键），一并修复。
+  - **系统提示交付约定**（`chat-engine.ts` 工作区说明）：引导 LLM 交付文件时用反引号包裹完整绝对路径——inline code 整体匹配无字符集限制，是含空格（mac 数据目录 `Application Support`）/含中文路径的精确识别通道；裸文本识别为尽力降级通道。
+
+### 修复
+
+- **渲染管线（`utils/markdown.ts`）**：
+  - `insertLinkButtons` 改文本节点级替换（按标签切分、`<a>` 内跳过）：修复旧版往 `<a href="...">` 属性里插按钮撑破标签的既有 bug（裸 URL 链接的 href 曾被注入按钮 HTML 而损坏）。
+  - 占位 token 全面改纯字母数字形态（`XINLCODE/XCODEBLK/JBTNMARK`）+ `appendBtn` 守卫（match 吃进占位 token 即放弃加按钮）：根治 docker 卷映射（`…:/var/…` 粘连）场景的 token 字面量泄漏进可见文本、以及路径紧贴反引号 code 时 `data-link` 被 token 污染必定位失败。
+  - `WIN_PATH_RE` 加左边界负断言（`(?<![A-Za-z0-9])`）：排除 `PATH=/usr/bin:/usr/local/bin`、`user@host:/tmp/x` 等被截出 `n:/`、`t:/` 伪盘符按钮；`UNIX_PATH_RE` 加 `(?<![\w.:])` 排除 `./tmp`、`../data`、`host:/path` 误判。
+  - 裸文本字符集排除 CJK / 全角 / 弯引号 / `&`（实体起始符）：修复路径吃进紧随的中文正文与 `&quot;` 实体（如「已保存（F:\a\b.png）请查收」「"C:\a\b"」）；`trimTrailingPunct` 改配对感知，保留 `D:\backup(1)` 的合法闭括号。
+  - 修复 marked 18 对反斜杠 img src 的 URL 编码（`C:\a\b.png` → `C:%5Ca%5Cb.png`）导致 `convertLocalImages` 永不命中的既有断裂：先 `decodeURIComponent` 再判断，并补 Unix 绝对路径图片分支。
+  - 删除 DOMPurify `ADD_URI_SAFE_ATTR: ['src']`（既有安全配置失效）：该配置豁免了 src 的 URI 校验使 `ALLOWED_URI_REGEXP` 对 img 落空（`javascript:`/`file:` src 原样通过）；删除后白名单恢复对 src 生效。
+  - `resolveLocalFileTarget` 改手工切分 query（`URLSearchParams.get` 会把未编码字面 `+` 解码成空格而路径含 `+` 合法），且 `rel` 优先于 `p` 与主进程 local-file 协议 handler 对齐（防「预览 rel 图、定位 p 文件」两端分叉）。
+- **点击委托（`ChatView.vue`）**：`.link-jump-btn` 分支前移至 anchor 分支之前——linked image（`[![图](local-file...)](https://...)`）形态下角标按钮在 `<a>` 内，原顺序会被 anchor 分支劫持成打开外部链接；anchor 分支补 `local-file:` 拦截（原会让渲染窗口原地导航加载文件、替换整个 SPA）。
+
+### 复查与验证
+
+- 经两轮独立对抗审查（字符串处理 / 渲染层集成）+ 实机渲染复验：29/29 断言通过（esbuild+node 实跑 `renderMarkdownLive`），`vue-tsc`（web）/ `tsc`（node）零错，`electron-vite build` 通过。
+- 已知限制（记录不修）：marked GFM autolink 会把裸 URL 后的中文句号编进 href（`https://a.com/x。` → 404），修复需改 autolink 层，超出本功能范围；raw HTML 标签属性含 `>` 时标签切分可能错乱（根治需 DOMParser 重写）；存量对话消息无需迁移，重渲染即自动获得按钮。
+
+### 新增（增量 2：画布批量删除）
+
+- **画布编辑器：Delete/Backspace 批量删除选中节点**（`CanvasEditorView.vue` `onKeyDown`）：多选（Shift+点击 / Shift+拖动框选，Vue Flow 默认交互）后按 Delete/Backspace 循环 `canvasStore.removeNode`（级联删关联连线、主进程清磁盘产物）；节点与连线同时选中时一起删（级联过的连线对 `removeEdges` 幂等）。守卫与删边一致：整图工作流运行中禁用、输入框聚焦跳过。直接删、无确认，与节点删除按钮 / 删边的既有手动交互对齐（不接 `canvas-undo`——该撤销栈归属画布助手「撤销上次 AI 变更」入口，登记手动操作会造成语义混乱）。此前 `onNodesChange` 只处理 `position` 变更、`remove` 被忽略，且 `onKeyDown` 只取 `getSelectedEdges`，故节点键盘删除不存在。
+- **画布列表页：批量删除选中**（`CanvasListView.vue`）：多选模式头部新增「删除选中」（红色样式对齐「清空画布」按钮），两步确认（确认按钮显示「确认删除 N 个画布」）；执行循环 `deleteProject`，正在运行（整图工作流或任一节点在跑，经 `useWorkflowEngine.isProjectAnyRunning` 判定）的画布跳过并 alert 告知数量——批量入口一次影响多个项目，较单删入口（暂无运行守卫）收紧。
+
+### 新增（增量 3：云控端自定义菜单）
+
+- **侧边栏自定义菜单合并渲染（`MainLayout.vue`）**：`GET /client/desktop-menu` 响应新增 `custom_items`（随云控端 1.6.31 下发；老云控端无此字段自动为空数组，向后兼容），按 `group_key` 挂到现有菜单组末尾或顶级末尾（组被 overrides 隐藏时其下自定义项随之不显示）；`internal` 复用 `router-link`（active 态自然生效），`external` 按 `open_mode` 走 `shell.openExternal`（系统浏览器，默认）或新 IPC `shell:openExternalWindow`（应用内窗口）。图标为 4 枚预置 key 映射内置 SVG（`IconCustom{Link,Page,App,Star}.vue`，与云控端枚举对齐，禁止外链图标）。
+- **应用内窗口（`main/ipc/index.ts` `shell:openExternalWindow` + preload + `env.d.ts`）**：独立 `BrowserWindow` 加载外部页面。安全基线：无 preload（页面拿不到任何特权 API）、`nodeIntegration` 关、`contextIsolation` + `sandbox` 开、session 独立持久分区 `persist:external-menu-pages`（与主窗口 cookie/缓存隔离，也因此不受主窗口 `onHeadersReceived` 注入的 SPA CSP 影响，外部页面按自身响应头正常加载）；原生标题栏 + `page-title-updated` 拦截固定为管理端配置标题。导航守卫：同 host（含其子域）窗内放行，跨域导航与 `window.open` 一律交系统浏览器；`will-navigate` 与 `will-redirect` 双挂（后者防「目标页 302 到外域」绕过）；https 开窗前经 Node tls 做证书预检（进程级 `ignore-certificate-errors` 不影响 Node 网络栈，证书无效则拒开并提示——该全局开关的存在原因未考据清楚，不敢动，故用预检兜住本功能增量）；同 URL 窗口单例聚焦（防连点开 N 个）；`loadURL` 失败关窗 + `dialog.showErrorBox` 反馈（防白屏窗口 + unhandled rejection 威胁主进程）。不选 iframe（生产 CSP 无 frame-src 会拦死 + 目标站 X-Frame-Options 双重限制）与 `<webview>`（需开 webviewTag、Electron 官方不推荐）。
+- **主窗口定位改模块级引用（`main/index.ts`）**：`showOrCreateMainWindow` 与 autoUpdater `sendToRenderer` 原用 `BrowserWindow.getAllWindows()` 泛找——外部页面窗口（或 ewei 改图隐藏窗口）存活时，主窗口关闭后点托盘/图标会把这些窗口误当主窗口 restore/focus，主窗口永无法重建（泛找 ewei 隐藏窗口属既有问题，一并修）。现 `createWindow` 时持有 `mainWindowRef`、`closed` 置空，两处统一只认该引用。
+- **路由兜底（`router/index.ts`）**：新增 `:pathMatch(.*)*` catch-all 重定向 `/chat`——自定义菜单 internal 目标配错（拼写错误/指向下线路由）时回退对话页，不再白屏死胡同。
+- **配套云控端改动（agent-admin 1.6.31 增量 2）**：「菜单配置」页新增「自定义菜单」管理区块，存储 `system_settings.desktop_menu_custom_items`（JSON，无 migration），详见 agent-admin CHANGELOG。
+- **复查修复（两轮独立对抗审查确认）**：合并前过滤脏数据（target_type 非法/目标为空直接丢弃，防死菜单）；自定义 internal 项 active 手动判定（`isCustomInternalActive`：带 query 目标按 fullPath 精确匹配，防与内置同 path 菜单双高亮）；`pathMatches` 剥 query/锚点（否则带 query 目标永不命中组高亮与自动展开）；菜单 key 加 `custom:` 前缀（防与内置 path 撞 `:key`）；打开失败经 `nativeDialog.alert` 可见反馈。
+
+---
+
 ## [1.0.0] - 2026-07-20
 
 > **新增「微信 ClawBot」**（微信扫码绑定，联系人消息桥接进本地智能体对话并回发）**+ 拼图拼接「长图竖拼 / 长图横拼」**（首尾相连模板）。面向用户记录见 `shared/changelog.ts`。

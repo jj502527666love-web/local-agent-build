@@ -154,6 +154,10 @@ const api = {
     invoke: (channel: string, ...args: unknown[]) =>
       ipcRenderer.invoke(`creativeTemplate:${channel}`, ...args)
   },
+  stylePreset: {
+    invoke: (channel: string, ...args: unknown[]) =>
+      ipcRenderer.invoke(`stylePreset:${channel}`, ...args)
+  },
   matting: {
     invoke: (channel: string, ...args: unknown[]) =>
       ipcRenderer.invoke(`matting:${channel}`, ...args),
@@ -388,7 +392,9 @@ const api = {
   shell: {
     openPath: (path: string) => ipcRenderer.invoke('shell:openPath', path),
     showItemInFolder: (path: string) => ipcRenderer.invoke('shell:showItemInFolder', path),
-    openExternal: (url: string) => ipcRenderer.invoke('shell:openExternal', url)
+    openExternal: (url: string) => ipcRenderer.invoke('shell:openExternal', url),
+    // 云控端自定义菜单「应用内窗口」：独立隔离 BrowserWindow 加载外部页面
+    openExternalWindow: (url: string, title?: string) => ipcRenderer.invoke('shell:openExternalWindow', url, title)
   },
   window: {
     minimize: () => ipcRenderer.send('window:minimize'),

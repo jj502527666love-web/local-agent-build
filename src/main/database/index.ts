@@ -193,6 +193,11 @@ function runMigrations(): void {
   if (!msgColNames.includes('tool_call_id')) {
     db.exec("ALTER TABLE messages ADD COLUMN tool_call_id TEXT NOT NULL DEFAULT ''")
   }
+  // conversations：手动改名锁定标记（自动标题生成不再覆盖用户命名）
+  const convTitleCols = db.prepare("PRAGMA table_info(conversations)").all() as any[]
+  if (!convTitleCols.some((c: any) => c.name === 'title_locked')) {
+    db.exec("ALTER TABLE conversations ADD COLUMN title_locked INTEGER NOT NULL DEFAULT 0")
+  }
   // reasoning 思维链持久化(仅 UI 展示用，不回传模型)：旧库幂等加列
   if (!msgColNames.includes('reasoning')) {
     db.exec("ALTER TABLE messages ADD COLUMN reasoning TEXT NOT NULL DEFAULT ''")
@@ -679,6 +684,12 @@ function runMigrations(): void {
     );
     CREATE INDEX IF NOT EXISTS idx_clawbot_logs_created ON clawbot_logs(created_at);
   `)
+
+  // 旧库升级：peer 已发水位列（messages.rowid），重启后 baseline 只标水位之前、遗留未发可补发
+  const cbPeerCols = db.prepare("PRAGMA table_info(clawbot_peers)").all() as any[]
+  if (!cbPeerCols.some((c) => c.name === 'last_sent_rowid')) {
+    db.exec("ALTER TABLE clawbot_peers ADD COLUMN last_sent_rowid INTEGER NOT NULL DEFAULT 0")
+  }
 }
 
 export function closeDatabase(): void {

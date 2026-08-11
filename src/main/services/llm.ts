@@ -43,6 +43,12 @@ export interface LLMRequestOptions {
     onContent?: (piece: string) => void
     onReasoning?: (piece: string) => void
   }
+  /**
+   * 允许「已产出部分内容后断流」的整次重试。默认 false：有 UI 时重发会让用户看到重复内容。
+   * 桥接/后台场景（window=null，如微信 ClawBot）无 UI 重复副作用，应传 true——
+   * 否则多轮工具循环里任一轮断流即整轮判死（无人值守场景被放大成高频报错）。
+   */
+  allowPartialRetry?: boolean
 }
 
 export class AbortedError extends Error {
@@ -170,8 +176,12 @@ async function fetchWithRetry(url: string, init: RequestInit, retries = 2): Prom
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       const resp = await fetch(url, init)
-      if ((resp.status === 502 || resp.status === 503 || resp.status === 504 || resp.status === 524) && attempt < retries) {
-        const delay = 500 * Math.pow(2, attempt)
+      if ((resp.status === 502 || resp.status === 503 || resp.status === 504 || resp.status === 524 || resp.status === 429) && attempt < retries) {
+        // 429 尊重 Retry-After（秒，封顶 15s）；其余 5xx 指数退避
+        const retryAfter = resp.status === 429 ? Number(resp.headers.get('retry-after')) : NaN
+        const delay = Number.isFinite(retryAfter) && retryAfter > 0
+          ? Math.min(retryAfter * 1000, 15000)
+          : 500 * Math.pow(2, attempt)
         console.log(`[llm] fetch ${resp.status} attempt ${attempt + 1}/${retries + 1}, retry in ${delay}ms`)
         await new Promise(r => setTimeout(r, delay))
         if (signal?.aborted) throw new AbortedError()
@@ -317,11 +327,12 @@ export async function callLLM(
 
   if (options.stream) {
     const notify = options.notifyStream !== false
+    const allowPartialRetry = options.allowPartialRetry === true
     try {
-      return await streamLLM(url, headers, body, window ?? null, providerId, options.modelId, options.signal, notify, options.streamContext)
+      return await streamLLM(url, headers, body, window ?? null, providerId, options.modelId, options.signal, notify, options.streamContext, allowPartialRetry)
     } catch (e: any) {
       if (e instanceof LLMHttpError && e.status === 401 && await refreshCloudHeaders(e.message)) {
-        return streamLLM(url, headers, body, window ?? null, providerId, options.modelId, options.signal, notify, options.streamContext)
+        return streamLLM(url, headers, body, window ?? null, providerId, options.modelId, options.signal, notify, options.streamContext, allowPartialRetry)
       }
       throw e
     }
@@ -345,7 +356,11 @@ export async function callLLM(
 
   if (!response.ok) {
     const errorText = await response.text()
-    if (response.status === 402) throw makeBalanceError(errorText)
+    // 与流式分支同口径：402 余额文案只对云端网关成立，自定义直连是厂商自己的计费错误
+    if (response.status === 402) {
+      if (providerId.startsWith('cloud:')) throw makeBalanceError(errorText)
+      throw new LLMHttpError(response.status, `自定义服务商计费错误（402），请检查该服务商账户余额/额度。原始信息：${errorText.slice(0, 200)}`)
+    }
     throw new LLMHttpError(response.status, errorText)
   }
 
@@ -406,7 +421,8 @@ async function streamLLM(
   modelId: string,
   signal?: AbortSignal,
   notifyStream = true,
-  streamContext?: LLMRequestOptions['streamContext']
+  streamContext?: LLMRequestOptions['streamContext'],
+  allowPartialRetry = false
 ): Promise<LLMResponse> {
   body.stream_options = { include_usage: true }
 
@@ -424,11 +440,12 @@ async function streamLLM(
       lastErr = err
       // 已经向 renderer 推送过 content/tool_call 时，重发整条请求会让 UI 出现重复内容，
       // 此时只能降级为友好错误，由用户手动重试。
+      // 桥接/后台场景（allowPartialRetry）无 UI 重复副作用，允许已产出断流整次重试。
       const hadOutput = (err as any).__streamHadOutput === true
       const idleTimeout = (err as any).__streamIdleTimeout === true
       const emptyStream = (err as any).__emptyStream === true
       let retryable =
-        !hadOutput &&
+        (!hadOutput || allowPartialRetry) &&
         (idleTimeout || isStreamTerminatedError(err) || isTransientFetchError(err))
       // 空流补一次重试（仅一次）
       if (!retryable && emptyStream && !emptyStreamRetried) {
@@ -475,17 +492,48 @@ async function streamLLMOnce(
   notifyStream = true,
   streamContext?: LLMRequestOptions['streamContext']
 ): Promise<LLMResponse> {
-  const response = await fetchWithRetry(url, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body),
-    signal
-  })
+  // 等头看门狗：头部到达前是防护盲区（idle 看门狗要等 reader 创建后才 arm），
+  // undici 默认 headersTimeout≈300s 还会被内外层重试叠乘到数十分钟——
+  // 用与流式静默同口径的超时（默认 90s，可配）主动掐断等头阶段。
+  const headIdleMs = resolveStreamIdleTimeout()
+  const headCtrl = new AbortController()
+  let headTimedOut = false
+  const onExternalAbort = (): void => headCtrl.abort()
+  if (signal) {
+    if (signal.aborted) headCtrl.abort()
+    else signal.addEventListener('abort', onExternalAbort, { once: true })
+  }
+  const headTimer = setTimeout(() => { headTimedOut = true; headCtrl.abort() }, headIdleMs)
+  let response: Response
+  try {
+    response = await fetchWithRetry(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal: headCtrl.signal
+    })
+  } catch (e: any) {
+    if (headTimedOut) {
+      const err: any = new Error(`与模型服务连接静默超过 ${Math.round(headIdleMs / 1000)} 秒，已断开（等待响应头）`)
+      err.__streamIdleTimeout = true
+      throw err
+    }
+    throw e
+  } finally {
+    clearTimeout(headTimer)
+    signal?.removeEventListener('abort', onExternalAbort)
+  }
 
   if (!response.ok) {
     const errorText = await response.text()
-    if (response.status === 402) throw makeBalanceError(errorText)
-    throw new Error(`LLM API error ${response.status}: ${errorText}`)
+    if (response.status === 402) {
+      // 「余额不足」文案只对云端网关成立；自定义直连上游的 402 是厂商自己的计费错误
+      if (providerId.startsWith('cloud:')) throw makeBalanceError(errorText)
+      throw new LLMHttpError(response.status, `自定义服务商计费错误（402），请检查该服务商账户余额/额度。原始信息：${errorText.slice(0, 200)}`)
+    }
+    // 必须抛带 status 的 LLMHttpError：callLLM 流式分支的 401 刷新重放链据此判定
+    //（此前抛裸 Error 导致 instanceof 恒 false，401 自愈链形同虚设）
+    throw new LLMHttpError(response.status, errorText)
   }
 
   const reader = response.body?.getReader()
@@ -629,16 +677,19 @@ async function streamLLMOnce(
     disarmIdle()
     // 把已流式产出的部分内容 / 工具调用附到 error 上，供外层(chat-engine)在中断或报错时落库，
     // 避免用户已经看到的半截回答在刷新后被 [已中断]/[Error] 覆盖丢失。
-    // __streamHadOutput 仍用于「是否可整条重试」判定（已有输出则不能重发，否则 UI 会拼出重复内容）。
-    const hadOutput = fullContent.length > 0 || toolCalls.length > 0
+    // 「是否已向用户推送过可见内容」决定能否整条重试：content/reasoning 已推送过 → 重发会让 UI 重复；
+    // 而 tool_calls 只在内存累积、从未推给渲染端（工具面板等整轮返回才显示），
+    // 纯 tool_calls 阶段断流时整条重试对用户零副作用——不置 __streamHadOutput。
+    const hadVisibleOutput = fullContent.length > 0 || reasoningContent.length > 0
     const attachPartial = (e: any): any => {
       if (fullContent) e.__partialContent = fullContent
       if (toolCalls.length > 0) e.__partialToolCalls = toolCalls
-      if (hadOutput) e.__streamHadOutput = true
+      if (hadVisibleOutput) e.__streamHadOutput = true
       return e
     }
     if (idleTimedOut) {
-      const idleErr: any = new Error('与模型服务连接静默超过 60 秒，已断开')
+      const idleSec = Math.round((sawReasoning ? Math.max(baseIdleTimeout, REASONING_IDLE_TIMEOUT_MS) : baseIdleTimeout) / 1000)
+      const idleErr: any = new Error(`与模型服务连接静默超过 ${idleSec} 秒，已断开`)
       idleErr.cause = err
       idleErr.__streamIdleTimeout = true
       throw attachPartial(idleErr)
@@ -648,6 +699,20 @@ async function streamLLMOnce(
   } finally {
     disarmIdle()
     if (signal) signal.removeEventListener('abort', onAbort)
+  }
+
+  // idle 看门狗触发的断流必须在这里显式抛错：reader.cancel() 按 WHATWG Streams 规范
+  // 会让挂起的 read() 以 {done:true} 正常 resolve——循环干净退出、catch 不执行，
+  // 不补这一刀的话半截内容会被当成成功响应落库（无标记、无重试、无「继续生成」入口）。
+  if (idleTimedOut) {
+    const idleSec = Math.round((sawReasoning ? Math.max(baseIdleTimeout, REASONING_IDLE_TIMEOUT_MS) : baseIdleTimeout) / 1000)
+    const idleErr: any = new Error(`与模型服务连接静默超过 ${idleSec} 秒，已断开`)
+    idleErr.__streamIdleTimeout = true
+    if (fullContent) idleErr.__partialContent = fullContent
+    if (toolCalls.length > 0) idleErr.__partialToolCalls = toolCalls
+    // 同 catch 内口径：只有「可见产出」(content/reasoning) 才阻止外层整条重试
+    if (fullContent.length > 0 || reasoningContent.length > 0) idleErr.__streamHadOutput = true
+    throw idleErr
   }
 
   // silent-200 / 空流识别:HTTP 200 但整条流无任何有效产出(无正文 / 工具调用 / 思维链 / 用量)。
@@ -675,6 +740,12 @@ async function streamLLMOnce(
         usage.total_tokens || 0
       )
     } catch {}
+  }
+
+  // tool_call 空 id 兜底：部分上游不下发 id，空 id 会让严格 OpenAI 兼容端 400、
+  // 且跨轮回放时配对过滤把自洽的工具结果一并丢弃（工具白做）
+  for (const tc of toolCalls) {
+    if (tc && !tc.id) tc.id = `call_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`
   }
 
   return {

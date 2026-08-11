@@ -19,6 +19,7 @@ import { initAccountContext, isAccountReady } from './services/account-context'
 import { runInEpoch } from './services/account-epoch'
 import { getDeviceSetting, setDeviceSetting } from './services/device-settings'
 import { startClawbotBridge, stopClawbotBridge, clawbotStartupMaintenance } from './services/clawbot/clawbot-bridge'
+import { cancelAllChats } from './services/chat-engine'
 
 if (is.dev) {
   process.env['ELECTRON_DISABLE_SECURITY_WARNINGS'] = 'true'
@@ -130,9 +131,13 @@ function createAppIcon(): Electron.NativeImage {
   return nativeImage.createFromBuffer(Buffer.from(svg), { scaleFactor: 1 })
 }
 
+// 主窗口模块级引用：托盘唤起 / 更新事件发送都必须精确定位主窗口。
+// 不能再用 BrowserWindow.getAllWindows() 泛找——外部页面窗口（openExternalWindow）、
+// ewei 改图隐藏窗口等存活时，泛找会把它们误当主窗口 restore/focus，主窗口反而重建无望。
+let mainWindowRef: BrowserWindow | null = null
+
 function createWindow(): BrowserWindow {
-  const isWin = process.platform === 'win32'
-  // Windows 使用 hidden 标题栏 + titleBarOverlay 方案：保留右上角最小/最大/关闭按钮，
+  const isWin = process.platform === 'win32'  // Windows 使用 hidden 标题栏 + titleBarOverlay 方案：保留右上角最小/最大/关闭按钮，
   // UI 顶栏自渲染并 app-drag 实现窗口拖动。
   // macOS 使用原生标题栏（含红黄绿 traffic light + 标题文字）：避免 traffic light
   // 与 sidebar logo 重叠的视觉冲突，符合 Mac 用户习惯。
@@ -161,6 +166,10 @@ function createWindow(): BrowserWindow {
     }
   }
   const mainWindow = new BrowserWindow(winOptions)
+  mainWindowRef = mainWindow
+  mainWindow.on('closed', () => {
+    if (mainWindowRef === mainWindow) mainWindowRef = null
+  })
 
   mainWindow.on('close', (event) => {
     if (isQuitting) return
@@ -211,7 +220,7 @@ function createWindow(): BrowserWindow {
 }
 
 function showOrCreateMainWindow(): void {
-  const existingWindow = BrowserWindow.getAllWindows().find((win) => !win.isDestroyed())
+  const existingWindow = mainWindowRef && !mainWindowRef.isDestroyed() ? mainWindowRef : null
   if (!existingWindow) {
     createWindow()
     return
@@ -445,7 +454,8 @@ function setupAutoUpdater(): void {
   let downloadedFilePath: string | null = null
 
   function sendToRenderer(channel: string, ...args: unknown[]): void {
-    const win = BrowserWindow.getAllWindows()[0]
+    // 只发主窗口（模块级引用）：外部页面窗口 / ewei 隐藏窗口存活时 getAllWindows()[0] 会发错对象
+    const win = mainWindowRef && !mainWindowRef.isDestroyed() ? mainWindowRef : null
     if (win) win.webContents.send(channel, ...args)
   }
 
@@ -511,6 +521,9 @@ app.on('window-all-closed', () => {})
 app.on('before-quit', () => {
   isQuitting = true
   stopAutoDownloadScheduler()
+  // 退出前中断全部在途对话轮次：abort 触发各轮 catch 落 [已中断] 标记+补配对，
+  // 重启后用户可「继续生成」（此前直接退出，会话静默断在半截且无续写入口）
+  try { cancelAllChats() } catch {}
   stopAllMcpServers()
   try { stopClawbotBridge() } catch {}
   closeDatabase()

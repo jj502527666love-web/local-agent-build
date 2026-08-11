@@ -2,6 +2,7 @@ import { executeSkillSandbox, resolveInWorkspace } from './skill-sandbox'
 import { generateImages } from './image-generation'
 import { listModelProviders } from './model-provider'
 import { getDataDir } from './data-path'
+import { emitAssistantAppended } from './events'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync } from 'fs'
 import { join, basename, resolve, isAbsolute, relative } from 'path'
 import { listCategories, listKnowledgeBases, type KnowledgeBase } from './knowledge'
@@ -415,7 +416,7 @@ export async function executeCoreToolCall(
       }
     }
     backupBeforeWrite(args, sandboxDir)
-    const result = await executeSkillSandbox(FILE_OPS_IMPL, args, sandboxDir, execContext?.timeoutMs)
+    const result = await executeSkillSandbox(FILE_OPS_IMPL, args, sandboxDir, execContext?.timeoutMs, undefined, execContext?.signal)
     const payload = result.success ? result.result : { error: result.error }
     return { handled: true, result: withWorkspace(payload, sandboxDir) }
   }
@@ -423,7 +424,7 @@ export async function executeCoreToolCall(
     const requestedTimeout = Number(args?.timeout) || 180000
     const maxTimeout = execContext?.timeoutMs || 180000
     const commandArgs = { ...args, timeout: Math.max(1, Math.min(requestedTimeout, maxTimeout)) }
-    const result = await executeSkillSandbox(RUN_COMMAND_IMPL, commandArgs, sandboxDir, maxTimeout)
+    const result = await executeSkillSandbox(RUN_COMMAND_IMPL, commandArgs, sandboxDir, maxTimeout, undefined, execContext?.signal)
     const payload = result.success ? result.result : { error: result.error }
     return { handled: true, result: withWorkspace(payload, sandboxDir) }
   }
@@ -962,7 +963,7 @@ async function runImageGenInBackground(
       const displayUrl = outputPath
         ? `local-file://img?p=${encodeURIComponent(outputPath.replace(/\\/g, '/'))}`
         : ''
-      const promptHint = args.prompt ? String(args.prompt).slice(0, 60) : ''
+      const promptHint = args.prompt ? String(args.prompt).slice(0, 60).replace(/[[\]()]/g, '') : ''
       assistantContent = displayUrl
         ? `![${promptHint || '已生成图片'}](${displayUrl})`
         : '[生图失败] 图片路径无效'
@@ -980,6 +981,8 @@ async function runImageGenInBackground(
       role: 'assistant',
       content: assistantContent
     })
+    // 通知 ClawBot 桥「有新 assistant 消息」：事件驱动补发（不再只靠轮询 watcher 猜窗口）
+    emitAssistantAppended(conversationId)
     if (window) {
       window.webContents.send('chat:appendMessage', { conversationId, requestId, message })
     }

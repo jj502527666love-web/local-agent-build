@@ -18,6 +18,7 @@ interface Window {
     }
     gallery: { invoke: (channel: string, ...args: unknown[]) => Promise<unknown> }
     creativeTemplate: { invoke: (channel: string, ...args: unknown[]) => Promise<unknown> }
+    stylePreset: { invoke: (channel: string, ...args: unknown[]) => Promise<unknown> }
     matting: {
       invoke: (channel: string, ...args: unknown[]) => Promise<unknown>
       /**
@@ -216,6 +217,7 @@ interface Window {
       openPath: (path: string) => Promise<string>
       showItemInFolder: (path: string) => Promise<{ success: boolean; path?: string; fallback?: string; error?: string }>
       openExternal: (url: string) => Promise<unknown>
+      openExternalWindow: (url: string, title?: string) => Promise<{ success: boolean; error?: string }>
     }
     window: {
       minimize: () => void

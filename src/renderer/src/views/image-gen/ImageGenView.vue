@@ -14,6 +14,7 @@
                       @click="showPresetPopup = !showPresetPopup"
                       class="rounded-lg border border-surface-3 bg-surface-1 px-2.5 py-1 text-[11px] font-medium text-text-secondary transition-colors hover:border-primary-300 hover:bg-surface-2 hover:text-primary-600"
                     >预设</button>
+                    <StylePresetPicker v-model="stylePresetId" />
                   </div>
                   <div class="flex items-center gap-2">
                     <button
@@ -572,6 +573,9 @@ import CreationDetailModal from '@/components/CreationDetailModal.vue'
 import ConsumptionEstimate from '@/components/ConsumptionEstimate.vue'
 import LowBalanceModal from '@/components/LowBalanceModal.vue'
 import PromptTextarea from '@/components/PromptTextarea.vue'
+import StylePresetPicker from '@/components/StylePresetPicker.vue'
+import { useStylePresetStore } from '@/stores/style-presets'
+import { composePromptWithStyle } from '@shared/style-prompt'
 import type { ImageGeneration } from '@/stores/image-gen'
 import { IMAGE_PROMPT_MAX_LENGTH } from '@shared/prompt-limits'
 
@@ -596,8 +600,13 @@ const {
   selectedTier,
   selectedQuality,
   batchCount,
+  stylePresetId,
   viewMode,
 } = storeToRefs(formStore)
+
+// 风格预设：选中风格的提示词片段（失效 id 自动降级为空串 = 无风格）
+const stylePresetStore = useStylePresetStore()
+const styleFragment = computed(() => stylePresetStore.byId(stylePresetId.value)?.prompt_fragment || '')
 
 // 错误详情弹窗：仅存原文 + 原始请求快照（已脱敏 JSON），友好翻译由 ErrorDetailDialog 内部派生。
 // rawRequest 仅主进程在 status='error' 路径写入，历史失败记录可能为空
@@ -855,7 +864,8 @@ const optimizeModelGroups = computed(() => {
 })
 
 const canGenerate = computed(() =>
-  prompt.value.trim() && prompt.value.length <= IMAGE_PROMPT_MAX_LENGTH && selectedProviderId.value && selectedModelId.value
+  // 长度按拼接风格片段后的最终提示词计，避免贴上限时带风格提交被主进程断言打回
+  prompt.value.trim() && composePromptWithStyle(prompt.value, styleFragment.value).length <= IMAGE_PROMPT_MAX_LENGTH && selectedProviderId.value && selectedModelId.value
 )
 
 const imageEstimate = computed(() => estimateImageCost(selectedProviderId.value, selectedModelId.value, batchCount.value))
@@ -971,7 +981,8 @@ function doGenerate() {
   if (!canGenerate.value) return
   if (!ensureEnoughBalance(selectedProviderId.value, selectedModelId.value, batchCount.value)) return
   store.enqueue({
-    prompt: prompt.value,
+    // 风格片段拼到提示词尾部（隐式拼接，输入框只保留用户原文）
+    prompt: composePromptWithStyle(prompt.value, styleFragment.value),
     refImages: refImages.value.length ? refImages.value : undefined,
     modelProviderId: selectedProviderId.value,
     modelId: selectedModelId.value,

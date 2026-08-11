@@ -11,8 +11,18 @@
       </div>
       <div class="flex items-center gap-2">
         <template v-if="multiSelectMode">
-          <button @click="doExportSelected" :disabled="!selectedIds.size || exporting" class="btn-primary text-xs disabled:opacity-40 disabled:cursor-not-allowed">
+          <button @click="doExportSelected" :disabled="!selectedIds.size || exporting || deleting" class="btn-primary text-xs disabled:opacity-40 disabled:cursor-not-allowed">
             {{ exporting ? '导出中...' : '导出选中' }}
+          </button>
+          <!-- 批量删除：两步确认（对齐单删 / 清空画布的交互惯例） -->
+          <template v-if="confirmBatchDelete">
+            <button @click="doDeleteSelected" :disabled="deleting" class="px-3 py-1.5 text-xs font-medium text-white bg-red-500 rounded-lg hover:bg-red-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+              {{ deleting ? '删除中...' : `确认删除 ${selectedIds.size} 个画布` }}
+            </button>
+            <button @click="confirmBatchDelete = false" :disabled="deleting" class="btn-secondary text-xs">取消删除</button>
+          </template>
+          <button v-else @click="confirmBatchDelete = true" :disabled="!selectedIds.size" class="px-3 py-1.5 text-xs font-medium text-red-600 border border-red-300 rounded-lg hover:bg-red-50 dark:text-red-300 dark:border-red-800 dark:hover:bg-red-900/30 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+            删除选中
           </button>
           <button @click="exitMultiSelect" class="btn-secondary text-xs">取消</button>
         </template>
@@ -200,6 +210,7 @@ import { useRouter } from 'vue-router'
 import { useCanvasStore } from '@/stores/canvas'
 import { useModelStore } from '@/stores/models'
 import { useHandoffStore } from '@/stores/handoff'
+import { useWorkflowEngine } from './composables/useWorkflowEngine'
 import { groupAndSort } from '@/utils/model-caps'
 import { warmHintsCache, getHintsSync } from '@/utils/model-usage-hints'
 
@@ -222,6 +233,10 @@ const multiSelectMode = ref(false)
 const selectedIds = ref(new Set<string>())
 const exporting = ref(false)
 const importing = ref(false)
+// 批量删除（多选模式）：两步确认状态 + 删除中防重入
+const confirmBatchDelete = ref(false)
+const deleting = ref(false)
+const { isProjectAnyRunning } = useWorkflowEngine()
 
 interface ImportUnmatched {
   project: string
@@ -346,11 +361,13 @@ function onCardClick(id: string) {
 function enterMultiSelect() {
   multiSelectMode.value = true
   selectedIds.value = new Set()
+  confirmBatchDelete.value = false
 }
 
 function exitMultiSelect() {
   multiSelectMode.value = false
   selectedIds.value = new Set()
+  confirmBatchDelete.value = false
 }
 
 function toggleSelect(id: string) {
@@ -454,6 +471,32 @@ async function doDuplicate(id: string) {
 async function doDelete(id: string) {
   await canvasStore.deleteProject(id)
   confirmDeleteId.value = null
+}
+
+/**
+ * 批量删除选中画布（两步确认后执行）。
+ * 正在运行（整图工作流或任一节点在跑）的画布跳过：删除会抽掉后台任务的数据载体，
+ * 任务继续跑只会写库失败；单删入口暂不拦截该场景，批量入口一次影响多个故收紧。
+ */
+async function doDeleteSelected() {
+  if (deleting.value) return
+  const ids = Array.from(selectedIds.value)
+  if (!ids.length) return
+  const runningCount = ids.filter((id) => isProjectAnyRunning(id)).length
+  const targets = ids.filter((id) => !isProjectAnyRunning(id))
+  deleting.value = true
+  try {
+    for (const id of targets) {
+      await canvasStore.deleteProject(id)
+    }
+  } finally {
+    deleting.value = false
+    confirmBatchDelete.value = false
+    exitMultiSelect()
+  }
+  if (runningCount > 0) {
+    alert(`${runningCount} 个画布正在运行，已跳过（停止运行后可删除）`)
+  }
 }
 
 /**

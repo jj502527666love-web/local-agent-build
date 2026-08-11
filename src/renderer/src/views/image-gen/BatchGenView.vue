@@ -14,6 +14,7 @@
                 @click="showPresetPopup = !showPresetPopup"
                 class="px-1.5 py-0.5 rounded text-[10px] text-text-tertiary hover:text-primary-600 hover:bg-surface-2 transition-colors"
               >预设</button>
+              <StylePresetPicker v-model="stylePresetId" />
             </div>
             <div class="flex items-center gap-1.5">
               <button
@@ -363,6 +364,9 @@ import GalleryPicker from '@/components/GalleryPicker.vue'
 import ImageLightbox from '@/components/ImageLightbox.vue'
 import { translateError, isBalanceError } from '@/utils/error-message'
 import PromptTextarea from '@/components/PromptTextarea.vue'
+import StylePresetPicker from '@/components/StylePresetPicker.vue'
+import { useStylePresetStore } from '@/stores/style-presets'
+import { composePromptWithStyle } from '@shared/style-prompt'
 import { IMAGE_PROMPT_MAX_LENGTH } from '@shared/prompt-limits'
 import { useImageBilling } from '@/views/ecom/useImageBilling'
 import { useLowBalanceStore } from '@/stores/low-balance'
@@ -388,11 +392,16 @@ const {
   optimizeModelId,
   defaultSize,
   defaultTier,
+  stylePresetId,
   concurrency,
   batchRunning,
   tasks,
   taskIdCounter,
 } = storeToRefs(formStore)
+
+// 风格预设：选中风格的提示词片段（失效 id 自动降级为空串 = 无风格）
+const stylePresetStore = useStylePresetStore()
+const styleFragment = computed(() => stylePresetStore.byId(stylePresetId.value)?.prompt_fragment || '')
 
 // selectedModelId 可能是复合 key `gpt-image-2#@多米`，Picker 内部按纯关键字匹配，必须 strip
 // 后才能正确识别型号专属参数（如 gpt-image-2 的 size/tier 选项）。
@@ -475,8 +484,9 @@ const optimizeModelGroups = computed(() => {
 const canStart = computed(() =>
   tasks.value.length > 0 &&
   (defaultPrompt.value.trim() || tasks.value.every(t => t.customPrompt.trim())) &&
-  defaultPrompt.value.length <= IMAGE_PROMPT_MAX_LENGTH &&
-  tasks.value.every(t => t.customPrompt.length <= IMAGE_PROMPT_MAX_LENGTH) &&
+  // 长度按拼接风格片段后的最终提示词计（默认词与逐任务自定义词都生效）
+  composePromptWithStyle(defaultPrompt.value, styleFragment.value).length <= IMAGE_PROMPT_MAX_LENGTH &&
+  tasks.value.every(t => !t.customPrompt.trim() || composePromptWithStyle(t.customPrompt, styleFragment.value).length <= IMAGE_PROMPT_MAX_LENGTH) &&
   selectedProviderId.value &&
   selectedModelId.value
 )
@@ -624,7 +634,7 @@ async function runOne(task: BatchTask): Promise<void> {
   task.status = 'generating'
   task.error = ''
   try {
-    const prompt = task.customPrompt.trim() || defaultPrompt.value.trim()
+    const prompt = composePromptWithStyle(task.customPrompt.trim() || defaultPrompt.value.trim(), styleFragment.value)
     const size = task.customSize || defaultSize.value
 
     const results = await store.generate({

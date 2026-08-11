@@ -20,9 +20,29 @@
         </div>
       </div>
       <nav class="flex-1 px-3 py-1 overflow-y-auto space-y-0.5">
-        <template v-for="item in navItems" :key="item.path || item.key">
+        <template v-for="item in navItems" :key="item.key || item.path">
+          <!-- 自定义外部链接菜单：无路由，点击按 open_mode 走系统浏览器 / 应用内窗口 -->
+          <a
+            v-if="!item.children && item.custom && item.custom.target_type === 'external'"
+            class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-text-secondary hover:bg-surface-2 transition-all duration-150 cursor-pointer"
+            :title="item.custom.target"
+            @click="onCustomItemClick(item.custom)"
+          >
+            <component :is="item.icon" class="w-[18px] h-[18px] flex-shrink-0" />
+            <span class="font-medium">{{ item.label }}</span>
+          </a>
+          <!-- 自定义内部页面菜单：router-link 但 active 手动判定（默认 active-class 不按 query 区分，
+               /models?tab=video 这类目标会与内置同 path 菜单双高亮） -->
           <router-link
-            v-if="!item.children"
+            v-else-if="!item.children && item.custom"
+            :to="item.custom.target"
+            :class="['nav-item flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-text-secondary hover:bg-surface-2 transition-all duration-150', isCustomInternalActive(item.custom) ? 'nav-active' : '']"
+          >
+            <component :is="item.icon" class="w-[18px] h-[18px] flex-shrink-0" />
+            <span class="font-medium">{{ item.label }}</span>
+          </router-link>
+          <router-link
+            v-else-if="!item.children"
             :to="item.path"
             class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-text-secondary hover:bg-surface-2 transition-all duration-150"
             active-class="nav-active"
@@ -41,16 +61,34 @@
               <IconChevron class="w-3.5 h-3.5 flex-shrink-0 transition-transform duration-200" :class="{ 'rotate-90': expandedGroups.has(item.key) }" />
             </button>
             <div v-show="expandedGroups.has(item.key)" class="mt-0.5 space-y-0.5">
-              <router-link
-                v-for="child in item.children"
-                :key="child.path"
-                :to="child.path"
-                class="nav-item flex items-center gap-3 pl-9 pr-3 py-2 rounded-lg text-sm text-text-secondary hover:bg-surface-2 transition-all duration-150"
-                active-class="nav-active"
-              >
-                <component :is="child.icon" class="w-[16px] h-[16px] flex-shrink-0" />
-                <span class="font-medium">{{ child.label }}</span>
-              </router-link>
+              <template v-for="child in item.children" :key="child.key || child.path">
+                <a
+                  v-if="child.custom && child.custom.target_type === 'external'"
+                  class="nav-item flex items-center gap-3 pl-9 pr-3 py-2 rounded-lg text-sm text-text-secondary hover:bg-surface-2 transition-all duration-150 cursor-pointer"
+                  :title="child.custom.target"
+                  @click="onCustomItemClick(child.custom)"
+                >
+                  <component :is="child.icon" class="w-[16px] h-[16px] flex-shrink-0" />
+                  <span class="font-medium">{{ child.label }}</span>
+                </a>
+                <router-link
+                  v-else-if="child.custom"
+                  :to="child.custom.target"
+                  :class="['nav-item flex items-center gap-3 pl-9 pr-3 py-2 rounded-lg text-sm text-text-secondary hover:bg-surface-2 transition-all duration-150', isCustomInternalActive(child.custom) ? 'nav-active' : '']"
+                >
+                  <component :is="child.icon" class="w-[16px] h-[16px] flex-shrink-0" />
+                  <span class="font-medium">{{ child.label }}</span>
+                </router-link>
+                <router-link
+                  v-else
+                  :to="child.path"
+                  class="nav-item flex items-center gap-3 pl-9 pr-3 py-2 rounded-lg text-sm text-text-secondary hover:bg-surface-2 transition-all duration-150"
+                  active-class="nav-active"
+                >
+                  <component :is="child.icon" class="w-[16px] h-[16px] flex-shrink-0" />
+                  <span class="font-medium">{{ child.label }}</span>
+                </router-link>
+              </template>
             </div>
           </div>
         </template>
@@ -156,6 +194,10 @@ import IconCanvasSquare from '@/components/icons/IconCanvasSquare.vue'
 import IconImageToolkit from '@/components/icons/IconImageToolkit.vue'
 import IconEweiShop from '@/components/icons/IconEweiShop.vue'
 import IconClawbot from '@/components/icons/IconClawbot.vue'
+import IconCustomLink from '@/components/icons/IconCustomLink.vue'
+import IconCustomPage from '@/components/icons/IconCustomPage.vue'
+import IconCustomApp from '@/components/icons/IconCustomApp.vue'
+import IconCustomStar from '@/components/icons/IconCustomStar.vue'
 import AnnouncementBar from '@/components/AnnouncementBar.vue'
 import ExpiryGlobalBanner from '@/components/ExpiryGlobalBanner.vue'
 import SidebarBalanceBadge from '@/components/SidebarBalanceBadge.vue'
@@ -270,14 +312,75 @@ const expandedGroups = ref<Set<string>>(new Set())
 // 云控端「桌面端菜单配置」：{ menu_key: { visible, title } }；登录后拉取，覆盖默认菜单的显隐与名称。
 // menu_key：叶子菜单用 path，分组用 group:xxx。「模型服务 / AI 抠图」不下发（继续按功能权限）。
 const menuOverrides = ref<Record<string, { visible: boolean; title: string }>>({})
+// 云控端「自定义菜单」：后台维护的额外菜单项（内部路由 / 外部链接），随同一端点下发（仅可见项、已按 sort 排序）
+interface CustomMenuItem {
+  key: string
+  title: string
+  group_key: string
+  target_type: 'internal' | 'external'
+  target: string
+  open_mode: 'browser' | 'window'
+  icon: string
+}
+const customMenuItems = ref<CustomMenuItem[]>([])
 onMounted(async () => {
   try {
     const res: any = await cloudClient.desktopMenu()
     menuOverrides.value = res?.overrides && typeof res.overrides === 'object' ? res.overrides : {}
+    // 合并前过滤脏数据（字段缺失 / target_type 非法 / 目标为空或协议不符的项直接丢弃），
+    // 防云端脏数据导致渲染出点击无反应的死菜单
+    customMenuItems.value = Array.isArray(res?.custom_items)
+      ? res.custom_items.filter((c: any) => {
+          if (!c || typeof c.key !== 'string' || !c.key) return false
+          if (typeof c.title !== 'string' || !c.title) return false
+          if (typeof c.target !== 'string' || !c.target) return false
+          if (c.target_type === 'internal') return c.target.startsWith('/')
+          if (c.target_type === 'external') return /^https?:\/\//i.test(c.target)
+          return false
+        })
+      : []
   } catch {
     menuOverrides.value = {}
+    customMenuItems.value = []
   }
 })
+
+// 自定义菜单图标 key → 内置 SVG 组件（与云控端 CUSTOM_ICONS 枚举对齐；未知 key 回落链接图标）
+const CUSTOM_ICON_MAP: Record<string, any> = {
+  link: IconCustomLink,
+  page: IconCustomPage,
+  app: IconCustomApp,
+  star: IconCustomStar
+}
+
+/** 自定义菜单点击：internal 走路由；external 按 open_mode 走系统浏览器 / 应用内独立窗口；失败给可见反馈 */
+async function onCustomItemClick(item: CustomMenuItem) {
+  if (item.target_type === 'internal') {
+    router.push(item.target)
+    return
+  }
+  const api = (window as any).api
+  try {
+    const res =
+      item.open_mode === 'window'
+        ? await api.shell.openExternalWindow(item.target, item.title)
+        : await api.shell.openExternal(item.target)
+    // openExternal 协议被主进程白名单拦截返回 false；openExternalWindow 校验失败返回 { success: false, error }
+    if (res === false || (res && typeof res === 'object' && res.success === false)) {
+      api.nativeDialog.alert(`无法打开链接：${item.target}${res?.error ? `\n${res.error}` : ''}`)
+    }
+  } catch (e: any) {
+    api.nativeDialog.alert(`无法打开链接：${item.target}\n${e?.message || e}`)
+  }
+}
+
+/** 自定义 internal 菜单的 active 判定：带 query/锚点的目标用 fullPath 精确匹配
+ * （否则 /models?tab=video 与内置「模型服务」/models 会同时高亮——router-link 的 active 不按 query 区分），
+ * 纯路径目标与内置一致按前缀匹配（子路由页面保持高亮） */
+function isCustomInternalActive(c: CustomMenuItem): boolean {
+  if (c.target.includes('?') || c.target.includes('#')) return route.fullPath === c.target
+  return pathMatches(route.path, c.target)
+}
 
 // 微信 ClawBot：app 级常驻监听（幂等）装在主布局而非 ClawbotView——
 // 否则用户未打开过 ClawBot 页时，微信轮次完成无法联动刷新对话页/会话列表
@@ -288,9 +391,12 @@ onMounted(() => {
 /**
  * 路径匹配：避免 `/canvas-square` 错命中 `/canvas` 这种「字符串前缀但语义不同」的情况。
  * 规则：完全相等 OR 完全相等 + 紧跟 `/`（用于带 :id 的子路径，比如 /canvas/abc）。
+ * menuPath 先剥 query/锚点（自定义菜单 internal 目标可能带 ?tab=xxx），否则永不命中。
  */
 function pathMatches(routePath: string, menuPath: string): boolean {
-  return routePath === menuPath || routePath.startsWith(menuPath + '/')
+  const pure = (menuPath || '').split('?')[0].split('#')[0]
+  if (!pure) return false
+  return routePath === pure || routePath.startsWith(pure + '/')
 }
 
 watchEffect(() => {
@@ -298,6 +404,11 @@ watchEffect(() => {
     if (item.children?.some((child: any) => pathMatches(route.path, child.path))) {
       expandedGroups.value.add(item.key)
     }
+  }
+  // 自定义菜单 internal 子项命中当前路由时，所在组同样自动展开
+  for (const c of customMenuItems.value) {
+    if (!c.group_key || c.target_type !== 'internal') continue
+    if (pathMatches(route.path, c.target)) expandedGroups.value.add(c.group_key)
   }
 })
 
@@ -355,6 +466,26 @@ const navItems = computed(() => {
       const applied = applyLeaf(item)
       if (applied) result.push(applied)
     }
+  }
+  // 合并云控端自定义菜单（已按 sort 排序）：挂到对应组末尾或顶级末尾；
+  // 组被 overrides 隐藏 / 子项全空不存在时，该自定义项随之不显示（管理员隐藏组的语义覆盖）。
+  // key 加 custom: 前缀——自定义 internal 项的 path 可能与内置菜单重复（如再挂一个 /chat），
+  // 模板 :key 优先取 key，此前缀保证天然唯一
+  for (const c of customMenuItems.value) {
+    const leaf = {
+      key: `custom:${c.key}`,
+      // internal 复用 router-link（active 态由 isCustomInternalActive 手动判定）；external 无 path，模板走 <a> 分支
+      path: c.target_type === 'internal' ? c.target : undefined,
+      label: c.title,
+      icon: CUSTOM_ICON_MAP[c.icon] || IconCustomLink,
+      custom: c
+    }
+    if (!c.group_key) {
+      result.push(leaf)
+      continue
+    }
+    const group = result.find((it) => it.key === c.group_key && it.children)
+    if (group) group.children.push(leaf)
   }
   return result
 })

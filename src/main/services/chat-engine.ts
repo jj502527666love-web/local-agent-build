@@ -1,11 +1,12 @@
 import { BrowserWindow } from 'electron'
 import { join, resolve, isAbsolute, relative } from 'path'
 import { existsSync, mkdirSync, writeFileSync } from 'fs'
+import { createHash } from 'crypto'
 import { v4 as uuid } from 'uuid'
 import { getDataDir } from './data-path'
 import { getBot, type ToolApproval } from './bot'
 import { getPersona } from './persona'
-import { getMessages, addMessage, getConversation, updateConversationTitle, deleteMessagesFrom, updateMessageContent, deleteMessage } from './conversation'
+import { getMessages, addMessage, getConversation, updateConversationTitle, deleteMessagesFrom, updateMessageContent, deleteMessage, countConversationMessages } from './conversation'
 import { callLLM, ChatMessage, AbortedError, isAbortedError } from './llm'
 import { listSkills } from './skill'
 import { getMcpServer } from './mcp-server'
@@ -22,7 +23,10 @@ import { coreToolDefs, executeCoreToolCall, CORE_TOOL_NAMES, KB_TOOL_NAMES, prev
 import { deckToolDefs, executeDeckTool, DECK_TOOL_NAMES } from './deck/deck-tools'
 import { sanitizeOpenAIMessages } from './message-sanitizer'
 import { type ToolHistoryEntry, hashToolArgs, isToolFailure, checkToolCircuitBreaker } from './tool-circuit-breaker'
-import { cancelPendingChoices, cancelAllPendingChoices } from './user-choice'
+import { cancelPendingChoices, cancelAllPendingChoices, registerDeadlineHooks } from './user-choice'
+
+// 单向注册：user-choice 不反向依赖本模块（避免循环依赖），卡片等待期间暂停硬上限
+registerDeadlineHooks({ pause: pauseAgentDeadline, resume: resumeAgentDeadline })
 
 // Per-model context-window table. Values are the *total* model context (prompt + completion).
 // We reserve ~25% for the response and pass the rest as the prompt budget.
@@ -118,6 +122,8 @@ function getModelPromptBudget(modelId: string): number {
 type ActiveChatController = {
   controller: AbortController
   requestId: string
+  /** 轮次完全收尾（含 catch 落库）后 resolve；新轮串行门据此等待，防并发写库污染转录 */
+  done?: Promise<void>
 }
 
 const activeControllers = new Map<string, ActiveChatController>()
@@ -155,13 +161,18 @@ export function cancelChat(conversationId: string, requestId?: string): boolean 
     if (ctx.conversationId === conversationId) {
       ctx.cleanup()
       notifyApprovalResolved(ctx.window, ctx.conversationId, ctx.requestId)
-      ctx.resolve(false)
+      ctx.resolve('aborted')
     }
   }
   // 同会话挂起的交互卡片选择一并取消（abort 已会触发，这里显式兜底）
   cancelPendingChoices(conversationId)
   return true
 }
+
+// 交互卡等待期间的 deadline 控制（user-choice.ts 经 registerDeadlineHooks 反向调用）
+const deadlineControls = new Map<string, { pause: () => void; resume: () => void }>()
+function pauseAgentDeadline(conversationId: string): void { deadlineControls.get(conversationId)?.pause() }
+function resumeAgentDeadline(conversationId: string): void { deadlineControls.get(conversationId)?.resume() }
 
 export function isChatActive(conversationId: string): boolean {
   return activeControllers.has(conversationId)
@@ -180,7 +191,7 @@ export function cancelAllChats(): number {
     try {
       ctx.cleanup()
       notifyApprovalResolved(ctx.window, ctx.conversationId, ctx.requestId)
-      ctx.resolve(false)
+      ctx.resolve('aborted')
     } catch {}
   }
   cancelAllPendingChoices()
@@ -196,12 +207,15 @@ interface ApprovalPayload {
   args: any
   preview?: any
 }
+/** 审批裁决：区分「用户拒绝 / 超时未答 / 中止」——此前三路共用 resolve(false)，
+ *  超时被伪装成用户主动拒绝，模型把「用户没看」当成「用户已拍板」并静默改道任务 */
+type ApprovalVerdict = 'approved' | 'rejected' | 'timeout' | 'aborted'
 interface PendingApproval {
   conversationId: string
   requestId: string
   window: BrowserWindow | null
   payload: ApprovalPayload
-  resolve: (approved: boolean) => void
+  resolve: (verdict: ApprovalVerdict) => void
   cleanup: () => void
 }
 const pendingApprovals = new Map<string, PendingApproval>()
@@ -299,8 +313,8 @@ function requestToolApproval(
   preview: FileWritePreview | FileReadPreview | null,
   signal: AbortSignal,
   approvalDecider?: (req: { name: string; args: any }) => boolean
-): Promise<boolean> {
-  return new Promise<boolean>((resolve) => {
+): Promise<ApprovalVerdict> {
+  return new Promise<ApprovalVerdict>((resolve) => {
     const requestId = uuid()
     const payload: ApprovalPayload = {
       request_id: requestId,
@@ -314,17 +328,18 @@ function requestToolApproval(
       signal.removeEventListener('abort', onAbort)
       clearTimeout(timer)
     }
-    // 超时 / 中止属「主进程侧解决」：除 resolve(false) 外还要通知渲染端清掉常驻卡片，避免残留。
-    const resolveBySystem = () => {
+    // 超时 / 中止属「主进程侧解决」：除 resolve 外还要通知渲染端清掉常驻卡片，避免残留。
+    // 两者语义分离：超时≠用户拒绝（模型据此选择「向用户说明」而非「改道任务」）
+    const resolveBySystem = (verdict: 'timeout' | 'aborted') => {
       const ctx = pendingApprovals.get(requestId)
       if (ctx) {
         cleanup()
         notifyApprovalResolved(window, conversationId, requestId)
-        ctx.resolve(false)
+        ctx.resolve(verdict)
       }
     }
-    const onAbort = () => resolveBySystem()
-    const timer = setTimeout(() => resolveBySystem(), APPROVAL_TIMEOUT_MS)
+    const onAbort = () => resolveBySystem('aborted')
+    const timer = setTimeout(() => resolveBySystem('timeout'), APPROVAL_TIMEOUT_MS)
     pendingApprovals.set(requestId, { conversationId, requestId, window, payload, resolve, cleanup })
     if (signal.aborted) {
       onAbort()
@@ -332,7 +347,19 @@ function requestToolApproval(
     }
     signal.addEventListener('abort', onAbort, { once: true })
     if (window) {
-      window.webContents.send('chat:toolApproval', payload)
+      // 窗口销毁后 send 会抛 'Object has been destroyed'：按 fail-closed 兜底为超时路径
+      try {
+        if (window.isDestroyed() || window.webContents.isDestroyed()) {
+          cleanup()
+          resolve('timeout')
+          return
+        }
+        window.webContents.send('chat:toolApproval', payload)
+      } catch {
+        cleanup()
+        resolve('timeout')
+        return
+      }
     } else if (approvalDecider) {
       // 无窗口但调用方注入了审批决策器（如微信 ClawBot 桥的自动审批白名单）：
       // 由决策器判定，抛错按拒绝处理（fail closed）
@@ -343,11 +370,11 @@ function requestToolApproval(
         decided = false
       }
       cleanup()
-      resolve(decided)
+      resolve(decided ? 'approved' : 'rejected')
     } else {
       // No window to ask: fail closed
       cleanup()
-      resolve(false)
+      resolve('rejected')
     }
   })
 }
@@ -356,7 +383,7 @@ export function respondToolApproval(requestId: string, approved: boolean): boole
   const ctx = pendingApprovals.get(requestId)
   if (!ctx) return false
   ctx.cleanup()
-  ctx.resolve(approved)
+  ctx.resolve(approved ? 'approved' : 'rejected')
   return true
 }
 
@@ -459,6 +486,8 @@ const TOOL_RESULT_OFFLOAD_DIR = 'tool-outputs'
 const TOOL_RESULT_PREVIEW_CHARS = 1500
 
 function offloadOrLimitToolResult(resultStr: string, toolName: string, sandboxDir: string, round: number): string {
+  // 防御：调用方序列化异常（如 undefined）时兜成可读串，不在此处抛 TypeError
+  if (typeof resultStr !== 'string') resultStr = String(resultStr ?? '(空结果)')
   if (resultStr.length <= MAX_TOOL_RESULT_CHARS) return resultStr
   try {
     const dir = join(sandboxDir, TOOL_RESULT_OFFLOAD_DIR)
@@ -498,7 +527,9 @@ function healDanglingToolCalls(conversationId: string): void {
         addMessage({
           conversation_id: conversationId,
           role: 'tool',
-          content: 'Error: 工具调用因对话中断未完成。',
+          // 中性措辞：只陈述「中断、结果未知」，不断言「未完成/失败」——
+          // 断言失败会诱导模型盲目重试（工具可能已执行，重试=副作用重复）
+          content: '工具调用被中断，结果未知；如需继续，请先检查当前状态再决定是否重试。',
           tool_call_id: id
         })
       }
@@ -549,13 +580,38 @@ function compactAgentContext(messages: ChatMessage[], systemCount: number, budge
   }
 
   // A：仍超 budget 则从对话区头部成组硬裁，保底最近 MIN_KEEP_ROUNDS 轮，repairHistoryHead 修配对。
-  const floor = MIN_KEEP_ROUNDS * 2
-  while (convo.length > floor && estimateMessagesTokens(convo) > budget) {
+  // 任务锚点保护：锚点（最后一条 user 消息）落在 convo[0]/convo[1] 即停——
+  // slice(2) 每次删一对，anchor=1 时再裁会把锚点连同前一条一起删掉（off-by-one 丢任务）。
+  while (true) {
+    let anchor = -1
+    for (let i = convo.length - 1; i >= 0; i--) {
+      if (convo[i].role === 'user') { anchor = i; break }
+    }
+    if (anchor >= 0 && anchor <= 1) break // 锚点已在头部，再裁必丢任务——停（超预算由溢出自愈重试兜底）
+    const floor = Math.max(MIN_KEEP_ROUNDS * 2, anchor >= 0 ? convo.length - anchor : MIN_KEEP_ROUNDS * 2)
+    if (convo.length <= floor || estimateMessagesTokens(convo) <= budget) break
     convo = convo.slice(2)
     convo = repairHistoryHead(convo)
   }
 
   return [...system, ...convo]
+}
+
+/** 上游报错是否为「上下文超长」类（各家文案不一，宽匹配；误判代价仅多压缩重试一次） */
+function isContextOverflowError(msg: string): boolean {
+  return /context.{0,30}(length|limit|window|overflow|exceed)|maximum context|too many tokens|prompt is too long|request too large|exceeds? the (maximum|max) (context|token|length)|上下文.{0,10}(超长|超限|上限|过长)|(输入|内容|请求).{0,6}过长|超出.{0,6}(上限|长度)/i.test(msg)
+}
+
+// 文档 RAG 结果缓存：key=文档内容+query 的指纹。历史消息内容冻结不变，
+// 此前每轮对同一文档重复分块+向量化（确定性重复计费），缓存后命中即返。
+const docRagCache = new Map<string, string>()
+const DOC_RAG_CACHE_CAP = 50
+function docRagCacheKey(docText: string, query: string): string {
+  const h = createHash('sha256')
+  h.update(docText)
+  h.update('')
+  h.update(query)
+  return h.digest('hex')
 }
 
 function estimateTokens(text: string): number {
@@ -578,11 +634,14 @@ function estimateImageTokens(url: string): number {
 
 function estimateMessagesTokens(msgs: ChatMessage[]): number {
   return msgs.reduce((sum, m) => {
+    // tool_calls 的参数（file_ops write 可携带几十 KB 全文）必须计入，
+    // 否则滑窗/压缩误判「未超预算」，实际请求体撑爆模型上下文（上游 400）
+    const tcTokens = (m as any).tool_calls ? estimateTokens(JSON.stringify((m as any).tool_calls)) : 0
     if (typeof m.content === 'string') {
-      return sum + estimateTokens(m.content) + 4
+      return sum + estimateTokens(m.content) + tcTokens + 4
     }
     // Multimodal content array: estimate text parts normally, images by data URI size
-    let tokens = 4
+    let tokens = 4 + tcTokens
     for (const part of m.content as any[]) {
       if (part.type === 'text') {
         tokens += estimateTokens(part.text || '')
@@ -644,6 +703,11 @@ export interface SendMessageOptions {
    * 微信 ClawBot 桥用它实现「桥内自动审批白名单」（见 services/clawbot/clawbot-bridge.ts）。
    */
   approvalDecider?: (req: { name: string; args: any }) => boolean
+  /**
+   * 无窗口（后台/桥接）场景的流式进度回调：emitStream 在 window=null 时改走这里。
+   * 微信 ClawBot 桥用它给微信发「仍在处理中（已执行 N 步）」的进度文本。
+   */
+  onProgress?: (payload: Record<string, any>) => void
 }
 
 // 缓存每个会话最近一轮 sendMessage 的 overrides，供 regenerate/continue/edit 复用
@@ -707,8 +771,11 @@ function normalizeStringList(value: any): string[] {
 }
 
 function shouldAutoInjectRecentImages(args: any, userContent: string): boolean {
-  const text = `${userContent || ''}\n${args?.prompt || ''}`.toLowerCase()
-  return /这张|这幅|这图|图片|照片|参考|基于|根据|保持|改成|修改|编辑|用.*图|image|photo|picture|reference|based on|edit|modify|this image/.test(text)
+  const text = `${userContent || ''}\n${args?.prompt || ''}`
+  // 只认强指代词（「这张图/上一张/刚生成的」）。此前包含「参考|基于|根据|改成|图片|image|edit」
+  // 等宽泛词——命中即把无关历史图静默注入并把端点切成 edits（出图语义+计费双变，用户零感知）；
+  // 系统提示已教模型要参考时显式传 ref_image_ids，自动兜底只覆盖强指代场景
+  return /这张|这幅|该图|这张图|上一张|前一张|刚生成|刚才那张|this image|that image|the previous/i.test(text)
 }
 
 function resolveImageGenRefImages(args: any, refs: Array<{ id: string; name: string; data: string; messageId: string }>, currentTurnRefs: Array<{ id: string; name: string; data: string; messageId: string }>, userContent: string): string[] {
@@ -753,21 +820,31 @@ export async function sendMessage(
 
   // Save user message
   const normalizedAttachments = normalizeAttachments(options.attachments)
+
+  // 会话级串行门：先中断并「等待旧轮收尾完成」再落新消息、再开始本轮。
+  // 旧实现 abort 后立即继续——旧轮的延迟 catch 收尾（healDanglingToolCalls / 中断标记落库）
+  // 与新轮并发写库：转录错位、给新轮在途 tool_calls 插假结果、幽灵中断行劫持「继续生成」。
+  // 沙箱已贯穿 signal（executeSkillSandbox），unwind 通常秒级；10s 上限兜底死锁。
+  const prevCtrl = activeControllers.get(options.conversationId)
+  if (prevCtrl) {
+    markChatRequestCanceled(prevCtrl.requestId, 'replaced')
+    prevCtrl.controller.abort()
+    if (prevCtrl.done) {
+      await Promise.race([prevCtrl.done.catch(() => {}), new Promise((r) => setTimeout(r, 10_000))])
+    }
+  }
+  const abortController = new AbortController()
+  let doneResolve!: () => void
+  const donePromise = new Promise<void>((r) => { doneResolve = r })
+  activeControllers.set(options.conversationId, { controller: abortController, requestId, done: donePromise })
+  const signal = abortController.signal
+
   const savedUserMessage = addMessage({
     conversation_id: options.conversationId,
     role: 'user',
     content: options.content,
     attachments: normalizedAttachments
   })
-
-  const prevCtrl = activeControllers.get(options.conversationId)
-  if (prevCtrl) {
-    markChatRequestCanceled(prevCtrl.requestId, 'replaced')
-    prevCtrl.controller.abort()
-  }
-  const abortController = new AbortController()
-  activeControllers.set(options.conversationId, { controller: abortController, requestId })
-  const signal = abortController.signal
   // 不再做整轮 180s 硬超时。只保留 30 分钟 hard deadline 兜底防失控循环。
   // 实际「卡死检测」由 llm.ts 的 stream idle timeout 完成（60s 无 token 即视为静默）。
   // 30 分钟硬上限只统计「Agent 实际工作时间」：等待用户审批弹窗期间暂停计时，
@@ -793,14 +870,27 @@ export async function sendMessage(
     if (!agentTurnTimer) startDeadline()
   }
   startDeadline()
+  // 交互卡（ask_user/生图参数卡）等待期间暂停硬上限计时（与审批卡同待遇）——
+  // 此前只在审批处 pause，交互卡等待会被 30min 硬上限误杀
+  deadlineControls.set(options.conversationId, { pause: pauseDeadline, resume: resumeDeadline })
   const emitStream = (payload: Record<string, any>): void => {
-    if (!window) return
-    if (isChatRequestCanceled(requestId) && payload.type !== 'aborted') return
-    window.webContents.send('chat:stream', {
-      ...payload,
-      conversationId: options.conversationId,
-      requestId
-    })
+    if (!window) {
+      // 桥接/后台场景：改走 onProgress 回调（此前整轮工具循环数分钟对调用方零可见输出）
+      try { options.onProgress?.({ ...payload, conversationId: options.conversationId, requestId }) } catch { /* 回调异常不影响主流程 */ }
+      return
+    }
+    // 窗口可能已被销毁（默认关窗到托盘）：destroyed 后 send 会抛 'Object has been destroyed'，
+    // 降级为静默丢弃——落库不受影响，轮次结束后渲染端从 DB 全量重拉
+    try {
+      if (window.isDestroyed() || window.webContents.isDestroyed()) return
+      // round_done 是轮次终态信号，取消后也要放行（僵尸恢复收尾依赖它）
+      if (isChatRequestCanceled(requestId) && payload.type !== 'aborted' && payload.type !== 'round_done') return
+      window.webContents.send('chat:stream', {
+        ...payload,
+        conversationId: options.conversationId,
+        requestId
+      })
+    } catch { /* 窗口销毁竞态：静默 */ }
   }
 
   try {
@@ -895,7 +985,8 @@ export async function sendMessage(
     `  · 绝对路径(如 C:\\foo\\bar.txt)按字面解析\n` +
     `  · 相对路径(如 out.md、data/x.json)解析到工作区内\n` +
     `  · '.' 或空字符串表示工作区根\n` +
-    `- 查看工作区内容请调用 file_ops({action:'tree', path:'.'}) 或 ({action:'list', path:'.'})`
+    `- 查看工作区内容请调用 file_ops({action:'tree', path:'.'}) 或 ({action:'list', path:'.'})\n` +
+    `- 向用户交付生成的文件时，在回复里用反引号包裹完整绝对路径（如 \`C:\\foo\\bar.png\`），客户端会自动为该路径生成「打开所在目录」按钮`
   )
 
   // ask_user：需要用户在多个选项间拍板/澄清时，弹内嵌选项卡而非长文罗列。对所有智能体可用。
@@ -977,8 +1068,8 @@ export async function sendMessage(
 
       if (kbIds.length > 0) {
         // Build enhanced query: combine recent history for multi-turn context
-        const recentHistory = getMessages(options.conversationId)
-        const recentPairs = recentHistory
+        //（复用入口已读入的 history，不再重复全量 getMessages）
+        const recentPairs = history
           .filter((m) => m.role === 'user' || m.role === 'assistant')
           .slice(-4) // last 2 rounds
         const historyContext = recentPairs
@@ -1158,18 +1249,36 @@ export async function sendMessage(
     }
   }
 
+  // 文档 RAG 只对「窗口内」的消息执行：此前对全量历史的每个大文档都重跑分块+向量化，
+  // 产物又被窗口切片丢弃（窗口外纯白算）、窗口内因 query 冻结逐轮完全相同（确定性重复计费）。
+  // 处理边界与窗口同口径（最近 RECENT_ROUNDS 个 user 消息起）。
+  const ragWindowStart = (() => {
+    let seen = 0
+    for (let i = history.length - 1; i >= 0; i--) {
+      const m = history[i]
+      if (m.role === 'user' && !m.card) {
+        seen++
+        if (seen > RECENT_ROUNDS) return i + 1
+      }
+    }
+    return 0
+  })()
+  let historyIdx = -1
+
   // Convert history to ChatMessage array
   const historyMessages: ChatMessage[] = []
   for (const msg of history) {
+    historyIdx++
     // UI-only 交互卡片消息（ask_user / 生图参数卡）不发给模型：它只承载渲染留痕，
     // 且夹在 assistant.tool_calls 与 tool 结果之间，混入会破坏 OpenAI 的 tool 配对。
     if (msg.card) continue
+    const inRagWindow = historyIdx >= ragWindowStart
     if (msg.role === 'user') {
       if (msg.attachments && msg.attachments.length > 0) {
         const contentParts: any[] = [{ type: 'text', text: msg.content }]
         for (const att of msg.attachments) {
           if (att.type === 'image') {
-            if (imageKeepMsgIds.has(msg.id)) {
+            if (inRagWindow && imageKeepMsgIds.has(msg.id)) {
               contentParts.push({
                 type: 'image_url',
                 image_url: { url: att.data }
@@ -1179,13 +1288,27 @@ export async function sendMessage(
             }
           } else if (att.type === 'document' && att.data) {
             const MAX_DOC_CHARS = 8000
-            if (att.data.length <= MAX_DOC_CHARS) {
+            if (!inRagWindow) {
+              // 窗口外文档：不重跑向量召回（产物注定被窗口切片丢弃），直接省略占位
+              contentParts.push({ type: 'text', text: `[历史文档已省略：${att.name || 'document'}]` })
+            } else if (att.data.length <= MAX_DOC_CHARS) {
               contentParts.push({ type: 'text', text: `[${att.name}]\n${att.data}` })
             } else {
-              // Large doc: try RAG retrieval, fallback to truncation
+              // Large doc: try RAG retrieval (content-fingerprint cached), fallback to truncation
               let docText: string
+              const cacheKey = docRagCacheKey(att.data, String(msg.content || ''))
+              const cached = docRagCache.get(cacheKey)
               try {
-                docText = await retrieveRelevantChunks(att.data, msg.content, att.name, signal)
+                if (cached !== undefined) {
+                  docText = cached
+                } else {
+                  docText = await retrieveRelevantChunks(att.data, msg.content, att.name, signal)
+                  docRagCache.set(cacheKey, docText)
+                  if (docRagCache.size > DOC_RAG_CACHE_CAP) {
+                    const first = docRagCache.keys().next().value
+                    if (first !== undefined) docRagCache.delete(first)
+                  }
+                }
               } catch (e) {
                 if (signal.aborted) throw e
                 docText = att.data.slice(0, MAX_DOC_CHARS) + `\n...(truncated, ${att.data.length} chars total)`
@@ -1234,8 +1357,15 @@ export async function sendMessage(
   const systemTokens = estimateMessagesTokens(messages)
   const promptBudget = getModelPromptBudget(effectiveModelId)
   const budget = promptBudget - systemTokens
-  let included = historyMessages.slice(-RECENT_ROUNDS * 2)
-  included = repairHistoryHead(included)
+  // 按「轮」切（user 消息为界）：保留最近 RECENT_ROUNDS 个用户提问及其完整应答链。
+  // 此前按「12 条全角色消息」切——工具密集轮里 tool 消息挤占窗口，把用户原始请求顶出去
+  let included: ChatMessage[]
+  {
+    const userIdx: number[] = []
+    historyMessages.forEach((m, i) => { if (m.role === 'user') userIdx.push(i) })
+    const startIdx = userIdx.length > RECENT_ROUNDS ? userIdx[userIdx.length - RECENT_ROUNDS] : 0
+    included = repairHistoryHead(historyMessages.slice(startIdx))
+  }
   while (included.length > 2 && estimateMessagesTokens(included) > budget) {
     included = included.slice(2)
     included = repairHistoryHead(included)
@@ -1255,6 +1385,8 @@ export async function sendMessage(
   // 到顶不静默丢弃，而是追加"可续跑"提示(见下方 round >= MAX_TOOL_ROUNDS 分支)，配合修复 bug1。
   const DEFAULT_MAX_TOOL_ROUNDS = 40
   const MAX_TOOL_ROUNDS = bot.max_tool_rounds && bot.max_tool_rounds > 0 ? bot.max_tool_rounds : DEFAULT_MAX_TOOL_ROUNDS
+  /** 上下文溢出自愈只重试一次（防死循环） */
+  let overflowRetried = false
     // 脱离沙箱白名单工具：能任意读写文件 / 执行任意命令，安全级别等同 run_command。
     // 即便智能体审批模式为 off 也强制弹一次确认，作为越权操作的安全兜底。
     const unsandboxedToolNames = new Set<string>(
@@ -1300,18 +1432,47 @@ export async function sendMessage(
       // 发送前净化:删空消息 / 修 tool 配对 / 合并连续 user，防止脏历史导致 replay 持续失败(bug2/bug3)
       currentMessages = sanitizeOpenAIMessages(currentMessages)
       const t0 = Date.now()
-      const response = await callLLM(
-        effectiveProviderId,
-        {
-          modelId: effectiveModelId,
-          messages: currentMessages,
-          tools: tools.length > 0 ? tools : undefined,
-          stream: true,
-          signal,
-          streamContext: { conversationId: options.conversationId, requestId }
-        },
-        window
-      )
+      let response: any
+      try {
+        response = await callLLM(
+          effectiveProviderId,
+          {
+            modelId: effectiveModelId,
+            messages: currentMessages,
+            tools: tools.length > 0 ? tools : undefined,
+            stream: true,
+            signal,
+            streamContext: { conversationId: options.conversationId, requestId },
+            // 桥接/后台（window=null）：允许「已产出后断流」整次重试，避免任一轮断流整轮判死
+            allowPartialRetry: !window
+          },
+          window
+        )
+      } catch (llmErr: any) {
+        // 上下文溢出自愈：对话区砍半后重试一次（此前 400 直接整轮判死，且窗口封顶致次次复发）
+        if (!overflowRetried && isContextOverflowError(String(llmErr?.message || ''))) {
+          overflowRetried = true
+          console.warn('[chat] context overflow, shrink conversation area and retry once')
+          const tail = repairHistoryHead(currentMessages.slice(systemCount).slice(-4))
+          currentMessages = [...currentMessages.slice(0, systemCount), ...tail]
+          currentMessages = sanitizeOpenAIMessages(currentMessages)
+          response = await callLLM(
+            effectiveProviderId,
+            {
+              modelId: effectiveModelId,
+              messages: currentMessages,
+              tools: tools.length > 0 ? tools : undefined,
+              stream: true,
+              signal,
+              streamContext: { conversationId: options.conversationId, requestId },
+              allowPartialRetry: !window
+            },
+            window
+          )
+        } else {
+          throw llmErr
+        }
+      }
 
       console.log(`[chat] round ${round}: LLM response in ${Date.now() - t0}ms, content: ${response.content.length} chars, tool_calls: ${response.tool_calls?.length || 0}`)
 
@@ -1332,7 +1493,8 @@ export async function sendMessage(
                 messages: currentMessages,
                 stream: true,
                 signal,
-                streamContext: { conversationId: options.conversationId, requestId }
+                streamContext: { conversationId: options.conversationId, requestId },
+                allowPartialRetry: !window
               },
               window
             )
@@ -1340,10 +1502,14 @@ export async function sendMessage(
             finalReasoning = retry.reasoning || finalReasoning
           } catch (e: any) {
             if (isAbortedError(e)) throw e
+            // 可分类硬错误（余额/鉴权/限流/4xx）向上抛走 [Error] 落库路径——
+            // 不吞成伪装正常的道歉回复（那会把系统故障归因给用户、诱导无效改写）
+            const em = String(e?.message || '')
+            if (/余额不足|INSUFFICIENT_BALANCE|Token expired|Cloud login required|rate limit|Rate limit|LLM API error 4\d\d/i.test(em)) throw e
             console.warn('[chat] empty-response retry failed:', e?.message)
           }
           if (!finalContent || !finalContent.trim()) {
-            finalContent = '抱歉，我暂时无法生成回复。请换一种方式描述你的需求，或稍后再试。'
+            finalContent = '模型这次没有返回内容，请稍后重试。'
             emitStream({ type: 'content', content: finalContent })
           }
         }
@@ -1447,22 +1613,28 @@ export async function sendMessage(
             ? (previewFileWrite(parsedArgs, sandboxDir) || previewFileRead(parsedArgs, sandboxDir))
             : null
           pauseDeadline()
-          let approved: boolean
+          let verdict: ApprovalVerdict
           try {
-            approved = await requestToolApproval(window, options.conversationId, toolCall, parsedArgs, preview, signal, options.approvalDecider)
+            verdict = await requestToolApproval(window, options.conversationId, toolCall, parsedArgs, preview, signal, options.approvalDecider)
           } finally {
             resumeDeadline()
           }
           if (signal.aborted) throw new AbortedError()
-          if (!approved) {
+          if (verdict !== 'approved') {
+            // 超时可辨识：模型应「向用户说明并等待指示」而非按「用户已拍板」改道
+            const errText = verdict === 'timeout'
+              ? '等待用户确认超时（10 分钟），用户未看到或未回应。请勿重试同一操作，先向用户说明情况并等待指示。'
+              : verdict === 'aborted'
+                ? '操作已被中止'
+                : '用户拒绝了该工具调用'
             plans.push({
               toolCall,
               fnName,
               argsHash,
               noRecord: true,
-              resultStr: JSON.stringify({ error: '用户拒绝了该工具调用', tool: fnName })
+              resultStr: JSON.stringify({ error: errText, tool: fnName })
             })
-            emitStream({ type: 'tool_result', tool: fnName, summary: '[已拒绝]' })
+            emitStream({ type: 'tool_result', tool: fnName, summary: verdict === 'timeout' ? '[确认超时]' : verdict === 'aborted' ? '[已中止]' : '[已拒绝]' })
             continue
           }
         }
@@ -1487,16 +1659,19 @@ export async function sendMessage(
           effectiveProviderId,
           effectiveModelId
         )
+        // 用户自建技能忘写 return 时 result===undefined：JSON.stringify(undefined) 返回 undefined
+        //（不是字符串），会在结果截断处抛 TypeError 炸掉整轮——先兜成可读错误对象
+        const safeResult = result === undefined ? { error: '工具未返回任何结果（技能代码可能没有 return）' } : result
         // 工具已经返回字符串（如 use_skill 返回的 markdown skill 正文）就直接用；
         // 再 JSON.stringify 会在原文外面再裹一层引号 + 转义全部 \n 和 "，
         // 使 tool message content 变成 "\"# title\\n...\\n...\""，部分 OpenAI 兼容
         // 上游（deepseek/智谱/豆包/Moonshot 等）拿到这种「双重转义字符串」会触发
         // silent 200 + 空 SSE，表现为「调用工具后 AI 不再回复」。
-        const rawResultStr = typeof result === 'string' ? result : JSON.stringify(result)
+        const rawResultStr = typeof safeResult === 'string' ? safeResult : JSON.stringify(safeResult)
         const resultStr = offloadOrLimitToolResult(rawResultStr, p.fnName, sandboxDir, round)
-        const summary = buildToolSummary(p.fnName, result, resultStr)
+        const summary = buildToolSummary(p.fnName, safeResult, resultStr)
         emitStream({ type: 'tool_result', tool: p.fnName, summary })
-        return { ...p, result, resultStr }
+        return { ...p, result: safeResult, resultStr }
       })
       // 工具执行期心跳：周期性向渲染端报「执行中 Ns」，让 MCP 冷启动握手 / 慢工具的长等待有可见反馈。
       const toolBatchStart = Date.now()
@@ -1506,7 +1681,18 @@ export async function sendMessage(
       if (typeof heartbeat.unref === 'function') heartbeat.unref()
       let completed: Plan[]
       try {
-        completed = await Promise.all(pendingExecs)
+        const settled = await Promise.allSettled(pendingExecs)
+        // race-safe 收集：已 resolve 的真实结果照常落库；rejected 的补「中断/失败」占位——
+        // 不再因单个工具中止把整批已完成结果丢弃（成功工具被标「未完成」会诱导模型盲目重试、副作用重复）
+        completed = settled.map((s, i) => {
+          if (s.status === 'fulfilled') return s.value
+          const p = plans[i]
+          const err: any = s.reason
+          const errMsg = isAbortedError(err)
+            ? '该工具调用被中断，结果未知；如需继续，请先检查当前状态再决定是否重试'
+            : String(err?.message || '工具执行异常')
+          return { ...p, result: { error: errMsg, tool: p.fnName }, resultStr: JSON.stringify({ error: errMsg, tool: p.fnName }) }
+        })
       } finally {
         clearInterval(heartbeat)
       }
@@ -1582,7 +1768,8 @@ export async function sendMessage(
             messages: currentMessages,
             stream: true,
             signal,
-            streamContext: { conversationId: options.conversationId, requestId }
+            streamContext: { conversationId: options.conversationId, requestId },
+            allowPartialRetry: !window
           },
           window
         )
@@ -1616,39 +1803,47 @@ export async function sendMessage(
     // 取出 llm 层透传的「已流式产出的部分内容」，连同中断/报错标记一起落库，
     // 避免用户已经看到的半截回答在刷新后被覆盖丢失。前端流式已展示过 partial，
     // 故 emitStream 只下发标记，由 renderer 追加到已有内容尾部（见 chat store）。
+    // 顺序纪律：先 addMessage 落库、再 emitStream 推送——窗口已销毁时推送会抛错，
+    // 先推送会导致落库被跳过（半截内容与中断标记全丢）
     const partial = typeof (error as any)?.__partialContent === 'string' ? (error as any).__partialContent : ''
     const withPartial = (marker: string): string => (partial ? `${partial}\n\n${marker}` : marker)
     if (agentTurnTimedOut) {
       const message = '本轮 Agent 执行已超过 30 分钟硬上限，已自动中断'
-      emitStream({ type: 'error', error: message })
       addMessage({
         conversation_id: options.conversationId,
         role: 'assistant',
         content: withPartial(`[Error] ${message}`)
       })
+      emitStream({ type: 'error', error: message })
     } else if (isAbortedError(error)) {
       const reason = canceledRequestReasons.get(requestId)
       const marker = reason === 'replaced' ? '[上一轮已被新消息中断]' : '[已中断]'
-      emitStream({ type: 'aborted', content: marker })
       addMessage({
         conversation_id: options.conversationId,
         role: 'assistant',
         content: withPartial(marker)
       })
+      emitStream({ type: 'aborted', content: marker })
     } else {
-      emitStream({ type: 'error', error: error.message })
       addMessage({
         conversation_id: options.conversationId,
         role: 'assistant',
         content: withPartial(`[Error] ${error.message}`)
       })
+      emitStream({ type: 'error', error: error.message })
     }
   } finally {
     clearTimeout(agentTurnTimer)
+    deadlineControls.delete(options.conversationId)
+    // 轮次真正结束信号：渲染端「reload 后恢复的僵尸流式态」据此收尾重拉
+    // （正常路径的清理在 IPC resolve 后由 runStreamedRequest 负责，本事件对它无害冗余）
+    try { emitStream({ type: 'round_done' }) } catch { /* ignore */ }
     const active = activeControllers.get(options.conversationId)
     if (active?.controller === abortController) {
       activeControllers.delete(options.conversationId)
     }
+    // 串行门放行：收尾（含上方 catch 落库）彻底完成后，等待中的新轮才继续
+    doneResolve()
   }
 }
 
@@ -1670,6 +1865,10 @@ export async function regenerateLastResponse(
   const lastUser = msgs[lastUserIdx]
   const conv = getConversation(conversationId)
   if (!conv) throw new Error('Conversation not found')
+  // 先校验可发送条件再截断——否则截断已提交而重发失败，截断点之后的历史被静默丢失
+  const bot = getBot(conv.bot_id)
+  if (!bot) throw new Error('智能体不存在，无法重新生成')
+  if (!(conv.active_model_id || bot.model_id)) throw new Error('未选择对话模型，无法重新生成')
   deleteMessagesFrom(conversationId, lastUser.id)
   const stash = lastTurnOverrides.get(conversationId) ?? {}
   await sendMessage(
@@ -1745,6 +1944,10 @@ export async function editAndResend(
   if (target.role !== 'user') throw new Error('只能编辑用户消息')
   const conv = getConversation(conversationId)
   if (!conv) throw new Error('Conversation not found')
+  // 先校验可发送条件再截断——否则截断已提交而重发失败，截断点之后的历史被静默丢失
+  const bot = getBot(conv.bot_id)
+  if (!bot) throw new Error('智能体不存在，无法重发')
+  if (!(conv.active_model_id || bot.model_id)) throw new Error('未选择对话模型，无法重发')
   const attachments = target.attachments
   deleteMessagesFrom(conversationId, messageId)
   const stash = lastTurnOverrides.get(conversationId) ?? {}
@@ -1761,20 +1964,16 @@ async function maybeGenerateTitle(
   window: BrowserWindow | null
 ): Promise<void> {
   try {
-    const allMessages = getMessages(conversationId)
-    const userMsgCount = allMessages.filter((m) => m.role === 'user').length
-    if (userMsgCount !== 1 && userMsgCount !== 5) return
-
+    // 先计数守卫（避免每轮都全量读消息体）；用户手动改名（title_locked）的会话不再自动覆盖
+    const counts = countConversationMessages(conversationId)
+    if (counts.user !== 1 && counts.user !== 5) return
     const conv = getConversation(conversationId)
-    if (!conv) return
-    // Skip if title was manually edited (not default) on 5th message
-    if (userMsgCount === 5 && conv.title !== 'New Chat') {
-      // Still regenerate on 5th to get a better title based on more context
-    }
+    if (!conv || (conv as any).title_locked) return
 
+    const allMessages = getMessages(conversationId)
     const recentMsgs = allMessages
       .filter((m) => m.role === 'user' || m.role === 'assistant')
-      .slice(0, userMsgCount === 1 ? 2 : 10)
+      .slice(0, counts.user === 1 ? 2 : 10)
       .map((m) => `${m.role === 'user' ? '用户' : 'AI'}: ${typeof m.content === 'string' ? m.content : '[附件]'}`)
       .join('\n')
 
@@ -1813,18 +2012,20 @@ async function maybeGenerateSummary(
   modelId: string
 ): Promise<void> {
   try {
-    const allMessages = getMessages(conversationId)
-    const userAssistantMsgs = allMessages.filter((m) => m.role === 'user' || m.role === 'assistant')
-    if (userAssistantMsgs.length < SUMMARY_THRESHOLD) return
+    // 先计数守卫（绝大多数轮次不需要全量读消息体）
+    const counts = countConversationMessages(conversationId)
+    if (counts.userAssistant < SUMMARY_THRESHOLD) return
 
     const existing = getSummary(conversationId)
     const coveredCount = existing?.covered_count || 0
     // 增量摘要：只压缩「已覆盖水位线(coveredCount)之后、滑动窗口(windowStart)之前」的新增段落，
     // 不再每轮把全部历史重喂给摘要模型（旧逻辑成本/延迟随对话长度线性增长）。
     // 把 covered_count 写到 windowStart，使摘要覆盖范围始终紧贴最近窗口，消除记忆空洞。
-    const windowStart = Math.max(0, userAssistantMsgs.length - RECENT_ROUNDS * 2)
+    const windowStart = Math.max(0, counts.userAssistant - RECENT_ROUNDS * 2)
     if (windowStart <= coveredCount) return // 没有新的、已滑出窗口的消息需要补摘要
 
+    const allMessages = getMessages(conversationId)
+    const userAssistantMsgs = allMessages.filter((m) => m.role === 'user' || m.role === 'assistant')
     const messagesToSummarize = userAssistantMsgs
       .slice(coveredCount, windowStart)
       .map((m) => `${m.role === 'user' ? '用户' : 'AI'}: ${typeof m.content === 'string' ? m.content : '[附件]'}`)
@@ -2247,7 +2448,11 @@ async function executeToolCall(
     cloudAgentId: cloudKb?.agentId || 0,
     cloudKbTopK: cloudKb?.topK || 5
   }
-  const execContext = { conversationId, requestId, window: window || null, signal, timeoutMs, isCanceled: isChatRequestCanceled }
+  // 生图后台任务的取消判定区分原因：reason='replaced'（用户发了新消息/微信来消息）不代表要取消生图——
+  // 图片已计费生成，应照常落库；仅 'user' 主动中止才丢弃
+  const isCanceledForImageGen = (rid?: string): boolean =>
+    !!rid && isChatRequestCanceled(rid) && canceledRequestReasons.get(rid) !== 'replaced'
+  const execContext = { conversationId, requestId, window: window || null, signal, timeoutMs, isCanceled: isCanceledForImageGen }
   const coreResult = await executeCoreToolCall(functionName, args, sandboxDir, kbContext, execContext)
   if (coreResult.handled) return coreResult.result
 
@@ -2284,7 +2489,8 @@ async function executeToolCall(
   if (skill) {
     // 脱离沙箱白名单工具：放开路径/命令限制（仍在 vm 隔离内运行）。内置预设永不脱离沙箱。
     const unrestricted = !skill.is_builtin && skill.unsandboxed
-    const result = await executeSkillSandbox(skill.implementation, args, sandboxDir, timeoutMs, unrestricted)
+    // signal 贯穿：用户中止/被替换时立即释放等待（不再等技能跑满自身超时）
+    const result = await executeSkillSandbox(skill.implementation, args, sandboxDir, timeoutMs, unrestricted, signal)
     return result.success ? result.result : { error: result.error }
   }
 

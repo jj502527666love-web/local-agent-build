@@ -218,11 +218,30 @@ export async function sendMessage(
   return data as SendMessageResponse
 }
 
+/**
+ * sendmessage 响应白名单断言：契约成功形态为 { ret: 0 }（开发计划 §5.6）。
+ * HTTP 200 空 body（缺字段静默丢失形态）或非零 ret/errcode 一律视为失败抛错，
+ * 由上层进入重试——此前仅判 `ret !== undefined && ret !== 0`，空 body/非零 errcode
+ * 会被误标「已发送」且按消息 id 去重后永不重试。
+ */
+export function assertSendResponse(resp: SendMessageResponse, what = 'sendmessage'): void {
+  if (!resp || typeof resp !== 'object') throw new Error(`${what} 响应为空（未确认送达）`)
+  const ret = resp.ret
+  const errcode = resp.errcode
+  if (ret === 0 || (ret === undefined && errcode === 0)) return
+  const code = ret ?? errcode
+  const suffix = code === undefined ? '（空响应，未确认送达）' : ` ${resp.errmsg || ''}`
+  throw new Error(`${what} 失败${code === undefined ? '' : ` ret=${code}`}${suffix}`.trim())
+}
+
 /** 便捷构造出站消息骨架（必填字段缺一即静默丢失，统一在此断言） */
 export function buildOutboundMessage(params: {
   toUserId: string
   contextToken: string
   itemList: WeixinMessage['item_list']
+  /** 稳定幂等键（可选）：同一逻辑消息的重试/分段共享同一前缀派生 id，供服务端按 client_id 去重，
+   *  防「响应歧义 → 重试 → 重复投递」（此前每次重试都重新生成随机 id，协议层无任何幂等键） */
+  clientId?: string
 }): OutboundMessage {
   if (!params.toUserId) throw new Error('buildOutboundMessage: toUserId required')
   if (!params.contextToken) throw new Error('buildOutboundMessage: contextToken required')
@@ -230,7 +249,7 @@ export function buildOutboundMessage(params: {
   return {
     from_user_id: '',
     to_user_id: params.toUserId,
-    client_id: `local-agent-${Math.random().toString(16).slice(2)}${Date.now().toString(16)}`,
+    client_id: params.clientId || `local-agent-${Math.random().toString(16).slice(2)}${Date.now().toString(16)}`,
     message_type: 2, // BOT
     message_state: 2, // FINISH
     context_token: params.contextToken,

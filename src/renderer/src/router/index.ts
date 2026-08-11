@@ -309,6 +309,12 @@ export const routes: RouteRecordRaw[] = [
         name: 'oemChannel',
         component: () => import('@/views/user-center/OemChannelCenterView.vue'),
         meta: { title: '渠道中心' }
+      },
+      {
+        // 兜底：未匹配路径（如云控端自定义菜单配错的内部目标）回退对话页，
+        // 避免 Vue Router 无匹配时渲染空白、无任何提示的死胡同
+        path: ':pathMatch(.*)*',
+        redirect: '/chat'
       }
     ]
   }

@@ -1399,13 +1399,22 @@ function onClickOutside(e: MouseEvent) {
   }
 }
 
-// Delete key support for selected edges
+// Delete key support for selected nodes & edges
 const { getSelectedEdges, removeEdges } = useVueFlow()
-function onKeyDown(e: KeyboardEvent) {
+async function onKeyDown(e: KeyboardEvent) {
   if (e.key === 'Delete' || e.key === 'Backspace') {
     if (workflowRunning.value) return
     const target = e.target as HTMLElement
     if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT') return
+    // 多选节点批量删除（Shift+点击多选 / Shift+拖动框选）。
+    // 与节点上的删除按钮同一 store 入口：直接删、无确认；removeNode 级联删关联连线
+    // 并由主进程清掉磁盘产物。节点与连线同时选中时一起删（级联过的连线对 removeEdges 幂等）。
+    const selectedNodes = getSelectedNodes.value
+    if (selectedNodes.length > 0) {
+      for (const n of selectedNodes) {
+        await canvasStore.removeNode(n.id)
+      }
+    }
     const selected = getSelectedEdges.value
     if (selected.length > 0) {
       removeEdges(selected.map((ed) => ed.id))

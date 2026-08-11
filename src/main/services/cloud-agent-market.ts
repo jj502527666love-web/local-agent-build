@@ -35,6 +35,9 @@ export interface CloudAgent {
   enable_image_gen: number
   enable_deck: number
   tags: string[]
+  /** 市场分类（云控端 agent_categories）；null=未分类 */
+  category_id: number | null
+  category_name: string
   download_count: number
   rating_avg: number
   rating_count: number
@@ -49,6 +52,14 @@ export interface CloudAgent {
   cloud_kb_only: number
   cloud_kb_top_k: number
   created_at?: string
+}
+
+/** 市场分类（GET /public/agents/categories 下发） */
+export interface MarketCategory {
+  id: number
+  name: string
+  description?: string
+  sort_order?: number
 }
 
 /** 市场列表/详情请求：登录则带 token（按身份过滤 + 标记已拥有），未登录匿名（只看公开免费）。 */
@@ -114,6 +125,8 @@ function mapAgent(raw: any, origin: string): CloudAgent {
     enable_image_gen: raw.enable_image_gen ? 1 : 0,
     enable_deck: raw.enable_deck ? 1 : 0,
     tags: Array.isArray(raw.tags) ? raw.tags.map((t: unknown) => String(t)) : [],
+    category_id: raw.category_id != null && Number(raw.category_id) > 0 ? Number(raw.category_id) : null,
+    category_name: String(raw.category_name || ''),
     download_count: Number(raw.download_count || 0),
     rating_avg: Number(raw.rating_avg || 0),
     rating_count: Number(raw.rating_count || 0),
@@ -134,6 +147,7 @@ export async function fetchMarketAgents(options?: {
   page?: number
   pageSize?: number
   search?: string
+  categoryId?: number
 }): Promise<{ items: CloudAgent[]; total: number; page: number; pageSize: number }> {
   const apiBase = getCloudApiBase()
   const page = options?.page || 1
@@ -142,6 +156,7 @@ export async function fetchMarketAgents(options?: {
   const origin = originOf(apiBase)
   const params = new URLSearchParams({ page: String(page), per_page: String(pageSize) })
   if (options?.search) params.set('search', options.search)
+  if (options?.categoryId && options.categoryId > 0) params.set('category_id', String(options.categoryId))
   const url = `${apiBase}/public/agents?${params.toString()}`
   let json: any
   try {
@@ -157,6 +172,27 @@ export async function fetchMarketAgents(options?: {
     total: Number(json.total || items.length || 0),
     page,
     pageSize,
+  }
+}
+
+/** 市场可见分类列表（免登录；远端未部署该接口时静默降级为空，UI 不显示分类行） */
+export async function fetchMarketCategories(): Promise<MarketCategory[]> {
+  const apiBase = getCloudApiBase()
+  if (!apiBase) return []
+  try {
+    const json = await fetchJson(`${apiBase}/public/agents/categories`)
+    const list: any[] = Array.isArray(json?.data) ? json.data : []
+    return list
+      .map((c: any) => ({
+        id: Number(c?.id) || 0,
+        name: String(c?.name || ''),
+        description: c?.description ? String(c.description) : undefined,
+        sort_order: c?.sort_order != null ? Number(c.sort_order) : undefined,
+      }))
+      .filter((c: MarketCategory) => c.id > 0 && c.name)
+  } catch (e) {
+    if (isNotFound(e)) return []
+    throw e
   }
 }
 

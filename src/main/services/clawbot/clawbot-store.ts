@@ -45,6 +45,8 @@ export interface ClawbotPeer {
   conversation_id: string
   last_context_token: string
   last_message_at: string
+  /** 已成功发往微信的 assistant 消息水位（messages.rowid）；重启后 baseline 只标水位之前，遗留未发可补发 */
+  last_sent_rowid: number
   created_at: string
   updated_at: string
 }
@@ -188,11 +190,12 @@ export function getConnectionStatus(id: string): ClawbotConnectionStatus | null 
   return row?.status ?? null
 }
 
-/** 启动/热切换时的僵尸状态清理：connecting 是进程级暂态，进程重启后必然已死 */
+/** 启动/热切换时的僵尸状态清理：connecting 是进程级暂态，进程重启后必然已死；
+ * paused_until 一并清空——否则重启后桥显示「连接中」却在空转等暂停到期 */
 export function cleanupStaleClawbotState(): void {
   const db = getDatabase()
   db.prepare(
-    `UPDATE clawbot_connections SET status='offline', updated_at=? WHERE status IN ('connecting','paused')`
+    `UPDATE clawbot_connections SET status='offline', paused_until='', updated_at=? WHERE status IN ('connecting','paused')`
   ).run(new Date().toISOString())
 }
 
@@ -203,6 +206,15 @@ export function getPeer(connectionId: string, peerId: string): ClawbotPeer | nul
   const row = db
     .prepare('SELECT * FROM clawbot_peers WHERE connection_id=? AND peer_id=?')
     .get(connectionId, peerId) as ClawbotPeer | undefined
+  return row || null
+}
+
+/** 按会话反查 peer（事件驱动补发：core-tools 完成事件只带 conversationId） */
+export function getPeerByConversation(connectionId: string, conversationId: string): ClawbotPeer | null {
+  const db = getDatabase()
+  const row = db
+    .prepare('SELECT * FROM clawbot_peers WHERE connection_id=? AND conversation_id=?')
+    .get(connectionId, conversationId) as ClawbotPeer | undefined
   return row || null
 }
 
@@ -234,6 +246,13 @@ export function touchPeerMessageAt(peerRowId: string): void {
   const db = getDatabase()
   const now = new Date().toISOString()
   db.prepare('UPDATE clawbot_peers SET last_message_at=?, updated_at=? WHERE id=?').run(now, now, peerRowId)
+}
+
+/** 推进已发水位（MAX 防并发 flush 乱序完成时水位倒退） */
+export function updatePeerLastSentRowid(peerRowId: string, rowid: number): void {
+  const db = getDatabase()
+  db.prepare('UPDATE clawbot_peers SET last_sent_rowid=MAX(last_sent_rowid, ?), updated_at=? WHERE id=?')
+    .run(rowid, new Date().toISOString(), peerRowId)
 }
 
 export function listPeers(connectionId: string): ClawbotPeerSummary[] {
