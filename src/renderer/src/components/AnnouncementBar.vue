@@ -45,6 +45,7 @@
           <div
             class="announcement-content px-5 py-4 max-h-[60vh] overflow-y-auto text-sm text-text-secondary leading-relaxed"
             v-html="announcement.content || '<p style=\'color:#bfbfbf\'>（无内容）</p>'"
+            @click="onContentClick"
           />
           <div class="px-5 py-3 border-t border-surface-2 flex justify-end">
             <button
@@ -57,17 +58,28 @@
       </div>
     </Teleport>
   </template>
+  <!-- 公告插图大图预览：点公告内的图片打开 Lightbox（缩放/拖动），再点关闭回公告弹窗 -->
+  <ImageLightbox :src="previewImage" @close="previewImage = null" />
 </template>
 
 <script setup lang="ts">
 import { computed, ref, onMounted, onUnmounted } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useCloudAuthStore } from '@/stores/cloud-auth'
+import ImageLightbox from '@/components/ImageLightbox.vue'
 
 const cloudAuth = useCloudAuthStore()
 const { announcement } = storeToRefs(cloudAuth)
 
 const open = ref(false)
+// 公告内插图的大图预览（点图中图片打开 Lightbox）
+const previewImage = ref<string | null>(null)
+
+// 富文本是 v-html 注入的，图片点击走容器事件委托
+function onContentClick(e: MouseEvent) {
+  const img = (e.target as HTMLElement).closest('img') as HTMLImageElement | null
+  if (img?.src) previewImage.value = img.src
+}
 
 // 20 字预览：以 title 为主；超过 20 字截断 + …。
 // 后端 title 上限 200，截断安全
@@ -99,4 +111,13 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
 .announcement-content :deep(i),
 .announcement-content :deep(em) { font-style: italic; }
 .announcement-content :deep(u) { text-decoration: underline; }
+/* 公告插图：容器内等比缩放居中，点击可放大（cursor 提示可交互） */
+.announcement-content :deep(img) {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 8px auto;
+  border-radius: 8px;
+  cursor: zoom-in;
+}
 </style>

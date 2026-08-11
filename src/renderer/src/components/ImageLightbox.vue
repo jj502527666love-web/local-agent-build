@@ -4,7 +4,7 @@
       <div
         v-if="src"
         ref="rootEl"
-        class="fixed inset-0 z-[100] flex items-center justify-center backdrop-blur-md"
+        class="fixed inset-0 z-[9600] flex items-center justify-center backdrop-blur-md"
         @click.self="emitClose"
         @wheel.prevent="onWheel"
       >

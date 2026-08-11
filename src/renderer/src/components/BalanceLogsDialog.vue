@@ -37,6 +37,7 @@
               <option value="register_bonus">注册赠送</option>
               <option value="redeem">兑换码</option>
               <option value="plan_grant">套餐发放</option>
+              <option value="plan_adjust">套餐余量调整</option>
               <option value="usage">用量扣费</option>
               <option value="deduct">扣减</option>
               <option value="admin_adjust">管理员调整</option>
@@ -162,6 +163,7 @@ function changeTypeLabel(t: string): string {
     case 'register_bonus': return '注册赠送'
     case 'redeem':         return '兑换码'
     case 'plan_grant':     return '套餐发放'
+    case 'plan_adjust':    return '套餐余量调整'
     case 'recharge':       return '充值'
     case 'recharge_bonus': return '充值赠送'
     case 'usage':          return '用量扣费'
