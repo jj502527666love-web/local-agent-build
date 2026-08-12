@@ -31,6 +31,7 @@
   - **工具前言不再发微信**：带 tool_calls 的中间态 assistant 消息被过滤，只发最终回复（发送面大减 = 防限流 + 不刷屏；长任务反馈由 typing + 45s 进度文本承担；生图落库消息不带 tool_calls，图片回传不受影响）。
   - **微信会话默认模型与工作台同源**：主进程新增 `/public/site-config` 免登录拉取并缓存 `chat_default_model`（settings `site_config_chat_default_model`，桥启动时刷新）；`resolveDefaultChatModel` 镜像 `ChatView.resolveDefaultModel`（云控默认主选 → 已授权校验 → 第一个 chat 兜底）；`createConversationForPeer` 不再读 bot.model_*（v0.6.5 起智能体不绑模型，此前这正是微信会话与工作台默认不一致的根源）。存量微信会话模型不变，「清空上下文」后生效。
   - 协议版本对齐官方包 2.4.6（`channel_version` / `iLink-App-ClientVersion` 132102）；sendmessage 记录原始响应 debug 日志（联调取证）。
+- **预览「启动未进智能体页 / 智能体页背景图不生效」根因修复（`tsconfig.node.json` / `tsconfig.web.json` + 全量清理）**：CDP 取证确认路由重定向（`getHomePath`）与 site-config 解析源码均正确，实际运行的却是 **tsc 误发射的陈旧 `.js` 孪生文件**（共 229 对，untracked）——此前不带 `--noEmit` 的 `tsc -p` 类型检查把 `.js`+`.d.ts` 发射到源码旁，而 Vite 解析扩展名 `.js` 优先于 `.ts`，无扩展名导入被陈旧产物遮蔽（`router/index.js` 旧 `redirect: '/chat'` 顶掉 `index.ts` 的 `getHomePath()`；`site-config.js` 旧 fetch 缺 `bot_list_background` 解析；主进程 `clawbot/*.js` 同为旧码，导致本轮 ClawBot 修复在预览中实际未生效）。处理：全量删除孪生残留（保留无孪生的 `postcss.config.js` / `env.d.ts` 等）；两个 tsconfig 增加 `"noEmit": true`（`composite` 保留，`tsc -p` / `tsc -b` 均验证零发射零报错）——此后类型检查不再污染源码树。**影响面说明**：残留文件从未入库，云打包（干净 clone 构建）不受影响；仅本地 dev / 本地打包曾被遮蔽。
 
 ---
 
