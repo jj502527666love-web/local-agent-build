@@ -93,10 +93,32 @@
             <button v-if="!conn?.bot_id" class="btn-ghost" :disabled="!canUse" @click="onCreateDefaultBot">新建「微信助手」并绑定</button>
           </div>
           <p class="text-[11px] text-text-tertiary -mt-2">微信联系人的消息将交给该智能体处理（含其知识库/技能配置），所有联系人共享同一智能体</p>
-          <select class="select-field" :class="{ 'opacity-50': !canUse }" :value="conn?.bot_id || ''" :disabled="!canUse" @change="onBindBot">
-            <option value="" disabled>选择智能体…</option>
-            <option v-for="b in botStore.bots" :key="b.id" :value="b.id">{{ b.name }}</option>
-          </select>
+          <!-- 自定义下拉：原生 select 弹层无可视滚动条，智能体多时选不到后面的 -->
+          <div class="relative" ref="botPickerRef">
+            <button
+              type="button"
+              class="select-field flex items-center justify-between gap-2 text-left"
+              :class="{ 'opacity-50': !canUse }"
+              :disabled="!canUse"
+              @click="toggleBotPicker"
+            >
+              <span class="truncate" :class="boundBotName ? 'text-text-primary' : 'text-text-tertiary'">{{ boundBotName || '选择智能体…' }}</span>
+              <svg class="w-3.5 h-3.5 shrink-0 text-text-tertiary" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m19.5 8.25-7.5 7.5-7.5-7.5" /></svg>
+            </button>
+            <div v-if="showBotPicker" class="absolute top-full left-0 right-0 mt-1 bg-surface-0 border border-surface-3 rounded-xl shadow-modal z-50 py-1 max-h-60 overflow-y-auto">
+              <div v-if="botStore.bots.length > 8" class="sticky top-0 bg-surface-0 px-2 pb-1">
+                <input ref="botSearchRef" v-model="botSearch" class="input-field !py-1.5 text-xs" placeholder="搜索智能体…" @keydown.escape="showBotPicker = false" />
+              </div>
+              <div v-if="!filteredBots.length" class="px-3 py-2 text-xs text-text-tertiary">{{ botSearch ? '无匹配的智能体' : '暂无智能体' }}</div>
+              <button
+                v-for="b in filteredBots"
+                :key="b.id"
+                type="button"
+                :class="['w-full text-left px-3 py-2 text-xs transition-colors', b.id === conn?.bot_id ? 'bg-primary-50 text-primary-700 font-medium' : 'text-text-secondary hover:bg-surface-2']"
+                @click="onPickBot(b.id)"
+              >{{ b.name }}</button>
+            </div>
+          </div>
           <p class="text-[11px] text-text-tertiary leading-4">
             建议：若需收发图片，请确认该智能体的对话模型支持视觉；AI PPT（deck）类工具对微信场景不适用，建议关闭。
           </p>
@@ -172,7 +194,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import QRCode from 'qrcode'
 import { useClawbotStore } from '@/stores/clawbot'
 import { useBotStore } from '@/stores/bots'
@@ -303,10 +325,38 @@ async function onLogout(): Promise<void> {
 
 // ===== 绑定智能体 =====
 
-async function onBindBot(e: Event): Promise<void> {
+// 自定义下拉状态（原生 select 弹层在 Windows 上无滚动条，列表长时后面的智能体选不到）
+const showBotPicker = ref(false)
+const botSearch = ref('')
+const botPickerRef = ref<HTMLElement | null>(null)
+const botSearchRef = ref<HTMLInputElement | null>(null)
+
+const boundBotName = computed(() => botStore.bots.find((b) => b.id === conn.value?.bot_id)?.name || '')
+
+const filteredBots = computed(() => {
+  const kw = botSearch.value.trim().toLowerCase()
+  if (!kw) return botStore.bots
+  return botStore.bots.filter((b) => b.name.toLowerCase().includes(kw))
+})
+
+function toggleBotPicker(): void {
+  showBotPicker.value = !showBotPicker.value
+  if (showBotPicker.value) {
+    botSearch.value = ''
+    void nextTick(() => botSearchRef.value?.focus())
+  }
+}
+
+function onBotPickerClickOutside(e: MouseEvent): void {
+  if (botPickerRef.value && !botPickerRef.value.contains(e.target as Node)) {
+    showBotPicker.value = false
+  }
+}
+
+async function onPickBot(botId: string): Promise<void> {
   if (!canUse.value) return
-  const botId = (e.target as HTMLSelectElement).value
-  if (!botId) return
+  showBotPicker.value = false
+  if (!botId || botId === conn.value?.bot_id) return
   try {
     await store.bindBot(botId)
     showToast('已绑定')
@@ -388,8 +438,13 @@ function showToast(text: string): void {
 
 onMounted(async () => {
   store.initClawbotListeners()
+  document.addEventListener('click', onBotPickerClickOutside)
   // 登录进行中离开再回来：canvas 是新元素，需用当前 qrcodeUrl 重绘一次
   if (loginRunning.value && login.value?.qrcodeUrl) void renderQr()
   await Promise.all([store.refreshAll(), botStore.bots.length ? Promise.resolve() : botStore.fetchBots()])
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('click', onBotPickerClickOutside)
 })
 </script>

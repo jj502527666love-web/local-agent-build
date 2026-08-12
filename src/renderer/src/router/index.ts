@@ -1,4 +1,5 @@
 import type { RouteRecordRaw } from 'vue-router'
+import { getHomePath } from '@/utils/home-path'
 
 export const routes: RouteRecordRaw[] = [
   {
@@ -12,7 +13,8 @@ export const routes: RouteRecordRaw[] = [
     component: () => import('@/layouts/MainLayout.vue'),
     meta: { requiresAuth: true },
     children: [
-      { path: '', redirect: '/chat' },
+      // 首页 = 智能体列表（云控端隐藏智能体菜单时 getHomePath 回退 /chat）
+      { path: '', redirect: () => getHomePath() },
       { path: 'chat', name: 'chat', component: () => import('@/views/chat/ChatView.vue'), meta: { title: '对话' } },
       { path: 'bots', name: 'bots', component: () => import('@/views/bots/BotListView.vue'), meta: { title: '智能体' } },
       {
@@ -311,10 +313,10 @@ export const routes: RouteRecordRaw[] = [
         meta: { title: '渠道中心' }
       },
       {
-        // 兜底：未匹配路径（如云控端自定义菜单配错的内部目标）回退对话页，
+        // 兜底：未匹配路径（如云控端自定义菜单配错的内部目标）回退首页，
         // 避免 Vue Router 无匹配时渲染空白、无任何提示的死胡同
         path: ':pathMatch(.*)*',
-        redirect: '/chat'
+        redirect: () => getHomePath()
       }
     ]
   }

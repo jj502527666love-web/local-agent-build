@@ -17,10 +17,11 @@ import type {
 
 export const ILINK_DEFAULT_BASE_URL = 'https://ilinkai.weixin.qq.com'
 export const ILINK_CDN_BASE = 'https://novac2c.cdn.weixin.qq.com/c2c'
-export const ILINK_CHANNEL_VERSION = '2.4.3'
+// 对齐官方 npm 包 @tencent-weixin/openclaw-weixin 的最新版本（base_info.channel_version / ClientVersion）
+export const ILINK_CHANNEL_VERSION = '2.4.6'
 
-/** iLink-App-ClientVersion：0x00MMNNPP（2.4.3 → 132099） */
-const CLIENT_VERSION_UINT32 = (2 << 16) | (4 << 8) | 3
+/** iLink-App-ClientVersion：0x00MMNNPP（2.4.6 → 132102） */
+const CLIENT_VERSION_UINT32 = (2 << 16) | (4 << 8) | 6
 const BOT_AGENT = 'local-agent-desktop/clawbot-bridge'
 
 /** 长轮询挂起时长（服务端 hold 35s），客户端超时须比它多留余量 */
@@ -68,6 +69,8 @@ export class ILinkAbortedError extends Error {
 interface RawJsonResult {
   status: number
   data: any
+  /** 原始响应体（截断 300 字）：sendmessage 联调期取证用（官方空 body/{} 表成功） */
+  raw?: string
 }
 
 /**
@@ -108,7 +111,7 @@ async function postJson(
       data = null
     }
     if (!resp.ok) throw new ILinkHttpError(resp.status, `ilink http ${resp.status}: ${text.slice(0, 200)}`)
-    return { status: resp.status, data: data ?? {} }
+    return { status: resp.status, data: data ?? {}, raw: text.slice(0, 300) }
   } catch (e: any) {
     if (e?.name === 'AbortError') throw new ILinkAbortedError()
     throw e
@@ -206,6 +209,25 @@ export async function getUpdates(
   return data as GetUpdatesResponse
 }
 
+/** sendmessage 业务拒绝错误：ret/errcode 非零。code=-2 为服务端拒发（限流/上下文失效等） */
+export class ILinkSendError extends Error {
+  constructor(
+    public readonly code: number,
+    public readonly errmsg: string,
+    what: string
+  ) {
+    super(`${what} 失败 ret=${code}${errmsg ? ` ${errmsg}` : ''}`.trim())
+    this.name = 'ILinkSendError'
+  }
+  /**
+   * -2 = 服务端拒发（社区实证两种形态：errmsg=rate limited 限流 / prepare failed 上下文失效）。
+   * 此类错误立刻重试只会加重限流（重试风暴），调用方应熔断退避、等下一条入站刷新 context_token。
+   */
+  get isDeclined(): boolean {
+    return this.code === -2
+  }
+}
+
 // ===== 发消息 =====
 
 export async function sendMessage(
@@ -214,24 +236,26 @@ export async function sendMessage(
   msg: OutboundMessage,
   signal?: AbortSignal
 ): Promise<SendMessageResponse> {
-  const { data } = await postJson(apiUrl(baseurl, '/sendmessage'), token, { msg }, 15000, signal)
+  const { data, status, raw } = await postJson(apiUrl(baseurl, '/sendmessage'), token, { msg }, 15000, signal)
+  // 联调取证：记录真实响应形态（成功=空 body 或 {}；失败=带 ret/errmsg 的 JSON）
+  console.debug('[clawbot] sendmessage resp:', status, raw || '(empty)')
   return data as SendMessageResponse
 }
 
 /**
- * sendmessage 响应白名单断言：契约成功形态为 { ret: 0 }（开发计划 §5.6）。
- * HTTP 200 空 body（缺字段静默丢失形态）或非零 ret/errcode 一律视为失败抛错，
- * 由上层进入重试——此前仅判 `ret !== undefined && ret !== 0`，空 body/非零 errcode
- * 会被误标「已发送」且按消息 id 去重后永不重试。
+ * sendmessage 响应判读（对齐官方 2.4.6 api.ts 语义）：
+ * - 成功：HTTP 200 + 空 body 或 `{}`（ret 缺失即为成功；官方测试套件的成功 mock 就是 "{}"）
+ * - 失败：ret 或 errcode 为非零数字 → 抛 ILinkSendError
+ * 注意：此前把空 body 判失败（「静默丢失」推测），真机联调证实该推测不成立——
+ * 误判会把已送达消息重试补发（重复投递 + 放大限流）。必填字段防呆由 buildOutboundMessage 断言承担。
  */
 export function assertSendResponse(resp: SendMessageResponse, what = 'sendmessage'): void {
-  if (!resp || typeof resp !== 'object') throw new Error(`${what} 响应为空（未确认送达）`)
-  const ret = resp.ret
-  const errcode = resp.errcode
-  if (ret === 0 || (ret === undefined && errcode === 0)) return
-  const code = ret ?? errcode
-  const suffix = code === undefined ? '（空响应，未确认送达）' : ` ${resp.errmsg || ''}`
-  throw new Error(`${what} 失败${code === undefined ? '' : ` ret=${code}`}${suffix}`.trim())
+  if (!resp || typeof resp !== 'object') return // 空响应 = 成功（官方语义）
+  const ret = Number(resp.ret)
+  const errcode = Number(resp.errcode)
+  const code = ret !== 0 && !Number.isNaN(ret) ? ret : !Number.isNaN(errcode) && errcode !== 0 ? errcode : 0
+  if (code === 0) return
+  throw new ILinkSendError(code, typeof resp.errmsg === 'string' ? resp.errmsg : '', what)
 }
 
 /** 便捷构造出站消息骨架（必填字段缺一即静默丢失，统一在此断言） */

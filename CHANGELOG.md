@@ -6,7 +6,35 @@
 
 ---
 
-## [1.1.0] - 未发布
+## [1.1.1] - 2026-08-12
+
+> **智能体列表页改版并设为启动首页 + 页面背景图云端下发 + ClawBot 绑定下拉修复**。云控端配套：背景图配置随云控端 1.6.32 下发（未部署的老云控端不下发该字段，桌面端保持默认纯色，向后兼容）。
+
+### 新增
+
+- **智能体列表页改版（`views/bots/BotListView.vue`）**：
+  - 顶部 Hero 区（slogan「让 AI 成为你的创意搭档」+ 副标题 + 新建智能体按钮；品牌主色淡染底、文案不含品牌名，OEM 中性，遵守「禁止 AI 花哨风」设计规则）。
+  - 页首工具行统一搜索框：「我的智能体」本地即时过滤（名称/描述），「智能体市场」回车/点图标走云端检索（原市场搜索行并入，不再重复）。
+  - 卡片海报化：形象列 128→140px、卡片最小高 200px、「开始对话」按钮加高；网格上限 max-w-6xl→max-w-7xl 整体居中；新增「搜索无结果」空态。
+  - 页签由弱灰底文字改为分段控件（灰轨道 + 白色滑块 + 轻阴影），选中态明确。
+- **启动首页改为智能体列表（`utils/home-path.ts` 新增；`router/index.ts` / `main.ts` / `LoginView.vue` / `MainLayout.vue`）**：`/` 重定向、路由兜底、登录成功跳转、guest 守卫、ewei 无授权回退共 5 处统一走 `getHomePath()`；侧栏菜单顺序同步调整为「智能体」在前、「对话」在后（`allNavItems`）；云控端菜单配置隐藏「智能体」菜单时自动回退 `/chat`——菜单配置由 MainLayout 拉取成功后写 localStorage 缓存（`desktop_menu_overrides_cache`），重定向发生在布局挂载前、读上次缓存判定（首次启动无缓存默认 /bots；菜单配置为站点级不随用户变）。
+- **智能体列表页背景图（`stores/site-config.ts` + `BotListView.vue`）**：解析 `/public/site-config` 新增的 `bot_list_background.url` 并写 localStorage 缓存（`site_config_bot_list_background`；老后端不带该字段时保持当前值，与 login_background 同容错模式）；页面滚动容器应用 cover/center 整页背景，未配置回退默认纯色，首屏读缓存不闪。
+- **对话附件新增 PPT 支持（`services/document-parser.ts` + `jszip` 提为直接依赖）**：.pptx 按页抽取 `<a:t>` 文本（`<a:p>` 分段换行、XML 实体解码、数字序排页 slide10 不插队）、同号 notesSlide 尽力配对抽演讲者备注；`<a:fld>` 域元素（页码/日期占位）先剔除防页码误当正文；整 deck 无文字时走 NO_EXTRACTABLE_TEXT（纯图片型 PPT 给明确提示），含图 deck 附「图片不进上下文」warning；旧版 .ppt（OLE 二进制）无成熟 pure-JS 提取器，明确报错「请另存为 .pptx」。四处清单同步：ChatView 选择器 filters + DOC_EXTENSIONS + 拖入 BINARY 分流、clawbot-inbound 白名单（微信收 .pptx 直接进对话，.ppt 得精准转格式提示）、画布 Copilot 附件 filters。知识库 `knowledge.ts` 支持面更窄（无 xls），本次未动。
+
+### 修复
+
+- **微信 ClawBot 绑定智能体下拉（`views/clawbot/ClawbotView.vue`）**：原生 `<select>` 弹层在 Windows 上无可视滚动条、一屏仅约 20 行（占位项 + 19 个智能体顶满），智能体更多时后面的无法选到——改为自绘下拉（`max-h-60` 滚动条 + 超 8 个时显示搜索框自动聚焦 + 点外部 / Esc 关闭 + 选中项高亮），交互与对话页智能体选择器一致；`canUse=false` 时禁用行为不变。
+- **微信 ClawBot 首轮真机联调发送可靠性大修（`services/clawbot/ilink-api.ts` / `clawbot-outbound.ts` / `clawbot-bridge.ts` / `ilink-types.ts`）**：用户实测暴露「回复大面积 ret=-2 prepare failed / 空响应误报失败 / 图片发不出」三问题，逐项修复——
+  - **sendmessage 响应判据对齐官方**：官方 2.4.6 代码及其测试套件实证**空 body / `{}` 即为成功**（成功 mock 就是 `"{}"`），仅 ret/errcode 为非零数字才抛 `ILinkSendError`；此前白名单严格判据把成功误判失败 → 假失败日志刷屏 + 每条 2s 后重发，发送量翻倍喂饱限流器（且服务端 client_id 去重失效时会重复投递）。真值表 9 例自测通过。
+  - **ret=-2 熔断器**（社区实证两种形态：errmsg=rate limited 限流 / prepare failed 上下文失效）：-2 触发熔断 60s×连续次数（封顶 5 分钟），熔断期发送快速失败——不打服务端、不记日志、不烧图片重试预算；不再 2s 原地重试（重试风暴只会加重限流，社区同款翻车有网关 OOM 案例）；发送间隔 1s→2s；`getuploadurl` 同样判业务 ret + 过发送门 + 纳入熔断（限流时它也回 -2，此前误报「缺少上传参数」）。
+  - **flush 放大收敛**：事件驱动补发 1.5s 防抖合并（此前一轮多条 append 各自触发 flush，故障期同一卡死消息被反复重试——11:34 一口气 14 条失败日志即此形态）；单条消息累计失败 5 次 poison 跳过防堵死队列；长回复分段断点续发（重试不重发已送达段，不依赖服务端 client_id 去重）；每轮 flush 重读 peer 最新 context_token（不再用轮次开始时的快照，prepare failed 主因之一就是旧 token）。
+  - **工具前言不再发微信**：带 tool_calls 的中间态 assistant 消息被过滤，只发最终回复（发送面大减 = 防限流 + 不刷屏；长任务反馈由 typing + 45s 进度文本承担；生图落库消息不带 tool_calls，图片回传不受影响）。
+  - **微信会话默认模型与工作台同源**：主进程新增 `/public/site-config` 免登录拉取并缓存 `chat_default_model`（settings `site_config_chat_default_model`，桥启动时刷新）；`resolveDefaultChatModel` 镜像 `ChatView.resolveDefaultModel`（云控默认主选 → 已授权校验 → 第一个 chat 兜底）；`createConversationForPeer` 不再读 bot.model_*（v0.6.5 起智能体不绑模型，此前这正是微信会话与工作台默认不一致的根源）。存量微信会话模型不变，「清空上下文」后生效。
+  - 协议版本对齐官方包 2.4.6（`channel_version` / `iLink-App-ClientVersion` 132102）；sendmessage 记录原始响应 debug 日志（联调取证）。
+
+---
+
+## [1.1.0] - 2026-08-12
 
 > **对话产出文件一键直达文件目录**（本条目为 1.1.0 增量记录之一；1.1.0 尚在研发中，对话主链路可靠性大修、画布助手流式化、智能体市场分页筛选、ClawBot 补发与幂等等其余增量仅维护了面向用户的 `shared/changelog.ts`，发版时归并整理）。
 

@@ -14,6 +14,8 @@
  *  - .docx                      → mammoth（仅文本，丢失图片/复杂样式）
  *  - .doc                       → word-extractor（pure JS 兜底，复杂格式效果有限）
  *  - .xls / .xlsx               → xlsx (SheetJS) → 每 sheet 拼成 TSV 文本
+ *  - .pptx                      → jszip 解 zip 按页抽 <a:t>（含演讲者备注；图片/图形不进上下文）
+ *  - .ppt                       → 老二进制 OLE 无成熟 pure-JS 提取器，明确报错引导另存为 .pptx
  */
 
 import { readFileSync, statSync, writeFileSync, unlinkSync } from 'fs'
@@ -34,7 +36,7 @@ export interface ParsedDocument {
   /** 文件大小（字节） */
   size: number
   /** 解析器名称，便于排查 */
-  parser: 'utf8' | 'pdf' | 'docx' | 'doc' | 'xlsx' | 'unsupported' | 'error'
+  parser: 'utf8' | 'pdf' | 'docx' | 'doc' | 'xlsx' | 'pptx' | 'unsupported' | 'error'
   /** 失败时的错误说明 */
   error?: string
   errorCode?: 'NO_EXTRACTABLE_TEXT' | 'TOO_LARGE' | 'READ_ERROR' | 'UNSUPPORTED_FORMAT' | 'PARSE_ERROR'
@@ -50,7 +52,7 @@ export interface ParsedDocument {
 }
 
 /** 这些扩展名走二进制文档解析器；其他扩展名调用方应自行 utf-8 直读 */
-export const BINARY_DOCUMENT_EXTENSIONS = new Set(['pdf', 'docx', 'doc', 'xlsx', 'xls'])
+export const BINARY_DOCUMENT_EXTENSIONS = new Set(['pdf', 'docx', 'doc', 'xlsx', 'xls', 'pptx', 'ppt'])
 
 /** 判断扩展名是否走本模块解析；调用方按此分流 */
 export function isBinaryDocument(filePath: string): boolean {
@@ -80,6 +82,7 @@ function imageWarning(ext: string): string {
   if (ext === 'pdf') return '该 PDF 可能包含图片、扫描页、截图、盖章或照片；当前仅提取可读文字，图片内容不会进入会话上下文，也不会被向量化。'
   if (ext === 'docx' || ext === 'doc') return '该文档可能包含图片、截图或照片；当前仅提取文字内容，图片内容不会进入会话上下文，也不会被向量化。'
   if (ext === 'xlsx' || ext === 'xls') return '该表格可能包含图片；当前仅提取单元格文字，图片内容不会进入会话上下文，也不会被向量化。'
+  if (ext === 'pptx') return '该 PPT 可能包含图片、图形或截图；当前仅提取每页文字（含演讲者备注），图片内容不会进入会话上下文，也不会被向量化。'
   return '当前仅提取文字内容，图片内容不会进入会话上下文，也不会被向量化。'
 }
 
@@ -97,6 +100,11 @@ function detectEmbeddedImages(buffer: Buffer, ext: string): { hasImages: boolean
   if (ext === 'xlsx' || ext === 'xls') {
     const sample = buffer.toString('latin1')
     const matches = sample.match(/xl\/media\//g)
+    return { hasImages: !!matches?.length, imageCount: matches?.length || 0 }
+  }
+  if (ext === 'pptx') {
+    const sample = buffer.toString('latin1')
+    const matches = sample.match(/ppt\/media\//g)
     return { hasImages: !!matches?.length, imageCount: matches?.length || 0 }
   }
   return { hasImages: ext === 'doc' }
@@ -205,6 +213,64 @@ function parseXlsxBuffer(buffer: Buffer): { text: string } {
 }
 
 /**
+ * PPTX = zip + XML：按页读 ppt/slides/slideN.xml 抽 <a:t> 文本（<a:p> 段落边界换行），
+ * 演讲者备注按同号 ppt/notesSlides/notesSlideN.xml 尽力配对（PowerPoint 实际编号与页一致）。
+ * 全部页都无文字时返回空 text —— 交给上层走 NO_EXTRACTABLE_TEXT（纯图片型 PPT）。
+ */
+async function parsePptxBuffer(buffer: Buffer): Promise<{ text: string; slideCount: number }> {
+  const JSZip = require('jszip')
+  const zip = await JSZip.loadAsync(buffer)
+  const numOf = (name: string): number => Number(name.match(/(\d+)\.xml$/)?.[1] || 0)
+  const slideNames = Object.keys(zip.files)
+    .filter((n) => /^ppt\/slides\/slide\d+\.xml$/.test(n))
+    .sort((a, b) => numOf(a) - numOf(b)) // 数字序：slide10 不能排在 slide2 前
+
+  let anyText = false
+  const pages: string[] = []
+  for (const name of slideNames) {
+    const xml = await zip.file(name)?.async('string')
+    if (xml === undefined) continue
+    const body = extractPptxText(xml)
+    // 备注（演讲者注释）：同号 notesSlide，尽力而为，抽不到就跳过
+    const notesXml = await zip.file(`ppt/notesSlides/notesSlide${numOf(name)}.xml`)?.async('string')
+    const notes = notesXml ? extractPptxText(notesXml) : ''
+    const parts = [`第 ${numOf(name)} 页：`]
+    if (body) parts.push(body)
+    if (notes) parts.push(`【备注】${notes}`)
+    if (!body && !notes) parts.push('（本页无可见文字，可能为纯图片/图形页）')
+    if (body || notes) anyText = true
+    pages.push(parts.join('\n'))
+  }
+  return { text: anyText ? pages.join('\n\n') : '', slideCount: slideNames.length }
+}
+
+/** 抽一段 slide/notesSlide XML 的可见文字：<a:p> 分段、段内 <a:t> 串联，XML 实体解码 */
+function extractPptxText(xml: string): string {
+  // 先剔除域元素：页码/日期占位符（<a:fld type="slidenum"> 等）的当前值也写在 <a:t> 里，
+  // 不剔除会把每页的页码数字误当正文/备注抽出来
+  return xml
+    .replace(/<a:fld[\s\S]*?<\/a:fld>/g, '')
+    .split(/<a:p(?:\s[^>]*)?>/)
+    .map((para) => (para.match(/<a:t>([\s\S]*?)<\/a:t>/g) || [])
+      .map((r) => decodeXmlEntities(r.slice(5, -6)))
+      .join(''))
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .join('\n')
+}
+
+function decodeXmlEntities(s: string): string {
+  return s
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+    .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(parseInt(d, 10)))
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&')
+}
+
+/**
  * 内部分发：按扩展名选对应解析器，都走 Buffer 路径。
  * 调用方（parseDocument / parseDocumentFromBuffer）负责 size / clamp / 错误包装。
  */
@@ -237,6 +303,16 @@ async function dispatchBuffer(
       const { text } = parseXlsxBuffer(buffer)
       features.textLength = text.length
       return { ok: true, text, parser: 'xlsx', features, warnings: buildWarnings(ext, features) }
+    }
+    if (ext === 'pptx') {
+      const { text, slideCount } = await parsePptxBuffer(buffer)
+      features.textLength = text.length
+      features.pageCount = slideCount
+      return { ok: true, text, parser: 'pptx', features, warnings: buildWarnings(ext, features) }
+    }
+    if (ext === 'ppt') {
+      // 老二进制 OLE 格式无成熟 pure-JS 提取器，明确拒绝并引导转 pptx（比静默乱码体面）
+      return { ok: false, text: '', parser: 'unsupported', error: '暂不支持旧版 .ppt 格式，请在 PowerPoint / WPS 中「另存为」.pptx 后再上传', errorCode: 'UNSUPPORTED_FORMAT', features }
     }
     return { ok: false, text: '', parser: 'unsupported', error: `不支持的二进制文档扩展名：${ext}`, errorCode: 'UNSUPPORTED_FORMAT', features }
   } catch (e: any) {

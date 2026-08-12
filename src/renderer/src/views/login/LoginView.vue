@@ -190,6 +190,7 @@ import { useCloudAuthStore } from '@/stores/cloud-auth'
 import { useSiteConfigStore } from '@/stores/site-config'
 import AgreementDialog from '@/components/AgreementDialog.vue'
 import { appName, appAbbr, appIconUrl } from '@/utils/branding'
+import { getHomePath } from '@/utils/home-path'
 
 // 输入框前置线性图标（heroicons outline 风格，描边用 currentColor，统一中性灰）
 const icons = {
@@ -453,7 +454,7 @@ async function handleSubmit() {
     else localStorage.removeItem('login_saved_username')
     if (rememberPassword.value) localStorage.setItem('login_saved_password', form.value.password)
     else localStorage.removeItem('login_saved_password')
-    router.replace('/chat')
+    router.replace(getHomePath())
   } catch (e: any) {
     error.value = translateLoginError(e.message || '操作失败')
   } finally {

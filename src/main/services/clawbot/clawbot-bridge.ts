@@ -17,18 +17,19 @@ import * as store from './clawbot-store'
 import * as login from './clawbot-login'
 import type { ClawbotConnection, ClawbotConnectionSummary } from './clawbot-store'
 import { processInboundMessage } from './clawbot-inbound'
-import { sendOutboundReply, sendImagesOnly, sendPlainText, type OutboundImage } from './clawbot-outbound'
+import { sendOutboundReply, sendImagesOnly, sendPlainText, SendCircuitOpenError, isSendCircuitOpen, type OutboundImage } from './clawbot-outbound'
 import { ERRCODE_SESSION_TIMEOUT, MESSAGE_TYPE, TYPING_STATUS } from './ilink-types'
 import type { WeixinMessage } from './ilink-types'
 import { sendMessage as engineSendMessage, cancelChat as engineCancelChat } from '../chat-engine'
 import { createConversation, getConversation, getMessages, updateConversationImageModel } from '../conversation'
 import { createBot, getBot, listBots } from '../bot'
-import { getCloudModels, getAllowClawbot, refreshCloudToken } from '../cloud-token'
+import { getCloudApiBase, getCloudModels, getAllowClawbot, refreshCloudToken } from '../cloud-token'
 import { getSetting, setSetting } from '../settings'
 import { getDataDir } from '../data-path'
 import { getDatabase } from '../../database'
 import { runInEpoch } from '../account-epoch'
 import { onAssistantAppended } from '../events'
+import { CLOUD_KEY_SEP } from '@shared/model-id'
 import type { Conversation } from '../conversation'
 
 // ===== 运行态 =====
@@ -51,6 +52,12 @@ interface Runtime {
   replyWatchers: Map<string, AbortController>
   /** 同会话 flush 互斥链（watcher/事件/新轮并发时防同一消息重复发送） */
   flushChains: Map<string, Promise<number>>
+  /** 事件驱动 flush 防抖计时器（conversationId → timer）：一轮多条 append 合并成一次 flush */
+  flushTimers: Map<string, NodeJS.Timeout>
+  /** 消息级投递失败计数（msgId → 连续失败次数）：达上限跳过该条防坏消息堵死队列 */
+  flushAttempts: Map<string, number>
+  /** 长回复分段断点（msgId → 已送达分段数）：分段途中失败后续发不重发已送达段 */
+  flushSegDone: Map<string, number>
   /** 图片级重试态（msgId → 任务）：图失败不再毒化整条消息重发文本 */
   pendingImageRetries: Map<string, { peerId: string; images: OutboundImage[]; attempts: number; lastAttemptAt: number }>
   /** 错误文案冷却（`${peerId}:${kind}` → 上次发送时间戳）：持久态错误不刷屏 */
@@ -85,6 +92,10 @@ const MAX_FLUSH_PER_ROUND = 20
 const PROGRESS_NOTICE_INTERVAL_MS = 45_000
 /** 图片级重试次数上限，耗尽后降级发文字说明 */
 const IMAGE_RETRY_MAX = 3
+/** 单条消息投递失败次数上限（跨 flush 累计）：达顶跳过该条，防一条坏消息把队列永久堵死 */
+const MAX_MESSAGE_DELIVER_ATTEMPTS = 5
+/** 事件驱动 flush 防抖窗口：一轮对话多条 append（工具前言/最终回复/生图完成）合并成一次 flush */
+const EVENT_FLUSH_DEBOUNCE_MS = 1500
 
 let runtime: Runtime | null = null
 
@@ -207,6 +218,9 @@ export async function startClawbotBridge(): Promise<void> {
     sentIdsByConv: new Map(),
     replyWatchers: new Map(),
     flushChains: new Map(),
+    flushTimers: new Map(),
+    flushAttempts: new Map(),
+    flushSegDone: new Map(),
     pendingImageRetries: new Map(),
     errorNotices: new Map(),
     lastLoginAlertAt: 0,
@@ -216,21 +230,30 @@ export async function startClawbotBridge(): Promise<void> {
   runtime = rt
   store.setConnectionStatus(conn.id, 'connecting')
   broadcastStatus()
-  // 事件驱动补发：core-tools 后台任务（生图等）落库即触发 flush，不再只靠轮询 watcher 猜窗口
+  // 事件驱动补发：core-tools 后台任务（生图等）落库即触发 flush，不再只靠轮询 watcher 猜窗口。
+  // 防抖合并：一轮对话会产生多条 append（工具前言/最终回复/生图完成），逐条 flush 会在故障期
+  // 放大成「同一卡死消息被反复重试」的风暴（真机 11:34 事故），1.5s 窗口合并成一次。
   rt.unsubAppend = onAssistantAppended((conversationId) => {
-    void (async () => {
-      const c = store.getPrimaryConnection()
-      if (!c || c.id !== rt.connectionId) return
-      const peer = store.getPeerByConversation(c.id, conversationId)
-      if (!peer || !peer.last_context_token) return
-      let token: string
-      try { token = store.resolveBotToken(c) } catch { return }
-      await flushLocked(rt, conversationId, async () => {
-        const r = await flushNewAssistantMessages(rt, c, token, peer.peer_id, peer.last_context_token, conversationId, peer.id)
-        await retryPendingImages(rt, c, token)
-        return r.sent
-      })
-    })().catch((e) => console.error('[clawbot] event-driven flush failed:', e))
+    const pending = rt.flushTimers.get(conversationId)
+    if (pending) clearTimeout(pending)
+    const timer = setTimeout(() => {
+      rt.flushTimers.delete(conversationId)
+      void (async () => {
+        const c = store.getPrimaryConnection()
+        if (!c || c.id !== rt.connectionId) return
+        const peer = store.getPeerByConversation(c.id, conversationId)
+        if (!peer || !peer.last_context_token) return
+        let token: string
+        try { token = store.resolveBotToken(c) } catch { return }
+        await flushLocked(rt, conversationId, async () => {
+          const r = await flushNewAssistantMessages(rt, c, token, peer.peer_id, peer.last_context_token, conversationId, peer.id)
+          await retryPendingImages(rt, c, token)
+          return r.sent
+        })
+      })().catch((e) => console.error('[clawbot] event-driven flush failed:', e))
+    }, EVENT_FLUSH_DEBOUNCE_MS)
+    ;(timer as any).unref?.()
+    rt.flushTimers.set(conversationId, timer)
   })
   // 循环体进 epoch：账号热切换后旧循环读库抛 AccountSwitchedError 自然死亡
   rt.loopDone = runInEpoch(() => pollLoop(rt))
@@ -251,6 +274,8 @@ export async function startClawbotBridge(): Promise<void> {
   } catch {
     /* 凭据异常由轮询循环处理 */
   }
+  // 云控默认对话模型缓存刷新（与工作台默认同源；失败保留旧缓存）
+  void refreshChatDefaultModel()
 }
 
 export function stopClawbotBridge(): void {
@@ -273,6 +298,11 @@ export function stopClawbotBridge(): void {
   for (const ctrl of rt.replyWatchers.values()) ctrl.abort()
   rt.replyWatchers.clear()
   rt.pendingImageRetries.clear()
+  // 清理事件防抖计时器（防停止后迟到的 flush 再发消息）
+  for (const t of rt.flushTimers.values()) clearTimeout(t)
+  rt.flushTimers.clear()
+  rt.flushAttempts.clear()
+  rt.flushSegDone.clear()
   // connecting/online 是进程级暂态，停止后必须降级，避免 DB 里残留假「在线」
   try {
     const status = store.getConnectionStatus(rt.connectionId)
@@ -631,8 +661,7 @@ async function processOne(rt: Runtime, connectionId: string, peerId: string, msg
     stopTypingFn()
   }
 
-  // 6. 回发本轮全部新 assistant 消息（而非仅最后一条）：
-  //    引擎一轮会产生多条 assistant（工具前言 + 最终回复），逐条按序发送（同会话互斥）
+  // 6. 回发本轮新 assistant 消息（工具前言已在 flush 内过滤，不上微信；同会话互斥）
   if (engineThrow) {
     await sendErrorText(rt, conn, token, peerId, contextToken, translateEngineThrow(engineThrow))
   } else {
@@ -673,7 +702,9 @@ interface FlushResult {
 
 /**
  * 把未发过的 assistant 消息逐条发给微信（按消息 id 去重；含 [Error]/中断标记转译、日限额拦截、
- * 持久态错误冷却、图片级失败登记、持久水位推进）。发送失败退避重试一次，仍败中断后续（保序）。
+ * 持久态错误冷却、图片级失败登记、持久水位推进；工具前言 tool_calls 过滤不上微信）。
+ * 失败分流：熔断期快速失败静默 break（不算尝试）；ret=-2 服务端拒发不原地重试直接 break（熔断器接管退避）；
+ * 网络类失败 2s 补试一次；最终失败累计计数，达 MAX_MESSAGE_DELIVER_ATTEMPTS 跳过该条防堵（保序让位于可用性）。
  */
 async function flushNewAssistantMessages(
   rt: Runtime,
@@ -684,6 +715,10 @@ async function flushNewAssistantMessages(
   conversationId: string,
   peerRowId?: string
 ): Promise<FlushResult> {
+  // 每轮 flush 重读该 peer 最新 context_token：调用方传的可能是轮次开始时的快照，
+  // 长轮次/退避恢复后可能已被新入站刷新（-2 prepare failed 的主因之一就是旧 token）
+  const freshPeer = store.getPeer(conn.id, peerId)
+  if (freshPeer?.last_context_token) contextToken = freshPeer.last_context_token
   let sentIds = rt.sentIdsByConv.get(conversationId)
   if (!sentIds) {
     sentIds = new Set<string>()
@@ -699,11 +734,11 @@ async function flushNewAssistantMessages(
       summary
     })
 
-  /** 投递单条：文本失败抛错（外层重试）；图片失败不抛、登记图片级重试；成功后推进水位 */
+  /** 投递单条：文本失败抛错（外层按类型分流）；图片失败不抛、登记图片级重试；成功后推进水位 */
   const deliver = async (m: { id: string; content: any }): Promise<void> => {
     const text = translateMarkedError(String(m.content)) ?? String(m.content)
     const res = await sendOutboundReply(
-      { conn, token, peerId, contextToken, signal: rt.abort.signal, msgKey: m.id, onSent: logSent },
+      { conn, token, peerId, contextToken, signal: rt.abort.signal, msgKey: m.id, segDone: rt.flushSegDone, onSent: logSent },
       text
     )
     sentIdSet.add(m.id)
@@ -734,7 +769,14 @@ async function flushNewAssistantMessages(
   }
 
   let pending = getMessages(conversationId).filter(
-    (m) => m.role === 'assistant' && String(m.content || '').trim() && !sentIdSet.has(m.id)
+    (m) =>
+      m.role === 'assistant' &&
+      String(m.content || '').trim() &&
+      !sentIdSet.has(m.id) &&
+      // 工具前言（带 tool_calls 的中间态 assistant）不上微信：一轮工具调用会产生 N 条前言，
+      // 逐条发既是刷屏又直接把发送频率打进限流（真机 11:34 事故的主放大器）。
+      // 最终回复天然无 tool_calls，不受影响；微信侧长任务反馈由 typing + 45s 进度文本承担。
+      !(Array.isArray(m.tool_calls) && m.tool_calls.length > 0)
   )
   // 积压截断：重启水位恢复后可能积压大量历史，最多补 MAX_FLUSH_PER_ROUND 条（更早的直接放弃，防刷屏）
   if (pending.length > MAX_FLUSH_PER_ROUND) {
@@ -792,24 +834,65 @@ async function flushNewAssistantMessages(
     try {
       await deliver(m)
       sent++
-    } catch {
-      // 文本发送失败：退避 2s 重试一次（此前零重试直接静默漏发）
-      try {
-        await sleep(2000, rt.abort.signal)
-        await deliver(m)
-        sent++
-      } catch (e2) {
+      rt.flushAttempts.delete(m.id)
+    } catch (e1) {
+      // 熔断开启中：发送根本没打服务端（快速失败），不算尝试、不记日志、不触发兜底，静默等退避期结束
+      if (e1 instanceof SendCircuitOpenError) {
+        attempted--
+        break
+      }
+      let finalErr = e1
+      // 服务端拒发（ret=-2：限流/prepare failed）：不原地重试（2s 重试只会加重限流，熔断器已接管退避）；
+      // 网络类失败保留一次 2s 补试
+      const declined = e1 instanceof api.ILinkSendError && e1.isDeclined
+      if (!declined) {
+        try {
+          await sleep(2000, rt.abort.signal)
+          await deliver(m)
+          sent++
+          rt.flushAttempts.delete(m.id)
+          continue
+        } catch (e2) {
+          if (e2 instanceof SendCircuitOpenError) {
+            attempted--
+            break
+          }
+          finalErr = e2
+        }
+      }
+      // 最终失败：累计计数，达顶跳过该条（poison 防堵：此前同一卡死消息被每个 flush 触发源反复
+      // 重试，既打不出后续消息又放大限流——真机 11:34 一口气 14 条失败日志即此形态）
+      const attempts = (rt.flushAttempts.get(m.id) || 0) + 1
+      rt.flushAttempts.set(m.id, attempts)
+      if (attempts >= MAX_MESSAGE_DELIVER_ATTEMPTS) {
+        sentIdSet.add(m.id)
+        rt.flushAttempts.delete(m.id)
+        rt.flushSegDone.delete(m.id)
+        if (peerRowId) {
+          const rowid = rowidOfMessage(m.id)
+          if (rowid) store.updatePeerLastSentRowid(peerRowId, rowid)
+        }
         store.insertLog({
           connection_id: conn.id,
           peer_id: peerId,
           direction: 'out',
           msg_type: 'system',
-          summary: '回复发送失败',
+          summary: `一条回复连续 ${attempts} 次投递失败，已跳过（防队列堵塞），可在桌面端对话查看`,
           status: 'error',
-          error: e2 instanceof Error ? e2.message : String(e2)
+          error: finalErr instanceof Error ? finalErr.message : String(finalErr)
         })
-        break
+        continue
       }
+      store.insertLog({
+        connection_id: conn.id,
+        peer_id: peerId,
+        direction: 'out',
+        msg_type: 'system',
+        summary: declined ? '回复被服务端拒发（限流或会话失效），退避后自动补发' : '回复发送失败',
+        status: 'error',
+        error: finalErr instanceof Error ? finalErr.message : String(finalErr)
+      })
+      break
     }
   }
   return { sent, blockedByLimit, suppressed, attempted }
@@ -824,6 +907,8 @@ async function retryPendingImages(rt: Runtime, conn: ClawbotConnection, token: s
   for (const [msgId, task] of rt.pendingImageRetries) {
     if (rt.abort.signal.aborted) return progressed
     if (Date.now() - task.lastAttemptAt < 60_000) continue
+    // 熔断期跳过（不烧重试预算：此时发送只会快速失败，预算烧完会误判「多次失败」降级）
+    if (isSendCircuitOpen()) continue
     // 用 peer 最新 context_token（旧 token 可能已失效）
     const peer = store.getPeer(conn.id, task.peerId)
     const contextToken = peer?.last_context_token || ''
@@ -1016,11 +1101,66 @@ async function safeSendPlain(
 
 // ===== 会话与模型 =====
 
-/** 主进程版默认对话模型解析：取已授权云端模型列表第一个 chat 模型（复合 key 精确路由） */
+/** 云控站点配置（/public/site-config，免登录）里的对话默认模型缓存 key（settings 表） */
+const SITE_CHAT_MODEL_SETTING = 'site_config_chat_default_model'
+
+/** 刷新云控默认对话模型缓存（与工作台默认模型同源）；尽力而为，失败保留旧缓存 */
+async function refreshChatDefaultModel(): Promise<void> {
+  try {
+    const ctrl = new AbortController()
+    const timer = setTimeout(() => ctrl.abort(), 8000)
+    try {
+      const resp = await fetch(`${getCloudApiBase()}/public/site-config`, { signal: ctrl.signal })
+      if (!resp.ok) return
+      const data = await resp.json()
+      const m = data?.chat_default_model
+      if (m && typeof m.provider_id === 'string' && typeof m.model_id === 'string' && m.model_id) {
+        setSetting(SITE_CHAT_MODEL_SETTING, JSON.stringify({ provider_id: m.provider_id, model_id: m.model_id }))
+      }
+    } finally {
+      clearTimeout(timer)
+    }
+  } catch {
+    /* 网络失败保留旧缓存 */
+  }
+}
+
+function getCachedChatDefaultModel(): { provider_id: string; model_id: string } | null {
+  try {
+    const raw = getSetting(SITE_CHAT_MODEL_SETTING)
+    if (!raw) return null
+    const m = JSON.parse(raw)
+    if (!m || typeof m.model_id !== 'string' || !m.model_id) return null
+    return { provider_id: typeof m.provider_id === 'string' ? m.provider_id : '', model_id: m.model_id }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 主进程版默认对话模型解析（镜像 ChatView.resolveDefaultModel，与工作台新会话一致）：
+ * 1. 云控端下发的 chat_default_model（主选）：provider_id 固定 'cloud:default'，
+ *    裸 model_id 按已授权列表升级为复合 key（model_id#@provider_name），且须仍在已授权 chat 列表内
+ * 2. 兜底：已授权云端模型列表第一个 chat 模型（复合 key 精确路由）
+ */
 function resolveDefaultChatModel(): { provider_id: string; model_id: string } | null {
-  const first = getCloudModels().find((m) => m.type === 'chat')
+  const models = getCloudModels()
+  const compositeOf = (e: { model_id: string; provider_name: string }): string => `${e.model_id}${CLOUD_KEY_SEP}${e.provider_name}`
+  const cached = getCachedChatDefaultModel()
+  if (cached && cached.provider_id === 'cloud:default' && cached.model_id) {
+    let candidate = cached.model_id
+    if (!candidate.includes(CLOUD_KEY_SEP)) {
+      const hit = models.find((m) => m.type === 'chat' && m.model_id === candidate)
+      candidate = hit ? compositeOf(hit) : ''
+    }
+    if (candidate && models.some((m) => m.type === 'chat' && compositeOf(m) === candidate)) {
+      return { provider_id: 'cloud:default', model_id: candidate }
+    }
+    // 无权限/已下线 → 落兜底链（与工作台一致，不摆「幽灵模型」）
+  }
+  const first = models.find((m) => m.type === 'chat')
   if (!first) return null
-  return { provider_id: 'cloud:default', model_id: `${first.model_id}#@${first.provider_name}` }
+  return { provider_id: 'cloud:default', model_id: compositeOf(first) }
 }
 
 /**
@@ -1036,16 +1176,11 @@ function resolveDefaultImageModel(): { provider_id: string; model_id: string } |
 }
 
 function createConversationForPeer(botId: string, peerId: string): Conversation {
-  const bot = getBot(botId)
   // peer 显示名：剥 @im.wechat 后缀取后 6 位
   const shortId = peerId.replace(/@im\.wechat$/, '').slice(-6) || 'user'
-  // 初始模型：绑定 bot 自带模型优先，否则解析默认 chat 模型（保证引擎回退链非空）
-  let initialModel: { provider_id: string; model_id: string } | null = null
-  if (bot?.model_provider_id && bot.model_id) {
-    initialModel = { provider_id: bot.model_provider_id, model_id: bot.model_id }
-  } else {
-    initialModel = resolveDefaultChatModel()
-  }
+  // 初始模型与工作台新会话完全同源（云控默认主选 + 已授权第一个 chat 兜底）：
+  // v0.6.5 起智能体不再绑定模型，此前读 bot.model_* 导致微信会话模型与工作台默认不一致
+  const initialModel = resolveDefaultChatModel()
   if (!initialModel) {
     throw new Error('暂无可用对话模型，请先在「模型服务」确认已授权 chat 模型')
   }

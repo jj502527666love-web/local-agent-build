@@ -106,6 +106,14 @@ export interface LoginBackground {
 }
 
 /**
+ * 智能体列表页背景图。由云控端「桌面端设置 → 基础设置 → 桌面端外观」上传，
+ * 桌面端「智能体」页（启动首页）整页 cover 背景。url 为空回退默认纯色。
+ */
+export interface BotListBackground {
+  url: string
+}
+
+/**
  * 全局主题。primary_color 是云控端配置的主色（hex），桌面端据此派生整套
  * primary 50~900 色阶并注入 CSS 变量换肤。空表示用桌面端内置默认橙。
  */
@@ -127,6 +135,7 @@ const DEFAULT_AGREEMENTS: Agreements = {
 const DEFAULT_CHAT_MODEL: ChatDefaultModel = { provider_id: '', model_id: '' }
 const DEFAULT_CUSTOMER_SERVICE: CustomerServiceInfo | null = null
 const DEFAULT_LOGIN_BACKGROUND: LoginBackground = { url: '' }
+const DEFAULT_BOT_LIST_BACKGROUND: BotListBackground = { url: '' }
 const DEFAULT_THEME: ThemeConfig = { primary_color: DEFAULT_PRIMARY }
 
 const STORAGE_KEY = 'site_config_currency'
@@ -140,6 +149,7 @@ const AGREEMENTS_STORAGE_KEY = 'site_config_agreements'
 const CHAT_MODEL_STORAGE_KEY = 'site_config_chat_default_model'
 const CUSTOMER_SERVICE_STORAGE_KEY = 'site_config_customer_service'
 const LOGIN_BACKGROUND_STORAGE_KEY = 'site_config_login_background'
+const BOT_LIST_BACKGROUND_STORAGE_KEY = 'site_config_bot_list_background'
 // 注意：此 key 必须与 main.ts 启动防闪注入读取的 key 一致
 const THEME_STORAGE_KEY = 'site_config_theme'
 
@@ -396,6 +406,25 @@ function writeLoginBackgroundCache(b: LoginBackground) {
   }
 }
 
+function readBotListBackgroundCache(): BotListBackground {
+  try {
+    const raw = localStorage.getItem(BOT_LIST_BACKGROUND_STORAGE_KEY)
+    if (!raw) return { ...DEFAULT_BOT_LIST_BACKGROUND }
+    const parsed = JSON.parse(raw)
+    return { url: typeof parsed?.url === 'string' ? parsed.url : '' }
+  } catch {
+    return { ...DEFAULT_BOT_LIST_BACKGROUND }
+  }
+}
+
+function writeBotListBackgroundCache(b: BotListBackground) {
+  try {
+    localStorage.setItem(BOT_LIST_BACKGROUND_STORAGE_KEY, JSON.stringify(b))
+  } catch {
+    // 静默失败
+  }
+}
+
 function readThemeCache(): ThemeConfig {
   try {
     const raw = localStorage.getItem(THEME_STORAGE_KEY)
@@ -432,6 +461,7 @@ export const useSiteConfigStore = defineStore('siteConfig', () => {
   const chatDefaultModel = ref<ChatDefaultModel>(readChatDefaultModelCache())
   const customerService = ref<CustomerServiceInfo | null>(readCustomerServiceCache())
   const loginBackground = ref<LoginBackground>(readLoginBackgroundCache())
+  const botListBackground = ref<BotListBackground>(readBotListBackgroundCache())
   const theme = ref<ThemeConfig>(readThemeCache())
   const loading = ref(false)
   const lastFetchedAt = ref<number | null>(null)
@@ -559,6 +589,15 @@ export const useSiteConfigStore = defineStore('siteConfig', () => {
         writeLoginBackgroundCache(nextBg)
       }
 
+      // 智能体列表页背景图（后加字段，老后端不带时保持当前值）
+      if (data?.bot_list_background && typeof data.bot_list_background === 'object') {
+        const nextBg: BotListBackground = {
+          url: typeof data.bot_list_background.url === 'string' ? data.bot_list_background.url : '',
+        }
+        botListBackground.value = nextBg
+        writeBotListBackgroundCache(nextBg)
+      }
+
       // 全局主题主色（后加字段）：解析后即时派生注入 CSS 变量换肤
       if (data?.theme && typeof data.theme === 'object') {
         const nextTheme: ThemeConfig = {
@@ -586,5 +625,5 @@ export const useSiteConfigStore = defineStore('siteConfig', () => {
     fetch()
   }
 
-  return { labels, payment, features, register, forgotPassword, plansStore, recharge, agreements, chatDefaultModel, customerService, loginBackground, theme, hasAnyPayment, hasAnyRecharge, loading, lastFetchedAt, labelOf, fetch, init }
+  return { labels, payment, features, register, forgotPassword, plansStore, recharge, agreements, chatDefaultModel, customerService, loginBackground, botListBackground, theme, hasAnyPayment, hasAnyRecharge, loading, lastFetchedAt, labelOf, fetch, init }
 })

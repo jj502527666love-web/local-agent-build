@@ -1,6 +1,6 @@
 {
   "name": "local-agent",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Local AI Agent Platform",
   "main": "./out/main/index.js",
   "scripts": {
@@ -25,6 +25,7 @@
     "electron-updater": "^6.8.3",
     "fast-xml-parser": "^4.5.6",
     "gifenc": "^1.0.3",
+    "jszip": "^3.10.1",
     "mammoth": "^1.12.0",
     "pdf-lib": "^1.17.1",
     "pdf-parse": "^2.4.5",

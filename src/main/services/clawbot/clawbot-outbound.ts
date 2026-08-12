@@ -7,14 +7,14 @@
 
 import { readFile } from 'fs/promises'
 import { isAbsolute, relative, resolve } from 'path'
-import { assertSendResponse, buildOutboundMessage, getUploadUrl, sendMessage } from './ilink-api'
+import { assertSendResponse, buildOutboundMessage, getUploadUrl, ILinkSendError, sendMessage } from './ilink-api'
 import { prepareUpload, uploadEncryptedMedia } from './ilink-cdn'
 import { MESSAGE_ITEM_TYPE, UPLOAD_MEDIA_TYPE } from './ilink-types'
 import type { ClawbotConnection } from './clawbot-store'
 import { getDataDir } from '../data-path'
 
-/** 发送间隔（社区经验值：>1s，防风控） */
-const SEND_INTERVAL_MS = 1000
+/** 发送间隔（社区经验值：>1s，防风控；限流实证后放宽到 2s） */
+const SEND_INTERVAL_MS = 2000
 /** 长文分段阈值（协议无官方上限，防御性分段） */
 const TEXT_SEGMENT_MAX = 1800
 /** 单条回复最多回传的图片数 */
@@ -22,10 +22,46 @@ const MAX_OUTBOUND_IMAGES = 4
 /** http 图片下载超时 */
 const IMAGE_DOWNLOAD_TIMEOUT_MS = 8000
 
+// ===== 服务端拒发（ret=-2）熔断器 =====
+// 社区实证：ret=-2 = 限流（rate limited）或 context_token 失效（prepare failed）。
+// 两种形态下立刻重试都只会加重拒绝（重试风暴），正确做法是停手退避：
+// 限流等窗口恢复，token 失效等用户下一条入站刷新。熔断期内发送快速失败，不打服务端。
+let consecutiveDeclines = 0
+let circuitOpenUntil = 0
+
+/** 熔断基准 60s，按连续拒发次数线性加长（60s/120s/180s），封顶 5 分钟 */
+function noteSendDeclined(): void {
+  consecutiveDeclines++
+  circuitOpenUntil = Date.now() + Math.min(5 * 60_000, 60_000 * consecutiveDeclines)
+}
+
+function noteSendOk(): void {
+  consecutiveDeclines = 0
+  circuitOpenUntil = 0
+}
+
+/** 熔断开启中（ret=-2 退避期）：发送快速失败，等窗口恢复/token 刷新 */
+export class SendCircuitOpenError extends Error {
+  constructor(public readonly remainingMs: number) {
+    super(`服务端拒发退避中（剩余 ${Math.ceil(remainingMs / 1000)}s）`)
+    this.name = 'SendCircuitOpenError'
+  }
+}
+
+/** 熔断是否开启中（图片级重试等据此跳过，不烧重试预算） */
+export function isSendCircuitOpen(): boolean {
+  return Date.now() < circuitOpenUntil
+}
+
+function checkCircuit(): void {
+  const remain = circuitOpenUntil - Date.now()
+  if (remain > 0) throw new SendCircuitOpenError(remain)
+}
+
 let lastSendAt = 0
 let sendChain: Promise<void> = Promise.resolve()
 
-/** 全局限速门：串行化 + 任意两条 sendmessage 之间至少间隔 1s（多 peer 并发下也不会挤在一起） */
+/** 全局限速门：串行化 + 任意两次 ilink 写请求之间至少间隔 SEND_INTERVAL_MS（多 peer 并发下也不会挤在一起） */
 function sendGate(): Promise<void> {
   const run = sendChain.then(async () => {
     const wait = SEND_INTERVAL_MS - (Date.now() - lastSendAt)
@@ -200,11 +236,15 @@ export interface SendContext {
   /** 逻辑消息幂等键（可选）：分段/重试/图片共享同一前缀派生 client_id
    * （msgKey-t{N} / msgKey-i{N}），服务端可按 client_id 去重，防响应歧义重试造成重复投递 */
   msgKey?: string
+  /** 分段断点（可选）：msgKey → 已确认送达的分段数。长回复分段发到一半失败时，
+   *  重试/补发从断点继续，已发分段不重发（服务端 client_id 去重不可依赖，社区实证会失效） */
+  segDone?: Map<string, number>
   /** 每成功发出一条（text/image）回调，用于写日志/计数 */
   onSent?: (kind: 'text' | 'image', summary: string) => void
 }
 
 async function sendTextSegment(ctx: SendContext, text: string, segIdx = 0): Promise<void> {
+  checkCircuit()
   const msg = buildOutboundMessage({
     toUserId: ctx.peerId,
     contextToken: ctx.contextToken,
@@ -212,24 +252,41 @@ async function sendTextSegment(ctx: SendContext, text: string, segIdx = 0): Prom
     clientId: ctx.msgKey ? `${ctx.msgKey}-t${segIdx}` : undefined
   })
   await sendGate()
-  const resp = await sendMessage(ctx.conn.baseurl, ctx.token, msg, ctx.signal)
-  // 白名单断言：仅 ret===0（或 errcode===0）算确认送达；空 body/非零码抛错走重试
-  assertSendResponse(resp)
+  try {
+    const resp = await sendMessage(ctx.conn.baseurl, ctx.token, msg, ctx.signal)
+    // 官方语义：空 body/{} = 成功；ret/errcode 非零抛 ILinkSendError
+    assertSendResponse(resp)
+    noteSendOk()
+  } catch (e) {
+    if (e instanceof ILinkSendError && e.isDeclined) noteSendDeclined()
+    throw e
+  }
   ctx.onSent?.('text', text.slice(0, 200))
 }
 
 async function sendImageOnce(ctx: SendContext, buf: Buffer, imgIdx = 0): Promise<void> {
+  checkCircuit()
   const prepared = prepareUpload(buf)
-  const up = await getUploadUrl(ctx.conn.baseurl, ctx.token, {
-    filekey: prepared.filekey,
-    media_type: UPLOAD_MEDIA_TYPE.IMAGE,
-    to_user_id: ctx.peerId,
-    rawsize: prepared.rawsize,
-    rawfilemd5: prepared.rawfilemd5,
-    filesize: prepared.filesize,
-    no_need_thumb: true,
-    aeskey: prepared.aeskeyHex
-  }, ctx.signal)
+  // getuploadurl 同样过发送门 + 判业务 ret：社区实证限流时它也回 ret=-2（此前不判，
+  // 响应无上传参数被误报「缺少上传参数」，且不触发熔断，图片重试循环持续打服务端）
+  await sendGate()
+  let up
+  try {
+    up = await getUploadUrl(ctx.conn.baseurl, ctx.token, {
+      filekey: prepared.filekey,
+      media_type: UPLOAD_MEDIA_TYPE.IMAGE,
+      to_user_id: ctx.peerId,
+      rawsize: prepared.rawsize,
+      rawfilemd5: prepared.rawfilemd5,
+      filesize: prepared.filesize,
+      no_need_thumb: true,
+      aeskey: prepared.aeskeyHex
+    }, ctx.signal)
+    assertSendResponse(up, 'getuploadurl')
+  } catch (e) {
+    if (e instanceof ILinkSendError && e.isDeclined) noteSendDeclined()
+    throw e
+  }
   if (!up.upload_full_url && !up.upload_param) {
     throw new Error('getuploadurl 响应缺少上传参数（未确认）')
   }
@@ -257,17 +314,25 @@ async function sendImageOnce(ctx: SendContext, buf: Buffer, imgIdx = 0): Promise
     clientId: ctx.msgKey ? `${ctx.msgKey}-i${imgIdx}` : undefined
   })
   await sendGate()
-  const resp = await sendMessage(ctx.conn.baseurl, ctx.token, msg, ctx.signal)
-  assertSendResponse(resp, 'sendmessage(image)')
+  try {
+    const resp = await sendMessage(ctx.conn.baseurl, ctx.token, msg, ctx.signal)
+    assertSendResponse(resp, 'sendmessage(image)')
+    noteSendOk()
+  } catch (e) {
+    if (e instanceof ILinkSendError && e.isDeclined) noteSendDeclined()
+    throw e
+  }
   ctx.onSent?.('image', '[图片]')
 }
 
-/** 单张图发送：失败后隔 2s 重试一次（CDN/网络抖动），仍败向上抛 */
+/** 单张图发送：网络类失败隔 2s 重试一次；服务端拒发（ret=-2）/熔断期不原地重试（退避后由图片级重试驱动），仍败向上抛 */
 async function sendImageWithRetry(ctx: SendContext, buf: Buffer, imgIdx = 0): Promise<void> {
   try {
     await sendImageOnce(ctx, buf, imgIdx)
   } catch (e) {
     if (ctx.signal?.aborted) throw e
+    if (e instanceof SendCircuitOpenError) throw e
+    if (e instanceof ILinkSendError && e.isDeclined) throw e
     await new Promise((r) => setTimeout(r, 2000))
     await sendImageOnce(ctx, buf, imgIdx)
   }
@@ -289,9 +354,13 @@ export async function sendOutboundReply(ctx: SendContext, rawText: string): Prom
   const images = extractMarkdownImages(rawText)
   const cleaned = stripMarkdownForWechat(rawText)
   const segments = segmentText(cleaned)
-  for (let i = 0; i < segments.length; i++) {
+  // 分段断点续发：上次发到一半失败的消息从断点继续（已发分段不重发）
+  const fromSeg = (ctx.msgKey && ctx.segDone?.get(ctx.msgKey)) || 0
+  for (let i = fromSeg; i < segments.length; i++) {
     await sendTextSegment(ctx, segments[i], i)
+    if (ctx.msgKey) ctx.segDone?.set(ctx.msgKey, i + 1)
   }
+  if (ctx.msgKey) ctx.segDone?.delete(ctx.msgKey) // 文本段全部送达，清断点
   const failedImages: OutboundImage[] = []
   for (let i = 0; i < Math.min(images.length, MAX_OUTBOUND_IMAGES); i++) {
     const img = images[i]

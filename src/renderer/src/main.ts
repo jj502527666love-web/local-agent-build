@@ -4,6 +4,7 @@ import { createRouter, createWebHashHistory } from 'vue-router'
 import App from './App.vue'
 import { routes } from './router'
 import { getCloudToken, setCloudToken } from './utils/cloud-api'
+import { getHomePath } from './utils/home-path'
 import { useThemeStore } from './stores/theme'
 import { useCloudAuthStore } from './stores/cloud-auth'
 import { useSiteConfigStore } from './stores/site-config'
@@ -60,7 +61,7 @@ router.beforeEach((to, from, next) => {
   // 店铺商品图路由级守卫：需至少一个商城被授权（与侧栏菜单同源 anyMallAllowed），否则重定向到主页，
   // 补齐「菜单隐藏但 URL 直达」的纵深（非安全边界，真实授权仍由云端校验）。
   if (token && to.matched.some((r) => r.meta.requireAnyMall) && !useCloudAuthStore().anyMallAllowed) {
-    next('/chat')
+    next(getHomePath())
     return
   }
   if (
@@ -75,7 +76,7 @@ router.beforeEach((to, from, next) => {
   if (to.matched.some(r => r.meta.requiresAuth) && !token) {
     next('/login')
   } else if (to.meta.guest && token) {
-    next('/chat')
+    next(getHomePath())
   } else {
     next()
   }

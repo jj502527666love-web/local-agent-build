@@ -1,14 +1,40 @@
 <template>
   <div class="h-full flex flex-col">
-    <header class="page-header flex items-center justify-between">
-      <div class="flex gap-1">
-        <button :class="['tab-btn', activeTab === 'mine' ? 'tab-btn-active' : '']" @click="activeTab = 'mine'">我的智能体</button>
-        <button :class="['tab-btn', activeTab === 'market' ? 'tab-btn-active' : '']" @click="switchToMarket">智能体市场</button>
-      </div>
-      <button v-if="activeTab === 'mine'" class="btn-primary" @click="openCreate">+ 新建智能体</button>
-    </header>
+    <div class="page-body" ref="pageBodyRef" @scroll="onPageScroll" :style="pageBgStyle">
+      <div class="max-w-7xl mx-auto">
+      <!-- Hero：本页同时是桌面端首页门面（文案不含品牌名，OEM 中性） -->
+      <section class="rounded-2xl border border-surface-3 bg-gradient-to-br from-primary-50/80 via-surface-0 to-surface-0 px-8 py-7 mb-5 flex items-center gap-6">
+        <div class="flex-1 min-w-0">
+          <h1 class="text-2xl font-bold text-text-primary">让 AI 成为你的创意搭档</h1>
+          <p class="text-xs text-text-tertiary mt-2">智能体协作 · 灵感即刻落地 · 创意无限可能</p>
+        </div>
+        <button v-if="activeTab === 'mine'" class="btn-primary shrink-0" @click="openCreate">+ 新建智能体</button>
+      </section>
 
-    <div class="page-body" ref="pageBodyRef" @scroll="onPageScroll">
+      <!-- 工具行：tab（分段控件）+ 统一搜索框（我的=即时过滤；市场=回车/点图标检索） -->
+      <div class="flex items-center justify-between gap-3 mb-4">
+        <div class="flex gap-0.5 p-0.5 rounded-lg bg-surface-2">
+          <button
+            :class="['px-3 py-1.5 text-sm font-medium rounded-md transition-colors', activeTab === 'mine' ? 'bg-surface-0 text-text-primary shadow-sm' : 'text-text-secondary hover:text-text-primary']"
+            @click="activeTab = 'mine'"
+          >我的智能体</button>
+          <button
+            :class="['px-3 py-1.5 text-sm font-medium rounded-md transition-colors', activeTab === 'market' ? 'bg-surface-0 text-text-primary shadow-sm' : 'text-text-secondary hover:text-text-primary']"
+            @click="switchToMarket"
+          >智能体市场</button>
+        </div>
+        <div class="relative w-72 shrink-0">
+          <input
+            v-model="heroSearch"
+            class="input-field !py-1.5 !pr-8 text-xs"
+            :placeholder="activeTab === 'mine' ? '搜索我的智能体' : '搜索市场智能体，回车确认'"
+            @keyup.enter="onHeroSearchEnter"
+          />
+          <button type="button" tabindex="-1" class="absolute right-2 top-1/2 -translate-y-1/2 text-text-tertiary hover:text-text-primary transition-colors" @click="onHeroSearchEnter">
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z" /></svg>
+          </button>
+        </div>
+      </div>
       <!-- ============ 我的智能体 ============ -->
       <template v-if="activeTab === 'mine'">
         <!-- Form -->
@@ -149,11 +175,17 @@
           <p class="text-xs">创建你的第一个智能体，或前往「智能体市场」保存</p>
         </div>
 
+        <!-- 搜索无结果 -->
+        <div v-else-if="!filteredBots.length && !showForm" class="empty-state">
+          <p class="text-sm font-medium text-text-secondary mb-1">没有匹配「{{ mineSearch.trim() }}」的智能体</p>
+          <p class="text-xs">换个关键词试试</p>
+        </div>
+
         <!-- Cards -->
-        <div v-else class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 max-w-6xl">
-          <div v-for="bot in botStore.bots" :key="bot.id" class="card overflow-hidden flex" style="min-height: 196px;">
+        <div v-else class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+          <div v-for="bot in filteredBots" :key="bot.id" class="card overflow-hidden flex" style="min-height: 200px;">
             <!-- 左：2:3 形象，铺满卡片高度 -->
-            <div class="flex-shrink-0 bg-surface-2" style="width: 128px;">
+            <div class="flex-shrink-0 bg-surface-2" style="width: 140px;">
               <img v-if="bot.avatar" :src="localFileUrl(bot.avatar)" class="w-full h-full object-cover" />
               <div v-else class="w-full h-full bg-gradient-to-br from-primary-400 to-primary-600 flex items-center justify-center">
                 <span class="text-white text-3xl font-bold">{{ bot.name.charAt(0) }}</span>
@@ -177,7 +209,7 @@
               <div v-if="bot.description" class="text-xs text-text-tertiary mt-2 line-clamp-2 leading-snug">{{ bot.description }}</div>
               <p v-if="bot.submission_status === 'rejected' && bot.submission_reject_reason" class="text-[11px] text-red-500 mt-1 line-clamp-1">驳回原因：{{ bot.submission_reject_reason }}</p>
               <div class="mt-auto pt-3">
-                <button @click="$router.push({ path: '/chat', query: { botId: bot.id } })" class="w-full py-2 text-xs font-medium bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors">开始对话</button>
+                <button @click="$router.push({ path: '/chat', query: { botId: bot.id } })" class="w-full py-2.5 text-xs font-medium bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors">开始对话</button>
                 <div class="flex items-center justify-center gap-2.5 mt-2 text-xs">
                   <button @click="editBot(bot)" class="text-text-tertiary hover:text-text-primary transition-colors">编辑</button>
                   <span class="text-surface-3">|</span>
@@ -194,13 +226,8 @@
 
       <!-- ============ 智能体市场 ============ -->
       <template v-else>
-        <div class="flex items-center gap-2 mb-3 max-w-5xl">
-          <input v-model="marketSearch" class="input-field flex-1" placeholder="搜索智能体名称或能力" @keyup.enter="loadMarket" />
-          <button class="btn-secondary" @click="loadMarket">搜索</button>
-        </div>
-
-        <!-- 分类筛选（云控端可见分类；无分类时不显示本行） -->
-        <div v-if="botStore.marketCategories.length" class="flex items-center gap-1.5 mb-4 max-w-5xl overflow-x-auto pb-0.5">
+        <!-- 分类筛选（云控端可见分类；无分类时不显示本行）。搜索框已并入页首工具行 -->
+        <div v-if="botStore.marketCategories.length" class="flex items-center gap-1.5 mb-4 overflow-x-auto pb-0.5">
           <button
             v-for="cat in [{ id: null, name: '全部' }, ...botStore.marketCategories]"
             :key="cat.id === null ? '__all__' : cat.id"
@@ -220,7 +247,7 @@
           <p class="text-xs">{{ activeCategory || marketSearch ? '换个分类或关键词试试' : '云控端发布并上架后，这里会显示可添加的智能体' }}</p>
         </div>
         <template v-else>
-          <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 max-w-6xl">
+          <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
             <div v-for="a in botStore.marketAgents" :key="a.id" class="card p-4 flex flex-col">
               <div class="rounded-lg overflow-hidden bg-surface-2 mb-3" style="aspect-ratio: 2/3;">
                 <img v-if="a.avatar" :src="a.avatar_thumb || a.avatar" loading="lazy" class="w-full h-full object-cover" />
@@ -261,6 +288,7 @@
           <div v-else-if="!marketHasMore" class="text-center text-[11px] text-text-disabled py-4">已加载全部 {{ botStore.marketTotal }} 个智能体</div>
         </template>
       </template>
+      </div>
     </div>
 
     <!-- 评分弹窗（仅阴影，无遮罩） -->
@@ -332,6 +360,37 @@ const cloudAuth = useCloudAuthStore()
 const siteConfig = useSiteConfigStore()
 
 const activeTab = ref<'mine' | 'market'>('mine')
+// 页首统一搜索框：我的=本地即时过滤（名称/描述）；市场=回车或点图标走云端检索
+const mineSearch = ref('')
+const filteredBots = computed(() => {
+  const kw = mineSearch.value.trim().toLowerCase()
+  if (!kw) return botStore.bots
+  return botStore.bots.filter((b) =>
+    b.name.toLowerCase().includes(kw) || (b.description || '').toLowerCase().includes(kw)
+  )
+})
+// 双 tab 共用一个输入框：按当前 tab 代理到对应的搜索状态
+const heroSearch = computed({
+  get: () => (activeTab.value === 'mine' ? mineSearch.value : marketSearch.value),
+  set: (v: string) => {
+    if (activeTab.value === 'mine') mineSearch.value = v
+    else marketSearch.value = v
+  }
+})
+function onHeroSearchEnter(): void {
+  if (activeTab.value === 'market') void loadMarket()
+}
+
+// 整页背景图（云控端「桌面端外观」下发；空=默认纯色。走 localStorage 缓存，首屏不闪）
+const pageBgStyle = computed(() => {
+  const url = siteConfig.botListBackground?.url || ''
+  if (!url) return {}
+  return {
+    backgroundImage: `url("${url}")`,
+    backgroundSize: 'cover',
+    backgroundPosition: 'center',
+  }
+})
 const showForm = ref(false)
 const editingId = ref<string | null>(null)
 const botDropdown = ref('')
@@ -679,12 +738,6 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.tab-btn {
-  @apply px-3 py-1.5 text-sm font-medium text-text-secondary rounded-lg hover:text-text-primary transition-colors;
-}
-.tab-btn-active {
-  @apply bg-surface-2 text-text-primary;
-}
 .bot-select-btn {
   @apply flex items-center gap-2 w-48 px-3 py-2 text-xs text-text-secondary bg-surface-0 border border-surface-3 rounded-lg hover:border-primary-400 transition-colors cursor-pointer;
 }

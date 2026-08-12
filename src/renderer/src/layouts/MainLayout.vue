@@ -206,6 +206,7 @@ import { useSiteConfigStore } from '@/stores/site-config'
 import { useClawbotStore } from '@/stores/clawbot'
 import { cloudClient } from '@/utils/cloud-api'
 import { appName, appAbbr, appIconUrl } from '@/utils/branding'
+import { cacheMenuOverrides } from '@/utils/home-path'
 
 const route = useRoute()
 const router = useRouter()
@@ -250,8 +251,9 @@ function onCancelCanvas() {
 const isWin = ((window as any).electron?.process?.platform || (window as any).runtimeConfig?.platform || '') === 'win32'
 
 const allNavItems = [
-  { path: '/chat', label: '对话', icon: IconChat },
+  // 智能体排第一：/bots 同时是启动首页（router 的 / 重定向到 getHomePath()）
   { path: '/bots', label: '智能体', icon: IconBot },
+  { path: '/chat', label: '对话', icon: IconChat },
   { path: '/knowledge', label: '知识库', icon: IconKnowledge },
   // 微信 ClawBot：本地功能（扫码绑定微信，消息桥接进对话），不走云端权限门控
   { path: '/clawbot', label: '微信 ClawBot', icon: IconClawbot },
@@ -327,6 +329,8 @@ onMounted(async () => {
   try {
     const res: any = await cloudClient.desktopMenu()
     menuOverrides.value = res?.overrides && typeof res.overrides === 'object' ? res.overrides : {}
+    // 写入本地缓存：下次启动「/」重定向（发生在本组件挂载前）据此判断首页是 /bots 还是 /chat
+    cacheMenuOverrides(menuOverrides.value)
     // 合并前过滤脏数据（字段缺失 / target_type 非法 / 目标为空或协议不符的项直接丢弃），
     // 防云端脏数据导致渲染出点击无反应的死菜单
     customMenuItems.value = Array.isArray(res?.custom_items)

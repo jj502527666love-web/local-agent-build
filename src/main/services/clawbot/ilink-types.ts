@@ -221,6 +221,10 @@ export interface GetUploadUrlRequest {
 }
 
 export interface GetUploadUrlResponse {
+  /** 业务错误码（社区实证 getuploadurl 限流也回 ret=-2，此时无上传参数） */
+  ret?: number
+  errcode?: number
+  errmsg?: string
   upload_param?: string
   thumb_upload_param?: string
   /** v2.1.1+ 优先用，无需客户端拼接 */
