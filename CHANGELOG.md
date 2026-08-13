@@ -6,6 +6,23 @@
 
 ---
 
+## [1.1.2] - 2026-08-14
+
+> **微信 ClawBot 生图参数双通道（编号菜单 + 自然语言直通 + 默认参数配置）+ 出站图片编码对齐官方 2.4.6**。背景：对照微信官方 npm 包 `@tencent-weixin/openclaw-weixin@2.4.6` 源码逐文件审查（api/send/upload/cdn-upload/pic-decrypt/login-qr/monitor/media-download），协议层与官方高度一致；发现出站图片 `aes_key` 编码与官方不一致（P1）并修复；桌面端「生图参数确认卡」依赖窗口交互（`core-tools.ts` 弹卡条件 `!args.size && window`），微信通道（window=null）下用户没有任何机会选择参数，本次补齐该交互缺口。
+
+### 新增
+
+- **微信 ClawBot 生图参数编号菜单（`clawbot-bridge.ts` + `chat-engine.ts` + `core-tools.ts`）**：微信里说「画一只猫」且未指定尺寸时，微信会收到编号菜单（1 方形 / 2 横版16:9 / 3 竖版9:16 / 4 横版4:3 / 5 竖版3:4，可附带张数如「2 四张」），60 秒内回复即按所选参数生成；超时或回复其他内容按默认参数生成并继续正常对话（新话题/反悔不被吞）。实现：`SendMessageOptions` 新增 `imageParamsResolver`（照 `approvalDecider` 同款注入模式，经 `executeToolCall` 透传 `execContext`），桥内 `askImageParamsViaText` 挂起等待 + `enqueueInbound` 旁路在入队前消费选择消息（防 FIFO 死锁）；含媒体消息不消费；桥停止时挂起菜单全部按「未选择」释放，防引擎轮次永久挂起。
+- **微信 ClawBot「默认生图参数」配置卡（`ClawbotView.vue` + `clawbot-ipc.ts`）**：默认尺寸（7 档）/ 分辨率档位（1K/2K/4K）/ 默认张数（1-4），落 settings `clawbot_image_defaults`；微信端生图未指定参数时按此出图（替代此前写死的 1:1/2K/1张）。
+- **`image_gen` 支持 `batch_count`（1-4）**：无参数卡通道下 LLM 可从用户话语提取张数传参（「来四张」）；张数优先级：菜单选择 > LLM 显式 `batch_count` > 通道默认。有窗口的桌面端路径行为不变（张数仍由参数卡统一处理）。
+- **生图工作流系统提示按通道出变体（`chat-engine.ts`）**：window=null（桥）时告知 LLM 无参数卡——用户明确说的尺寸/张数必须传 `size`/`batch_count`，没说的不传由通道询问或走默认；桌面端提示文案不变。
+
+### 修复
+
+- **微信 ClawBot 出站图片 `aes_key` 编码对齐官方（`clawbot-outbound.ts`，P1）**：官方 send.ts 实为 `Buffer.from(aeskeyHex)`（无 `'hex'` 参数按 utf8）→ base64 解出 32 字符 hex 串，手机端再 fromhex 得 16 字节 key；本地原为 base64(16 字节原始 key)，与官方出站实现不一致，手机端可能无法解密显示。已删 `'hex'` 参数对齐（真机回归重点：手机收图后能否点开显示）。
+
+---
+
 ## [1.1.1] - 2026-08-12
 
 > **智能体列表页改版并设为启动首页 + 页面背景图云端下发 + ClawBot 绑定下拉修复**。云控端配套：背景图配置随云控端 1.6.32 下发（未部署的老云控端不下发该字段，桌面端保持默认纯色，向后兼容）。

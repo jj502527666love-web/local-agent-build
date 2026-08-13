@@ -67,6 +67,14 @@ export interface ClawbotApprovalPolicy {
   allowRunCommand: boolean
 }
 
+/** 无参数卡通道的默认生图参数（微信端生图未指定参数时使用） */
+export interface ClawbotImageDefaults {
+  size: string
+  tierId: string
+  quality: string
+  batchCount: number
+}
+
 const LOG_PAGE_SIZE = 50
 
 export const useClawbotStore = defineStore('clawbot', () => {
@@ -75,6 +83,7 @@ export const useClawbotStore = defineStore('clawbot', () => {
   const logs = ref<ClawbotLog[]>([])
   const logsExhausted = ref(false)
   const policy = ref<ClawbotApprovalPolicy | null>(null)
+  const imageDefaults = ref<ClawbotImageDefaults | null>(null)
   const busy = ref(false)
 
   // App 级常驻监听幂等标志（照 chat.ts initStreamListener 模式：只装一次，永不随组件卸载退订）
@@ -105,8 +114,16 @@ export const useClawbotStore = defineStore('clawbot', () => {
     policy.value = (await clawbot().invoke('getApprovalPolicy')) as ClawbotApprovalPolicy
   }
 
+  async function refreshImageDefaults(): Promise<void> {
+    imageDefaults.value = (await clawbot().invoke('getImageDefaults')) as ClawbotImageDefaults
+  }
+
+  async function setImageDefaults(patch: Partial<ClawbotImageDefaults>): Promise<void> {
+    imageDefaults.value = (await clawbot().invoke('setImageDefaults', patch)) as ClawbotImageDefaults
+  }
+
   async function refreshAll(): Promise<void> {
-    await Promise.all([refreshState(), refreshPeers(), refreshLogs(), refreshPolicy()])
+    await Promise.all([refreshState(), refreshPeers(), refreshLogs(), refreshPolicy(), refreshImageDefaults()])
   }
 
   /**
@@ -196,12 +213,15 @@ export const useClawbotStore = defineStore('clawbot', () => {
     logs,
     logsExhausted,
     policy,
+    imageDefaults,
     busy,
     refreshState,
     refreshPeers,
     refreshLogs,
     loadMoreLogs,
     refreshPolicy,
+    refreshImageDefaults,
+    setImageDefaults,
     refreshAll,
     initClawbotListeners,
     startLogin,

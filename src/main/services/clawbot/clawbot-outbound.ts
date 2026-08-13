@@ -304,8 +304,11 @@ async function sendImageOnce(ctx: SendContext, buf: Buffer, imgIdx = 0): Promise
       image_item: {
         media: {
           encrypt_query_param: encryptQueryParam,
-          // 出站 aes_key 为 16 字节原始 key 的 base64
-          aes_key: Buffer.from(prepared.aeskeyHex, 'hex').toString('base64'),
+          // 出站 aes_key 对齐官方 send.ts：Buffer.from(hex字符串)（无 'hex' 参数，按 utf8）
+          // → base64 解出 32 字符 hex 串，手机端再 fromhex 得 16 字节 key
+          // （官方 pic-decrypt「base64(hex string of 16 bytes)」形态；
+          //  此前用 base64(16字节原始key)，与官方出站实现不一致，手机端可能无法解密显示）
+          aes_key: Buffer.from(prepared.aeskeyHex).toString('base64'),
           encrypt_type: 1
         },
         mid_size: prepared.filesize

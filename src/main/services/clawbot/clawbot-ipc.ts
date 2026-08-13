@@ -81,6 +81,13 @@ export function registerClawbotIpc(ipcMain: IpcLike): void {
     return bridge.setApprovalPolicy(patch || {})
   })
 
+  // ===== 默认生图参数（无参数卡通道：微信端生图未指定参数时使用） =====
+  ipcMain.handle('clawbot:getImageDefaults', () => bridge.getImageDefaults())
+  ipcMain.handle('clawbot:setImageDefaults', (_, patch: { size?: string; tierId?: string; quality?: string; batchCount?: number }) => {
+    assertClawbotAllowed()
+    return bridge.setImageDefaults(patch || {})
+  })
+
   // 登录状态机只读快照（进入页面时恢复二维码/配对码界面用）
   ipcMain.handle('clawbot:getLoginState', () => login.getLoginState())
 }

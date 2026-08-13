@@ -141,6 +141,69 @@
           </div>
         </section>
 
+        <!-- 默认生图参数卡（无参数卡通道） -->
+        <section v-if="imageDefaults" class="form-card">
+          <h3 class="text-sm font-semibold text-text-primary">默认生图参数</h3>
+          <p class="text-[11px] text-text-tertiary -mt-2">
+            微信里弹不了桌面端的参数选框：用户未指定参数时按这里的默认值生成；用户说「画个 16:9 的，来四张」会优先按话语参数出图；未指定尺寸时微信侧会收到编号菜单回复
+          </p>
+          <div class="space-y-3">
+            <div>
+              <div class="form-label">默认尺寸</div>
+              <div class="flex flex-wrap gap-1.5">
+                <button
+                  v-for="p in imageSizeOptions"
+                  :key="p.value"
+                  type="button"
+                  class="px-2.5 py-1 rounded-lg border text-xs transition-colors"
+                  :class="[
+                    imageDefaults.size === p.value ? 'border-primary-400 bg-primary-50 text-primary-700 font-medium' : 'border-surface-3 text-text-secondary hover:bg-surface-2',
+                    !canUse ? 'opacity-50 cursor-not-allowed' : ''
+                  ]"
+                  :disabled="!canUse"
+                  @click="onImageDefaultsChange({ size: p.value })"
+                >{{ p.label }}</button>
+              </div>
+            </div>
+            <div class="flex flex-wrap items-end gap-5">
+              <div>
+                <div class="form-label">分辨率档位</div>
+                <div class="flex gap-1.5">
+                  <button
+                    v-for="t in tierOptions"
+                    :key="t.value"
+                    type="button"
+                    class="px-2.5 py-1 rounded-lg border text-xs transition-colors"
+                    :class="[
+                      imageDefaults.tierId === t.value ? 'border-primary-400 bg-primary-50 text-primary-700 font-medium' : 'border-surface-3 text-text-secondary hover:bg-surface-2',
+                      !canUse ? 'opacity-50 cursor-not-allowed' : ''
+                    ]"
+                    :disabled="!canUse"
+                    @click="onImageDefaultsChange({ tierId: t.value })"
+                  >{{ t.label }}</button>
+                </div>
+              </div>
+              <div>
+                <div class="form-label">默认张数</div>
+                <div class="flex gap-1.5">
+                  <button
+                    v-for="n in [1, 2, 3, 4]"
+                    :key="n"
+                    type="button"
+                    class="px-2.5 py-1 rounded-lg border text-xs transition-colors"
+                    :class="[
+                      imageDefaults.batchCount === n ? 'border-primary-400 bg-primary-50 text-primary-700 font-medium' : 'border-surface-3 text-text-secondary hover:bg-surface-2',
+                      !canUse ? 'opacity-50 cursor-not-allowed' : ''
+                    ]"
+                    :disabled="!canUse"
+                    @click="onImageDefaultsChange({ batchCount: n })"
+                  >{{ n }} 张</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
         <!-- 联系人映射 -->
         <section class="form-card">
           <h3 class="text-sm font-semibold text-text-primary">联系人会话</h3>
@@ -200,12 +263,12 @@ import { useClawbotStore } from '@/stores/clawbot'
 import { useBotStore } from '@/stores/bots'
 import { useCloudAuthStore } from '@/stores/cloud-auth'
 import { storeToRefs } from 'pinia'
-import type { ClawbotApprovalPolicy, ClawbotPeerSummary } from '@/stores/clawbot'
+import type { ClawbotApprovalPolicy, ClawbotImageDefaults, ClawbotPeerSummary } from '@/stores/clawbot'
 
 const store = useClawbotStore()
 const botStore = useBotStore()
 const cloudAuth = useCloudAuthStore()
-const { state, peers, logs, policy } = storeToRefs(store)
+const { state, peers, logs, policy, imageDefaults } = storeToRefs(store)
 
 // 使用权限（allow_clawbot，默认拒绝）：仅控制「能否使用」，菜单显示由云控端菜单配置管理
 const canUse = computed(() => cloudAuth.permissions.allow_clawbot === true)
@@ -397,6 +460,28 @@ const policyItems: Array<{ key: keyof ClawbotApprovalPolicy; label: string; desc
 async function onPolicyChange(key: keyof ClawbotApprovalPolicy, value: boolean): Promise<void> {
   if (!canUse.value) return
   await store.setApprovalPolicy({ [key]: value })
+}
+
+// ===== 默认生图参数（无参数卡通道） =====
+
+const imageSizeOptions: Array<{ value: string; label: string }> = [
+  { value: '1:1', label: '方形 1:1' },
+  { value: '16:9', label: '横版 16:9' },
+  { value: '9:16', label: '竖版 9:16' },
+  { value: '4:3', label: '横版 4:3' },
+  { value: '3:4', label: '竖版 3:4' },
+  { value: '3:2', label: '横版 3:2' },
+  { value: '2:3', label: '竖版 2:3' }
+]
+const tierOptions: Array<{ value: string; label: string }> = [
+  { value: '1k', label: '1K' },
+  { value: '2k', label: '2K' },
+  { value: '4k', label: '4K' }
+]
+
+async function onImageDefaultsChange(patch: Partial<ClawbotImageDefaults>): Promise<void> {
+  if (!canUse.value) return
+  await store.setImageDefaults(patch)
 }
 
 // ===== 联系人映射 =====

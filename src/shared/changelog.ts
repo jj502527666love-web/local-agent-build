@@ -21,6 +21,16 @@ export interface ReleaseNote {
 
 export const CHANGELOG: ReleaseNote[] = [
   {
+    version: '1.1.2',
+    date: '2026-08-14',
+    notes: [
+      '微信 ClawBot：生图前可在微信里回复编号选尺寸和张数，60 秒内有效',
+      '微信 ClawBot：生图直接说「横版/竖版/16:9、来四张」即按需求出图',
+      '微信 ClawBot：设置页新增「默认生图参数」，未指定时按你的偏好出图',
+      '微信 ClawBot：修复发送的图片在手机上可能无法显示的问题'
+    ]
+  },
+  {
     version: '1.1.1',
     date: '2026-08-12',
     notes: [
