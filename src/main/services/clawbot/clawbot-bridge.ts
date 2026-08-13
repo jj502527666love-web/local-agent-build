@@ -18,9 +18,10 @@ import * as login from './clawbot-login'
 import type { ClawbotConnection, ClawbotConnectionSummary } from './clawbot-store'
 import { processInboundMessage } from './clawbot-inbound'
 import { sendOutboundReply, sendImagesOnly, sendPlainText, SendCircuitOpenError, isSendCircuitOpen, type OutboundImage } from './clawbot-outbound'
-import { ERRCODE_SESSION_TIMEOUT, MESSAGE_TYPE, TYPING_STATUS } from './ilink-types'
+import { ERRCODE_SESSION_TIMEOUT, MESSAGE_ITEM_TYPE, MESSAGE_TYPE, TYPING_STATUS } from './ilink-types'
 import type { WeixinMessage } from './ilink-types'
 import { sendMessage as engineSendMessage, cancelChat as engineCancelChat } from '../chat-engine'
+import { getNoWindowImageDefaults, setNoWindowImageDefaults, type NoWindowImageDefaults } from '../core-tools'
 import { createConversation, getConversation, getMessages, updateConversationImageModel } from '../conversation'
 import { createBot, getBot, listBots } from '../bot'
 import { getCloudApiBase, getCloudModels, getAllowClawbot, refreshCloudToken } from '../cloud-token'
@@ -33,6 +34,13 @@ import { CLOUD_KEY_SEP } from '@shared/model-id'
 import type { Conversation } from '../conversation'
 
 // ===== 运行态 =====
+
+/** 生图参数文本菜单的挂起记录：finish 把用户选择（或 null=默认）交还给引擎侧挂起的 resolver */
+interface PendingParamMenu {
+  conversationId: string
+  timer: NodeJS.Timeout
+  finish: (choice: { size?: string; batchCount?: number } | null) => void
+}
 
 interface Runtime {
   connectionId: string
@@ -62,6 +70,8 @@ interface Runtime {
   pendingImageRetries: Map<string, { peerId: string; images: OutboundImage[]; attempts: number; lastAttemptAt: number }>
   /** 错误文案冷却（`${peerId}:${kind}` → 上次发送时间戳）：持久态错误不刷屏 */
   errorNotices: Map<string, number>
+  /** 生图参数文本菜单挂起态（peerId → 等待中的选择）：菜单期间的纯文本回复被旁路消费为参数选择 */
+  pendingParamMenus: Map<string, PendingParamMenu>
   /** 桌面「重新登录」通知上次弹出时间（冷却用） */
   lastLoginAlertAt: number
   /** 事件总线退订函数（assistant 落库 → 事件驱动补发） */
@@ -223,6 +233,7 @@ export async function startClawbotBridge(): Promise<void> {
     flushSegDone: new Map(),
     pendingImageRetries: new Map(),
     errorNotices: new Map(),
+    pendingParamMenus: new Map(),
     lastLoginAlertAt: 0,
     unsubAppend: null,
     loopDone: null
@@ -298,6 +309,11 @@ export function stopClawbotBridge(): void {
   for (const ctrl of rt.replyWatchers.values()) ctrl.abort()
   rt.replyWatchers.clear()
   rt.pendingImageRetries.clear()
+  // 挂起中的生图参数菜单：全部按「未选择」释放（引擎侧 resolver 收到 null 走默认参数），防桥停止后引擎轮次永久挂起
+  for (const menu of rt.pendingParamMenus.values()) {
+    try { menu.finish(null) } catch { /* ignore */ }
+  }
+  rt.pendingParamMenus.clear()
   // 清理事件防抖计时器（防停止后迟到的 flush 再发消息）
   for (const t of rt.flushTimers.values()) clearTimeout(t)
   rt.flushTimers.clear()
@@ -456,6 +472,33 @@ function enqueueInbound(rt: Runtime, conn: ClawbotConnection, msg: WeixinMessage
   // context_token 始终用最新入站值（不可复用旧消息的）
   if (msg.context_token) store.updatePeerContextToken(peer.id, msg.context_token)
   store.touchPeerMessageAt(peer.id)
+
+  // 生图参数菜单旁路：该 peer 有挂起菜单时，纯文本回复先尝试解析为参数选择。
+  // 解析成功 = 消费掉（不进引擎，避免一次无意义的 LLM 轮次）；
+  // 解析失败 = 菜单按默认参数提前释放 + 消息照常入队（新话题/反悔不被吞）。
+  // 含媒体的消息不消费（正常入队排队），菜单继续等到超时。
+  const menu = rt.pendingParamMenus.get(peerId)
+  if (menu) {
+    const text = extractPlainText(msg)
+    if (text) {
+      const choice = parseImageParamChoice(text)
+      menu.finish(choice)
+      if (choice) {
+        store.insertLog({ connection_id: conn.id, peer_id: peerId, direction: 'in', msg_type: 'text', summary: `生图参数选择：${text.slice(0, 60)}` })
+        try {
+          const token = store.resolveBotToken(conn)
+          const sizeLabel = IMAGE_SIZE_TEXT_LABELS[choice.size || ''] || choice.size || '默认尺寸'
+          const confirm = `收到，按 ${sizeLabel} · ${choice.batchCount || 1} 张生成，请稍候…`
+          // 本条入站的 context_token 最新（peer 快照可能是更新前的旧值）
+          void safeSendPlain(conn, token, peerId, msg.context_token || peer.last_context_token || '', confirm, rt.abort.signal)
+        } catch {
+          /* 凭据异常时确认语不发，不影响生图主流程 */
+        }
+        return
+      }
+      // choice=null：菜单已按默认参数释放；消息继续走下方正常入队
+    }
+  }
 
   const prev = rt.peerQueues.get(peerId) || Promise.resolve()
   const next = prev
@@ -644,6 +687,9 @@ async function processOne(rt: Runtime, connectionId: string, peerId: string, msg
         attachments: parsed.attachments,
         requestId,
         approvalDecider: makeApprovalDecider(conversationId),
+        // 无参数卡通道的生图参数选择：微信文本菜单（用户已显式指定尺寸时引擎不会调它）
+        imageParamsResolver: ({ prompt }) =>
+          askImageParamsViaText(rt, conn, token, peerId, contextToken, conversationId, prompt),
         onProgress: (p) => {
           if (p?.type === 'tool_start' || p?.type === 'tool_result') progressSteps++
           // 记录本轮是否留下了 fire-and-forget 生图任务（决定要不要启动补发 watcher）
@@ -1187,6 +1233,110 @@ function createConversationForPeer(botId: string, peerId: string): Conversation 
   return createConversation(botId, `微信-${shortId}`, initialModel, resolveDefaultImageModel() ?? undefined)
 }
 
+// ===== 生图参数文本菜单（方案 B：无参数卡通道的参数选择交互） =====
+
+/** 菜单等待上限：超时按通道默认参数生成 */
+const PARAM_MENU_TIMEOUT_MS = 60_000
+
+/** 菜单尺寸选项 → 比例值（与 @shared/image-size 预设一致） */
+const IMAGE_SIZE_TEXT_LABELS: Record<string, string> = {
+  '1:1': '方形 1:1',
+  '16:9': '横版 16:9',
+  '9:16': '竖版 9:16',
+  '4:3': '横版 4:3',
+  '3:4': '竖版 3:4'
+}
+
+/** 提取入站消息的纯文本（含任何非文本 item 时返回 null——不当参数选择消费） */
+function extractPlainText(msg: WeixinMessage): string | null {
+  const texts: string[] = []
+  for (const it of msg.item_list || []) {
+    if (!it || it.type === MESSAGE_ITEM_TYPE.NONE) continue
+    if (it.type !== MESSAGE_ITEM_TYPE.TEXT) return null
+    const t = it.text_item?.text?.trim()
+    if (t) texts.push(t)
+  }
+  return texts.length ? texts.join(' ') : null
+}
+
+/**
+ * 解析菜单回复为参数选择：支持「2」「2 四张」「横版」「横版 两张」「16:9」等形态。
+ * 完全解析不出 → null（视为普通对话消息，菜单按默认参数释放）。
+ * 超长文本直接排除（菜单选择不会是一篇小作文）。
+ */
+function parseImageParamChoice(text: string): { size?: string; batchCount?: number } | null {
+  const t = text.trim()
+  if (!t || t.length > 40) return null
+  let size: string | undefined
+  const headNum = t.match(/^([1-5])(?=[\s,，、。张幅]|$)/)
+  if (headNum) {
+    size = ['1:1', '16:9', '9:16', '4:3', '3:4'][Number(headNum[1]) - 1]
+  } else if (/方形|方图/.test(t)) {
+    size = '1:1'
+  } else if (/横版|横图|横幅|16\s*[:：]\s*9/.test(t)) {
+    size = '16:9'
+  } else if (/竖版|竖图|竖幅|9\s*[:：]\s*16/.test(t)) {
+    size = '9:16'
+  } else if (/4\s*[:：]\s*3/.test(t)) {
+    size = '4:3'
+  } else if (/3\s*[:：]\s*4/.test(t)) {
+    size = '3:4'
+  }
+  let batchCount: number | undefined
+  const numMatch = t.match(/([一二三四1-4])\s*[张幅份]/)
+  if (numMatch) {
+    const idx = '一二三四'.indexOf(numMatch[1])
+    batchCount = idx >= 0 ? idx + 1 : Number(numMatch[1])
+  }
+  if (!size && !batchCount) return null
+  return { size, batchCount }
+}
+
+/**
+ * imageParamsResolver（注入引擎 image_gen）：向微信发编号菜单并挂起等待。
+ * 下一条纯文本入站由 enqueueInbound 旁路喂给 finish；超时/桥停止/非文本 → null（默认参数）。
+ * 同 peer 已有挂起菜单时不叠加（直接 null 走默认）。
+ */
+function askImageParamsViaText(
+  rt: Runtime,
+  conn: ClawbotConnection,
+  token: string,
+  peerId: string,
+  contextToken: string,
+  conversationId: string,
+  prompt: string
+): Promise<{ size?: string; batchCount?: number } | null> {
+  if (rt.pendingParamMenus.has(peerId) || !contextToken) return Promise.resolve(null)
+  const defaults = getNoWindowImageDefaults()
+  const defaultLabel = `${IMAGE_SIZE_TEXT_LABELS[defaults.size] || defaults.size} · ${defaults.batchCount} 张`
+  const menuText = [
+    `请选择生图尺寸（60 秒内回复有效，超时按默认「${defaultLabel}」生成）：`,
+    `1 方形  2 横版16:9  3 竖版9:16  4 横版4:3  5 竖版3:4`,
+    `可附带张数，如「2 四张」；回复其他内容将按默认参数生成并继续对话。`
+  ].join('\n')
+  return new Promise((resolvePromise) => {
+    let settled = false
+    const finish = (choice: { size?: string; batchCount?: number } | null): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      rt.pendingParamMenus.delete(peerId)
+      resolvePromise(choice)
+    }
+    const timer = setTimeout(() => finish(null), PARAM_MENU_TIMEOUT_MS)
+    ;(timer as any).unref?.()
+    rt.pendingParamMenus.set(peerId, { conversationId, timer, finish })
+    void safeSendPlain(conn, token, peerId, contextToken, menuText, rt.abort.signal)
+    store.insertLog({
+      connection_id: conn.id,
+      peer_id: peerId,
+      direction: 'out',
+      msg_type: 'system',
+      summary: `生图参数菜单已发送（${prompt.slice(0, 40)}）`
+    })
+  })
+}
+
 // ===== 回复提取与错误转译 =====
 
 /** [Error] / 中断标记 → 用户可读文案；返回 null 表示不是错误标记 */
@@ -1440,6 +1590,15 @@ export function listPeerSummaries(): store.ClawbotPeerSummary[] {
 
 export function listBridgeLogs(beforeId?: string, limit?: number): store.ClawbotLog[] {
   return store.listLogs(beforeId, limit)
+}
+
+/** 无参数卡通道的默认生图参数（微信端生图未指定参数时使用；配置 UI 见 ClawbotView） */
+export function getImageDefaults(): NoWindowImageDefaults {
+  return getNoWindowImageDefaults()
+}
+
+export function setImageDefaults(patch: Partial<NoWindowImageDefaults>): NoWindowImageDefaults {
+  return setNoWindowImageDefaults(patch)
 }
 
 /** 启动/热切换后的僵尸状态清理 + 日志 pruning（main/index 与 account-context 双调用点） */

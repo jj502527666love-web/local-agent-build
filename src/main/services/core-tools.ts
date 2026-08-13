@@ -12,6 +12,7 @@ import { searchCloudKnowledgeBases } from './cloud-kb-search'
 import { getVectorStatsForUI } from './vectorize'
 import { addMessage, getConversation, updateMessageCard, type MessageCard } from './conversation'
 import { requestUserChoice } from './user-choice'
+import { getSetting, setSetting } from './settings'
 import { v4 as uuid } from 'uuid'
 import type { BrowserWindow } from 'electron'
 
@@ -197,7 +198,8 @@ export const coreToolDefs = [
           prompt: { type: 'string', description: '图片描述提示词（generate 时必填）' },
           model_provider_id: { type: 'string', description: '服务商ID（generate 时必填，从 list_providers 获取）' },
           model_id: { type: 'string', description: '模型ID（generate 时必填，从 list_providers 获取）' },
-          size: { type: 'string', description: '图片尺寸比例。重要：用户未明确说尺寸/比例时不要传此参数（留空）——系统会弹「生图参数卡」让用户选尺寸/分辨率/画质/数量；仅当用户明确指定了尺寸或比例（如“画个16:9的”）时才传。取值：正图 1:1；横图 2:1, 3:1, 3:2, 4:3, 5:4, 16:9, 21:9；竖图 1:2, 1:3, 2:3, 3:4, 4:5, 9:16, 9:21；也可传 1:3 到 3:1 范围内的自定义比例或像素' },
+          size: { type: 'string', description: '图片尺寸比例。重要：用户未明确说尺寸/比例时不要传此参数（留空）——有参数卡的通道会弹「生图参数卡」让用户选尺寸/分辨率/画质/数量，无卡通道（如微信）会用通道默认参数或代为询问；仅当用户明确指定了尺寸或比例（如“画个16:9的”）时才传。取值：正图 1:1；横图 2:1, 3:1, 3:2, 4:3, 5:4, 16:9, 21:9；竖图 1:2, 1:3, 2:3, 3:4, 4:5, 9:16, 9:21；也可传 1:3 到 3:1 范围内的自定义比例或像素' },
+          batch_count: { type: 'number', description: '可选，生成张数（1-4，默认 1）。仅在无参数确认卡的通道（如微信）且用户明确说了张数（如“来四张”）时才传；有参数卡的通道不要传，张数由参数卡统一处理' },
           output_dir: { type: 'string', description: '可选，将生成的图片复制到此目录。相对路径相对当前对话工作区;未指定时默认落在 {工作区}/images/' },
           output_filename: { type: 'string', description: '可选，自定义输出文件名（不含扩展名，如 cover_bg）' },
           ref_image_ids: { type: 'array', items: { type: 'string' }, description: '可选，参考图片附件 ID 数组。优先使用系统提示列出的最近图片附件 id，不要传 base64' }
@@ -371,6 +373,9 @@ export interface ToolExecContext {
   signal?: AbortSignal
   timeoutMs?: number
   isCanceled?: (requestId?: string) => boolean
+  /** 无窗口通道（微信 ClawBot 桥）的生图参数解析器：弹不了参数卡时由调用方用通道自有方式
+   * （如微信文本菜单）问用户尺寸/张数；返回 null = 用户未选择/超时 → 用通道默认参数 */
+  imageParamsResolver?: (args: { prompt: string }) => Promise<{ size?: string; batchCount?: number } | null>
 }
 
 export async function executeCoreToolCall(
@@ -785,6 +790,50 @@ async function requestImageParams(
   return result
 }
 
+/** 无窗口通道生图张数收敛（1-4；微信等通道限流/刷屏风险高于桌面端，不上探到参数卡的 10） */
+export function clampImageBatchCount(v: any): number {
+  const n = Number(v)
+  return Number.isFinite(n) ? Math.min(Math.max(Math.floor(n), 1), 4) : 1
+}
+
+export interface NoWindowImageDefaults {
+  size: string
+  tierId: string
+  quality: string
+  batchCount: number
+}
+
+const NO_WINDOW_IMAGE_DEFAULTS_KEY = 'clawbot_image_defaults'
+const NO_WINDOW_IMAGE_FALLBACK: NoWindowImageDefaults = { size: '1:1', tierId: '2k', quality: 'auto', batchCount: 1 }
+
+/**
+ * 无窗口通道（微信 ClawBot 桥）的生图默认参数：读 settings 的 clawbot_image_defaults，
+ * 缺省 1:1 / 2K / auto / 1张（与此前写死行为一致）。UI 配置见 ClawbotView「默认生图参数」卡。
+ */
+export function getNoWindowImageDefaults(): NoWindowImageDefaults {
+  try {
+    const raw = getSetting(NO_WINDOW_IMAGE_DEFAULTS_KEY)
+    if (!raw) return { ...NO_WINDOW_IMAGE_FALLBACK }
+    const p = JSON.parse(raw)
+    return {
+      size: typeof p.size === 'string' && p.size ? p.size : NO_WINDOW_IMAGE_FALLBACK.size,
+      tierId: typeof p.tierId === 'string' && p.tierId ? p.tierId : NO_WINDOW_IMAGE_FALLBACK.tierId,
+      quality: typeof p.quality === 'string' && p.quality ? p.quality : NO_WINDOW_IMAGE_FALLBACK.quality,
+      batchCount: clampImageBatchCount(p.batchCount ?? NO_WINDOW_IMAGE_FALLBACK.batchCount)
+    }
+  } catch {
+    return { ...NO_WINDOW_IMAGE_FALLBACK }
+  }
+}
+
+/** 写入无窗口通道默认生图参数（合并式；ClawBot 管理页调用） */
+export function setNoWindowImageDefaults(patch: Partial<NoWindowImageDefaults>): NoWindowImageDefaults {
+  const next = { ...getNoWindowImageDefaults(), ...patch }
+  next.batchCount = clampImageBatchCount(next.batchCount)
+  setSetting(NO_WINDOW_IMAGE_DEFAULTS_KEY, JSON.stringify(next))
+  return next
+}
+
 async function executeImageGen(args: any, sandboxDir?: string, execContext?: ToolExecContext): Promise<any> {
   try {
     if (args.action === 'list_providers') {
@@ -813,7 +862,7 @@ async function executeImageGen(args: any, sandboxDir?: string, execContext?: Too
       const requestId = execContext?.requestId
       const window = execContext?.window || null
       if (conversationId) {
-        // 用户未明确指定尺寸（args.size）时，先弹「生图参数确认卡」让其确认尺寸/分辨率/画质/张数；
+        // 用户未明确指定尺寸（args.size）时，有窗口通道先弹「生图参数确认卡」让其确认尺寸/分辨率/画质/张数；
         // 已指定则直接出图（尊重用户/LLM 的显式参数，不打扰）。
         let genArgs = args
         if (!args.size && window) {
@@ -825,6 +874,21 @@ async function executeImageGen(args: any, sandboxDir?: string, execContext?: Too
             }
           }
           genArgs = { ...args, ...params }
+        } else if (!window) {
+          // 无窗口通道（微信 ClawBot 桥等）：参数卡不可用。
+          // ① LLM 未指定尺寸且调用方挂了参数解析器 → 由通道问用户（如微信文本菜单）;
+          // ② 未选择/超时/无解析器 → 通道默认参数（settings）兜底；LLM 显式参数永远优先。
+          const resolved = !args.size && execContext?.imageParamsResolver
+            ? await execContext.imageParamsResolver({ prompt: String(args.prompt || '') }).catch(() => null)
+            : null
+          genArgs = { ...getNoWindowImageDefaults(), ...args, ...(resolved || {}) }
+          // 张数优先级：菜单选择（最新用户意图）> LLM 显式 batch_count > 通道默认
+          const batchFromLlm = args.batch_count != null ? clampImageBatchCount(args.batch_count) : undefined
+          genArgs.batchCount = resolved?.batchCount ?? batchFromLlm ?? clampImageBatchCount(genArgs.batchCount)
+        }
+        // batch_count（LLM 可传，snake_case）归一化为内部 batchCount（参数卡回传已是 camelCase）
+        if (genArgs.batchCount == null && genArgs.batch_count != null) {
+          genArgs = { ...genArgs, batchCount: clampImageBatchCount(genArgs.batch_count) }
         }
         // 后台执行（不 await）—— 任何异常都在 helper 内自我消化，避免吞掉
         runImageGenInBackground(genArgs, sandboxDir, conversationId, requestId, window, execContext?.isCanceled).catch((e) => {

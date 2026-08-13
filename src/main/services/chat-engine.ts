@@ -708,6 +708,12 @@ export interface SendMessageOptions {
    * 微信 ClawBot 桥用它给微信发「仍在处理中（已执行 N 步）」的进度文本。
    */
   onProgress?: (payload: Record<string, any>) => void
+  /**
+   * 无窗口（后台/桥接）场景的生图参数解析器：image_gen 弹不了参数卡时（window=null 且用户未指定尺寸），
+   * 由调用方用通道自有方式（如微信文本菜单）向用户询问尺寸/张数；返回 null = 未选择/超时 → 通道默认参数。
+   * 微信 ClawBot 桥用它实现「生图参数文本菜单」。
+   */
+  imageParamsResolver?: (args: { prompt: string }) => Promise<{ size?: string; batchCount?: number } | null>
 }
 
 // 缓存每个会话最近一轮 sendMessage 的 overrides，供 regenerate/continue/edit 复用
@@ -1028,20 +1034,38 @@ export async function sendMessage(
 
     // 图片生成工作流约定：image_gen 是 fire-and-forget 异步工具，避免阻塞对话 30-90 秒。
     // 工具立即返回 status:'pending'，后台异步生成；完成后系统自动追加图片消息到对话流。
-    baseSystemParts.push(
-      `[图片生成工作流（异步、不等图）]:\n` +
-      `- 用户请求绘图/生成图片时：只要主体明确（如"画只猫"），就直接把需求补全为高质量提示词并调用 image_gen({action:'generate', prompt:<提示词>}) 一次，不要用文字反问一堆问题\n` +
-      `- 关于尺寸：用户没明确说尺寸/比例时，务必不要传 size 参数（留空）——系统会自动弹出「生图参数确认卡」让用户选择尺寸/分辨率/画质/张数；只有用户明确指定了尺寸或比例（如"画个 16:9 的"）时才传对应 size\n` +
-      `- 不要传 quality / 分辨率 / 张数参数，也不要用文字向用户询问尺寸/清晰度/数量；这些统一由系统的参数确认卡处理\n` +
-      `- 若确需先确认创意方向（如风格、用途），用 ask_user 弹卡询问，不要用文字罗列选项\n` +
-      `- 工具会**立即返回 status:'pending'**，表示任务已提交。这是正常的——不要等图、不要重试、不要再次调用\n` +
-      `- 收到 pending 后用一句话简短告诉用户："已为你提交生图任务，约 30-90 秒后图片会自动出现在对话和右上角"，然后立即结束本轮回复\n` +
-      `- 不要在回复里嵌入 markdown 图片：图片还没生成完，url 此刻并不存在\n` +
-      `- 生成完成后系统会自动追加一条 assistant 消息（含 markdown 图片）到对话，无需你做任何操作\n` +
-      `- 用户在等待期间可以继续聊天，你正常回应即可。新一轮请求若再次需要画图，再次调用 image_gen\n` +
-      `- 不要在调用前列出 providers，不要重复调用\n` +
-      `- 失败时（tool 返回 error 字段）：简要说明原因并给出建议，不要重试`
-    )
+    if (window) {
+      baseSystemParts.push(
+        `[图片生成工作流（异步、不等图）]:\n` +
+        `- 用户请求绘图/生成图片时：只要主体明确（如"画只猫"），就直接把需求补全为高质量提示词并调用 image_gen({action:'generate', prompt:<提示词>}) 一次，不要用文字反问一堆问题\n` +
+        `- 关于尺寸：用户没明确说尺寸/比例时，务必不要传 size 参数（留空）——系统会自动弹出「生图参数确认卡」让用户选择尺寸/分辨率/画质/张数；只有用户明确指定了尺寸或比例（如"画个 16:9 的"）时才传对应 size\n` +
+        `- 不要传 quality / 分辨率 / 张数参数，也不要用文字向用户询问尺寸/清晰度/数量；这些统一由系统的参数确认卡处理\n` +
+        `- 若确需先确认创意方向（如风格、用途），用 ask_user 弹卡询问，不要用文字罗列选项\n` +
+        `- 工具会**立即返回 status:'pending'**，表示任务已提交。这是正常的——不要等图、不要重试、不要再次调用\n` +
+        `- 收到 pending 后用一句话简短告诉用户："已为你提交生图任务，约 30-90 秒后图片会自动出现在对话和右上角"，然后立即结束本轮回复\n` +
+        `- 不要在回复里嵌入 markdown 图片：图片还没生成完，url 此刻并不存在\n` +
+        `- 生成完成后系统会自动追加一条 assistant 消息（含 markdown 图片）到对话，无需你做任何操作\n` +
+        `- 用户在等待期间可以继续聊天，你正常回应即可。新一轮请求若再次需要画图，再次调用 image_gen\n` +
+        `- 不要在调用前列出 providers，不要重复调用\n` +
+        `- 失败时（tool 返回 error 字段）：简要说明原因并给出建议，不要重试`
+      )
+    } else {
+      // 无参数卡通道（微信 ClawBot 桥，window=null）：参数卡弹不出，尺寸/张数改由
+      // ① 用户话语里的显式要求（LLM 传 size/batch_count）② 通道文本菜单/默认参数 处理。
+      baseSystemParts.push(
+        `[图片生成工作流（异步、不等图）— 当前为无参数卡通道（如微信）]:\n` +
+        `- 用户请求绘图/生成图片时：只要主体明确（如"画只猫"），就直接把需求补全为高质量提示词并调用 image_gen({action:'generate', prompt:<提示词>}) 一次，不要用文字反问一堆问题\n` +
+        `- 关于尺寸：用户明确说了尺寸/比例/方向（如"横版""竖版""16:9""手机壁纸"）时必须传对应 size；没说就不要传——通道会向用户询问或使用默认参数\n` +
+        `- 关于张数：用户明确说了张数（如"来四张"）时传 batch_count（1-4）；没说不要传（默认 1 张）\n` +
+        `- 不要传 quality / 分辨率参数\n` +
+        `- 工具会**立即返回 status:'pending'**，表示任务已提交。这是正常的——不要等图、不要重试、不要再次调用\n` +
+        `- 收到 pending 后用一句话简短告诉用户图片正在生成、完成后会自动发送给他，然后立即结束本轮回复\n` +
+        `- 不要在回复里嵌入 markdown 图片：图片还没生成完，url 此刻并不存在\n` +
+        `- 生成完成后系统会自动把图片发送给用户，无需你做任何操作\n` +
+        `- 不要在调用前列出 providers，不要重复调用\n` +
+        `- 失败时（tool 返回 error 字段）：简要说明原因并给出建议，不要重试`
+      )
+    }
   }
 
   // System prompt from persona
@@ -1657,7 +1681,8 @@ export async function sendMessage(
           undefined,
           hasCloudKb ? { kbIds: effectiveCloudKbIds, agentId: bot.cloud_agent_id, topK: bot.cloud_kb_top_k || 5 } : undefined,
           effectiveProviderId,
-          effectiveModelId
+          effectiveModelId,
+          options.imageParamsResolver
         )
         // 用户自建技能忘写 return 时 result===undefined：JSON.stringify(undefined) 返回 undefined
         //（不是字符串），会在结果截断处抛 TypeError 炸掉整轮——先兜成可读错误对象
@@ -2417,7 +2442,9 @@ async function executeToolCall(
   // deck 子生成的模型回退: 与主对话同口径(conv.active 缺失时回退 bot.model / cloud:default),
   // 避免旧数据 bot(模型绑在 bot.model_* 而非 conv.active_*)发起 PPT 工具时 provider 为空致集体哑火。
   fallbackProviderId?: string,
-  fallbackModelId?: string
+  fallbackModelId?: string,
+  /** 无窗口通道生图参数解析器（微信 ClawBot 桥的文本菜单），透传给 core-tools 的 image_gen */
+  imageParamsResolver?: SendMessageOptions['imageParamsResolver']
 ): Promise<any> {
   const functionName = toolCall.function?.name
   let args: any = {}
@@ -2452,7 +2479,7 @@ async function executeToolCall(
   // 图片已计费生成，应照常落库；仅 'user' 主动中止才丢弃
   const isCanceledForImageGen = (rid?: string): boolean =>
     !!rid && isChatRequestCanceled(rid) && canceledRequestReasons.get(rid) !== 'replaced'
-  const execContext = { conversationId, requestId, window: window || null, signal, timeoutMs, isCanceled: isCanceledForImageGen }
+  const execContext = { conversationId, requestId, window: window || null, signal, timeoutMs, isCanceled: isCanceledForImageGen, imageParamsResolver }
   const coreResult = await executeCoreToolCall(functionName, args, sandboxDir, kbContext, execContext)
   if (coreResult.handled) return coreResult.result
 
