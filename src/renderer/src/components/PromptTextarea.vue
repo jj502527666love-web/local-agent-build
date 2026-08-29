@@ -64,7 +64,7 @@
         :disabled="disabled"
         :readonly="!inlineEdit"
         :maxlength="hardLimit ? maxLength : undefined"
-        :style="{ height: autoGrow ? undefined : normalizedHeight, minHeight: autoGrow ? minHeightPx : undefined, maxHeight: autoGrow ? maxHeightPx : undefined }"
+        :style="{ height: autoGrow ? (grownHeight || undefined) : normalizedHeight, minHeight: autoGrow ? minHeightPx : undefined, maxHeight: autoGrow ? maxHeightPx : undefined }"
         :class="[
           'relative z-[1] block w-full resize-none bg-transparent text-[13px] text-text-primary outline-none placeholder:text-text-disabled',
           plain ? 'rounded-xl px-1 py-1' : 'rounded-lg px-3 py-2',
@@ -319,6 +319,11 @@ function handlePreviewFocus() {
   if (!props.inlineEdit) openDialog()
 }
 
+// autoGrow 的当前高度收进响应式状态：直接 DOM 设置的 inline height 会被 Vue 重渲染时
+// 的 patchStyle 清掉（style 绑定里 height==null 即被置空），导致失焦等场景输入框「缩小」；
+// 用 ref 驱动后，重渲染时 Vue 会把正确高度写回去，任何时刻高度都只跟内容走。
+const grownHeight = ref('')
+
 function syncAutoGrow() {
   if (!props.autoGrow) return
   const el = previewTextareaRef.value
@@ -326,6 +331,7 @@ function syncAutoGrow() {
   el.style.height = 'auto'
   const next = Math.min(Math.max(el.scrollHeight, props.minHeight), props.maxHeight)
   el.style.height = `${next}px`
+  grownHeight.value = `${next}px`
 }
 
 watch(() => props.modelValue, () => { nextTick(syncAutoGrow) })

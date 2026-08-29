@@ -459,7 +459,7 @@ export interface ReplaceGoodsImageArgs {
 }
 
 /**
- * 构造安全的 goods/edit 回写 body（见 docs/ewei商城集成-实施方案.md §13.3）。
+ * 构造安全的 goods/edit 回写 body（逆向自 ewei 服务端 §13.3 等价逻辑）。
  *   - 以 details 完整 goods 为基底（含 title 等必填 + dispatch_* 原值，避免「请选择运费模版」整单失败）。
  *   - 剔除读写格式不一致的 diy_share。
  *   - 改主图/图集/详情图：不带 options/specs（optionIds 空 → 后端跳过 SKU 删除）。

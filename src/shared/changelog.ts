@@ -21,6 +21,13 @@ export interface ReleaseNote {
 
 export const CHANGELOG: ReleaseNote[] = [
   {
+    version: '1.1.4',
+    date: '2026-08-30',
+    notes: [
+      '修复：输入多行文字后点击输入框以外区域，输入框高度突然缩回去的问题'
+    ]
+  },
+  {
     version: '1.1.3',
     date: '2026-08-29',
     notes: [
