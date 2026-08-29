@@ -257,12 +257,21 @@ export const useChatStore = defineStore('chat', () => {
     initialModel?: { provider_id: string; model_id: string },
     initialImageModel?: { provider_id: string; model_id: string }
   ) {
+    // IPC 只能传结构化克隆数据：模型参数必须拆成纯对象，
+    // 调用方可能直接传 ref.value（Vue reactive proxy，如空态 draft 模型），
+    // 传 proxy 会抛 "An object could not be cloned"
+    const model = initialModel?.model_id
+      ? { provider_id: String(initialModel.provider_id || ''), model_id: String(initialModel.model_id || '') }
+      : undefined
+    const imageModel = initialImageModel?.model_id
+      ? { provider_id: String(initialImageModel.provider_id || ''), model_id: String(initialImageModel.model_id || '') }
+      : undefined
     const result = (await window.api.chat.invoke(
       'createConversation',
-      botId,
+      botId || '',
       title,
-      initialModel,
-      initialImageModel
+      model,
+      imageModel
     )) as Conversation
     conversations.value.unshift(result)
     return result
