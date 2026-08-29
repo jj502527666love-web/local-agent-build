@@ -24,12 +24,15 @@
       <div
         v-else-if="modelValue"
         class="absolute inset-0 z-[2] pointer-events-none"
-        :class="plain ? 'rounded-xl px-1 py-1' : 'rounded-lg px-3 py-2'"
+        :class="[plain ? 'rounded-xl px-1 py-1' : 'rounded-lg px-3 py-2', contentOverflow ? 'overflow-hidden' : '']"
       >
         <span class="whitespace-pre-wrap break-words text-[13px] text-transparent" :class="inputClass">{{ modelValue }}</span><button
           v-if="tabHint"
           type="button"
-          class="relative ml-1 inline-flex align-middle items-center justify-center w-[22px] h-[22px] rounded-full bg-primary-50 text-primary-600 pointer-events-auto hover:bg-primary-100 transition-colors"
+          :class="[
+            'inline-flex items-center justify-center w-[22px] h-[22px] rounded-full bg-primary-50 text-primary-600 pointer-events-auto hover:bg-primary-100 transition-colors',
+            contentOverflow ? 'absolute bottom-2 right-2' : 'relative ml-1 align-middle'
+          ]"
           :disabled="optimizing"
           title="优化提示词"
           @mousedown.prevent
@@ -324,6 +327,12 @@ function handlePreviewFocus() {
 // 用 ref 驱动后，重渲染时 Vue 会把正确高度写回去，任何时刻高度都只跟内容走。
 const grownHeight = ref('')
 
+// 内容是否超过 maxHeight 封顶（出现滚动）。
+// 镜像覆盖层里的透明文本 + 优化按钮是 inline 流排布：未封顶时按钮跟在文本末尾（设计意图）；
+// 一旦封顶，镜像层不滚动会把按钮带出容器（掉到输入框外）。封顶时改：镜像层 overflow-hidden
+// 裁切 + 按钮固定右下角。
+const contentOverflow = ref(false)
+
 function syncAutoGrow() {
   if (!props.autoGrow) return
   const el = previewTextareaRef.value
@@ -332,6 +341,7 @@ function syncAutoGrow() {
   const next = Math.min(Math.max(el.scrollHeight, props.minHeight), props.maxHeight)
   el.style.height = `${next}px`
   grownHeight.value = `${next}px`
+  contentOverflow.value = el.scrollHeight > props.maxHeight
 }
 
 watch(() => props.modelValue, () => { nextTick(syncAutoGrow) })

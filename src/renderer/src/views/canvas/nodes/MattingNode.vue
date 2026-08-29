@@ -177,7 +177,7 @@ function deleteNode() {
   background-size: 12px 12px;
   background-position: 0 0, 6px 6px;
 }
-:global(.dark) .checkerboard {
+:global(.dark .checkerboard) {
   background-image:
     linear-gradient(45deg, #333 25%, transparent 25%, transparent 75%, #333 75%, #333),
     linear-gradient(45deg, #333 25%, #1f1f1f 25%, #1f1f1f 75%, #333 75%, #333);

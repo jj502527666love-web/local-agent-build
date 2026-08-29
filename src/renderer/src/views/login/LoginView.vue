@@ -477,7 +477,7 @@ async function handleSubmit() {
     var(--surface-1);
 }
 /* 深色模式下光晕更克制，避免发脏 */
-:global(.dark) .login-root {
+:global(.dark .login-root) {
   background:
     radial-gradient(125% 80% at 50% -12%, rgba(242, 118, 56, 0.06), transparent 60%),
     var(--surface-1);

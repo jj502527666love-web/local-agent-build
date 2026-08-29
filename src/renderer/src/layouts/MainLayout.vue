@@ -858,11 +858,11 @@ onUnmounted(() => {
   opacity: 1;
 }
 
-:global(.dark) .nav-active {
+:global(.dark .nav-active) {
   background: color-mix(in srgb, var(--color-primary-500, #F27638) 18%, transparent);
   color: var(--color-primary-200, #fed7aa);
 }
-:global(.dark) .nav-active svg {
+:global(.dark .nav-active svg) {
   color: var(--color-primary-300, #fdba74);
 }
 </style>
