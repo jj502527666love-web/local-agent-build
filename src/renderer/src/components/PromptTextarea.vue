@@ -1,34 +1,88 @@
 <template>
   <div :class="['space-y-1.5', containerClass]">
     <div
-      :class="[
-        'relative rounded-lg border bg-surface-1 transition-colors',
-        disabled ? 'opacity-60 cursor-not-allowed' : (inlineEdit ? 'cursor-text hover:border-primary-300' : 'cursor-pointer hover:border-primary-300'),
-        isOverLimit ? 'border-red-400' : 'border-surface-3 focus-within:ring-2 focus-within:ring-primary-500 focus-within:border-transparent'
-      ]"
+      :class="plain
+        ? ['relative', disabled ? 'opacity-60 cursor-not-allowed' : (inlineEdit ? 'cursor-text' : 'cursor-pointer')]
+        : [
+            'relative rounded-lg border bg-surface-1 transition-colors',
+            disabled ? 'opacity-60 cursor-not-allowed' : (inlineEdit ? 'cursor-text hover:border-primary-300' : 'cursor-pointer hover:border-primary-300'),
+            isOverLimit ? 'border-red-400' : 'border-surface-3 focus-within:ring-2 focus-within:ring-primary-500 focus-within:border-transparent'
+          ]"
       @click="handleContainerClick"
     >
+      <div
+        v-if="!modelValue && (placeholder || tabHint)"
+        class="absolute inset-0 z-0 pointer-events-none overflow-hidden"
+        :class="plain ? 'rounded-xl px-1 py-1' : 'rounded-lg px-3 py-2'"
+        aria-hidden="true"
+      >
+        <span class="whitespace-pre-wrap break-words text-[13px] text-text-disabled" :class="inputClass">{{ placeholder }}</span><span
+          v-if="tabHint"
+          class="ml-1.5 inline-flex align-middle items-center h-[18px] px-1.5 rounded-md bg-surface-2 text-[10px] font-medium text-text-tertiary"
+        >tab</span>
+      </div>
+      <div
+        v-else-if="modelValue"
+        class="absolute inset-0 z-[2] pointer-events-none"
+        :class="plain ? 'rounded-xl px-1 py-1' : 'rounded-lg px-3 py-2'"
+      >
+        <span class="whitespace-pre-wrap break-words text-[13px] text-transparent" :class="inputClass">{{ modelValue }}</span><button
+          v-if="tabHint"
+          type="button"
+          class="relative ml-1 inline-flex align-middle items-center justify-center w-[22px] h-[22px] rounded-full bg-primary-50 text-primary-600 pointer-events-auto hover:bg-primary-100 transition-colors"
+          :disabled="optimizing"
+          title="优化提示词"
+          @mousedown.prevent
+          @click.stop="emit('optimize')"
+          @mouseenter="optimizeHover = true"
+          @mouseleave="optimizeHover = false"
+        >
+          <svg v-if="optimizing" class="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" /><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>
+          <svg v-else class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M16.5 3.5c.8-.8 2.1-.8 2.9 0 .8.8.8 2.1 0 2.9L9 16.8 5 18l1.2-4L16.5 3.5Z" />
+            <path d="M15 5.2 17.8 8" />
+            <path d="M19.2 2.4 20 1.2" />
+            <path d="M20.4 4.2 21.6 3.8" />
+          </svg>
+          <span
+            v-if="optimizeHover"
+            class="absolute left-1/2 bottom-full z-20 mb-1.5 -translate-x-1/2 whitespace-nowrap inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-surface-0 border border-surface-3 shadow-[0_8px_24px_rgba(28,27,23,0.12)] text-[12px] text-text-primary"
+          >
+            优化提示词
+            <span class="px-1.5 h-4 inline-flex items-center rounded-md bg-surface-2 text-[10px] font-medium text-text-tertiary">Tab</span>
+          </span>
+        </button><span
+          v-if="ghostText"
+          class="whitespace-pre-wrap break-words text-[13px] text-text-disabled/55"
+          :class="inputClass"
+        >{{ ghostText }}</span>
+      </div>
       <textarea
         ref="previewTextareaRef"
         :value="modelValue"
-        :placeholder="placeholder"
+        :placeholder="!modelValue && (placeholder || tabHint) ? '' : placeholder"
         :disabled="disabled"
         :readonly="!inlineEdit"
         :maxlength="hardLimit ? maxLength : undefined"
-        :style="{ height: normalizedHeight }"
+        :style="{ height: autoGrow ? undefined : normalizedHeight, minHeight: autoGrow ? minHeightPx : undefined, maxHeight: autoGrow ? maxHeightPx : undefined }"
         :class="[
-          'block w-full resize-none rounded-lg bg-transparent px-3 py-2 pr-16 text-xs text-text-primary outline-none placeholder:text-text-disabled',
+          'relative z-[1] block w-full resize-none bg-transparent text-[13px] text-text-primary outline-none placeholder:text-text-disabled',
+          plain ? 'rounded-xl px-1 py-1' : 'rounded-lg px-3 py-2',
+          hideExpand ? (plain ? 'pr-1' : 'pr-3') : (plain ? 'pr-14' : 'pr-16'),
           inlineEdit ? 'cursor-text' : 'cursor-pointer',
+          autoGrow ? 'overflow-y-auto' : '',
           inputClass
         ]"
         @input="handlePreviewInput"
         @keydown.enter.exact="handlePreviewEnter"
+        @keydown.tab="handlePreviewTab"
         @focus="handlePreviewFocus"
         @click.stop="handlePreviewClick"
         @blur="emitBlur"
         @paste="emitPaste"
       ></textarea>
       <button
+        v-if="!hideExpand"
         type="button"
         :disabled="disabled"
         class="absolute right-2 top-2 rounded-md border border-surface-3 bg-surface-0 px-2 py-1 text-[10px] font-medium text-text-tertiary shadow-sm transition-colors hover:border-primary-300 hover:text-primary-600 disabled:cursor-not-allowed disabled:opacity-50"
@@ -54,7 +108,7 @@
         <div class="flex cursor-move select-none items-center justify-between gap-3 border-b border-surface-3 px-5 py-3" @pointerdown="startDialogDrag">
           <div class="min-w-0">
             <h3 class="text-sm font-semibold text-text-primary truncate">{{ dialogTitle }}</h3>
-            <p class="mt-0.5 text-[11px] text-text-tertiary">大输入框编辑，{{ saveShortcutLabel }} 保存</p>
+            <p class="mt-0.5 text-[11px] text-text-tertiary">大输入框编辑，右键可复制粘贴，{{ saveShortcutLabel }} 保存</p>
           </div>
           <button type="button" class="rounded-lg p-1.5 text-text-tertiary transition-colors hover:bg-surface-2 hover:text-text-primary" @pointerdown.stop @click="cancelDialog">
             <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18 18 6M6 6l12 12" /></svg>
@@ -90,7 +144,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, type CSSProperties } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type CSSProperties } from 'vue'
 
 const props = withDefaults(defineProps<{
   modelValue: string
@@ -108,6 +162,14 @@ const props = withDefaults(defineProps<{
   showCount?: boolean
   changeOnInput?: boolean
   dialogLiveEdit?: boolean
+  plain?: boolean
+  autoGrow?: boolean
+  hideExpand?: boolean
+  minHeight?: number
+  maxHeight?: number
+  ghostText?: string
+  tabHint?: boolean
+  optimizing?: boolean
 }>(), {
   modelValue: '',
   placeholder: '',
@@ -122,7 +184,15 @@ const props = withDefaults(defineProps<{
   inlineEdit: false,
   showCount: true,
   changeOnInput: false,
-  dialogLiveEdit: false
+  dialogLiveEdit: false,
+  plain: false,
+  autoGrow: false,
+  hideExpand: false,
+  minHeight: 40,
+  maxHeight: 160,
+  ghostText: '',
+  tabHint: false,
+  optimizing: false
 })
 
 const emit = defineEmits<{
@@ -131,7 +201,11 @@ const emit = defineEmits<{
   (e: 'submit'): void
   (e: 'blur'): void
   (e: 'paste', event: ClipboardEvent): void
+  (e: 'tab', event: KeyboardEvent): void
+  (e: 'optimize'): void
 }>()
+
+const optimizeHover = ref(false)
 
 const previewTextareaRef = ref<HTMLTextAreaElement | null>(null)
 const dialogTextareaRef = ref<HTMLTextAreaElement | null>(null)
@@ -142,6 +216,8 @@ const dialogPosition = ref({ x: 0, y: 0 })
 const dialogSize = ref({ width: 582, height: 540 })
 
 const normalizedHeight = computed(() => typeof props.height === 'number' ? `${props.height}px` : props.height)
+const minHeightPx = computed(() => `${props.minHeight}px`)
+const maxHeightPx = computed(() => `${props.maxHeight}px`)
 const length = computed(() => String(props.modelValue || '').length)
 const isOverLimit = computed(() => Boolean(props.maxLength && length.value > props.maxLength))
 const countText = computed(() => props.maxLength ? `${length.value}/${props.maxLength}` : `${length.value}`)
@@ -243,10 +319,28 @@ function handlePreviewFocus() {
   if (!props.inlineEdit) openDialog()
 }
 
+function syncAutoGrow() {
+  if (!props.autoGrow) return
+  const el = previewTextareaRef.value
+  if (!el) return
+  el.style.height = 'auto'
+  const next = Math.min(Math.max(el.scrollHeight, props.minHeight), props.maxHeight)
+  el.style.height = `${next}px`
+}
+
+watch(() => props.modelValue, () => { nextTick(syncAutoGrow) })
+onMounted(() => nextTick(syncAutoGrow))
+
 function handlePreviewInput(event: Event) {
   if (!props.inlineEdit) return
   emit('update:modelValue', (event.target as HTMLTextAreaElement).value)
   if (props.changeOnInput) emit('change')
+  nextTick(syncAutoGrow)
+}
+
+function handlePreviewTab(event: KeyboardEvent) {
+  event.preventDefault()
+  emit('tab', event)
 }
 
 function handleDialogInput() {
@@ -259,8 +353,12 @@ function emitBlur() {
   emit('blur')
 }
 
+function isImeEnter(event: KeyboardEvent): boolean {
+  return event.isComposing || event.keyCode === 229
+}
+
 function handlePreviewEnter(event: KeyboardEvent) {
-  if (!props.inlineEdit || !props.submitOnEnter || event.isComposing) return
+  if (!props.inlineEdit || !props.submitOnEnter || isImeEnter(event)) return
   event.preventDefault()
   if (isOverLimit.value) return
   emit('submit')
@@ -278,7 +376,7 @@ function confirmDialog() {
 }
 
 function handleEnter(event: KeyboardEvent) {
-  if (!props.submitOnEnter || event.isComposing) return
+  if (!props.submitOnEnter || isImeEnter(event)) return
   event.preventDefault()
   if (draftOverLimit.value) return
   emit('update:modelValue', draft.value)

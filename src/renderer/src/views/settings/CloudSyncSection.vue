@@ -182,6 +182,10 @@ const showConflicts = ref(false)
 const conflicts = ref<any[]>([])
 let pendingMode: typeof form.mode = 'off'
 
+// 暴露给设置模态：Esc 让位判定（子弹窗打开时关闭设置需先让位）
+const hasOpenDialog = computed(() => showConsent.value || showConflicts.value)
+defineExpose({ hasOpenDialog })
+
 let offProgress: (() => void) | null = null
 let offStatus: (() => void) | null = null
 

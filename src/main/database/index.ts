@@ -198,6 +198,10 @@ function runMigrations(): void {
   if (!convTitleCols.some((c: any) => c.name === 'title_locked')) {
     db.exec("ALTER TABLE conversations ADD COLUMN title_locked INTEGER NOT NULL DEFAULT 0")
   }
+  // conversations：会话级工具审批档（空串=继承智能体 tool_approval；否则 off/destructive/all）
+  if (!convTitleCols.some((c: any) => c.name === 'tool_approval')) {
+    db.exec("ALTER TABLE conversations ADD COLUMN tool_approval TEXT NOT NULL DEFAULT ''")
+  }
   // reasoning 思维链持久化(仅 UI 展示用，不回传模型)：旧库幂等加列
   if (!msgColNames.includes('reasoning')) {
     db.exec("ALTER TABLE messages ADD COLUMN reasoning TEXT NOT NULL DEFAULT ''")

@@ -15,12 +15,6 @@ export const useThemeStore = defineStore('theme', () => {
       isDark = m === 'dark'
     }
     root.classList.toggle('dark', isDark)
-    try {
-      ;(window as any).api?.window?.setTitleBarOverlay?.({
-        color: isDark ? '#1f2937' : '#ffffff',
-        symbolColor: isDark ? '#f9fafb' : '#212529'
-      })
-    } catch {}
   }
 
   function setMode(m: ThemeMode) {

@@ -5,27 +5,54 @@
 @tailwind utilities;
 
 :root {
+  /*
+   * 统一色板：高明度近白暖灰底 + 品牌橙点缀。侧栏浅灰白、主区纯白。
+   */
   --surface-0: #ffffff;
-  --surface-1: #f9fafb;
-  --surface-2: #f3f4f6;
-  --surface-3: #e5e7eb;
-  --surface-4: #d1d5db;
-  --text-primary: #111827;
-  --text-secondary: #4b5563;
-  --text-tertiary: #9ca3af;
-  --text-disabled: #d1d5db;
+  --surface-1: #f2f3f4;
+  --surface-2: #ebebe9;
+  --surface-3: #e1e1de;
+  --surface-4: #c6c6c2;
+  --text-primary: #1a1a19;
+  --text-secondary: #5a5a56;
+  --text-tertiary: #8b8b86;
+  --text-disabled: #c2c2bc;
+  --panel-radius: 14px;
+  --panel-gap: 8px;
+
+  /* 语义色：成功、警示、危险三组（状态徽章/提示条统一走变量，不再硬编码 emerald/amber） */
+  --ok-bg: #f3f7f6;
+  --ok-fg: #1a4a43;
+  --ok-border: #d4e4e1;
+  --warn-bg: #f7f4ee;
+  --warn-fg: #7a5c2e;
+  --warn-border: #e8dfd0;
+  --danger-bg: #f8f1f1;
+  --danger-fg: #9b3b3b;
+  --danger-border: #ead4d4;
 }
 
 .dark {
-  --surface-0: #1f2937;
-  --surface-1: #111827;
-  --surface-2: #374151;
-  --surface-3: #4b5563;
-  --surface-4: #6b7280;
-  --text-primary: #f9fafb;
-  --text-secondary: #d1d5db;
-  --text-tertiary: #9ca3af;
-  --text-disabled: #6b7280;
+  /* 暗色走暖墨绿底，不用冷 slate */
+  --surface-0: #1c2421;
+  --surface-1: #141a18;
+  --surface-2: #27302c;
+  --surface-3: #3c4641;
+  --surface-4: #57615c;
+  --text-primary: #f3f0eb;
+  --text-secondary: #c4bfb6;
+  --text-tertiary: #8e8980;
+  --text-disabled: #5c635f;
+
+  --ok-bg: rgba(35, 87, 79, 0.28);
+  --ok-fg: #b7d4ce;
+  --ok-border: rgba(155, 191, 186, 0.35);
+  --warn-bg: rgba(122, 92, 46, 0.28);
+  --warn-fg: #e4cfa6;
+  --warn-border: rgba(229, 212, 181, 0.3);
+  --danger-bg: rgba(155, 59, 59, 0.28);
+  --danger-fg: #f0b4b4;
+  --danger-border: rgba(232, 197, 197, 0.3);
 }
 
 .app-drag {
@@ -36,7 +63,8 @@
 .app-drag select,
 .app-drag input,
 .app-drag a,
-.app-drag textarea {
+.app-drag textarea,
+.app-drag .no-drag {
   -webkit-app-region: no-drag;
 }
 
@@ -48,6 +76,14 @@
     -webkit-font-smoothing: antialiased;
     color: var(--text-primary);
     background: var(--surface-1);
+  }
+
+  /* 输入类元素允许文字选择（body 全局 select-none 的例外） */
+  input,
+  textarea,
+  [contenteditable='true'] {
+    user-select: text;
+    -webkit-user-select: text;
   }
 
   ::-webkit-scrollbar {
@@ -71,9 +107,9 @@
 
 @layer components {
   .btn-primary {
-    @apply px-4 py-2 text-sm font-medium bg-primary-600 text-white rounded-lg
-      hover:bg-primary-700 active:bg-primary-800 transition-all duration-150
-      focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-1;
+    @apply px-4 py-2 text-sm font-medium bg-primary-600 text-white rounded-xl
+      hover:bg-primary-700 active:bg-primary-700 transition-all duration-150
+      focus:outline-none focus:ring-2 focus:ring-primary-400 focus:ring-offset-1;
   }
 
   .btn-secondary {
@@ -144,7 +180,8 @@
   }
 
   .status-active {
-    @apply bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300;
+    background: var(--ok-bg);
+    color: var(--ok-fg);
   }
 
   .status-inactive {
@@ -152,11 +189,30 @@
   }
 
   .status-warning {
-    @apply bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300;
+    background: var(--warn-bg);
+    color: var(--warn-fg);
   }
 
   .status-error {
-    @apply bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300;
+    background: var(--danger-bg);
+    color: var(--danger-fg);
+  }
+
+  /* 语义提示条：替代散落的 amber/emerald 硬编码 */
+  .tone-ok {
+    background: var(--ok-bg);
+    color: var(--ok-fg);
+    border-color: var(--ok-border);
+  }
+  .tone-warn {
+    background: var(--warn-bg);
+    color: var(--warn-fg);
+    border-color: var(--warn-border);
+  }
+  .tone-danger {
+    background: var(--danger-bg);
+    color: var(--danger-fg);
+    border-color: var(--danger-border);
   }
 }
 
@@ -324,7 +380,7 @@
   transition: border-color 0.15s;
 }
 .node-textarea:focus {
-  border-color: #6366f1;
+  border-color: var(--color-primary-500, #F27638);
 }
 .node-select {
   width: 100%;
@@ -337,30 +393,30 @@
   outline: none;
 }
 .node-select:focus {
-  border-color: #6366f1;
+  border-color: var(--color-primary-500, #F27638);
 }
 
 /* Handle colors by data type */
 .handle-text {
-  border-color: #6366f1 !important;
+  border-color: var(--color-primary-500, #F27638) !important;
 }
 .handle-image {
-  border-color: #10b981 !important;
+  border-color: var(--color-primary-400, #f9974c) !important;
 }
 
 /* Execution state borders */
 .canvas-node[data-status="running"] {
-  border-color: #f59e0b !important;
-  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.15);
+  border-color: var(--warn-fg) !important;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn-fg) 18%, transparent);
 }
 .canvas-node[data-status="done"] {
-  border-color: #22c55e !important;
+  border-color: var(--color-primary-500, #F27638) !important;
 }
 .canvas-node[data-status="error"] {
-  border-color: #ef4444 !important;
-  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.12);
+  border-color: var(--danger-fg) !important;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger-fg) 16%, transparent);
 }
 .canvas-node[data-status="blocked"] {
-  border-color: #9ca3af !important;
+  border-color: var(--surface-4) !important;
   opacity: 0.7;
 }

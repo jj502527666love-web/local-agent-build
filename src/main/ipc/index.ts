@@ -202,6 +202,10 @@ export function registerIpcHandlers(): void {
     (_, id: string, provider_id: string, model_id: string) =>
       conversationService.updateConversationImageModel(id, provider_id, model_id)
   )
+  // 会话级工具审批档覆盖（输入条权限切换器；空串 = 恢复继承智能体默认）
+  ipcMain.handle('chat:updateConversationToolApproval', (_, id: string, tool_approval: string) =>
+    conversationService.updateConversationToolApproval(id, tool_approval)
+  )
   ipcMain.handle('chat:deleteConversation', (_, id: string) =>
     conversationService.deleteConversation(id)
   )
@@ -1226,16 +1230,6 @@ export function registerIpcHandlers(): void {
   })
   ipcMain.on('window:close', (event) => {
     BrowserWindow.fromWebContents(event.sender)?.close()
-  })
-  ipcMain.on('window:setTitleBarOverlay', (event, options: { color: string; symbolColor: string }) => {
-    const win = BrowserWindow.fromWebContents(event.sender)
-    if (win) {
-      try {
-        win.setTitleBarOverlay({ color: options.color, symbolColor: options.symbolColor, height: 36 })
-      } catch (e) {
-        console.error('setTitleBarOverlay error:', e)
-      }
-    }
   })
 
   // === Canvas ===

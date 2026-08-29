@@ -157,13 +157,9 @@ function createWindow(): BrowserWindow {
     }
   }
   if (isWin) {
+    // 彻底无边框：窗口控件由渲染层自绘（WindowControls 组件收在主区卡片 header 右端），
+    // 不再使用 titleBarOverlay 系统控件（它只能贴窗口物理顶/右缘，与卡片边距冲突）
     winOptions.frame = false
-    winOptions.titleBarStyle = 'hidden'
-    winOptions.titleBarOverlay = {
-      color: '#ffffff',
-      symbolColor: '#212529',
-      height: 36
-    }
   }
   const mainWindow = new BrowserWindow(winOptions)
   mainWindowRef = mainWindow

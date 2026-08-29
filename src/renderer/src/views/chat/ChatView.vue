@@ -1,26 +1,50 @@
 <template>
-  <div class="h-full flex flex-col">
-    <header class="page-header">
-      <div class="flex items-center gap-3">
-        <!-- Floating bot selector -->
-        <div class="relative" ref="botSelectorRef">
-          <button @click="showBotSelector = !showBotSelector" class="flex items-center gap-2 px-3 py-1.5 text-xs rounded-lg border border-surface-3 bg-surface-0 hover:bg-surface-2 transition-colors">
-            <span class="text-text-secondary">{{ selectedBotName || '选择智能体' }}</span>
-            <svg class="w-3 h-3 text-text-tertiary" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m19.5 8.25-7.5 7.5-7.5-7.5" /></svg>
+  <div class="h-full flex flex-col bg-surface-0">
+    <!-- 顶栏：/chat 路由下 MainLayout 已隐藏全局顶栏，本 header 兼任窗口拖拽区（48px 与全局 header/侧栏品牌区同高） -->
+    <header
+      class="h-12 flex-shrink-0 flex items-center gap-2 px-3 border-b border-surface-2"
+      :class="[(isWin || isMac) ? 'app-drag' : '']"
+      @dblclick="onHeaderDblClick"
+    >
+      <!-- Floating bot selector -->
+      <div class="relative no-drag" ref="botSelectorRef">
+        <button
+          type="button"
+          @click="showBotSelector = !showBotSelector"
+          class="flex items-center gap-1.5 h-8 px-2.5 text-xs rounded-lg text-text-secondary hover:bg-surface-1 transition-colors"
+          title="智能体"
+        >
+          <span class="max-w-[10rem] truncate">{{ selectedBotName || '选择智能体' }}</span>
+          <svg class="w-3 h-3 text-text-tertiary flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m19.5 8.25-7.5 7.5-7.5-7.5" /></svg>
+        </button>
+        <div v-if="showBotSelector" class="absolute top-full left-0 mt-1 w-52 bg-surface-0 border border-surface-3 rounded-xl shadow-modal z-50 py-1 max-h-60 overflow-y-auto">
+          <div v-if="!bots.length" class="px-3 py-2 text-xs text-text-tertiary">暂无智能体</div>
+          <button v-for="bot in bots" :key="bot.id" @click="selectedBotId = bot.id; showBotSelector = false" :class="['w-full text-left px-3 py-2 text-xs transition-colors', bot.id === selectedBotId ? 'bg-surface-2 text-text-primary font-medium' : 'text-text-secondary hover:bg-surface-1']">
+            {{ bot.name }}
           </button>
-          <div v-if="showBotSelector" class="absolute top-full left-0 mt-1 w-48 bg-surface-0 border border-surface-3 rounded-xl shadow-modal z-50 py-1 max-h-60 overflow-y-auto">
-            <div v-if="!bots.length" class="px-3 py-2 text-xs text-text-tertiary">暂无智能体</div>
-            <button v-for="bot in bots" :key="bot.id" @click="selectedBotId = bot.id; showBotSelector = false" :class="['w-full text-left px-3 py-2 text-xs transition-colors', bot.id === selectedBotId ? 'bg-primary-50 text-primary-700 font-medium' : 'text-text-secondary hover:bg-surface-2']">
-              {{ bot.name }}
-            </button>
-          </div>
         </div>
       </div>
-      <button v-if="selectedBotId" @click="newConversation" class="btn-primary text-xs">+ 新建对话</button>
+      <button
+        type="button"
+        @click="newConversation"
+        class="h-8 w-8 flex items-center justify-center rounded-lg text-text-tertiary hover:text-text-primary hover:bg-surface-1 transition-colors flex-shrink-0 no-drag"
+        title="新建对话（进入空态，发送首条消息时才创建会话）"
+      >
+        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.75"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg>
+      </button>
+      <button
+        v-if="chatStore.currentConversationId"
+        type="button"
+        @click="openWorkspace"
+        class="h-8 px-2.5 text-xs font-medium rounded-lg text-text-secondary hover:bg-surface-1 hover:text-text-primary transition-colors no-drag"
+        title="打开本会话工作区目录"
+      >工作区</button>
+      <!-- 自绘窗口控件（仅 Win 渲染） -->
+      <WindowControls class="ml-auto" />
     </header>
-    <div class="flex-1 flex overflow-hidden">
-      <!-- Conversation list sidebar (narrow) -->
-      <aside v-if="selectedBotId && chatStore.conversations.length" class="w-40 flex-shrink-0 border-r border-surface-3 bg-surface-0 flex flex-col">
+    <div class="flex-1 flex overflow-hidden min-h-0">
+      <!-- Conversation list sidebar (narrow)：浅灰底与白消息区底色区分（新色板下边框太淡） -->
+      <aside v-if="selectedBotId && chatStore.conversations.length" class="w-40 flex-shrink-0 border-r border-surface-2 bg-surface-1 flex flex-col">
         <div class="flex-1 overflow-y-auto px-2 py-2">
           <div
             v-for="conv in chatStore.conversations"
@@ -61,13 +85,178 @@
       </aside>
 
       <!-- Chat Area -->
-      <div class="flex-1 flex flex-col bg-surface-1 relative">
-        <div v-if="!chatStore.currentConversationId" class="flex-1 empty-state">
-          <div class="w-20 h-20 rounded-2xl bg-surface-2 flex items-center justify-center mb-5">
-            <svg class="w-10 h-10 text-text-disabled" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8.625 12a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0H8.25m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0H12m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 0 1-2.555-.337A5.972 5.972 0 0 1 5.41 20.97a5.969 5.969 0 0 1-.474-.065 4.48 4.48 0 0 0 .978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25Z" /></svg>
+      <div class="flex-1 flex flex-col bg-surface-0 relative min-w-0">
+        <!-- 空态工作台：问候 + 大输入卡 + 场景胶囊 + 设置入口；发送首条消息时才真正建会话 -->
+        <div v-if="!chatStore.currentConversationId" class="flex-1 flex flex-col items-center justify-center px-6 py-10 overflow-y-auto">
+          <div class="w-[79%] max-w-[51rem] flex flex-col items-center">
+            <h2 class="text-[30px] font-semibold text-text-primary tracking-tight mb-10 text-center leading-snug">{{ emptyGreeting }}</h2>
+
+            <!-- 工具选择条（知识库/小工具/Skills/MCP）：空态与会话态共用 -->
+            <div v-if="showToolbar" ref="toolbarRef" class="w-full mb-2">
+              <div class="flex gap-2 flex-wrap">
+                <!-- 知识库 -->
+                <div class="relative">
+                  <button @click="toolbarDropdown = toolbarDropdown === 'kb' ? '' : 'kb'" class="toolbar-select-btn">
+                    知识库 <span v-if="tempKbIds.length" class="toolbar-count">{{ tempKbIds.length }}</span>
+                    <svg class="w-3 h-3 ml-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m19.5 8.25-7.5 7.5-7.5-7.5" /></svg>
+                  </button>
+                  <div v-if="toolbarDropdown === 'kb'" class="toolbar-dropdown toolbar-dropdown-down">
+                    <label v-for="cat in kbStore.categories" :key="cat.id" class="toolbar-dropdown-item">
+                      <input type="checkbox" :value="cat.id" v-model="tempKbIds" class="rounded w-3 h-3" />
+                      <span class="truncate">{{ cat.name }}</span>
+                    </label>
+                    <div v-if="!kbStore.categories.length" class="text-[10px] text-text-disabled px-3 py-2">无可用分类</div>
+                    <div v-if="currentBot?.cloud_kb_ids?.length" class="text-[10px] text-teal-600 dark:text-teal-300 px-3 py-2 border-t border-border-subtle">
+                      已绑定 {{ currentBot.cloud_kb_ids.length }} 个云端知识库（随智能体下发，对话时自动在线检索）
+                    </div>
+                  </div>
+                </div>
+                <!-- 小工具 -->
+                <div class="relative">
+                  <button @click="toolbarDropdown = toolbarDropdown === 'skill' ? '' : 'skill'" class="toolbar-select-btn">
+                    小工具 <span v-if="tempSkillIds.length" class="toolbar-count">{{ tempSkillIds.length }}</span>
+                    <svg class="w-3 h-3 ml-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m19.5 8.25-7.5 7.5-7.5-7.5" /></svg>
+                  </button>
+                  <div v-if="toolbarDropdown === 'skill'" class="toolbar-dropdown toolbar-dropdown-down">
+                    <label v-for="s in userSkills" :key="s.id" class="toolbar-dropdown-item">
+                      <input type="checkbox" :value="s.id" v-model="tempSkillIds" class="rounded w-3 h-3" />
+                      <span class="truncate">{{ s.name }}</span>
+                    </label>
+                    <div v-if="!userSkills.length" class="text-[10px] text-text-disabled px-3 py-2">无可用小工具</div>
+                  </div>
+                </div>
+                <!-- Skills -->
+                <div class="relative">
+                  <button @click="toolbarDropdown = toolbarDropdown === 'prompt' ? '' : 'prompt'" class="toolbar-select-btn">
+                    Skills <span v-if="tempPromptSkillDirs.length" class="toolbar-count">{{ tempPromptSkillDirs.length }}</span>
+                    <svg class="w-3 h-3 ml-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m19.5 8.25-7.5 7.5-7.5-7.5" /></svg>
+                  </button>
+                  <div v-if="toolbarDropdown === 'prompt'" class="toolbar-dropdown toolbar-dropdown-down">
+                    <label v-for="ps in promptSkillStore.skills" :key="ps.dirName" class="toolbar-dropdown-item">
+                      <input type="checkbox" :value="ps.dirName" v-model="tempPromptSkillDirs" class="rounded w-3 h-3" />
+                      <span class="truncate">{{ ps.name }}</span>
+                    </label>
+                    <div v-if="!promptSkillStore.skills.length" class="text-[10px] text-text-disabled px-3 py-2">无可用Skills</div>
+                  </div>
+                </div>
+                <!-- MCP -->
+                <div class="relative">
+                  <button @click="toolbarDropdown = toolbarDropdown === 'mcp' ? '' : 'mcp'" class="toolbar-select-btn">
+                    MCP <span v-if="tempMcpIds.length" class="toolbar-count">{{ tempMcpIds.length }}</span>
+                    <svg class="w-3 h-3 ml-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m19.5 8.25-7.5 7.5-7.5-7.5" /></svg>
+                  </button>
+                  <div v-if="toolbarDropdown === 'mcp'" class="toolbar-dropdown toolbar-dropdown-down">
+                    <label
+                      v-for="m in mcpStore.servers"
+                      :key="m.id"
+                      :class="['toolbar-dropdown-item', { disabled: !m.enabled }]"
+                    >
+                      <input type="checkbox" :value="m.id" v-model="tempMcpIds" :disabled="!m.enabled" class="rounded w-3 h-3" />
+                      <span class="truncate">{{ m.name }}</span>
+                      <span v-if="!m.enabled" class="text-[10px] text-text-disabled ml-auto">（未启用）</span>
+                    </label>
+                    <div v-if="!mcpStore.servers.length" class="text-[10px] text-text-disabled px-3 py-2">暂无 MCP 服务</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div
+              :class="['w-full flex flex-col bg-surface-0 rounded-[24px] border shadow-modal transition-all mb-5', dragging ? 'border-primary-500' : 'border-surface-3 focus-within:border-surface-4']"
+              @dragover.prevent="dragging = true"
+              @dragleave.prevent="dragging = false"
+              @drop.prevent="handleDrop"
+            >
+              <div v-if="attachLimitMsg" class="px-4 pt-3 text-xs" style="color: var(--warn-fg)">最多添加 {{ MAX_ATTACHMENTS }} 个附件</div>
+              <div v-if="attachmentError" class="px-4 pt-3 text-xs" style="color: var(--danger-fg)">{{ attachmentError }}</div>
+              <div v-if="attachmentNotice" class="px-4 pt-3 text-xs" style="color: var(--warn-fg)">{{ attachmentNotice }}</div>
+              <div v-if="loadingAttachment" class="px-4 pt-3 flex items-center gap-2 text-xs text-text-tertiary">
+                <svg class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                正在处理附件...
+              </div>
+              <div v-if="composerAssist.errorText.value" class="px-4 pt-3 text-[11px]" style="color: var(--danger-fg)">{{ composerAssist.errorText.value }}</div>
+              <PromptTextarea
+                ref="emptyInputEl"
+                v-model="inputText"
+                @paste="handlePaste"
+                @submit="onEmptyStart"
+                @tab="composerAssist.onTab"
+                @optimize="composerAssist.optimize"
+                title="开始任务"
+                :min-height="56"
+                :max-height="160"
+                auto-grow
+                hide-expand
+                plain
+                submit-on-enter
+                inline-edit
+                :show-count="false"
+                :placeholder="dragging ? '松开以添加附件' : emptyPlaceholder"
+                :ghost-text="composerAssist.suggestion.value"
+                :tab-hint="true"
+                :optimizing="composerAssist.busy.value === 'optimize'"
+                container-class="mx-4 mt-4 mb-2"
+                input-class="text-[15px] leading-normal"
+              />
+              <div v-if="pendingAttachments.length" class="flex gap-2 flex-wrap px-4 pb-2">
+                <div v-for="(att, i) in pendingAttachments" :key="i" class="flex items-center gap-1.5 px-2.5 py-1.5 bg-surface-1 border border-surface-3 rounded-lg text-xs text-text-secondary">
+                  <span class="max-w-[120px] truncate">{{ att.name }}</span>
+                  <button type="button" @click="pendingAttachments.splice(i, 1)" class="text-text-tertiary hover:text-text-primary">
+                    <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18 18 6M6 6l12 12" /></svg>
+                  </button>
+                </div>
+              </div>
+              <div class="px-3.5 pb-3.5">
+                <ChatComposerToolbar
+                  :disabled="chatStore.streaming"
+                  :tools-open="showToolbar"
+                  :active-tool-count="activeToolCount"
+                  :permission-mode="draftToolApproval"
+                  :bot-default="(currentBot?.tool_approval as any) || 'destructive'"
+                  :chat-provider-id="draftChatModel.provider_id"
+                  :chat-model-id="draftChatModel.model_id"
+                  :show-image-model="!!currentBot?.enable_image_gen"
+                  :image-provider-id="draftImageModel.provider_id"
+                  :image-model-id="draftImageModel.model_id"
+                  :can-send="!!(inputText.trim() || pendingAttachments.length) && !emptyStarting"
+                  :send-title="emptyStartHint"
+                  @attach="pickFile"
+                  @gallery="openGalleryForChat"
+                  @prompt="showQuickPrompt = true"
+                  @tools="showToolbar = !showToolbar"
+                  @permission-change="onDraftToolApprovalChange"
+                  @chat-model-change="onDraftChatModelChange"
+                  @image-model-change="onDraftImageModelChange"
+                  @send="onEmptyStart"
+                />
+              </div>
+            </div>
+
+            <div class="w-full flex flex-wrap justify-center items-center gap-2">
+              <button
+                v-for="cap in visibleCapsules"
+                :key="cap.key"
+                type="button"
+                @click="onCapsule(cap)"
+                :class="cap.key === 'guide'
+                  ? 'inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs rounded-full bg-primary-600 text-white hover:bg-primary-500 transition-colors'
+                  : 'px-3 py-1.5 text-xs rounded-full bg-surface-1 text-text-secondary hover:bg-surface-2 hover:text-text-primary transition-colors'"
+              >
+                {{ cap.label }}
+              </button>
+              <button
+                type="button"
+                class="h-7 w-7 flex items-center justify-center rounded-full text-text-tertiary hover:text-text-primary hover:bg-surface-1 transition-colors"
+                title="设置"
+                @click="settingsUi.show()"
+              >
+                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
+                  <circle cx="12" cy="12" r="3" />
+                </svg>
+              </button>
+            </div>
           </div>
-          <p class="text-sm font-medium text-text-secondary mb-1">{{ selectedBotId ? '点击「新建对话」开始聊天' : '选择一个智能体开始' }}</p>
-          <p class="text-xs text-text-tertiary">{{ selectedBotId ? '或从左侧选择历史对话' : '从顶部下拉菜单中选择' }}</p>
         </div>
         <template v-else>
           <!-- Messages -->
@@ -272,117 +461,86 @@
           </div>
 
           <!-- Input -->
-          <div class="border-t border-surface-3 p-4 bg-surface-0">
+          <div class="px-4 pb-4 pt-2 bg-surface-0">
             <div class="max-w-3xl mx-auto">
-              <div v-if="attachLimitMsg" class="flex items-center gap-2 mb-2 px-1 text-xs text-amber-600">
+              <div v-if="attachLimitMsg" class="flex items-center gap-2 mb-2 px-1 text-xs" style="color: var(--warn-fg)">
                 最多添加 {{ MAX_ATTACHMENTS }} 个附件
               </div>
-              <div v-if="attachmentError" class="flex items-center gap-2 mb-2 px-1 text-xs text-red-500">
+              <div v-if="attachmentError" class="flex items-center gap-2 mb-2 px-1 text-xs" style="color: var(--danger-fg)">
                 {{ attachmentError }}
               </div>
-              <div v-if="attachmentNotice" class="flex items-center gap-2 mb-2 px-1 text-xs text-amber-600">
+              <div v-if="attachmentNotice" class="flex items-center gap-2 mb-2 px-1 text-xs" style="color: var(--warn-fg)">
                 {{ attachmentNotice }}
               </div>
               <div v-if="loadingAttachment" class="flex items-center gap-2 mb-2 px-1 text-xs text-text-tertiary">
                 <svg class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
                 正在处理附件...
               </div>
-              <div v-if="pendingAttachments.length" class="flex gap-2 flex-wrap mb-2 px-1">
-                <div v-for="(att, i) in pendingAttachments" :key="i" class="flex items-center gap-1.5 px-2.5 py-1.5 bg-surface-2 rounded-lg text-xs text-text-secondary group">
-                  <svg v-if="att.type === 'image'" class="w-3.5 h-3.5 text-text-tertiary" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909M3.75 21h16.5A2.25 2.25 0 0 0 22.5 18.75V5.25A2.25 2.25 0 0 0 20.25 3H3.75A2.25 2.25 0 0 0 1.5 5.25v13.5A2.25 2.25 0 0 0 3.75 21Z" /></svg>
-                  <svg v-else class="w-3.5 h-3.5 text-text-tertiary" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" /></svg>
-                  <span class="max-w-[120px] truncate">{{ att.name }}</span>
-                  <button @click="pendingAttachments.splice(i, 1)" class="text-text-tertiary hover:text-text-primary ml-0.5">
-                    <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18 18 6M6 6l12 12" /></svg>
-                  </button>
-                </div>
-              </div>
-              <div class="flex items-end gap-3">
-                <div class="flex flex-col gap-1 flex-shrink-0">
-                  <div class="flex gap-1.5">
-                    <button @click="showToolbar = !showToolbar" class="relative w-9 h-9 flex items-center justify-center text-text-tertiary hover:text-text-secondary rounded-lg hover:bg-surface-2 transition-all" :class="showToolbar ? 'text-primary-600 bg-primary-50' : ''" title="工具">
-                      <svg class="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11.42 15.17 17.25 21A2.652 2.652 0 0 0 21 17.25l-5.877-5.877M11.42 15.17l2.496-3.03c.317-.384.74-.626 1.208-.766M11.42 15.17l-4.655 5.653a2.548 2.548 0 1 1-3.586-3.586l6.837-5.63m5.108-.233c.55-.164 1.163-.188 1.743-.14a4.5 4.5 0 0 0 4.486-6.336l-3.276 3.277a3.004 3.004 0 0 1-2.25-2.25l3.276-3.276a4.5 4.5 0 0 0-6.336 4.486c.091 1.076-.071 2.264-.904 2.95l-.102.085" /></svg>
-                      <span v-if="activeToolCount" class="absolute -top-0.5 -right-0.5 w-4 h-4 bg-primary-600 text-white text-[9px] rounded-full flex items-center justify-center font-medium">{{ activeToolCount }}</span>
-                    </button>
-                    <div class="relative" ref="attachRef">
-                      <button @click="showAttachMenu = !showAttachMenu" :disabled="chatStore.streaming" class="w-9 h-9 flex items-center justify-center text-text-tertiary hover:text-text-secondary rounded-lg hover:bg-surface-2 disabled:opacity-40 transition-all" title="添加附件">
-                        <svg class="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m18.375 12.739-7.693 7.693a4.5 4.5 0 0 1-6.364-6.364l10.94-10.94A3 3 0 1 1 19.5 7.372L8.552 18.32m.009-.01-.01.01m5.699-9.941-7.81 7.81a1.5 1.5 0 0 0 2.112 2.13" /></svg>
-                      </button>
-                      <div v-if="showAttachMenu" class="absolute bottom-full left-0 mb-2 bg-surface-0 rounded-lg shadow-lg border border-surface-3 py-1 w-32 z-10">
-                        <button @click="pickFile('image')" class="w-full flex items-center gap-2 px-3 py-2 text-xs text-text-secondary hover:bg-surface-1 transition-colors">
-                          <svg class="w-4 h-4 text-text-tertiary" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909M3.75 21h16.5A2.25 2.25 0 0 0 22.5 18.75V5.25A2.25 2.25 0 0 0 20.25 3H3.75A2.25 2.25 0 0 0 1.5 5.25v13.5A2.25 2.25 0 0 0 3.75 21Z" /></svg>
-                          图片
-                        </button>
-                        <button @click="pickFile('document')" class="w-full flex items-center gap-2 px-3 py-2 text-xs text-text-secondary hover:bg-surface-1 transition-colors">
-                          <svg class="w-4 h-4 text-text-tertiary" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" /></svg>
-                          文档
-                        </button>
-                        <button @click="openGalleryForChat" class="w-full flex items-center gap-2 px-3 py-2 text-xs text-text-secondary hover:bg-surface-1 transition-colors">
-                          <svg class="w-4 h-4 text-text-tertiary" fill="none" viewBox="0 0 24 24" stroke="currentColor"><rect x="3" y="3" width="18" height="18" rx="2" ry="2" stroke-width="2"/><circle cx="8.5" cy="8.5" r="1.5" stroke-width="2"/><polyline points="21 15 16 10 5 21" stroke-width="2"/></svg>
-                          图库
-                        </button>
-                      </div>
-                    </div>
-                    <button @click="showQuickPrompt = true" class="w-9 h-9 flex items-center justify-center text-text-tertiary hover:text-text-secondary rounded-lg hover:bg-surface-2 transition-all" title="快捷提示词">
-                      <svg class="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z" /></svg>
+              <div v-if="composerAssist.errorText.value" class="mb-2 px-1 text-[11px]" style="color: var(--danger-fg)">{{ composerAssist.errorText.value }}</div>
+              <!-- 输入整卡：PromptTextarea + 底部 Composer 工具栏（附件/提示词/工具 + 模型切换 + 发送） -->
+              <div
+                :class="['flex flex-col bg-surface-0 rounded-[24px] border shadow-modal transition-all', dragging ? 'border-primary-500' : 'border-surface-3 focus-within:border-surface-4']"
+                @dragover.prevent="dragging = true"
+                @dragleave.prevent="dragging = false"
+                @drop.prevent="handleDrop"
+              >
+                <PromptTextarea
+                  ref="inputEl"
+                  v-model="inputText"
+                  @paste="handlePaste"
+                  @submit="send"
+                  @tab="composerAssist.onTab"
+                  @optimize="composerAssist.optimize"
+                  title="编辑消息"
+                  :min-height="48"
+                  :max-height="160"
+                  auto-grow
+                  hide-expand
+                  plain
+                  submit-on-enter
+                  inline-edit
+                  :show-count="false"
+                  :placeholder="dragging ? '松开以添加附件' : '输入消息，按 Enter 发送...'"
+                  :ghost-text="composerAssist.suggestion.value"
+                  :tab-hint="true"
+                  :optimizing="composerAssist.busy.value === 'optimize'"
+                  container-class="mx-4 mt-3.5 mb-1"
+                  input-class="text-[15px] leading-normal"
+                />
+                <div v-if="pendingAttachments.length" class="flex gap-2 flex-wrap px-4 pb-2">
+                  <div v-for="(att, i) in pendingAttachments" :key="i" class="flex items-center gap-1.5 px-2.5 py-1.5 bg-surface-1 border border-surface-3 rounded-lg text-xs text-text-secondary">
+                    <svg v-if="att.type === 'image'" class="w-3.5 h-3.5 text-text-tertiary" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909M3.75 21h16.5A2.25 2.25 0 0 0 22.5 18.75V5.25A2.25 2.25 0 0 0 20.25 3H3.75A2.25 2.25 0 0 0 1.5 5.25v13.5A2.25 2.25 0 0 0 3.75 21Z" /></svg>
+                    <svg v-else class="w-3.5 h-3.5 text-text-tertiary" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125.504 1.125 1.125V11.25a9 9 0 0 0-9-9Z" /></svg>
+                    <span class="max-w-[120px] truncate">{{ att.name }}</span>
+                    <button @click="pendingAttachments.splice(i, 1)" class="text-text-tertiary hover:text-text-primary ml-0.5">
+                      <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18 18 6M6 6l12 12" /></svg>
                     </button>
                   </div>
-                  <button @click="openWorkspace" :disabled="!chatStore.currentConversationId" class="w-full h-7 flex items-center justify-center text-[10px] text-text-tertiary hover:text-text-secondary rounded-md border border-surface-3 hover:bg-surface-2 disabled:opacity-30 disabled:cursor-not-allowed transition-all" title="打开工作区">
-                    工作区
-                  </button>
                 </div>
-                <!-- 输入框容器：flex-col，上部 textarea + 底部左 ModelSwitcher / 右 发送按钮。IDE 风格。 -->
-                <div
-                  :class="['flex-1 flex flex-col bg-surface-1 rounded-2xl border focus-within:ring-2 focus-within:ring-primary-500 focus-within:border-transparent transition-all', dragging ? 'border-primary-500 bg-primary-50' : 'border-surface-4']"
-                  @dragover.prevent="dragging = true"
-                  @dragleave.prevent="dragging = false"
-                  @drop.prevent="handleDrop"
-                >
-                  <PromptTextarea
-                    ref="inputEl"
-                    v-model="inputText"
-                    @paste="handlePaste"
-                    @submit="send"
-                    title="编辑消息"
-                    :height="64"
-                    submit-on-enter
-                    inline-edit
-                    :show-count="false"
-                    :placeholder="dragging ? '松开以添加附件' : '输入消息，按 Enter 发送...'"
-                    container-class="m-2 mb-1"
-                    input-class="text-sm"
+                <div class="px-3.5 pb-3.5">
+                  <ChatComposerToolbar
+                    :tools-open="showToolbar"
+                    :active-tool-count="activeToolCount"
+                    :permission-mode="chatStore.currentConversation?.tool_approval || ''"
+                    :bot-default="(currentBot?.tool_approval as any) || 'destructive'"
+                    :chat-provider-id="chatStore.currentConversation?.active_model_provider_id || ''"
+                    :chat-model-id="chatStore.currentConversation?.active_model_id || ''"
+                    :show-image-model="!!currentBot?.enable_image_gen"
+                    :image-provider-id="chatStore.currentConversation?.active_image_provider_id || ''"
+                    :image-model-id="chatStore.currentConversation?.active_image_model_id || ''"
+                    :can-send="!!(inputText.trim() || pendingAttachments.length)"
+                    :streaming="chatStore.streaming"
+                    :cancelling="chatStore.isCancelling()"
+                    @attach="pickFile"
+                    @gallery="openGalleryForChat"
+                    @prompt="showQuickPrompt = true"
+                    @tools="showToolbar = !showToolbar"
+                    @permission-change="onToolApprovalChange"
+                    @chat-model-change="onChatModelChange"
+                    @image-model-change="onImageModelChange"
+                    @send="send"
+                    @cancel="chatStore.cancel()"
                   />
-                  <!-- 底部条：左侧 「对话：」+ 「生图：」两个模型切换器并排（IDE 风格）、右侧 发送/中断按钮。
-                       生图切换器控制 image_gen tool 默认 provider/model，LLM args 未传时作为兑底 -->
-                  <div class="flex items-center justify-between gap-2 px-2 pb-2">
-                    <div class="flex items-center gap-1 min-w-0">
-                      <ChatModelSwitcher
-                        type="chat"
-                        :provider-id="chatStore.currentConversation?.active_model_provider_id || ''"
-                        :model-id="chatStore.currentConversation?.active_model_id || ''"
-                        @change="onChatModelChange"
-                      />
-                      <ChatModelSwitcher
-                        v-if="currentBot?.enable_image_gen"
-                        type="image"
-                        :provider-id="chatStore.currentConversation?.active_image_provider_id || ''"
-                        :model-id="chatStore.currentConversation?.active_image_model_id || ''"
-                        @change="onImageModelChange"
-                      />
-                    </div>
-                    <div class="flex items-center gap-2 flex-shrink-0">
-                      <button v-if="chatStore.streaming && !chatStore.isCancelling()" @click="chatStore.cancel()" class="w-8 h-8 flex items-center justify-center bg-red-600 text-white rounded-lg hover:bg-red-700 transition-all flex-shrink-0" title="中断当前回复">
-                        <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1.5" /></svg>
-                      </button>
-                      <button v-else-if="chatStore.isCancelling()" disabled class="h-8 px-2.5 flex items-center gap-1.5 bg-surface-2 text-text-tertiary rounded-lg cursor-not-allowed flex-shrink-0 text-[11px]" title="正在中断，等待当前工具收尾">
-                        <svg class="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
-                        中断中
-                      </button>
-                      <button v-else @click="send" :disabled="!inputText.trim() && !pendingAttachments.length" class="w-8 h-8 flex items-center justify-center bg-primary-600 text-white rounded-lg hover:bg-primary-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all flex-shrink-0" title="发送">
-                        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5" /></svg>
-                      </button>
-                    </div>
-                  </div>
                 </div>
               </div>
             </div>
@@ -519,6 +677,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useChatStore, isContinuable } from '@/stores/chat'
 import { useHandoffStore } from '@/stores/handoff'
 import { useBotStore } from '@/stores/bots'
+import type { ToolApproval } from '@/stores/bots'
 import { useKnowledgeStore } from '@/stores/knowledge'
 import { useSkillStore } from '@/stores/skills'
 import { useMcpStore } from '@/stores/mcps'
@@ -533,11 +692,14 @@ import { stripImageMetadata } from '@shared/strip-image-metadata'
 import { CLOUD_KEY_SEP, stripModelId } from '@shared/model-id'
 import GalleryPicker from '@/components/GalleryPicker.vue'
 import ImageLightbox from '@/components/ImageLightbox.vue'
-import ChatModelSwitcher from '@/components/ChatModelSwitcher.vue'
+import ChatComposerToolbar from '@/components/ChatComposerToolbar.vue'
 import LowBalanceModal from '@/components/LowBalanceModal.vue'
 import PromptTextarea from '@/components/PromptTextarea.vue'
 import AskUserCard from '@/components/AskUserCard.vue'
 import ImageParamsCard from '@/components/ImageParamsCard.vue'
+import { useSettingsUiStore } from '@/stores/settings-ui'
+import { useComposerAssist } from '@/composables/useComposerAssist'
+import WindowControls from '@/components/WindowControls.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -547,6 +709,20 @@ const botStore = useBotStore()
 const modelStore = useModelStore()
 const cloudAuth = useCloudAuthStore()
 const siteConfigStore = useSiteConfigStore()
+const settingsUi = useSettingsUiStore()
+
+// 平台判断：/chat 路由下 MainLayout 隐藏全局顶栏，本页 header 兼任窗口拖拽区（与 MainLayout 同一判定）
+const platform = ((window as any).electron?.process?.platform || (window as any).runtimeConfig?.platform || '')
+const isWin = platform === 'win32'
+const isMac = platform === 'darwin'
+
+/** 顶栏拖拽区双击 = 切换最大化（与 MainLayout 同一行为） */
+function onHeaderDblClick(e: MouseEvent) {
+  if (!isWin) return
+  const target = e.target as HTMLElement
+  if (target.closest('button, a, input, select, [role="button"]')) return
+  ;(window as any).api?.window?.maximize?.()
+}
 const kbStore = useKnowledgeStore()
 const skillStore = useSkillStore()
 const CORE_TOOL_NAMES = ['file_ops', 'run_command', 'image_gen']
@@ -568,11 +744,10 @@ const lowBalanceOpen = ref(false)
 const lowBalanceState = ref({ balanceType: 'token', required: 0, available: 0 })
 const messagesContainer = ref<HTMLElement | null>(null)
 const inputEl = ref<InstanceType<typeof PromptTextarea> | null>(null)
+const emptyInputEl = ref<InstanceType<typeof PromptTextarea> | null>(null)
 const botSelectorRef = ref<HTMLElement | null>(null)
 const toolbarRef = ref<HTMLElement | null>(null)
-const attachRef = ref<HTMLElement | null>(null)
 const pendingAttachments = ref<{ name: string; type: string; data: string }[]>([])
-const showAttachMenu = ref(false)
 const showGalleryPicker = ref(false)
 const showToolbar = ref(false)
 const toolbarDropdown = ref('')
@@ -580,6 +755,179 @@ const tempKbIds = ref<string[]>([])
 const tempSkillIds = ref<string[]>([])
 const tempMcpIds = ref<string[]>([])
 const tempPromptSkillDirs = ref<string[]>([])
+
+// === 空态工作台：draft 模型（未建会话时的模型选择，发送时随 createConversation 落库） ===
+const draftChatModel = ref<{ provider_id: string; model_id: string }>({ provider_id: '', model_id: '' })
+const draftImageModel = ref<{ provider_id: string; model_id: string }>({ provider_id: '', model_id: '' })
+
+function onDraftChatModelChange(val: { provider_id: string; model_id: string }) {
+  draftChatModel.value = { provider_id: val.provider_id, model_id: val.model_id }
+}
+function onDraftImageModelChange(val: { provider_id: string; model_id: string }) {
+  draftImageModel.value = { provider_id: val.provider_id, model_id: val.model_id }
+}
+
+// === 会话级工具权限档：会话态写库覆盖；空态先记 draft，建会话时落库 ===
+const draftToolApproval = ref<ToolApproval | ''>('')
+function onDraftToolApprovalChange(mode: ToolApproval) {
+  draftToolApproval.value = mode
+}
+async function onToolApprovalChange(mode: ToolApproval) {
+  const id = chatStore.currentConversationId
+  if (!id) {
+    draftToolApproval.value = mode
+    return
+  }
+  await chatStore.updateConversationToolApproval(id, mode)
+}
+
+function syncDraftModelFromDefault() {
+  if (!draftChatModel.value.model_id) {
+    const m = resolveDefaultModel()
+    if (m.model_id) draftChatModel.value = { ...m }
+  }
+  if (!draftImageModel.value.model_id) {
+    const im = resolveDefaultImageModel()
+    if (im.model_id) draftImageModel.value = { ...im }
+  }
+}
+
+// === 空态工作台：问候语 / 占位文案 / 场景胶囊 ===
+const emptyGreeting = computed(() => {
+  const h = new Date().getHours()
+  if (h < 5) return '夜深了，需要把思路整理成文档吗？'
+  if (h < 11) return '早上好，今天想写、查还是改？'
+  if (h < 14) return '中午好，要推进哪项任务？'
+  if (h < 18) return '下午好，把想法变成可执行任务吧'
+  return '晚上好，有什么我可以帮你的？'
+})
+const emptyPlaceholder = computed(() => '请你帮我研究一下最近一天的最新 AI 新闻')
+
+type SceneCapsule = { key: string; label: string; kind: 'route' | 'prompt' | 'more'; to?: string; prompt?: string }
+const extraCapsules: SceneCapsule[] = [
+  { key: 'ai-video', label: 'AI 视频', kind: 'route', to: '/ai-video' },
+  { key: 'canvas', label: '流式画布', kind: 'route', to: '/canvas' },
+  { key: 'toolkit', label: '图像处理', kind: 'route', to: '/image-toolkit' }
+]
+const showMoreCapsules = ref(false)
+const sceneCapsules = computed<SceneCapsule[]>(() => [
+  { key: 'guide', label: '引导帮助', kind: 'prompt', prompt: '请用简洁步骤引导我完成今天最重要的一件事：先问清目标，再给出可执行清单。\n' },
+  { key: 'write', label: '写作', kind: 'prompt', prompt: '帮我把下面这个想法整理成一篇结构清晰的文稿：\n' },
+  { key: 'ppt', label: 'PPT', kind: 'prompt', prompt: '请根据主题输出一份 PPT 大纲：每页标题、要点、建议配图说明。主题：\n' },
+  { key: 'research', label: '调研报告', kind: 'prompt', prompt: '请围绕主题输出一份调研报告提纲，含背景、问题清单、资料来源建议与结论结构：\n' },
+  { key: 'image', label: 'AI 生图', kind: 'route', to: '/image-gen' },
+  { key: 'more', label: '更多', kind: 'more' }
+])
+const visibleCapsules = computed(() => {
+  const base = sceneCapsules.value.filter((c) => c.key !== 'more')
+  const more = sceneCapsules.value.find((c) => c.key === 'more')
+  const list = showMoreCapsules.value ? [...base, ...extraCapsules] : base
+  return more ? [...list, more] : list
+})
+
+function goToImageGenWithDraft() {
+  const refs = pendingAttachments.value
+    .filter((a) => a.type === 'image' && a.data)
+    .map((a) => a.data)
+    .slice(0, 10)
+  const prompt = inputText.value.trim()
+  if (prompt || refs.length) {
+    handoff.set('imageGen', { prompt, refImages: refs.length ? refs : undefined })
+  }
+  router.push({ name: 'imageGen' })
+}
+
+async function onCapsule(cap: SceneCapsule) {
+  if (cap.kind === 'more') {
+    showMoreCapsules.value = !showMoreCapsules.value
+    return
+  }
+  if (cap.key === 'image') {
+    goToImageGenWithDraft()
+    return
+  }
+  if (cap.kind === 'route' && cap.to) {
+    router.push(cap.to)
+    return
+  }
+  if (cap.kind === 'prompt' && cap.prompt) {
+    inputText.value = cap.prompt
+    await nextTick()
+    emptyInputEl.value?.focus()
+  }
+}
+
+/** 空态发送：先建会话再走既有 send() */
+const emptyStarting = ref(false)
+
+// === 输入辅助：500ms 防抖补全（ghost text）+ Tab 接受 / 无补全时 Tab 一键优化提示词 ===
+// 模型跟随当前会话模型，空态跟随 draft 模型；未选模型时自动静默不启用
+const composerAssist = useComposerAssist({
+  text: inputText,
+  providerId: () => chatStore.currentConversation?.active_model_provider_id || draftChatModel.value.provider_id,
+  modelId: () => chatStore.currentConversation?.active_model_id || draftChatModel.value.model_id
+})
+// 切会话/新建对话时丢弃未完成的补全请求与建议
+watch(() => chatStore.currentConversationId, () => composerAssist.cancel())
+const emptyStartHint = computed(() => {
+  if (!inputText.value.trim() && !pendingAttachments.value.length) return '请先输入内容'
+  if (emptyStarting.value) return '正在创建对话…'
+  return '开始对话'
+})
+
+async function onEmptyStart() {
+  if (emptyStarting.value) return
+  emptyStarting.value = true
+  try {
+    await sendFromEmpty()
+  } catch (e: any) {
+    console.error('[chat] empty start failed:', e)
+    ;(window as any).api?.nativeDialog?.alert?.(e?.message || '无法开始对话，请重试')
+  } finally {
+    emptyStarting.value = false
+  }
+}
+
+async function sendFromEmpty() {
+  const text = inputText.value.trim()
+  if (!text && !pendingAttachments.value.length) return
+  // 空态必须落到一个智能体：未选时取第一个；一个都没有则提示先建
+  if (!selectedBotId.value) {
+    if (bots.value.length) {
+      selectedBotId.value = bots.value[0].id
+    } else {
+      throw new Error('请先在「智能体」页创建一个智能体')
+    }
+  }
+  // 显式等待 bot 上下文就绪：watch(selectedBotId) 的异步 fetch 不保证时序，
+  // currentBotId 未就绪时 sendMessage 会静默 return，把用户输入吞掉
+  if ((chatStore.currentBotId ?? '') !== selectedBotId.value) {
+    await chatStore.fetchConversations(selectedBotId.value)
+  }
+  if (chatStore.streaming) {
+    throw new Error('当前仍有回复在进行中，请稍候或先点停止')
+  }
+  syncDraftModelFromDefault()
+  const initialModel = draftChatModel.value.model_id ? draftChatModel.value : resolveDefaultModel()
+  if (!initialModel.model_id) {
+    throw new Error('暂无可用对话模型，请先在「模型服务」页配置或确认套餐权限')
+  }
+  const initialImageModel = draftImageModel.value.model_id ? draftImageModel.value : resolveDefaultImageModel()
+  const conv = await chatStore.createConversation(
+    selectedBotId.value,
+    undefined,
+    initialModel,
+    initialImageModel.model_id ? initialImageModel : undefined
+  )
+  // 先存草稿再选会话：watch(currentConversationId) 触发 loadDraftFor 时把输入原样还原
+  saveDraftFor(conv.id)
+  await chatStore.selectConversation(conv.id)
+  // 空态选过的权限档随建会话落库（空串 = 继承智能体默认，无需写）
+  if (draftToolApproval.value) {
+    await chatStore.updateConversationToolApproval(conv.id, draftToolApproval.value)
+  }
+  await send()
+}
 
 const editingConvId = ref<string | null>(null)
 const editingTitle = ref('')
@@ -877,15 +1225,18 @@ function onClickOutside(e: MouseEvent) {
       dispatchMenuId.value = null
     }
   }
-  if (showAttachMenu.value && attachRef.value && !attachRef.value.contains(target)) {
-    showAttachMenu.value = false
-  }
 }
 
 watch(selectedBotId, async (id) => {
   if (!id) return
   if (restoringState.value) {
     restoringState.value = false
+    return
+  }
+  // 空态（无当前会话）时换 bot：不做全量 reset——reset 会清空所有会话的草稿，
+  // 而空态下 conversations/messages 本就为空，直接拉新 bot 会话列表即可（fetchConversations 自带 currentBotId）
+  if (!chatStore.currentConversationId) {
+    await chatStore.fetchConversations(id)
     return
   }
   chatStore.reset()
@@ -1049,21 +1400,22 @@ function resolveDefaultImageModel(): { provider_id: string; model_id: string } {
   return { provider_id: '', model_id: '' }
 }
 
+/** 新建对话：不再立刻建会话，进入空态（发送首条消息时才 createConversation，避免空会话堆列表） */
 async function newConversation() {
-  if (!selectedBotId.value) return
-  // 「智能体不再绑定模型」（v0.6.5+）：新会话预填云控默认模型；db 层 active_model_*
-  // 以后用户可随时在输入框左下角切换，每个会话独立记忆。
-  // v0.6.6+：生图模型同理预填本地第一个 image 模型，带不出时让 chat-engine fallback 到 list_providers
-  const initialModel = resolveDefaultModel()
-  const initialImageModel = resolveDefaultImageModel()
-  const conv = await chatStore.createConversation(
-    selectedBotId.value,
-    undefined,
-    initialModel.model_id ? initialModel : undefined,
-    initialImageModel.model_id ? initialImageModel : undefined
-  )
-  await chatStore.selectConversation(conv.id)
+  chatStore.startNewChat()
 }
+
+// 已在空态时再点「新建对话」（侧栏 ⌘N/本页 +）：清掉本地草稿并聚焦输入框
+watch(
+  () => chatStore.newChatSeq,
+  async () => {
+    if (chatStore.currentConversationId) return
+    clearLocalDraft()
+    syncDraftModelFromDefault()
+    await nextTick()
+    emptyInputEl.value?.focus()
+  }
+)
 
 /**
  * 打开旧会话时的兼容兜底：若 conversation.active_model_* / active_image_* 为空（老会话、跨版本升级），
@@ -1238,7 +1590,6 @@ function compressImage(dataUri: string, maxSize: number, quality: number): Promi
 }
 
 async function pickFile(fileType: 'image' | 'document') {
-  showAttachMenu.value = false
   try {
     const filters = fileType === 'image'
       ? [{ name: 'Images', extensions: ['jpg', 'jpeg', 'png', 'gif', 'webp'] }]
@@ -1281,7 +1632,6 @@ async function pickFile(fileType: 'image' | 'document') {
 }
 
 function openGalleryForChat() {
-  showAttachMenu.value = false
   showGalleryPicker.value = true
 }
 
@@ -1568,10 +1918,23 @@ onMounted(async () => {
     // 僵尸轮次恢复：渲染端 reload/托盘重开后主进程轮次可能仍在跑，重建流式态
     //（续接后续流事件 + 恢复停止按钮；轮末由 round_done 事件收尾重拉）
     void chatStore.resumeStreamingIfActive(chatStore.currentConversationId)
+  } else {
+    // 空态：draft 模型预填（providers 未就绪时留空，发送前 syncDraftModelFromDefault 兜底）
+    syncDraftModelFromDefault()
+    await nextTick()
+    emptyInputEl.value?.focus()
   }
 
   scrollToBottom()
 })
+
+// 模型列表异步就绪后，空态 draft 模型仍为空时补一次预填（打开即能聊）
+watch(
+  () => modelStore.providers.length,
+  () => {
+    if (!chatStore.currentConversationId) syncDraftModelFromDefault()
+  }
+)
 
 onUnmounted(() => {
   // 路由离开前保存当前对话的草稿到 store（仅会话级，重启 app 后丢失）
@@ -1595,6 +1958,10 @@ onUnmounted(() => {
 }
 .toolbar-dropdown {
   @apply absolute bottom-full left-0 mb-1 w-48 max-h-48 overflow-y-auto bg-surface-0 border border-surface-3 rounded-lg shadow-lg z-50 py-1;
+}
+/* 空态工作台：Toolbar 条在输入卡上方，下拉改向下展开 */
+.toolbar-dropdown-down {
+  @apply top-full bottom-auto mt-1 mb-0;
 }
 .toolbar-dropdown-item {
   @apply flex items-center gap-2 px-3 py-1.5 text-xs cursor-pointer text-text-secondary hover:bg-surface-2 hover:text-text-primary transition-colors;

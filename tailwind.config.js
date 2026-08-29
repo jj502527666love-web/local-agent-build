@@ -35,12 +35,15 @@ module.exports = {
       },
       borderRadius: {
         'xl': '12px',
-        '2xl': '16px'
+        '2xl': '14px',
+        '3xl': '18px'
       },
       boxShadow: {
-        'card': '0 1px 3px 0 rgba(0, 0, 0, 0.06), 0 1px 2px -1px rgba(0, 0, 0, 0.06)',
-        'card-hover': '0 4px 12px 0 rgba(0, 0, 0, 0.08), 0 2px 4px -2px rgba(0, 0, 0, 0.06)',
-        'modal': '0 20px 60px -12px rgba(0, 0, 0, 0.15)'
+        // 阴影统一走暖灰调（配合暖灰 surface 色板），panel 用于侧栏/主区悬浮卡片
+        'card': '0 1px 2px rgba(28, 27, 23, 0.04), 0 0 0 1px rgba(28, 27, 23, 0.04)',
+        'card-hover': '0 8px 24px -12px rgba(28, 27, 23, 0.12), 0 0 0 1px rgba(28, 27, 23, 0.06)',
+        'panel': '0 1px 3px rgba(28, 27, 23, 0.04), 0 0 0 1px rgba(28, 27, 23, 0.05)',
+        'modal': '0 0 0 1px rgba(28, 27, 23, 0.06), 0 24px 48px -16px rgba(28, 27, 23, 0.18)'
       }
     }
   },

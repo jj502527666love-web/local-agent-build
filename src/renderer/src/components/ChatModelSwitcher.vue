@@ -4,10 +4,13 @@
          prefix 不参与 truncate，让「对话：」/「生图：」始终完整可见，模型名可被截断 -->
     <button
       type="button"
+      :tabindex="chip ? -1 : 0"
       @click="open = !open"
       :class="block
         ? 'w-full flex items-center gap-1 px-3 py-2 text-sm bg-surface-1 border border-surface-3 rounded-lg text-text-primary hover:bg-surface-2 transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500'
-        : 'flex items-center gap-1 px-1.5 py-0.5 text-[11px] text-text-tertiary hover:text-text-primary rounded-md hover:bg-surface-2 transition-colors max-w-[220px] focus:outline-none'"
+        : chip
+          ? 'flex items-center gap-1 h-8 px-2 text-[12px] text-text-tertiary hover:text-text-secondary rounded-full transition-colors max-w-[220px] outline-none focus:outline-none focus:ring-0'
+          : 'flex items-center gap-1 h-7 px-1.5 text-[12px] text-text-secondary hover:text-text-primary rounded-md hover:bg-surface-2 transition-colors max-w-[220px] focus:outline-none'"
       :title="currentLabel || placeholderLabel"
     >
       <span v-if="prefixText" class="flex-shrink-0 text-text-tertiary">{{ prefixText }}</span>
@@ -20,8 +23,11 @@
     <!-- 下拉面板：默认向上展开（按钮在输入框底部）；direction='down' 向下展开（表单场景） -->
     <div
       v-if="open"
-      class="absolute left-0 w-80 max-h-[360px] bg-surface-0 border border-surface-3 rounded-xl shadow-modal z-30 flex flex-col overflow-hidden"
-      :class="direction === 'down' ? 'top-full mt-1' : 'bottom-full mb-1'"
+      class="absolute w-80 max-w-[min(20rem,calc(100vw-24px))] max-h-[360px] bg-surface-0 border border-surface-3 rounded-xl shadow-modal z-30 flex flex-col overflow-hidden"
+      :class="[
+        direction === 'down' ? 'top-full mt-1' : 'bottom-full mb-1',
+        align === 'end' ? 'right-0' : 'left-0'
+      ]"
     >
       <div class="px-2.5 pt-2 pb-1.5 border-b border-surface-3 flex-shrink-0">
         <input
@@ -102,14 +108,20 @@ const props = withDefaults(defineProps<{
   type?: 'chat' | 'image'
   /** 下拉展开方向：up 默认（对话框底部用）；down 用于表单场景 */
   direction?: 'up' | 'down'
+  /** 下拉水平对齐：start 左齐按钮（默认）；end 右齐按钮（输入栏右侧用） */
+  align?: 'start' | 'end'
   /** 块级全宽表单样式（默认 false 为 IDE 小条样式） */
   block?: boolean
   /** 覆盖按钮前缀文案；传 '' 则不显示前缀（表单已有 label 时） */
   prefix?: string
+  /** 输入栏内的浅色胶囊样式 */
+  chip?: boolean
 }>(), {
   type: 'chat',
   direction: 'up',
-  block: false
+  align: 'start',
+  block: false,
+  chip: false
 })
 
 /** 按钮前缀文案：「对话：」 / 「生图：」（可被 prefix 覆盖） */

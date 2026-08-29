@@ -42,7 +42,7 @@
         >购买套餐 →</router-link>
         <router-link
           v-if="banner.action === 'settings'"
-          to="/settings"
+          to="/settings?tab=vector"
           class="text-xs font-medium text-primary-600 hover:text-primary-700 whitespace-nowrap"
         >去设置 →</router-link>
         <button
@@ -82,7 +82,7 @@
         >购买套餐 →</router-link>
         <router-link
           v-if="progressAction === 'settings'"
-          to="/settings"
+          to="/settings?tab=vector"
           class="text-xs font-medium text-primary-600 hover:text-primary-700"
         >去设置 →</router-link>
       </div>

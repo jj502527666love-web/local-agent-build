@@ -6,6 +6,34 @@
 
 ---
 
+## [1.1.3] - 2026-08-29
+
+> **界面与对话主链路一轮整体升级（参照官方 1.3.5 演进方向选择性吸收并多处超越）**：主题色板换暖灰体系（保留品牌橙）、主布局改三段式圆角卡片侧栏、设置改全局居中模态、窗口控件改应用内自绘（四边统一卡片）、首页改对话空态工作台（发首条消息才建会话）、输入区统一 Composer 工具栏、输入框自动增高+智能补全、会话级工具权限覆盖、视频前端接入万相协议能力表。另含三轮实机预览迭代定案的顶栏方案与一次三路对抗复查（10 项修复）。云控端配套：万相协议模型/SKU 需云控端 ≥1.6.33 部署并配置后才在目录中可见，未部署时视频功能表现与之前一致。
+
+### 新增
+
+- **主题 token 焕新（`assets/main.css` + `tailwind.config.js` + `index.html`）**：暖灰 surface 色板（亮色 `#f2f3f4` 系 / 暗色暖墨绿 `#1c2421` 系），新增 `--ok/--warn/--danger` 语义变量与 `.tone-*` 提示条、`--panel-radius/gap`；状态徽章全部变量化；圆角 `2xl:14px/3xl:18px`、阴影四件（card/card-hover/panel/modal）；输入类元素允许文字选择；首帧兜底色；画布节点色改主题变量（fallback 品牌橙）。
+- **主布局重组（`layouts/MainLayout.vue`）**：窗口四周统一 12px 边距、侧栏 220px 与主区 `rounded-3xl shadow-panel` 悬浮卡片；侧栏三段式——固定区（新建对话 Ctrl+N / 搜索 Ctrl+K / 主导航）、滚动区（创作类+更多低频下沉）、底部（余额徽章+用户中心+设置图标按钮）；导航项按 `tier` 分组渲染；`/chat` 路由隐藏全局顶栏改浮动公告层；active 态改 `color-mix` 跟主题变量；⌘K 导航搜索面板（无遮罩，按项目设计规则）。
+- **设置全局居中模态（`views/settings/SettingsView.vue` + `stores/settings-ui.ts` + `views/settings/OpenSettingsRoute.vue`）**：Teleport 模态（`max-w-4xl`、左 208px 分类导航：常规/向量服务/数据与安全/关于），原 8 个 section 原样分组搬入（v-show 保状态）；Esc 关闭（内部弹窗优先关闭自身，云同步子弹窗经 `defineExpose hasOpenDialog` 让位）；每次打开自动刷新数据；`/settings` 老路由与 `?tab=xxx` 全部兼容（OpenSettingsRoute 映射，models/clawbot/personas 走独立页）。
+- **自定义窗口控件（`components/WindowControls.vue`）**：—□× 自绘收在主区 header 右端卡片内（最大化图标按窗口状态切换），替代系统 titleBarOverlay（`main/index.ts` 改纯 `frame:false`，`theme.ts` 移除 overlay 联动）；顶栏三处（侧栏品牌区/全局 header/ChatView header）统一 `h-12(48px)` 且侧栏品牌区下缘与主区分隔线同高贯通；顶栏拖拽区双击切换最大化。
+- **对话空态工作台首页（`views/chat/ChatView.vue` + `utils/home-path.ts` + `stores/chat.ts`）**：`getHomePath()` 默认 `/chat`（云控隐藏对话菜单时回退 `/bots`）；时段问候 + 大输入卡 + 场景胶囊（含「更多」展开路由胶囊）+ 设置快捷入口；`startNewChat()` 不预建会话、`sendFromEmpty()` 首条消息发出时才 `createConversation`（空会话不再堆列表，含 bot 上下文显式就绪等待防首发吞消息）；智能体选择器/新建按钮/工作区按钮收到 h-12 顶栏。
+- **输入区统一工具栏（`components/ChatComposerToolbar.vue`）**：附件菜单（图片/文档/图库，组件自包含）+ 提示词 + 工具（带选中计数徽标）+ 权限切换 + 对话/生图模型胶囊（chip 模式）+ 发送/停止/中断中，空态绑定 draft 模型、会话态绑定会话模型。
+- **输入框增强（`components/PromptTextarea.vue` 整体升级）**：`plain` 无边框模式、`autoGrow` 自动增高（min/maxHeight）、ghost text 显示、tab 徽标与优化按钮、中文输入法 Enter 防误发（`isComposing || keyCode 229`）；28 个全局引用点全部向后兼容。
+- **输入智能辅助（`composables/useComposerAssist.ts`）**：500ms 防抖调当前对话模型做后半句补全（ghost text，Tab 接受）；无补全时 Tab 一键优化改写提示词；切会话自动取消在途请求。
+- **会话级工具权限覆盖（全链路）**：`conversations` 表新增 `tool_approval` 列（空串=继承智能体；off/destructive/all）；`ChatPermissionSwitcher` 输入条即切；空态选择随 `sendFromEmpty` 落库；chat-engine `effectiveToolApproval` 会话优先；`sendingConvIds` 双发短锁（含 regenerate/continueGenerate/editMessage 入口对齐）；SQLite 迁移幂等且对云同步透明（oplog JSON 多一键）。
+- **默认助手兜底（`main/services/default-chat.ts`）**：智能体被删除/未绑人设时 `resolveChatBot` 回退内置默认助手（regenerate/editMessage 同路），无人设时注入 `DEFAULT_CHAT_SYSTEM_PROMPT`，对话不再报错。
+- **提问卡改版（`components/AskUserCard.vue`）**：多题平铺 + 已等待计时 + 折叠/展开 + 重置 + 「其他」自由输入自动识别；`ChatModelSwitcher` 升级 chip 胶囊与右对齐下拉。
+- **视频前端万相协议支持（`views/video/AiVideoView.vue`）**：`PROTOCOL_CAPABILITIES` 新增 `wan`（图/视频/音频 + 首尾帧），别名归一与后端 `VideoProtocols::isWan` 同源。
+
+### 修复
+
+- 空态切换智能体时全量 `reset()` 误清所有会话草稿（watch 空态分支跳过 reset）。
+- 空态首次发送因 bot 上下文异步就绪时序导致的吞消息（显式 `await fetchConversations`）。
+- 设置模态常驻后数据不刷新（watch open 重载）、Esc 层级混乱、内部确认弹窗 z-index 偏低。
+- 路由与 home-path 注释与实际逻辑相反。
+
+---
+
 ## [1.1.2] - 2026-08-14
 
 > **微信 ClawBot 生图参数双通道（编号菜单 + 自然语言直通 + 默认参数配置）+ 出站图片编码对齐官方 2.4.6**。背景：对照微信官方 npm 包 `@tencent-weixin/openclaw-weixin@2.4.6` 源码逐文件审查（api/send/upload/cdn-upload/pic-decrypt/login-qr/monitor/media-download），协议层与官方高度一致；发现出站图片 `aes_key` 编码与官方不一致（P1）并修复；桌面端「生图参数确认卡」依赖窗口交互（`core-tools.ts` 弹卡条件 `!args.size && window`），微信通道（window=null）下用户没有任何机会选择参数，本次补齐该交互缺口。

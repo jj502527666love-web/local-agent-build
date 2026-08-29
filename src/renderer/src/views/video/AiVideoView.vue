@@ -457,11 +457,17 @@ const PROTOCOL_CAPABILITIES: Record<string, ProtocolCapability> = {
   grok: { assetTypes: ['image'], firstLastFrameByImage: false },
   // 可灵：图生视频单图 + 首尾帧（image + image_tail），故支持 image 与首尾帧
   kling: { assetTypes: ['image'], firstLastFrameByImage: true },
+  wan: { assetTypes: ['image', 'video', 'audio'], firstLastFrameByImage: true },
   openai_video: { assetTypes: ['image', 'video'], firstLastFrameByImage: false },
 }
 const DEFAULT_PROTOCOL_CAPABILITY: ProtocolCapability = { assetTypes: ['image'], firstLastFrameByImage: false }
 function protocolCapability(protocol?: string): ProtocolCapability {
-  return PROTOCOL_CAPABILITIES[(protocol || '').toLowerCase()] || DEFAULT_PROTOCOL_CAPABILITY
+  const p = (protocol || '').toLowerCase()
+  // wan 协议别名与后端 VideoProtocols::isWan 同源归一
+  if (['wan3', 'wan3.0', 'wan3.0-video', 'dashscope', 'dashscope_compatible'].includes(p)) {
+    return PROTOCOL_CAPABILITIES.wan
+  }
+  return PROTOCOL_CAPABILITIES[p] || DEFAULT_PROTOCOL_CAPABILITY
 }
 const ASSET_ACCEPT_MAP: Record<ProtocolAssetType, string> = { image: 'image/*', video: 'video/*', audio: 'audio/*' }
 const ASSET_TYPE_LABEL: Record<ProtocolAssetType, string> = { image: '图片', video: '视频', audio: '音频' }

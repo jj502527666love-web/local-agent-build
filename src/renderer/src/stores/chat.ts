@@ -38,6 +38,8 @@ export interface Conversation {
   // 输入框左下角「生图：」切换器写回；chat-engine 调 image_gen 时作为 LLM args 默认值。
   active_image_provider_id: string
   active_image_model_id: string
+  /** 会话级工具审批档：空串 = 继承智能体；否则 off/destructive/all */
+  tool_approval: string
   created_at: string
   updated_at: string
 }
@@ -164,6 +166,8 @@ export const useChatStore = defineStore('chat', () => {
   const currentConversationId = ref<string | null>(null)
   const currentBotId = ref<string | null>(null)
   const streamingConvIds = ref<Set<string>>(new Set())
+  /** sendMessage 入口到挂上 streaming 之间的短锁，防止 Enter 连按双发 */
+  const sendingConvIds = ref<Set<string>>(new Set())
   const activeRequestIds = ref<Record<string, string>>({})
   const canceledRequestIds = ref<Set<string>>(new Set())
   const streamContent = ref('')
@@ -213,7 +217,9 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   const streaming = computed(() =>
-    currentConversationId.value ? streamingConvIds.value.has(currentConversationId.value) : false
+    currentConversationId.value
+      ? streamingConvIds.value.has(currentConversationId.value) || sendingConvIds.value.has(currentConversationId.value)
+      : false
   )
 
   const currentConversation = computed(() =>
@@ -277,6 +283,18 @@ export const useChatStore = defineStore('chat', () => {
     if (conv) {
       conv.active_model_provider_id = provider_id || ''
       conv.active_model_id = model_id || ''
+    }
+  }
+
+  /**
+   * 会话级工具审批档覆盖（输入条权限切换器触发）。
+   * 写回主进程 + 同步本地缓存；空串 = 恢复继承智能体默认。
+   */
+  async function updateConversationToolApproval(conversationId: string, tool_approval: string) {
+    await window.api.chat.invoke('updateConversationToolApproval', conversationId, tool_approval)
+    const conv = conversations.value.find((c) => c.id === conversationId)
+    if (conv) {
+      conv.tool_approval = tool_approval || ''
     }
   }
 
@@ -732,6 +750,11 @@ export const useChatStore = defineStore('chat', () => {
     const convId = currentConversationId.value!
     const botId = currentBotId.value!
 
+    // 双发短锁：Enter 连按/重复点击时第一条尚未挂上 streaming（异步 gap），第二条直接丢弃
+    if (streamingConvIds.value.has(convId) || sendingConvIds.value.has(convId)) return
+    sendingConvIds.value.add(convId)
+    sendingConvIds.value = new Set(sendingConvIds.value)
+
     // 乐观插入用户消息（主进程也会立即落库；切走切回靠 getMessages 拿回）
     // startedAt 在 push 之前捕获并传入执行器：失败兜底按它判定「本轮新落库」，
     // 若在执行器内捕获，跨毫秒边界时本轮乐观气泡会被误判为旧消息而丢失
@@ -746,27 +769,32 @@ export const useChatStore = defineStore('chat', () => {
       created_at: new Date().toISOString()
     })
 
-    await runStreamedRequest(convId, (requestId) =>
-      window.api.chat.invoke('sendMessage', {
-        conversationId: convId,
-        requestId,
-        botId,
-        content,
-        attachments,
-        // 四类 override 都按「undefined=未指定走 bot 默认 / 空数组=本轮明确不用」对称下发，
-        // 避免 length 守卫把用户清空意图静默回填为 bot 默认（与 MCP 对齐）
-        ...(overrides?.kbCategoryIds !== undefined ? { overrideKbCategoryIds: overrides.kbCategoryIds } : {}),
-        ...(overrides?.skillIds !== undefined ? { overrideSkillIds: overrides.skillIds } : {}),
-        ...(overrides?.mcpIds !== undefined ? { overrideMcpIds: overrides.mcpIds } : {}),
-        ...(overrides?.promptSkillDirs !== undefined ? { overridePromptSkillDirs: overrides.promptSkillDirs } : {})
-      })
-    , startedAt)
+    try {
+      await runStreamedRequest(convId, (requestId) =>
+        window.api.chat.invoke('sendMessage', {
+          conversationId: convId,
+          requestId,
+          botId,
+          content,
+          attachments,
+          // 四类 override 都按「undefined=未指定走 bot 默认 / 空数组=本轮明确不用」对称下发，
+          // 避免 length 守卫把用户清空意图静默回填为 bot 默认（与 MCP 对齐）
+          ...(overrides?.kbCategoryIds !== undefined ? { overrideKbCategoryIds: overrides.kbCategoryIds } : {}),
+          ...(overrides?.skillIds !== undefined ? { overrideSkillIds: overrides.skillIds } : {}),
+          ...(overrides?.mcpIds !== undefined ? { overrideMcpIds: overrides.mcpIds } : {}),
+          ...(overrides?.promptSkillDirs !== undefined ? { overridePromptSkillDirs: overrides.promptSkillDirs } : {})
+        })
+      , startedAt)
+    } finally {
+      sendingConvIds.value.delete(convId)
+      sendingConvIds.value = new Set(sendingConvIds.value)
+    }
   }
 
   // 重新生成最后一轮回复(删除最后一条 user 及其后消息，用相同内容重发)
   async function regenerate() {
     const convId = currentConversationId.value
-    if (!convId || streamingConvIds.value.has(convId)) return
+    if (!convId || streamingConvIds.value.has(convId) || sendingConvIds.value.has(convId)) return
     // 乐观:移除本地最后一条 user 之后的旧回答(保留到该 user 含)，立即反映"重新生成";完成后由 DB seamless swap
     const list = messages.value
     for (let i = list.length - 1; i >= 0; i--) {
@@ -783,7 +811,7 @@ export const useChatStore = defineStore('chat', () => {
   // 从中断处继续生成:保留已产出的半截回答，让模型接着写(不丢弃已生成内容、省 completion token)
   async function continueGenerate() {
     const convId = currentConversationId.value
-    if (!convId || streamingConvIds.value.has(convId)) return
+    if (!convId || streamingConvIds.value.has(convId) || sendingConvIds.value.has(convId)) return
     // 乐观:去掉最后一条 assistant 的中断/报错标记，立即反映"继续中"；完成后由 DB seamless swap
     const list = messages.value
     const last = list[list.length - 1]
@@ -799,7 +827,7 @@ export const useChatStore = defineStore('chat', () => {
   // 编辑某条用户消息并重发(删除该消息及其后消息，用新内容重发)
   async function editMessage(messageId: string, newContent: string) {
     const convId = currentConversationId.value
-    if (!convId || streamingConvIds.value.has(convId)) return
+    if (!convId || streamingConvIds.value.has(convId) || sendingConvIds.value.has(convId)) return
     if (!newContent || !newContent.trim()) return
     // 乐观:截断到该消息之前 + 插入编辑后的 user，立即显示新问题;完成后由 DB seamless swap
     const idx = messages.value.findIndex((m) => m.id === messageId)
@@ -821,12 +849,26 @@ export const useChatStore = defineStore('chat', () => {
     messages.value = messages.value.filter((m) => m.id !== messageId)
   }
 
+  /**
+   * 进入空态新对话：不立刻写库，会话在发出第一条消息时才创建。
+   * 避免侧栏堆满空的「新对话」，也让问候空态真正出现。
+   * newChatSeq 用于 ChatView 感知「再次点了新建对话」（已在空态时也要重置输入区状态）。
+   */
+  const newChatSeq = ref(0)
+  function startNewChat() {
+    currentConversationId.value = null
+    messages.value = []
+    streamContent.value = ''
+    newChatSeq.value += 1
+  }
+
   function reset() {
     conversations.value = []
     messages.value = []
     currentConversationId.value = null
     currentBotId.value = null
     streamingConvIds.value = new Set()
+    sendingConvIds.value = new Set()
     activeRequestIds.value = {}
     canceledRequestIds.value = new Set()
     streamContent.value = ''
@@ -920,6 +962,7 @@ export const useChatStore = defineStore('chat', () => {
     createConversation,
     updateConversationModel,
     updateConversationImageModel,
+    updateConversationToolApproval,
     selectConversation,
     deleteConversation,
     updateTitle,
@@ -938,6 +981,8 @@ export const useChatStore = defineStore('chat', () => {
     getDraft,
     setDraft,
     clearDraft,
+    newChatSeq,
+    startNewChat,
     reset
   }
 })

@@ -1,10 +1,52 @@
 <template>
-  <div class="h-full flex flex-col">
-    <header class="page-header"></header>
-    <div class="page-body">
-      <div class="max-w-2xl space-y-8">
+  <!-- 设置 = 全局居中模态（MainLayout 常驻挂载，settings-ui store 控制显隐）。无背景遮罩，仅阴影。 -->
+  <Teleport to="body">
+    <div
+      v-if="settingsUi.open"
+      class="fixed inset-0 z-[100] flex items-center justify-center p-6"
+    >
+      <div class="relative flex w-full max-w-4xl h-[min(720px,88vh)] rounded-3xl bg-surface-0 shadow-modal overflow-hidden">
+        <!-- 左侧分类导航 -->
+        <aside class="w-52 flex-shrink-0 bg-surface-1 border-r border-surface-2 flex flex-col">
+          <div class="h-14 flex items-center px-5 flex-shrink-0">
+            <span class="text-sm font-semibold text-text-primary">设置</span>
+          </div>
+          <nav class="flex-1 px-2.5 space-y-0.5 overflow-y-auto">
+            <button
+              v-for="cat in categories"
+              :key="cat.key"
+              type="button"
+              :class="[
+                'w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-[13px] font-medium transition-colors text-left',
+                settingsUi.category === cat.key
+                  ? 'bg-surface-0 text-text-primary shadow-panel'
+                  : 'text-text-secondary hover:bg-surface-2'
+              ]"
+              @click="settingsUi.setCategory(cat.key)"
+            >
+              <component :is="cat.icon" class="w-4 h-4 flex-shrink-0 opacity-80" />
+              <span>{{ cat.label }}</span>
+            </button>
+          </nav>
+        </aside>
+
+        <!-- 右侧内容 -->
+        <div class="flex-1 min-w-0 flex flex-col">
+          <div class="h-14 flex items-center justify-between px-6 border-b border-surface-2 flex-shrink-0">
+            <h1 class="text-sm font-semibold text-text-primary">{{ currentCategoryLabel }}</h1>
+            <button
+              type="button"
+              class="p-1.5 rounded-lg text-text-tertiary hover:text-text-primary hover:bg-surface-2 transition-colors"
+              title="关闭 (Esc)"
+              @click="settingsUi.hide()"
+            >
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18 18 6M6 6l12 12" /></svg>
+            </button>
+          </div>
+          <div class="flex-1 overflow-y-auto px-6 py-5">
+            <div class="max-w-2xl space-y-8">
         <!-- Vector Service -->
-        <section>
+        <section v-show="settingsUi.category === 'vector'">
           <div class="flex items-center gap-2.5 mb-4">
             <div class="w-8 h-8 rounded-lg bg-primary-50 flex items-center justify-center">
               <svg class="w-4 h-4 text-primary-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75m-16.5-3.75v3.75m16.5 0v3.75C20.25 16.153 16.556 18 12 18s-8.25-1.847-8.25-4.125v-3.75m16.5 0c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125" /></svg>
@@ -42,12 +84,12 @@
               </select>
               <p class="text-[11px] text-text-tertiary mt-1.5">消耗云端{{ siteConfig.labels.token }}（与对话共享同一池）</p>
             </div>
-            <div v-else class="flex items-start gap-2 p-3 rounded-lg bg-amber-50 border border-amber-200 dark:bg-amber-900/20 dark:border-amber-800">
-              <svg class="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" /></svg>
+            <div v-else class="flex items-start gap-2 p-3 rounded-lg tone-warn border">
+              <svg class="w-4 h-4 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" /></svg>
               <div class="flex-1">
-                <div class="text-xs text-amber-800 dark:text-amber-300 font-medium">您的套餐未包含向量模型</div>
-                <div class="text-[11px] text-amber-700 dark:text-amber-400 mt-1">购买含向量模型的套餐后，知识库可使用云端向量服务</div>
-                <router-link to="/plans-store" class="inline-block mt-2 text-xs text-primary-600 hover:text-primary-700 font-medium">前往套餐商城 →</router-link>
+                <div class="text-xs font-medium">您的套餐未包含向量模型</div>
+                <div class="text-[11px] mt-1 opacity-80">购买含向量模型的套餐后，知识库可使用云端向量服务</div>
+                <router-link to="/plans-store" class="inline-block mt-2 text-xs text-primary-600 hover:text-primary-700 font-medium" @click="settingsUi.hide()">前往套餐商城 →</router-link>
               </div>
             </div>
           </div>
@@ -87,20 +129,20 @@
                 <svg v-if="vectorTesting" class="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" class="opacity-25" /><path d="M4 12a8 8 0 018-8" stroke="currentColor" stroke-width="3" stroke-linecap="round" class="opacity-75" /></svg>
                 <span>{{ vectorTesting ? '测试中...' : '连接测试' }}</span>
               </button>
-              <span v-if="vectorSaved" class="text-xs text-emerald-600 dark:text-emerald-400 font-medium animate-pulse">已保存</span>
-              <span v-if="vectorTestResult" :class="['text-xs font-medium', vectorTestOk ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500 dark:text-red-400']">{{ vectorTestResult }}</span>
+              <span v-if="vectorSaved" class="text-xs font-medium animate-pulse" style="color: var(--ok-fg)">已保存</span>
+              <span v-if="vectorTestResult" :class="['text-xs font-medium']" :style="{ color: vectorTestOk ? 'var(--ok-fg)' : 'var(--danger-fg)' }">{{ vectorTestResult }}</span>
             </div>
             <p class="text-[11px] text-text-tertiary">自定义配置不消耗云端{{ siteConfig.labels.token }}。若管理员关闭「自定义向量」权限，本地配置将被忽略，强制走云端</p>
           </div>
 
           <!-- 切换源确认弹窗（仅当库内已有向量时显示） -->
-          <div v-if="sourceSwitchTarget" class="fixed inset-0 flex items-center justify-center z-50">
+          <div v-if="sourceSwitchTarget" class="fixed inset-0 flex items-center justify-center z-[110]">
             <div class="bg-surface-0 rounded-xl shadow-2xl border border-surface-3 p-6 max-w-md w-full mx-4">
               <h3 class="text-sm font-semibold text-text-primary mb-2">切换向量源</h3>
               <p class="text-xs text-text-secondary mb-2">
                 当前已有 <b class="text-text-primary">{{ mismatchInfo?.totalChunks ?? 0 }}</b> 个分块使用「{{ describeMeta(mismatchInfo?.legacy?.[0]) }}」向量化。
               </p>
-              <p class="text-xs text-amber-600 font-medium mb-4">
+              <p class="text-xs font-medium mb-4" style="color: var(--warn-fg)">
                 切换到「{{ sourceSwitchTarget === 'cloud' ? '云端模型' : '自定义配置' }}」后，已有向量空间不兼容，知识库召回将失效。请在切换后前往「向量统计」页执行「全量重新向量化」。
               </p>
               <div class="flex justify-end gap-2">
@@ -112,7 +154,7 @@
         </section>
 
         <!-- General -->
-        <section>
+        <section v-show="settingsUi.category === 'general'">
           <div class="flex items-center gap-2.5 mb-4">
             <div class="w-8 h-8 rounded-lg bg-amber-50 dark:bg-amber-900/20 flex items-center justify-center">
               <svg class="w-4 h-4 text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.325.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.431l-1.003.827c-.293.241-.438.613-.431.992a6.759 6.759 0 0 1 0 .255c-.007.378.138.75.43.991l1.004.827c.424.35.534.955.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.47 6.47 0 0 1-.22.128c-.331.183-.581.495-.644.869l-.213 1.281c-.09.543-.56.94-1.11.94h-2.594c-.55 0-1.019-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.431l1.004-.827c.292-.24.437-.613.43-.991a6.932 6.932 0 0 1 0-.255c.007-.38-.138-.751-.43-.992l-1.004-.827a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.086.22-.128.332-.183.582-.495.644-.869l.214-1.28Z" /><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" /></svg>
@@ -139,13 +181,33 @@
             </div>
             <div class="flex items-center gap-3 pt-1">
               <button @click="saveGeneralSettings" class="btn-primary">保存</button>
-              <span v-if="generalSaved" class="text-xs text-emerald-600 dark:text-emerald-400 font-medium animate-pulse">已保存</span>
+              <span v-if="generalSaved" class="text-xs font-medium animate-pulse" style="color: var(--ok-fg)">已保存</span>
+            </div>
+          </div>
+        </section>
+
+        <!-- Theme -->
+        <section v-show="settingsUi.category === 'general'">
+          <div class="flex items-center gap-2.5 mb-4">
+            <div class="w-8 h-8 rounded-lg bg-indigo-50 dark:bg-indigo-900/20 flex items-center justify-center">
+              <svg class="w-4 h-4 text-indigo-600 dark:text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M21.752 15.002A9.72 9.72 0 0 1 18 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 0 0 3 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 0 0 9.002-5.998Z" /></svg>
+            </div>
+            <h2 class="text-sm font-semibold text-text-primary">外观</h2>
+          </div>
+          <div class="form-card">
+            <div>
+              <label class="form-label">主题模式</label>
+              <div class="flex gap-2">
+                <button v-for="opt in themeOptions" :key="opt.value" @click="themeStore.setMode(opt.value)" :class="['flex-1 px-3 py-2.5 text-xs font-medium rounded-lg border transition-all', themeStore.mode === opt.value ? 'border-primary-500 bg-primary-50 text-primary-700' : 'border-surface-3 bg-surface-0 text-text-secondary hover:bg-surface-2']">
+                  {{ opt.label }}
+                </button>
+              </div>
             </div>
           </div>
         </section>
 
         <!-- File Read Security -->
-        <section>
+        <section v-show="settingsUi.category === 'data'">
           <div class="flex items-center gap-2.5 mb-4">
             <div class="w-8 h-8 rounded-lg bg-surface-2 flex items-center justify-center">
               <svg class="w-4 h-4 text-text-secondary" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12.75 11.25 15 15 9.75m-3-7.036A11.959 11.959 0 0 1 3.598 6 11.99 11.99 0 0 0 3 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285Z" /></svg>
@@ -166,14 +228,14 @@
               <p v-else class="text-[11px] text-text-tertiary mb-2.5">尚未添加可信目录</p>
               <div class="flex items-center gap-3 pt-1">
                 <button @click="addTrustedDir" class="btn-secondary">添加目录</button>
-                <span v-if="trustedSaved" class="text-xs text-emerald-600 dark:text-emerald-400 font-medium animate-pulse">已保存</span>
+                <span v-if="trustedSaved" class="text-xs font-medium animate-pulse" style="color: var(--ok-fg)">已保存</span>
               </div>
             </div>
           </div>
         </section>
 
         <!-- Data Directory -->
-        <section>
+        <section v-show="settingsUi.category === 'data'">
           <div class="flex items-center gap-2.5 mb-4">
             <div class="w-8 h-8 rounded-lg bg-teal-50 dark:bg-teal-900/20 flex items-center justify-center">
               <svg class="w-4 h-4 text-teal-600 dark:text-teal-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M2.25 12.75V12A2.25 2.25 0 0 1 4.5 9.75h15A2.25 2.25 0 0 1 21.75 12v.75m-8.69-6.44-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9a2.25 2.25 0 0 0-2.25-2.25h-5.379a1.5 1.5 0 0 1-1.06-.44Z" /></svg>
@@ -191,11 +253,11 @@
               <p class="text-[11px] text-text-tertiary mt-1.5">数据库、技能、工作区等数据存放位置。更改后会自动追加 <span class="font-mono">local-agent</span> 子目录。</p>
               <p class="text-[11px] text-text-tertiary mt-1">请勿选择应用安装目录（如 <span class="font-mono">Program Files</span>）或系统目录，否则升级/卸载时数据会被清空。</p>
             </div>
-            <div v-if="dataDirError" class="flex items-start gap-2 pt-1 text-xs text-red-500 font-medium">
+            <div v-if="dataDirError" class="flex items-start gap-2 pt-1 text-xs font-medium" style="color: var(--danger-fg)">
               <svg class="w-3.5 h-3.5 mt-0.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" /></svg>
               <span class="break-all">{{ dataDirError }}</span>
             </div>
-            <div v-if="dataDirChanged" class="flex items-center gap-2 pt-1 text-xs text-amber-600 font-medium">
+            <div v-if="dataDirChanged" class="flex items-center gap-2 pt-1 text-xs font-medium" style="color: var(--warn-fg)">
               <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z" /></svg>
               数据目录已更改，请重启软件后生效
             </div>
@@ -217,7 +279,7 @@
         </div>
 
         <!-- Data Backup -->
-        <section>
+        <section v-show="settingsUi.category === 'data'">
           <div class="flex items-center gap-2.5 mb-4">
             <div class="w-8 h-8 rounded-lg bg-sky-50 dark:bg-sky-900/20 flex items-center justify-center">
               <svg class="w-4 h-4 text-sky-600 dark:text-sky-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M20.25 7.5l-.625 10.632a2.25 2.25 0 0 1-2.247 2.118H6.622a2.25 2.25 0 0 1-2.247-2.118L3.75 7.5m8.25 3v6.75m0 0-3-3m3 3 3-3M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125Z" /></svg>
@@ -265,7 +327,7 @@
                 </div>
               </div>
               <button @click="restoreFromExternal" :disabled="taskRunning" class="btn-secondary">从文件恢复...</button>
-              <span v-if="backupMessage" :class="['text-xs font-medium', backupMessageOk ? 'text-emerald-600' : 'text-red-500']">{{ backupMessage }}</span>
+              <span v-if="backupMessage" :class="['text-xs font-medium']" :style="{ color: backupMessageOk ? 'var(--ok-fg)' : 'var(--danger-fg)' }">{{ backupMessage }}</span>
             </div>
 
             <!-- 进度区域：备份或恢复进行中显示 -->
@@ -289,7 +351,7 @@
                 <div v-for="b in pagedBackups" :key="b.fileName" class="flex flex-col gap-1.5 px-3 py-2 rounded-lg bg-surface-1 text-xs">
                   <div class="flex items-center gap-2">
                     <span :class="['inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium', b.type === 'full' ? 'bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300' : 'bg-surface-3 text-text-secondary']">{{ b.type === 'full' ? '完整' : '数据库' }}</span>
-                    <span v-if="b.format === 'legacy'" class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300" title="旧格式备份，无完整性校验">旧格式</span>
+                    <span v-if="b.format === 'legacy'" class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium" style="background: var(--warn-bg); color: var(--warn-fg)" title="旧格式备份，无完整性校验">旧格式</span>
                     <span class="text-text-secondary flex-1 truncate">{{ formatTime(b.createdAt) }}</span>
                     <span class="text-text-tertiary flex-shrink-0">{{ formatSize(b.size) }}</span>
                   </div>
@@ -313,7 +375,7 @@
           </div>
 
           <!-- Restore Confirm Dialog -->
-          <div v-if="restoreTarget" class="fixed inset-0 flex items-center justify-center z-50">
+          <div v-if="restoreTarget" class="fixed inset-0 flex items-center justify-center z-[110]">
             <div class="bg-surface-0 rounded-xl shadow-2xl border border-surface-3 p-6 max-w-md w-full mx-4">
               <h3 class="text-sm font-semibold text-text-primary mb-3">确认恢复</h3>
 
@@ -346,22 +408,22 @@
                 <svg class="w-3 h-3 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" class="opacity-25" /><path d="M4 12a8 8 0 018-8" stroke="currentColor" stroke-width="3" stroke-linecap="round" class="opacity-75" /></svg>
                 正在校验备份文件...
               </div>
-              <div v-else-if="verifyInfo && !verifyInfo.ok" class="mb-3 text-xs text-red-600 bg-red-50 border border-red-200 dark:text-red-300 dark:bg-red-900/20 dark:border-red-800 rounded-lg px-3 py-2">
+              <div v-else-if="verifyInfo && !verifyInfo.ok" class="mb-3 text-xs rounded-lg px-3 py-2 tone-danger border">
                 <div class="font-medium mb-0.5">备份不可恢复</div>
                 <div>{{ verifyInfo.error }}</div>
               </div>
-              <div v-else-if="verifyInfo?.compat?.level === 'warning'" class="mb-3 text-xs text-amber-700 bg-amber-50 border border-amber-200 dark:text-amber-300 dark:bg-amber-900/20 dark:border-amber-800 rounded-lg px-3 py-2">
+              <div v-else-if="verifyInfo?.compat?.level === 'warning'" class="mb-3 text-xs rounded-lg px-3 py-2 tone-warn border">
                 <div class="font-medium mb-0.5">兼容性警告</div>
                 <div>{{ verifyInfo.compat.reason }}</div>
               </div>
-              <div v-else-if="verifyInfo?.legacy" class="mb-3 text-xs text-amber-700 bg-amber-50 border border-amber-200 dark:text-amber-300 dark:bg-amber-900/20 dark:border-amber-800 rounded-lg px-3 py-2">
+              <div v-else-if="verifyInfo?.legacy" class="mb-3 text-xs rounded-lg px-3 py-2 tone-warn border">
                 <div class="font-medium mb-0.5">旧格式备份</div>
                 <div>无法做完整性校验，建议恢复后立即创建新格式的备份。</div>
               </div>
 
               <!-- 影响说明 -->
               <p class="text-xs text-text-secondary mb-1">{{ restoreTarget.type === 'full' ? '将恢复所有数据和文件，当前数据将被归档保留 7 天供反悔。' : '将恢复数据库（对话、Bot、知识库配置等），技能文件和图片不受影响。' }}</p>
-              <p class="text-xs text-amber-600 dark:text-amber-400 font-medium mb-4">恢复完成后应用将自动重启。</p>
+              <p class="text-xs font-medium mb-4" style="color: var(--warn-fg)">恢复完成后应用将自动重启。</p>
 
               <div class="flex justify-end gap-2">
                 <button @click="cancelRestoreDialog" :disabled="restoreRunning" class="btn-secondary">取消</button>
@@ -375,30 +437,10 @@
         </section>
 
         <!-- Cloud Sync -->
-        <CloudSyncSection />
-
-        <!-- Theme -->
-        <section>
-          <div class="flex items-center gap-2.5 mb-4">
-            <div class="w-8 h-8 rounded-lg bg-indigo-50 dark:bg-indigo-900/20 flex items-center justify-center">
-              <svg class="w-4 h-4 text-indigo-600 dark:text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M21.752 15.002A9.72 9.72 0 0 1 18 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 0 0 3 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 0 0 9.002-5.998Z" /></svg>
-            </div>
-            <h2 class="text-sm font-semibold text-text-primary">外观</h2>
-          </div>
-          <div class="form-card">
-            <div>
-              <label class="form-label">主题模式</label>
-              <div class="flex gap-2">
-                <button v-for="opt in themeOptions" :key="opt.value" @click="themeStore.setMode(opt.value)" :class="['flex-1 px-3 py-2.5 text-xs font-medium rounded-lg border transition-all', themeStore.mode === opt.value ? 'border-primary-500 bg-primary-50 text-primary-700' : 'border-surface-3 bg-surface-0 text-text-secondary hover:bg-surface-2']">
-                  {{ opt.label }}
-                </button>
-              </div>
-            </div>
-          </div>
-        </section>
+        <CloudSyncSection v-show="settingsUi.category === 'data'" ref="cloudSyncRef" />
 
         <!-- About -->
-        <section>
+        <section v-show="settingsUi.category === 'about'">
           <div class="flex items-center gap-2.5 mb-4">
             <div class="w-8 h-8 rounded-lg bg-surface-2 flex items-center justify-center">
               <svg class="w-4 h-4 text-text-tertiary" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="m11.25 11.25.041-.02a.75.75 0 0 1 1.063.852l-.708 2.836a.75.75 0 0 0 1.063.853l.041-.021M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9-3.75h.008v.008H12V8.25Z" /></svg>
@@ -443,12 +485,15 @@
             </div>
           </div>
         </section>
+            </div>
+          </div>
+        </div>
+
+        <!-- 更新日志弹窗（模态容器内，层级自然高于设置模态） -->
+        <ChangelogDialog v-if="showChangelog" :current-version="appVersion" @close="showChangelog = false" />
       </div>
     </div>
-
-    <!-- 更新日志弹窗 -->
-    <ChangelogDialog v-if="showChangelog" :current-version="appVersion" @close="showChangelog = false" />
-  </div>
+  </Teleport>
 </template>
 
 <script setup lang="ts">
@@ -457,13 +502,51 @@ import { useThemeStore } from '@/stores/theme'
 import type { ThemeMode } from '@/stores/theme'
 import { useCloudAuthStore } from '@/stores/cloud-auth'
 import { useSiteConfigStore } from '@/stores/site-config'
+import { useSettingsUiStore, type SettingsCategory } from '@/stores/settings-ui'
 import { appName, appAbbr, appIconUrl } from '@/utils/branding'
 import { normalizeApiBase } from '@shared/api-base-normalize'
 import ChangelogDialog from './ChangelogDialog.vue'
 import CloudSyncSection from './CloudSyncSection.vue'
+import IconSettings from '@/components/icons/IconSettings.vue'
+import IconKnowledge from '@/components/icons/IconKnowledge.vue'
+import IconFolder from '@/components/icons/IconFolder.vue'
+import IconCustomApp from '@/components/icons/IconCustomApp.vue'
 
 declare const __APP_VERSION__: string
 const appVersion = __APP_VERSION__
+
+// === 设置模态：分类导航 ===
+const settingsUi = useSettingsUiStore()
+const cloudSyncRef = ref<InstanceType<typeof CloudSyncSection> | null>(null)
+const categories: { key: SettingsCategory; label: string; icon: any }[] = [
+  { key: 'general', label: '常规', icon: IconSettings },
+  { key: 'vector', label: '向量服务', icon: IconKnowledge },
+  { key: 'data', label: '数据与安全', icon: IconFolder },
+  { key: 'about', label: '关于', icon: IconCustomApp }
+]
+const currentCategoryLabel = computed(() => categories.find((c) => c.key === settingsUi.category)?.label || '设置')
+
+/** Esc：内部弹窗打开时优先关闭弹窗本身；都不在时才关设置模态 */
+function onSettingsKeydown(e: KeyboardEvent) {
+  if (e.key !== 'Escape' || !settingsUi.open) return
+  if (sourceSwitchTarget.value) { cancelSwitchSource(); return }
+  if (restoreTarget.value) { cancelRestoreDialog(); return }
+  if (showDataDirRelaunch.value) { showDataDirRelaunch.value = false; return }
+  if (showChangelog.value) { showChangelog.value = false; return }
+  if (cloudSyncRef.value?.hasOpenDialog) return // 云同步授权/冲突弹窗由组件自身处理，让位
+  settingsUi.hide()
+}
+
+// 模态每次打开时刷新设置与备份列表（常驻挂载后 onMounted 只跑一次，数据会陈旧）
+watch(
+  () => settingsUi.open,
+  (open, wasOpen) => {
+    if (open && !wasOpen) {
+      loadSettings()
+      loadBackups()
+    }
+  }
+)
 
 // === 更新检查与日志 ===
 const checkingUpdate = ref(false)
@@ -1074,12 +1157,14 @@ onMounted(() => {
   loadSettings()
   loadBackups()
   document.addEventListener('click', onClickOutsideMenu)
+  document.addEventListener('keydown', onSettingsKeydown)
   // 订阅备份/恢复进度，让 UI 进度条与主进程实际状态同步
   window.api.backup.onProgress(handleBackupProgress)
 })
 
 onUnmounted(() => {
   document.removeEventListener('click', onClickOutsideMenu)
+  document.removeEventListener('keydown', onSettingsKeydown)
   window.api.backup.offProgress()
   if (updateMessageTimer !== null) {
     clearTimeout(updateMessageTimer)

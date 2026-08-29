@@ -13,7 +13,10 @@
           <img
             v-if="appIconUrl"
             :src="appIconUrl"
+            width="64"
+            height="64"
             class="w-16 h-16 rounded-2xl object-cover"
+            style="width:64px;height:64px"
             alt=""
             draggable="false"
           />
@@ -24,7 +27,10 @@
             <span class="text-white text-lg font-bold">{{ appAbbr }}</span>
           </div>
           <!-- 同色系柔光底：仅作质感衬托，不引入其它色相 -->
-          <div class="absolute -inset-3 -z-10 rounded-full bg-primary-500/20 blur-2xl"></div>
+          <div
+            class="absolute -inset-3 -z-10 rounded-full bg-primary-500/20 blur-2xl"
+            style="width:88px;height:88px;max-width:88px;max-height:88px"
+          ></div>
         </div>
         <h1 class="text-lg font-bold text-text-primary">{{ appName }}</h1>
         <div class="mt-2 flex items-center gap-2.5">

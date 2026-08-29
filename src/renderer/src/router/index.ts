@@ -13,7 +13,7 @@ export const routes: RouteRecordRaw[] = [
     component: () => import('@/layouts/MainLayout.vue'),
     meta: { requiresAuth: true },
     children: [
-      // 首页 = 智能体列表（云控端隐藏智能体菜单时 getHomePath 回退 /chat）
+      // 首页 = 对话空态工作台（云控端隐藏对话菜单时 getHomePath 回退 /bots）
       { path: '', redirect: () => getHomePath() },
       { path: 'chat', name: 'chat', component: () => import('@/views/chat/ChatView.vue'), meta: { title: '对话' } },
       { path: 'bots', name: 'bots', component: () => import('@/views/bots/BotListView.vue'), meta: { title: '智能体' } },
@@ -283,9 +283,10 @@ export const routes: RouteRecordRaw[] = [
         meta: { title: '提示词' }
       },
       {
+        // 设置已改为全局居中模态：/settings 兼容路由打开模态后回首页（OpenSettingsRoute）
         path: 'settings',
         name: 'settings',
-        component: () => import('@/views/settings/SettingsView.vue'),
+        component: () => import('@/views/settings/OpenSettingsRoute.vue'),
         meta: { title: '设置' }
       },
       {

@@ -23,6 +23,11 @@ export interface Conversation {
   active_image_model_id: string
   /** 用户手动改名后置 1：自动标题生成（第 1/5 条消息）不再覆盖用户命名 */
   title_locked: number
+  /**
+   * 会话级工具审批档（P1 会话级权限覆盖）。
+   * 空串 = 继承智能体 tool_approval；否则为 'off' | 'destructive' | 'all'。
+   */
+  tool_approval: string
   created_at: string
   updated_at: string
 }
@@ -174,6 +179,19 @@ export function updateConversationImageModel(
   db.prepare(
     'UPDATE conversations SET active_image_provider_id=?, active_image_model_id=? WHERE id=?'
   ).run(provider_id || '', model_id || '', id)
+}
+
+/**
+ * 会话级工具审批档覆盖（输入条权限切换器触发）。
+ * 空串 = 恢复继承智能体默认；off/destructive/all = 会话独立档。
+ * 不更新 updated_at（同模型切换，不污染会话列表排序）。
+ */
+export function updateConversationToolApproval(id: string, tool_approval: string): void {
+  const mode = tool_approval === 'off' || tool_approval === 'destructive' || tool_approval === 'all'
+    ? tool_approval
+    : ''
+  const db = getDatabase()
+  db.prepare('UPDATE conversations SET tool_approval=? WHERE id=?').run(mode, id)
 }
 
 export function deleteConversation(id: string): boolean {

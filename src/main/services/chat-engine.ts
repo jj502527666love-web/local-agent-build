@@ -4,7 +4,8 @@ import { existsSync, mkdirSync, writeFileSync } from 'fs'
 import { createHash } from 'crypto'
 import { v4 as uuid } from 'uuid'
 import { getDataDir } from './data-path'
-import { getBot, type ToolApproval } from './bot'
+import { type ToolApproval } from './bot'
+import { resolveChatBot, DEFAULT_CHAT_SYSTEM_PROMPT } from './default-chat'
 import { getPersona } from './persona'
 import { getMessages, addMessage, getConversation, updateConversationTitle, deleteMessagesFrom, updateMessageContent, deleteMessage, countConversationMessages } from './conversation'
 import { callLLM, ChatMessage, AbortedError, isAbortedError } from './llm'
@@ -805,8 +806,7 @@ export async function sendMessage(
   options: SendMessageOptions,
   window: BrowserWindow | null
 ): Promise<void> {
-  const bot = getBot(options.botId)
-  if (!bot) throw new Error('Bot not found')
+  const bot = resolveChatBot(options.botId)
   const requestId = options.requestId || `chat_${uuid()}`
   canceledRequestIds.delete(requestId)
   canceledRequestReasons.delete(requestId)
@@ -823,6 +823,11 @@ export async function sendMessage(
   if (!effectiveModelId) {
     throw new Error('未选择对话模型，请在输入框左下角选择模型')
   }
+  // 会话级权限档覆盖智能体（空串 = 继承智能体 tool_approval）
+  const effectiveToolApproval: ToolApproval =
+    conv.tool_approval === 'off' || conv.tool_approval === 'destructive' || conv.tool_approval === 'all'
+      ? conv.tool_approval
+      : (bot.tool_approval || 'destructive')
 
   // Save user message
   const normalizedAttachments = normalizeAttachments(options.attachments)
@@ -1073,7 +1078,13 @@ export async function sendMessage(
     const persona = getPersona(bot.persona_id)
     if (persona) {
       baseSystemParts.push(persona.system_prompt)
+    } else {
+      // 人设已删除/失效：注入默认助手身份，避免无人设裸跑
+      baseSystemParts.push(DEFAULT_CHAT_SYSTEM_PROMPT)
     }
+  } else {
+    // 未绑人设（含默认助手兜底场景）：注入默认身份说明
+    baseSystemParts.push(DEFAULT_CHAT_SYSTEM_PROMPT)
   }
 
   messages.push({ role: 'system', content: baseSystemParts.join('\n\n') })
@@ -1631,8 +1642,8 @@ export async function sendMessage(
             approvalToolArgs = parsedArgs?.args && typeof parsedArgs.args === 'object' ? parsedArgs.args : {}
           }
         }
-        // 脱离沙箱工具强制确认（忽略审批模式）；其余按智能体审批策略。
-        if (unsandboxedToolNames.has(fnName) || needsApproval(bot.tool_approval, approvalToolName, approvalToolArgs, sandboxDir, mcpReadOnlyToolNames)) {
+        // 脱离沙箱工具强制确认（忽略审批模式）；其余按会话级覆盖后的审批策略。
+        if (unsandboxedToolNames.has(fnName) || needsApproval(effectiveToolApproval, approvalToolName, approvalToolArgs, sandboxDir, mcpReadOnlyToolNames)) {
           const preview = fnName === 'file_ops'
             ? (previewFileWrite(parsedArgs, sandboxDir) || previewFileRead(parsedArgs, sandboxDir))
             : null
@@ -1891,8 +1902,7 @@ export async function regenerateLastResponse(
   const conv = getConversation(conversationId)
   if (!conv) throw new Error('Conversation not found')
   // 先校验可发送条件再截断——否则截断已提交而重发失败，截断点之后的历史被静默丢失
-  const bot = getBot(conv.bot_id)
-  if (!bot) throw new Error('智能体不存在，无法重新生成')
+  const bot = resolveChatBot(conv.bot_id)
   if (!(conv.active_model_id || bot.model_id)) throw new Error('未选择对话模型，无法重新生成')
   deleteMessagesFrom(conversationId, lastUser.id)
   const stash = lastTurnOverrides.get(conversationId) ?? {}
@@ -1970,8 +1980,7 @@ export async function editAndResend(
   const conv = getConversation(conversationId)
   if (!conv) throw new Error('Conversation not found')
   // 先校验可发送条件再截断——否则截断已提交而重发失败，截断点之后的历史被静默丢失
-  const bot = getBot(conv.bot_id)
-  if (!bot) throw new Error('智能体不存在，无法重发')
+  const bot = resolveChatBot(conv.bot_id)
   if (!(conv.active_model_id || bot.model_id)) throw new Error('未选择对话模型，无法重发')
   const attachments = target.attachments
   deleteMessagesFrom(conversationId, messageId)
