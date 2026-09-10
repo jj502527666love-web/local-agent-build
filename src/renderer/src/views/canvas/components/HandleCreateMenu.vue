@@ -94,6 +94,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, onBeforeUnmount, ref, watch, nextTick } from 'vue'
+import { isImeEvent } from '@/utils/keyboard'
 
 interface Candidate {
   type: string
@@ -181,7 +182,7 @@ function onDocumentPointerDown(e: PointerEvent) {
 }
 
 function onEsc(e: KeyboardEvent) {
-  if (props.visible && e.key === 'Escape') emit('close')
+  if (props.visible && e.key === 'Escape' && !isImeEvent(e)) emit('close')
 }
 
 onMounted(() => {

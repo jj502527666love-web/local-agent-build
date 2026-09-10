@@ -34,6 +34,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, watch } from 'vue'
 import DOMPurify from 'dompurify'
+import { isImeEvent } from '@/utils/keyboard'
 
 const props = defineProps<{
   open: boolean
@@ -60,7 +61,7 @@ const safeHtml = computed(() => {
 })
 
 function onKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape') emit('close')
+  if (e.key === 'Escape' && !isImeEvent(e)) emit('close')
 }
 
 watch(

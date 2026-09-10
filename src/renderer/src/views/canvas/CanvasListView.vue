@@ -103,8 +103,8 @@
             <input
               ref="renameInputRef"
               v-model="renameTitle"
-              @keydown.enter="confirmRename(project.id)"
-              @keydown.escape="renamingId = null"
+              @keydown.enter="!isImeEvent($event) && confirmRename(project.id)"
+              @keydown.escape="!isImeEvent($event) && (renamingId = null)"
               @blur="confirmRename(project.id)"
               maxlength="30"
               class="w-full text-sm font-medium text-text-primary bg-transparent border-b border-primary-400 outline-none py-0.5"
@@ -155,7 +155,7 @@
         <div class="space-y-4">
           <div>
             <label class="form-label">画布名称</label>
-            <input v-model="createForm.title" placeholder="输入画布名称" maxlength="30" class="input-field" @keydown.enter="doCreate" />
+            <input v-model="createForm.title" placeholder="输入画布名称" maxlength="30" class="input-field" @keydown.enter="!isImeEvent($event) && doCreate()" />
           </div>
           <div>
             <label class="form-label">文本处理服务商</label>
@@ -207,6 +207,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
+import { isImeEvent } from '@/utils/keyboard'
 import { useCanvasStore } from '@/stores/canvas'
 import { useModelStore } from '@/stores/models'
 import { useHandoffStore } from '@/stores/handoff'

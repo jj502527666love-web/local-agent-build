@@ -6,6 +6,23 @@
 
 ---
 
+## [1.1.5] - 2026-09-09
+
+> **多米渠道接入 gpt-image-2.5 双模型**：多米 2026-09-09 上架 `gpt-image-2.5-flare`（速度优先）/ `gpt-image-2.5-sunburst`（精度优先），本地多米服务商从"仅 gpt-image-2"放开为 3 模型清单，并打通画质档位透传；存量设备启动自动补齐模型清单。走云端模型目录的用户需云控端 ≥1.6.36 部署并登记 2.5 模型后可见。
+
+### 新增
+
+- **多米 gpt-image-2.5 双模型支持（`shared/image-size.ts` + `main/services/image-generation.ts` + `views/models/ModelView.vue`）**：
+  - `CAPABILITIES` 注册两个新模型（与 gpt-image-2 同档：2K/4K 分辨率档、4K 像素上限 8,294,400、四档画质）；`PROVIDER_FIXED_MODELS.duomi` 固定清单更新为 3 个，服务商编辑页改为列表展示，文案同步修正（删除"不支持参考图"的过时描述）。
+  - `callDuoMiImageAPI` 新增 `quality` 参数并透传——仅 low/medium/high 三档发给多米，auto 不传（让多米用默认档）；2.5 官方新增的 xhigh/max 档多米未明示支持，暂不开放。`resolveDuoMiSize` 改为按实际选中模型解析像素。
+  - modelId 白名单校验（`DUOMI_SUPPORTED_MODELS`）：本地数据不规范时兜底改写 gpt-image-2，与云控端 Adapter 白名单形成双重防御。
+
+### 修复
+
+- **存量多米服务商自动补齐模型清单（`main/database/index.ts`）**：`runMigrations()` 新增数据级迁移——启动时将 `type='duomi'` 的 provider `models` 幂等覆盖为当前固定清单（在 `installSyncSchema` 之前执行，不进同步 oplog）。此前老设备 models 只存了 gpt-image-2，不重新编辑保存就看不到新模型；现在升级重启即自动获得 2.5 双模型，将来清单再扩充也同样自动跟上。
+
+---
+
 ## [1.1.4] - 2026-08-30
 
 ### 修复

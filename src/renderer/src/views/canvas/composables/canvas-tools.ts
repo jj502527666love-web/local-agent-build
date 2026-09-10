@@ -62,12 +62,43 @@ interface ToolDef {
 /** 工具执行结果（紧凑，供回填 tool 消息） */
 export type ToolResult = Record<string, any>
 
-/** 破坏性 / 需审批的工具（删除、断线、运行）——执行前经审批门确认 */
+/** 破坏性 / 需审批的工具（删除、断线、运行、改节点数据）——执行前经审批门确认 */
 export const DESTRUCTIVE_CANVAS_TOOLS = new Set<string>([
   'canvas_disconnect',
   'canvas_delete_node',
-  'canvas_run'
+  'canvas_run',
+  'canvas_update_node_data'
 ])
+
+/** 字段级变更（改节点数据的审批卡用）：改前/改后对照 */
+export interface FieldDiff {
+  key: string
+  /** 字段中文说明（能力目录 desc，缺省回退 key） */
+  label: string
+  before: string
+  after: string
+  /** 完整值（tooltip 核对用；仅当展示值被截断时存在） */
+  beforeFull?: string
+  afterFull?: string
+}
+
+/** 展示用短串化：对象/数组 JSON 化并限长，undefined 显示为「（未设置）」。
+ *  返回 { text, full }——full 仅在发生截断时为完整值（tooltip 用），未截断时省略。 */
+function shortValue(v: any, maxLen = 120): { text: string; full?: string } {
+  let s: string
+  if (v === undefined) s = '（未设置）'
+  else if (v === null) s = '（空）'
+  else if (typeof v === 'string') s = v
+  else {
+    try {
+      s = JSON.stringify(v)
+    } catch {
+      s = String(v)
+    }
+  }
+  if (s.length > maxLen) return { text: s.slice(0, maxLen) + '…', full: s.length <= 4000 ? s : s.slice(0, 4000) + '…' }
+  return { text: s }
+}
 
 /** 会改画布结构/数据的工具：整图运行期间禁止执行（与手动编辑器的 workflowRunning 门闩一致） */
 const WRITE_CANVAS_TOOLS = new Set<string>([
@@ -86,7 +117,7 @@ export function createCanvasTools(ctx: CanvasToolContext): {
   defs: ToolDef[]
   names: Set<string>
   destructive: Set<string>
-  preview: (name: string, args: Record<string, any>) => string
+  preview: (name: string, args: Record<string, any>) => string | FieldDiff[]
   execute: (name: string, args: Record<string, any>) => Promise<ToolResult>
 } {
   const pid = () => ctx.projectId()
@@ -412,9 +443,34 @@ export function createCanvasTools(ctx: CanvasToolContext): {
   // ---------------------------------------------------------------------------
   // 破坏性工具的变更预览（供确认卡）
   // ---------------------------------------------------------------------------
-  function preview(name: string, rawArgs: Record<string, any>): string {
+  // 改节点数据返回结构化字段级 diff（改前/改后对照），删除/断线/运行保持文本描述
+  function preview(name: string, rawArgs: Record<string, any>): string | FieldDiff[] {
     const args = rawArgs || {}
     switch (name) {
+      case 'canvas_update_node_data': {
+        const node = findNode(String(args.nodeId))
+        if (!node) return `节点不存在：${args.nodeId}`
+        const partial = args.data && typeof args.data === 'object' ? args.data : {}
+        const capFields = getNodeCapabilities().find((c) => c.type === node.type)?.fields || []
+        const diffs: FieldDiff[] = []
+        for (const [k, v] of Object.entries(partial)) {
+          // 引擎专属字段（运行态/产物）execute 会硬拦，预览侧同样过滤不展示
+          if (!isAgentWritableDataKey(k, v)) continue
+          const fieldDef = capFields.find((f) => f.key === k)
+          const before = shortValue(node.data?.[k])
+          const after = shortValue(v)
+          diffs.push({
+            key: k,
+            label: fieldDef?.desc || k,
+            before: before.text,
+            after: after.text,
+            beforeFull: before.full,
+            afterFull: after.full
+          })
+        }
+        if (!diffs.length) return `将修改节点「${labelOf(node)}」（${tagOf(node.id)}），但没有可写入的字段。`
+        return diffs
+      }
       case 'canvas_delete_node': {
         const node = findNode(String(args.nodeId))
         if (!node) return `节点不存在：${args.nodeId}`

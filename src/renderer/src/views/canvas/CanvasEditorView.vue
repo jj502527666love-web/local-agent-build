@@ -10,8 +10,8 @@
           <input
             ref="titleInputRef"
             v-model="titleDraft"
-            @keydown.enter="saveTitle"
-            @keydown.escape="editingTitle = false"
+            @keydown.enter="!isImeEvent($event) && saveTitle()"
+            @keydown.escape="!isImeEvent($event) && (editingTitle = false)"
             @blur="saveTitle"
             maxlength="30"
             class="text-sm font-medium text-text-primary bg-transparent border-b border-primary-400 outline-none py-0.5 w-48"
@@ -366,6 +366,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, nextTick, markRaw, provide, watch } from 'vue'
 import { useRoute, useRouter, onBeforeRouteLeave } from 'vue-router'
+import { isImeEvent } from '@/utils/keyboard'
 import { VueFlow, useVueFlow, ConnectionMode, type Node as FlowNode, type Edge, type Connection } from '@vue-flow/core'
 import { MiniMap } from '@vue-flow/minimap'
 import '@vue-flow/core/dist/style.css'

@@ -234,6 +234,30 @@
           </div>
         </section>
 
+        <!-- Tool Approval Rules -->
+        <section v-show="settingsUi.category === 'data'">
+          <div class="flex items-center gap-2.5 mb-4">
+            <div class="w-8 h-8 rounded-lg bg-surface-2 flex items-center justify-center">
+              <svg class="w-4 h-4 text-text-secondary" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12.75 11.25 15 15 9.75M3.75 12a8.25 8.25 0 1 0 16.5 0 8.25 8.25 0 0 0-16.5 0Z" /></svg>
+            </div>
+            <h2 class="text-sm font-semibold text-text-primary">工具审批</h2>
+          </div>
+          <div class="form-card">
+            <div>
+              <label class="form-label">「总是允许」规则</label>
+              <p class="text-[11px] text-text-tertiary mt-1 mb-2.5 leading-relaxed">审批卡片上点「总是允许此工具」后，该工具（MCP 工具精确到具体服务器下的具体工具）的后续调用不再询问、直接执行。规则仅保存在本机，移除后立即恢复逐次确认。高危工具（如命令执行）不可入规则。</p>
+              <div v-if="approvalRules.length" class="space-y-1.5">
+                <div v-for="rule in approvalRules" :key="rule.tool_key" class="flex items-center gap-2 px-3 py-2 rounded-lg bg-surface-2 border border-surface-3">
+                  <svg class="w-3.5 h-3.5 text-text-tertiary flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M11.42 15.17 17.25 21A2.652 2.652 0 0 0 21 17.25l-5.877-5.877M11.42 15.17l2.496-3.03c.317-.384.74-.626 1.208-.766M11.42 15.17l-4.655 5.653a2.548 2.548 0 1 1-3.586-3.586l6.837-5.63m5.108-.233c.55-.164 1.163-.188 1.743-.14a4.5 4.5 0 0 0 4.486-6.336l-3.276 3.277a3.004 3.004 0 0 1-2.25-2.25l3.276-3.276a4.5 4.5 0 0 0-6.336 4.486c.091 1.076-.071 2.264-.904 2.95l-.102.085" /></svg>
+                  <code class="font-mono text-[11px] text-text-secondary flex-1 truncate" :title="sanitizeText(rule.tool_key, 300)">{{ sanitizeText(rule.tool_key, 300) }}</code>
+                  <button @click="removeApprovalRuleItem(rule.tool_key)" class="text-[11px] text-text-tertiary hover:text-red-500 flex-shrink-0">移除</button>
+                </div>
+              </div>
+              <p v-else class="text-[11px] text-text-tertiary">暂无规则</p>
+            </div>
+          </div>
+        </section>
+
         <!-- Data Directory -->
         <section v-show="settingsUi.category === 'data'">
           <div class="flex items-center gap-2.5 mb-4">
@@ -498,6 +522,8 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { isImeEvent } from '@/utils/keyboard'
+import { sanitizeText } from '@/utils/untrusted-text'
 import { useThemeStore } from '@/stores/theme'
 import type { ThemeMode } from '@/stores/theme'
 import { useCloudAuthStore } from '@/stores/cloud-auth'
@@ -526,9 +552,10 @@ const categories: { key: SettingsCategory; label: string; icon: any }[] = [
 ]
 const currentCategoryLabel = computed(() => categories.find((c) => c.key === settingsUi.category)?.label || '设置')
 
-/** Esc：内部弹窗打开时优先关闭弹窗本身；都不在时才关设置模态 */
+/** Esc：内部弹窗打开时优先关闭弹窗本身；都不在时才关设置模态；IME 组字中放行 */
 function onSettingsKeydown(e: KeyboardEvent) {
   if (e.key !== 'Escape' || !settingsUi.open) return
+  if (isImeEvent(e)) return
   if (sourceSwitchTarget.value) { cancelSwitchSource(); return }
   if (restoreTarget.value) { cancelRestoreDialog(); return }
   if (showDataDirRelaunch.value) { showDataDirRelaunch.value = false; return }
@@ -544,9 +571,32 @@ watch(
     if (open && !wasOpen) {
       loadSettings()
       loadBackups()
+      loadApprovalRules()
     }
   }
 )
+
+// === 工具审批「总是允许」规则清单（数据与安全分类下展示） ===
+interface ApprovalRuleItem {
+  tool_key: string
+  enabled: number
+  created_at: string
+}
+const approvalRules = ref<ApprovalRuleItem[]>([])
+async function loadApprovalRules(): Promise<void> {
+  try {
+    const list = await (window.api.chat.invoke('listApprovalRules') as Promise<ApprovalRuleItem[]>)
+    approvalRules.value = Array.isArray(list) ? list : []
+  } catch {
+    approvalRules.value = []
+  }
+}
+async function removeApprovalRuleItem(toolKey: string): Promise<void> {
+  try {
+    await window.api.chat.invoke('removeApprovalRule', toolKey)
+    approvalRules.value = approvalRules.value.filter((r) => r.tool_key !== toolKey)
+  } catch {}
+}
 
 // === 更新检查与日志 ===
 const checkingUpdate = ref(false)

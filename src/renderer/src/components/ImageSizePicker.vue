@@ -209,6 +209,7 @@
 
 <script setup lang="ts">
 import { ref, computed, nextTick, onBeforeUnmount, watch } from 'vue'
+import { isImeEvent } from '@/utils/keyboard'
 import {
   IMAGE_SIZE_PRESETS,
   isPresetValue,
@@ -542,7 +543,7 @@ function onOutsideClick(e: MouseEvent) {
 }
 
 function onKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape') {
+  if (e.key === 'Escape' && !isImeEvent(e)) {
     e.preventDefault()
     closePopover()
   } else if (e.key === 'Enter' && canConfirm.value) {

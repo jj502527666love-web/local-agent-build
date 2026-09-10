@@ -29,6 +29,28 @@ export function parseJsonLoose(text: string): unknown {
   return {}
 }
 
+/**
+ * 从半截 JSON 文本里提取「已完整闭合的 key:string 字段对」（流式预览用）。
+ * 只认完整闭合的 `"key": "value"`（转义安全）；数组/嵌套对象等复杂字段提取不到——
+ * 它们等最终完整 JSON 再生效（流式预览只显示先完成的字符串字段，属预期降级）。
+ */
+export function extractCompleteStringFields(text: string): Record<string, string> {
+  const out: Record<string, string> = {}
+  if (!text) return out
+  const re = /"((?:[^"\\]|\\.)*)"\s*:\s*"((?:[^"\\]|\\.)*)"/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(text)) !== null) {
+    try {
+      const k = JSON.parse(`"${m[1]}"`)
+      const v = JSON.parse(`"${m[2]}"`)
+      if (typeof k === 'string' && typeof v === 'string') out[k] = v
+    } catch {
+      /* 坏转义字段跳过 */
+    }
+  }
+  return out
+}
+
 export function toDeckLlm(
   providerId: string,
   modelId: string,
@@ -79,6 +101,53 @@ export function toDeckLlm(
         window ?? null
       )
       return res.content
+    },
+    // 流式 JSON: 边收边提取已闭合的字符串字段回调 onPartial（预览用）, 最终仍以全文宽松解析为准。
+    // onPartial 节流（100ms）：避免每 token 触发一次下游渲染管线。
+    async generateJsonStream({ system, user, schema, signal, onPartial }) {
+      let accumulated = ''
+      let lastEmitAt = 0
+      let lastEmittedKeys = 0
+      const res = await callLLM(
+        providerId,
+        {
+          modelId,
+          messages: [
+            { role: 'system', content: system },
+            {
+              role: 'user',
+              content:
+                user +
+                '\n\n只输出一个 JSON 对象, 严格符合下列 JSON Schema, 不要任何额外说明或代码围栏:\n' +
+                JSON.stringify(schema)
+            }
+          ],
+          response_format: { type: 'json_object' },
+          stream: true,
+          notifyStream: false,
+          streamContext: {
+            onContent: (piece) => {
+              accumulated += piece
+              const now = Date.now()
+              if (now - lastEmitAt < 100) return
+              const partial = extractCompleteStringFields(accumulated)
+              const keyCount = Object.keys(partial).length
+              if (keyCount === 0 || keyCount === lastEmittedKeys) return
+              lastEmitAt = now
+              lastEmittedKeys = keyCount
+              onPartial(partial)
+            }
+          },
+          signal
+        },
+        window ?? null
+      )
+      // 流末兜底补发：节流窗口内未发的尾部字段（快速模型最后 100ms 内闭合的字段）补一次预览
+      const finalPartial = extractCompleteStringFields(accumulated)
+      if (Object.keys(finalPartial).length > lastEmittedKeys) {
+        try { onPartial(finalPartial) } catch { /* 预览失败不影响权威结果 */ }
+      }
+      return parseJsonLoose(res.content)
     }
   }
 }

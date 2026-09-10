@@ -12,7 +12,7 @@ import { listMarket, searchMarket, getMarketDetail, installFromMarket } from '..
 import * as settingsService from '../services/settings'
 import * as dataPathService from '../services/data-path'
 import * as usageStatsService from '../services/usage-stats'
-import { sendMessage, cancelChat, isChatActive, respondToolApproval, listPendingApprovals, regenerateLastResponse, editAndResend, continueLastResponse } from '../services/chat-engine'
+import { sendMessage, cancelChat, isChatActive, respondToolApproval, listPendingApprovals, regenerateLastResponse, editAndResend, continueLastResponse, getApprovalRules, removeApprovalRule } from '../services/chat-engine'
 import { respondUserChoice } from '../services/user-choice'
 import { callLLM } from '../services/llm'
 import { skillPresets } from '../services/skill-presets'
@@ -220,9 +220,12 @@ export function registerIpcHandlers(): void {
   })
   ipcMain.handle('chat:cancel', (_, conversationId: string, requestId?: string) => cancelChat(conversationId, requestId))
   ipcMain.handle('chat:isActive', (_, conversationId: string) => isChatActive(conversationId))
-  ipcMain.handle('chat:respondToolApproval', (_, requestId: string, approved: boolean) =>
-    respondToolApproval(requestId, approved)
+  ipcMain.handle('chat:respondToolApproval', (_, requestId: string, approved: boolean, always?: boolean) =>
+    respondToolApproval(requestId, approved, always)
   )
+  // 「总是允许此工具」持久规则的管理（设置页清单）
+  ipcMain.handle('chat:listApprovalRules', () => getApprovalRules())
+  ipcMain.handle('chat:removeApprovalRule', (_, toolKey: string) => removeApprovalRule(toolKey))
   // 重新进入会话时补投仍挂起的审批（卡片切走期间可能丢失，靠此恢复）
   ipcMain.handle('chat:listPendingApprovals', (_, conversationId: string) =>
     listPendingApprovals(conversationId)

@@ -148,6 +148,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type CSSProperties } from 'vue'
+import { isImeEvent } from '@/utils/keyboard'
 
 const props = withDefaults(defineProps<{
   modelValue: string
@@ -370,7 +371,8 @@ function emitBlur() {
 }
 
 function isImeEnter(event: KeyboardEvent): boolean {
-  return event.isComposing || event.keyCode === 229
+  // 统一走共享 IME 判定（isComposing + keyCode 229 双兜底）
+  return isImeEvent(event)
 }
 
 function handlePreviewEnter(event: KeyboardEvent) {

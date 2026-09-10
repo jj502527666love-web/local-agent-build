@@ -82,7 +82,7 @@
             <button v-for="cat in inspirationCategories" :key="cat" class="px-2.5 py-1 text-[11px] rounded-lg transition-colors" :class="inspirationCategory === cat ? 'bg-primary-600 text-white' : 'bg-surface-2 text-text-secondary hover:bg-surface-3'" @click="selectInspirationCategory(cat)">{{ cat }}</button>
           </div>
           <div class="flex gap-2">
-            <input v-model="inspirationSearch" class="flex-1 px-3 py-2 border border-surface-3 rounded-lg bg-surface-0 outline-none focus:ring-2 focus:ring-primary-500" placeholder="搜索灵感标题或提示词" @keydown.enter="loadInspirations(1)" />
+            <input v-model="inspirationSearch" class="flex-1 px-3 py-2 border border-surface-3 rounded-lg bg-surface-0 outline-none focus:ring-2 focus:ring-primary-500" placeholder="搜索灵感标题或提示词" @keydown.enter="!isImeEvent($event) && loadInspirations(1)" />
             <button class="px-3 py-2 text-xs text-text-secondary border border-surface-3 rounded-lg hover:bg-surface-1" :disabled="inspirationLoading" @click="loadInspirations(1)">搜索</button>
           </div>
           <div v-if="inspirationLoading" class="py-8 text-center text-text-tertiary">正在加载灵感...</div>
@@ -119,6 +119,7 @@
 <script setup lang="ts">
 import { computed, defineComponent, h, onMounted, ref, watch } from 'vue'
 import { useModelStore } from '@/stores/models'
+import { isImeEvent } from '@/utils/keyboard'
 import type { CreativeTemplateSource, CreativeTemplateVariable } from '@/stores/creative-templates'
 import { groupAndSort, type ModelCap } from '@/utils/model-caps'
 import { getHintsSync, recordUsage, warmHintsCache } from '@/utils/model-usage-hints'

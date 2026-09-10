@@ -191,6 +191,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onUnmounted } from 'vue'
+import { isImeEvent } from '@/utils/keyboard'
 
 type Mode = 'single' | 'compare'
 
@@ -433,7 +434,7 @@ function toggleCompare() {
 // ── Keyboard ───────────────────────────────────────────────────────────────
 function onKeydown(e: KeyboardEvent) {
   if (!props.src) return
-  if (e.key === 'Escape') {
+  if (e.key === 'Escape' && !isImeEvent(e)) {
     e.preventDefault()
     emitClose()
   } else if (e.key === '+' || e.key === '=') {

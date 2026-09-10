@@ -114,7 +114,20 @@
         <svg class="w-3.5 h-3.5 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" /></svg>
         <span class="text-[12px] font-medium text-text-primary">确认{{ toolLabel(pendingApproval.req.tool) }}</span>
       </div>
-      <p class="text-[11px] text-text-secondary leading-relaxed mb-2.5 whitespace-pre-wrap break-words select-text">{{ pendingApproval.req.preview }}</p>
+      <!-- 字段级 diff（改节点数据）：改前/改后对照表；文本预览（删除/断线/运行）保持原样 -->
+      <template v-if="Array.isArray(pendingApproval.req.preview)">
+        <div class="mb-2.5 rounded-lg border border-surface-3 overflow-hidden">
+          <div v-for="d in pendingApproval.req.preview" :key="d.key" class="border-b border-surface-3 last:border-b-0 px-2.5 py-1.5">
+            <div class="text-[10px] text-text-tertiary mb-0.5" :title="d.key">{{ d.label }}</div>
+            <div class="flex items-start gap-1.5 text-[11px] font-mono leading-relaxed">
+              <span class="flex-1 min-w-0 break-words whitespace-pre-wrap text-red-600 dark:text-red-400 line-through decoration-red-400/50" :title="d.beforeFull || d.before">{{ d.before }}</span>
+              <svg class="w-3 h-3 mt-0.5 flex-shrink-0 text-text-tertiary" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.5 4.5 21 12m0 0-7.5 7.5M21 12H3" /></svg>
+              <span class="flex-1 min-w-0 break-words whitespace-pre-wrap text-emerald-600 dark:text-emerald-400" :title="d.afterFull || d.after">{{ d.after }}</span>
+            </div>
+          </div>
+        </div>
+      </template>
+      <p v-else class="text-[11px] text-text-secondary leading-relaxed mb-2.5 whitespace-pre-wrap break-words select-text">{{ pendingApproval.req.preview }}</p>
       <div class="flex items-center justify-end gap-2">
         <button @click="resolveApproval(false)" class="px-3 py-1 text-[11px] text-text-tertiary border border-surface-3 rounded-lg hover:bg-surface-2 transition-colors">取消</button>
         <button @click="resolveApproval(true)" class="px-3 py-1 text-[11px] font-medium text-white bg-amber-600 rounded-lg hover:bg-amber-700 transition-colors">确认执行</button>

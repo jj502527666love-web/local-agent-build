@@ -216,11 +216,11 @@
         <h2 class="text-base font-semibold text-text-primary">{{ editingCatId ? '编辑分类' : '新建分类' }}</h2>
         <div>
           <label class="form-label">分类名称</label>
-          <input v-model="catForm.name" class="input-field" placeholder="例如: 素材库" @keydown.enter="saveCat" />
+          <input v-model="catForm.name" class="input-field" placeholder="例如: 素材库" @keydown.enter="!isImeEvent($event) && saveCat()" />
         </div>
         <div>
           <label class="form-label">描述</label>
-          <input v-model="catForm.description" class="input-field" placeholder="关于此分类的简要说明" @keydown.enter="saveCat" />
+          <input v-model="catForm.description" class="input-field" placeholder="关于此分类的简要说明" @keydown.enter="!isImeEvent($event) && saveCat()" />
         </div>
         <div class="flex justify-end gap-3 pt-2">
           <button @click="showCatForm = false" class="btn-secondary">取消</button>
@@ -284,6 +284,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
+import { isImeEvent } from '@/utils/keyboard'
 import { useGalleryStore, type GalleryCategory, type GalleryItem } from '@/stores/gallery'
 import ImageLightbox from '@/components/ImageLightbox.vue'
 import ProcessedBadge from '@/components/ProcessedBadge.vue'

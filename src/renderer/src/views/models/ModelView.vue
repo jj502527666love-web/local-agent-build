@@ -32,13 +32,13 @@
           <div>
             <label class="form-label">模型列表</label>
 
-            <!-- 多米 API：固定只支持 gpt-image-2，不提供获取 / 手输入口 -->
+            <!-- 多米 API：固定模型清单（gpt-image-2 系列），不提供获取 / 手输入口 -->
             <div v-if="form.type === 'duomi'" class="text-xs space-y-1">
-              <div class="flex items-center gap-2 px-3 py-2 bg-surface-1 rounded-lg border border-surface-3">
+              <div class="flex items-center gap-2 flex-wrap px-3 py-2 bg-surface-1 rounded-lg border border-surface-3">
                 <span class="text-text-tertiary">固定支持模型：</span>
-                <span class="px-2 py-0.5 bg-primary-50 text-primary-700 rounded-md font-medium">gpt-image-2</span>
+                <span v-for="m in PROVIDER_FIXED_MODELS.duomi" :key="m" class="px-2 py-0.5 bg-primary-50 text-primary-700 rounded-md font-medium">{{ m }}</span>
               </div>
-              <p class="text-text-tertiary leading-relaxed">多米 API 不提供 /v1/models 端点，且现阶段仅支持 gpt-image-2，无需手动配置。</p>
+              <p class="text-text-tertiary leading-relaxed">多米 API 不提供 /v1/models 端点，模型清单按官方文档固定（含 gpt-image-2.5 双模型），无需手动配置。</p>
             </div>
 
             <!-- 其他类型：原有获取 + 列表 + 手动输入 -->
@@ -178,7 +178,7 @@
           </div>
           <div :class="['p-3 rounded-xl border transition-colors', form.type === 'duomi' ? 'border-primary-300 bg-primary-50/50' : 'border-surface-3 bg-surface-0']">
             <div class="text-xs font-semibold text-text-primary mb-1">多米 API</div>
-            <p class="text-xs text-text-tertiary leading-relaxed">duomiapi.com 中转服务，仅支持图片生成（gpt-image-2 异步路径）。提交后内部轮询任务直至完成。不支持参考图（多米只接受图片 URL）与单次多图。</p>
+            <p class="text-xs text-text-tertiary leading-relaxed">duomiapi.com 中转服务，仅支持图片生成（gpt-image-2 系列异步路径，含 gpt-image-2.5-flare / gpt-image-2.5-sunburst）。提交后内部轮询任务直至完成。不支持单次多图。</p>
           </div>
         </div>
       </div>
@@ -390,8 +390,9 @@ const PROVIDER_DEFAULT_API_BASE: Record<string, string> = {
   duomi: 'https://duomiapi.com/v1'
 }
 // 某些服务商类型有固定模型清单，选中后强制锁定。
+// duomi：按官方文档（https://duomiapi.com/doc/55）固定 3 个生图模型（2026-09-09 上架 2.5 双模型）。
 const PROVIDER_FIXED_MODELS: Record<string, string[]> = {
-  duomi: ['gpt-image-2']
+  duomi: ['gpt-image-2', 'gpt-image-2.5-flare', 'gpt-image-2.5-sunburst']
 }
 // 不用 immediate：handler 里会访问下面才声明的 selectedModels / remoteModels / fetchError（TDZ）；
 // editProvider 进入老 duomi provider 时 type 未变不会触发 watch，在 editProvider 内手动兼底。

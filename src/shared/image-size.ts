@@ -167,6 +167,27 @@ const CAPABILITIES: Record<string, ModelImageCapability> = {
     maxTotalPixels: 8_294_400,
     qualities: GPT_IMAGE_QUALITIES
   },
+  // gpt-image-2.5 双模型（2026-09-08 OpenAI 发布 / 多米 2026-09-09 上架）：
+  // 多米文档标 1k/2k/4k，与 gpt-image-2 同档注册（2K/4K 档 + 4K 像素上限）。
+  // 官方 2.5 新增的 xhigh/max 画质档多米未明示支持，qualities 仍用四档标准集。
+  'gpt-image-2.5-flare': {
+    tiers: [
+      { id: '2k', label: '2K', longSide: 2048 },
+      { id: '4k', label: '4K', longSide: 3840, note: '较慢' }
+    ],
+    maxRatio: CUSTOM_ASPECT_RATIO_MAX,
+    maxTotalPixels: 8_294_400,
+    qualities: GPT_IMAGE_QUALITIES
+  },
+  'gpt-image-2.5-sunburst': {
+    tiers: [
+      { id: '2k', label: '2K', longSide: 2048 },
+      { id: '4k', label: '4K', longSide: 3840, note: '较慢' }
+    ],
+    maxRatio: CUSTOM_ASPECT_RATIO_MAX,
+    maxTotalPixels: 8_294_400,
+    qualities: GPT_IMAGE_QUALITIES
+  },
   'gpt-image-1.5': {
     tiers: [
       { id: '1k', label: '1K', longSide: 1024 }

@@ -16,12 +16,27 @@ export interface PrototypeOptions {
 }
 
 // 把每页 standalone HTML 塞进 srcdoc(转义引号); iframe 隔离各页样式/脚本, 规避全局污染。
+// 沙箱收紧(2026-09): 去掉 allow-same-origin——帧为 opaque origin, 即使页 HTML 被篡改也触达不到
+// 壳层 DOM/同源存储。翻页通信改走 postMessage 桥（见 PAGE_BRIDGE_SCRIPT / 壳层 message 监听）。
 function frameFor(html: string, idx: number): string {
-  const srcdoc = html.replace(/"/g, '&quot;')
+  // srcdoc 属性转义：必须先转 & 再转 "——漏转 & 时页内的 &lt;/&amp; 实体会被壳层属性解析器
+  // 解码一次，在帧源码里还原成裸 </&（escHtml 转义过的 LLM 文本复活为真标签，内容失真）。
+  const srcdoc = injectBridge(html).replace(/&/g, '&amp;').replace(/"/g, '&quot;')
   return (
-    `<iframe class="page" data-page="${idx}" title="slide-${idx + 1}" ` +
-    `sandbox="allow-same-origin allow-scripts" srcdoc="${srcdoc}"></iframe>`
+    `<iframe class="page" data-page="${idx}" title="slide ${idx + 1}" ` +
+    `sandbox="allow-scripts" srcdoc="${srcdoc}"></iframe>`
   )
+}
+
+// 注入每页的导航桥脚本：点击带 data-goto 的元素时 postMessage 通知壳层翻页。
+// 捕获阶段监听（帧内自身 click 监听不冲突）；postMessage 不受沙箱同源限制，file:// 双击可用。
+const PAGE_BRIDGE_SCRIPT = `<script>(function(){document.addEventListener('click',function(ev){var el=ev.target;while(el&&el!==document.body&&el!==document.documentElement){var g=el.getAttribute&&el.getAttribute('data-goto');if(g){try{parent.postMessage({__deckGoto:String(g)},'*')}catch(e){}ev.preventDefault();return}el=el.parentNode}},true)})();</scr` + `ipt>`
+
+// 把桥脚本插到 </body> 前（无 </body> 则追加尾部；HTML 解析器对 </html> 后内容会容错移入 body）
+function injectBridge(html: string): string {
+  const i = html.toLowerCase().lastIndexOf('</body>')
+  if (i >= 0) return html.slice(0, i) + PAGE_BRIDGE_SCRIPT + html.slice(i)
+  return html + PAGE_BRIDGE_SCRIPT
 }
 
 function esc(s: string): string {
@@ -30,7 +45,8 @@ function esc(s: string): string {
 
 /**
  * 构建自包含可点击原型 HTML。
- * 热区约定: 任意 slide 元素带 data-goto="N"(1-based 页码)时, 点击跳到该页(由壳层捕获 iframe 内点击实现)。
+ * 热区约定: 任意 slide 元素带 data-goto="N"(1-based 页码)时, 点击跳到该页
+ * （帧内桥脚本捕获点击 → postMessage 报给壳层；帧为 opaque origin 沙箱，无同源 DOM 依赖）。
  */
 export function buildPrototypeHtml(slides: PrototypeSlide[], opts: PrototypeOptions = {}): string {
   const title = opts.deckTitle || 'Deck 原型'
@@ -94,22 +110,14 @@ html,body{width:100%;height:100%;background:#1a1c20;font-family:-apple-system,'S
     else if (e.key === 'Home') show(0);
     else if (e.key === 'End') show(n - 1);
   });
-  // 热区跳转: iframe 内带 data-goto 的元素点击 → 跳到目标页(同源 sandbox 可读取)
-  pages.forEach(function(frame){
-    frame.addEventListener('load', function(){
-      try {
-        var doc = frame.contentDocument;
-        if (!doc) return;
-        doc.addEventListener('click', function(ev){
-          var el = ev.target;
-          while (el && el !== doc.body) {
-            var g = el.getAttribute && el.getAttribute('data-goto');
-            if (g) { show(parseInt(g, 10) - 1); ev.preventDefault(); return; }
-            el = el.parentNode;
-          }
-        });
-      } catch (err) { /* 跨源等异常忽略 */ }
-    });
+  // 热区跳转: 帧内桥脚本把 data-goto 点击经 postMessage 报给壳层（opaque origin 下唯一通道）。
+  // 仅认 __deckGoto 字段 + 页码范围校验，最坏情况只是翻页，无注入面。
+  window.addEventListener('message', function(e){
+    var d = e && e.data;
+    if (d && typeof d === 'object' && typeof d.__deckGoto === 'string') {
+      var page = parseInt(d.__deckGoto, 10);
+      if (page >= 1 && page <= n) show(page - 1);
+    }
   });
   window.addEventListener('resize', fit);
   fit(); show(0);

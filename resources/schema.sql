@@ -672,3 +672,27 @@ CREATE TABLE IF NOT EXISTS clawbot_logs (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_clawbot_logs_created ON clawbot_logs(created_at);
+
+-- 工具审批「总是允许」持久规则（本机安全状态，不纳入云同步）
+-- tool_key：内置工具用原名；MCP 工具带 server 前缀（mcp:{serverId}:{tool}）防跨服务器串权
+CREATE TABLE IF NOT EXISTS tool_approval_rules (
+  tool_key TEXT PRIMARY KEY,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- 工具审批审计流水（本机安全状态，不纳入云同步）
+-- verdict: approved/rejected/timeout/aborted/auto_approved/interrupted
+-- decided_by: user/rule/decider/timeout/system
+CREATE TABLE IF NOT EXISTS tool_approval_records (
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL DEFAULT '',
+  request_id TEXT NOT NULL DEFAULT '',
+  tool TEXT NOT NULL DEFAULT '',
+  args_json TEXT NOT NULL DEFAULT '',
+  verdict TEXT NOT NULL DEFAULT '',
+  decided_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  resolved_at TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_approval_records_conv ON tool_approval_records(conversation_id, created_at DESC);

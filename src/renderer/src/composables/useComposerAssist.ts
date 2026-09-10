@@ -1,4 +1,5 @@
 import { computed, onUnmounted, ref, watch, type Ref } from 'vue'
+import { isImeEvent } from '@/utils/keyboard'
 
 const COMPLETE_SYS =
   '你是输入补全助手。根据用户已输入的中文草稿，只续写后半句，补全意图。不要重复已有文字，不要解释，不要加引号，不要换行，不超过 40 个字。'
@@ -99,7 +100,7 @@ export function useComposerAssist(opts: {
 
   function onTab(event: KeyboardEvent) {
     event.preventDefault()
-    if (event.isComposing || event.keyCode === 229) return
+    if (isImeEvent(event)) return
     if (suggestion.value) {
       acceptSuggestion()
       return

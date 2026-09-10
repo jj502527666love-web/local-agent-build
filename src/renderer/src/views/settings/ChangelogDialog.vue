@@ -50,6 +50,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { CHANGELOG } from '@shared/changelog'
+import { isImeEvent } from '@/utils/keyboard'
 
 defineProps<{ currentVersion: string }>()
 const emit = defineEmits<{ close: [] }>()
@@ -58,7 +59,7 @@ const dialogEl = ref<HTMLDivElement | null>(null)
 
 // ESC 关闭
 function onKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape') emit('close')
+  if (e.key === 'Escape' && !isImeEvent(e)) emit('close')
 }
 
 // 弹窗外点击关闭（项目规则不允许遮罩，所以用 document 监听代替遮罩点击）

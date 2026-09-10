@@ -29,6 +29,17 @@ export interface DeckLlm {
     signal?: AbortSignal
     onContent?: (piece: string) => void
   }): Promise<string>
+  /**
+   * 流式 JSON(可选): 生成过程中每有完整闭合的字符串字段经 onPartial 回调部分数据(预览用),
+   * 返回值仍为全文解析的权威结果。不实现时调用方回退 generateJson（无预览但不缺功能）。
+   */
+  generateJsonStream?(args: {
+    system: string
+    user: string
+    schema: Record<string, unknown>
+    signal?: AbortSignal
+    onPartial: (partial: Record<string, string>) => void
+  }): Promise<unknown>
 }
 
 export interface GenerateDeckInput {
@@ -83,6 +94,13 @@ export interface DeckGeneratorDeps {
    */
   kbSearch?: (query: string, topK?: number) => Promise<Array<{ source: string; content: string; score: number }>>
   onProgress?: (p: { phase: 'outline' | 'slide'; done: number; total: number }) => void
+  /**
+   * 逐页流式预览（generateDeck 对外 API）：第 index 页生成中每次有部分 HTML 产出时回调。
+   * 预览 HTML 由部分字段渲染而来（半残页属预期），最终以 generateDeck 返回的权威 slides 为准。
+   */
+  onSlidePartial?: (slideIndex: number, html: string) => void
+  /** 单页流式预览闭包（generateDeck 内部按页注入；generateSlide 使用，外部调用方勿传） */
+  onSlideHtml?: (html: string) => void
   signal?: AbortSignal
 }
 
@@ -222,12 +240,24 @@ export async function generateSlide(
   let data: SlideData
   let warnings: string[]
   try {
-    const raw = (await deps.llm.generateJson({
-      system,
-      user,
-      schema: toJsonSchema(tpl.schema),
-      signal: deps.signal
-    })) as SlideData | null
+    const jsonSchema = toJsonSchema(tpl.schema)
+    // 流式预览路径（LLM 支持 generateJsonStream 且有预览回调时）：部分字段→清洗→渲染→回调，
+    // 最终以全文解析为准；预览渲染失败静默吞掉（预览是增强，不影响主流程）。
+    const onPartial =
+      deps.llm.generateJsonStream && deps.onSlideHtml
+        ? (partial: Record<string, string>) => {
+            try {
+              const pv = validateAndClamp(tpl.schema, partial)
+              const pdata = Object.keys(pv.data).length > 0 ? pv.data : null
+              if (pdata) deps.onSlideHtml!(renderSlideHtml(tpl, pdata, theme))
+            } catch {
+              /* 部分数据渲染失败忽略 */
+            }
+          }
+        : undefined
+    const raw = (onPartial
+      ? await deps.llm.generateJsonStream!({ system, user, schema: jsonSchema, signal: deps.signal, onPartial })
+      : await deps.llm.generateJson({ system, user, schema: jsonSchema, signal: deps.signal })) as SlideData | null
     const v = validateAndClamp(tpl.schema, raw ?? {})
     // 槽位有内容则用清洗后数据, 否则用模板默认数据兜底(绝不产出空白页)
     data = Object.keys(v.data).length > 0 ? v.data : tpl.defaultData
@@ -315,7 +345,11 @@ export async function generateDeck(
   const total = outline.slides.length
   for (let i = 0; i < total; i++) {
     if (deps.signal?.aborted) throw new Error('aborted')
-    const gs = await generateSlide(outline.slides[i]!, outline.title, theme, deps)
+    // 逐页注入流式预览闭包：部分字段 HTML → 对外 indexed 回调
+    const slideDeps: DeckGeneratorDeps = deps.onSlidePartial
+      ? { ...deps, onSlideHtml: (html) => deps.onSlidePartial!(i, html) }
+      : deps
+    const gs = await generateSlide(outline.slides[i]!, outline.title, theme, slideDeps)
     slides.push(gs)
     deps.onProgress?.({ phase: 'slide', done: i + 1, total })
   }

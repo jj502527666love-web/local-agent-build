@@ -140,6 +140,12 @@ const api = {
       const handler = (_event: Electron.IpcRendererEvent, data: unknown) => callback(data)
       ipcRenderer.on('deck:progress', handler)
       return () => ipcRenderer.off('deck:progress', handler)
+    },
+    // 逐页流式预览（生成中部分 HTML）：{ reqId, index, html }
+    onSlideDelta: (callback: (data: { reqId: string; index: number; html: string }) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, data: any) => callback(data)
+      ipcRenderer.on('deck:slideDelta', handler)
+      return () => ipcRenderer.off('deck:slideDelta', handler)
     }
   },
   canvas: {

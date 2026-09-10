@@ -104,6 +104,7 @@ export const useDeckStore = defineStore('deck', () => {
   let reqSeq = 0
   let currentReqId = ''
   let unsubscribe: (() => void) | null = null
+  let unsubscribeDelta: (() => void) | null = null
 
   function listenProgress(): void {
     if (unsubscribe) return
@@ -113,11 +114,25 @@ export const useDeckStore = defineStore('deck', () => {
         progress.value = { phase: d.phase ?? '', done: d.done ?? 0, total: d.total ?? 0 }
       }
     })
+    // 逐页流式预览：部分 HTML 按页就地更新（DeckView srcdoc 响应式自动刷新）；
+    // 最终 generate 返回的权威 slides 会整体覆盖（生成中页的预览 HTML 可能缺图片槽/解说稿，属预期）
+    unsubscribeDelta = window.api.deck.onSlideDelta((d) => {
+      if (!d || d.reqId !== currentReqId) return
+      const i = d.index
+      if (!Number.isInteger(i) || i < 0) return
+      const cur = slides.value[i]
+      slides.value[i] = {
+        ...(cur || { templateId: '', title: '', warnings: [] }),
+        html: d.html
+      } as any
+    })
   }
 
   function stopListenProgress(): void {
     unsubscribe?.()
     unsubscribe = null
+    unsubscribeDelta?.()
+    unsubscribeDelta = null
   }
 
   async function loadTemplates(): Promise<void> {
@@ -176,6 +191,8 @@ export const useDeckStore = defineStore('deck', () => {
 
   function cancel(): void {
     if (currentReqId) void window.api.deck.invoke('cancel', currentReqId)
+    // 清掉流式预览留下的半截占位页（幽灵页网格），下次 generate 会重建
+    slides.value = []
   }
 
   async function openProject(id: string): Promise<void> {

@@ -56,12 +56,15 @@ ${body}
 </body></html>`
 }
 
-/** 多页拼接的预览索引(仅用于 renderer iframe 预览; 导出时每页独立渲染)。 */
+/** 多页拼接的预览索引(仅用于 renderer iframe 预览; 导出时每页独立渲染)。
+ *  帧沙箱 allow-scripts（页内 ANIM_RUNTIME 动画脚本需执行）；不给 allow-same-origin——
+ *  opaque origin 下帧内容触达不到宿主 DOM/存储（内容虽为本进程自产可信 HTML，按最小权限收紧）。 */
 export function renderDeckIndexHtml(pagesHtml: string[]): string {
   const frames = pagesHtml
     .map(
       (h, i) =>
-        `<iframe title="slide-${i + 1}" srcdoc="${h.replace(/"/g, '&quot;')}" ` +
+        // srcdoc 转义先 & 后 "（漏转 & 会让页内实体在帧源码里双重解码失真）
+        `<iframe title="slide-${i + 1}" sandbox="allow-scripts" srcdoc="${h.replace(/&/g, '&amp;').replace(/"/g, '&quot;')}" ` +
         `style="width:${CANVAS_W}px;height:${CANVAS_H}px;border:0;display:block;margin:0 auto 24px;box-shadow:0 8px 30px rgba(0,0,0,.12);"></iframe>`
     )
     .join('\n')

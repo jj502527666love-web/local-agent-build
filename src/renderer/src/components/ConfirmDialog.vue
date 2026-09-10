@@ -52,6 +52,7 @@
 
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { isImeEvent } from '@/utils/keyboard'
 
 const props = defineProps<{
   visible: boolean
@@ -71,6 +72,7 @@ const confirmBtn = ref<HTMLButtonElement | null>(null)
 
 function onKeydown(e: KeyboardEvent) {
   if (!props.visible) return
+  if (isImeEvent(e)) return
   if (e.key === 'Escape') emit('cancel')
   else if (e.key === 'Enter') emit('confirm')
 }

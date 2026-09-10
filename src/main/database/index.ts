@@ -92,6 +92,13 @@ function expireStalePendingCards(): void {
   } catch (e) {
     console.warn('[db] expireStalePendingCards failed:', e)
   }
+  // 同款清理：进程重启后未裁决的审批记录标 interrupted（其内存等待回环已随进程消失）。
+  // 内联于此而非 import approval-store——后者反向 import 本模块拿 getDatabase，会构成循环依赖。
+  try {
+    db.exec(`UPDATE tool_approval_records SET verdict = 'interrupted', decided_by = 'system', resolved_at = datetime('now') WHERE verdict = ''`)
+  } catch (e) {
+    console.warn('[db] markInterruptedApprovals failed:', e)
+  }
 }
 
 function runMigrations(): void {
@@ -105,6 +112,21 @@ function runMigrations(): void {
   }
   if (mpCols.length > 0 && !mpColNames.includes('request_override_patch')) {
     db.exec("ALTER TABLE model_providers ADD COLUMN request_override_patch TEXT NOT NULL DEFAULT '{}'")
+  }
+
+  // model_providers: duomi 固定模型清单归一化（数据级迁移，每次启动幂等）。
+  // 多米 models 不是用户可配项（UI 锁定 + Adapter 白名单双重防御），但 2026-09-09 前
+  // 老库只存了 gpt-image-2，存量用户升级后看不到 gpt-image-2.5-flare/sunburst。
+  // 覆盖为当前固定清单：将来清单再加模型，老库重启即自动跟上。
+  // 与 image-generation.ts 的 DUOMI_SUPPORTED_MODELS / ModelView.vue 的
+  // PROVIDER_FIXED_MODELS 同源，改动需三处同步。
+  // 本段在 installSyncSchema 之前执行，不产生 oplog 噪音。
+  const duomiFixedModelsJson = JSON.stringify(['gpt-image-2', 'gpt-image-2.5-flare', 'gpt-image-2.5-sunburst'])
+  try {
+    db.prepare("UPDATE model_providers SET models = ? WHERE type = 'duomi' AND models != ?")
+      .run(duomiFixedModelsJson, duomiFixedModelsJson)
+  } catch (e) {
+    console.warn('[db] normalize duomi provider models failed:', e)
   }
 
   // mcp_servers: always_load 白名单（false 时该 server 的工具不直接注入 LLM tools，仅通过
@@ -694,6 +716,28 @@ function runMigrations(): void {
   if (!cbPeerCols.some((c) => c.name === 'last_sent_rowid')) {
     db.exec("ALTER TABLE clawbot_peers ADD COLUMN last_sent_rowid INTEGER NOT NULL DEFAULT 0")
   }
+
+  // 工具审批：「总是允许」持久规则 + 审计流水（旧库升级兜底；与 schema.sql 双写保持一致）
+  // 两表均为本机安全状态，刻意不注册进 sync/registry.ts（不跨设备同步）
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS tool_approval_rules (
+      tool_key TEXT PRIMARY KEY,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS tool_approval_records (
+      id TEXT PRIMARY KEY,
+      conversation_id TEXT NOT NULL DEFAULT '',
+      request_id TEXT NOT NULL DEFAULT '',
+      tool TEXT NOT NULL DEFAULT '',
+      args_json TEXT NOT NULL DEFAULT '',
+      verdict TEXT NOT NULL DEFAULT '',
+      decided_by TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      resolved_at TEXT NOT NULL DEFAULT ''
+    );
+    CREATE INDEX IF NOT EXISTS idx_approval_records_conv ON tool_approval_records(conversation_id, created_at DESC);
+  `)
 }
 
 export function closeDatabase(): void {

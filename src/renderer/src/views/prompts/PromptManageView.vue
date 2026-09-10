@@ -95,7 +95,7 @@
           v-model="categoryForm.name"
           class="w-full px-3 py-2 text-xs border border-surface-3 rounded-lg bg-surface-1 outline-none focus:ring-2 focus:ring-primary-500 mb-4"
           placeholder="分类名称"
-          @keydown.enter="saveCategory"
+          @keydown.enter="!isImeEvent($event) && saveCategory()"
         />
         <div class="flex gap-2 justify-end">
           <button @click="closeCategory" class="btn-secondary text-xs">取消</button>
@@ -178,6 +178,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { isImeEvent } from '@/utils/keyboard'
 import { usePromptPresetStore, type PromptCategory, type PromptPreset } from '@/stores/prompt-presets'
 import { useModelStore } from '@/stores/models'
 import { groupAndSort } from '@/utils/model-caps'

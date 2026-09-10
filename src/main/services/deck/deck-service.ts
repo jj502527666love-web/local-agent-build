@@ -44,6 +44,8 @@ export interface GenerateDeckOptions {
   window?: Electron.BrowserWindow | null
   signal?: AbortSignal
   onProgress?: (p: { phase: 'outline' | 'slide'; done: number; total: number }) => void
+  /** 逐页流式预览：第 index 页生成中每次有部分 HTML 产出时回调（最终以返回的权威 deck 为准） */
+  onSlidePartial?: (slideIndex: number, html: string) => void
   /** 注入(测试用); 不传则用 toDeckLlm(providerId,modelId) 接真实 llm.ts */
   llm?: DeckLlm
   db?: DB
@@ -140,6 +142,7 @@ export async function generateAndSaveDeck(
       iconFor,
       chartFor,
       onProgress: opts.onProgress,
+      onSlidePartial: opts.onSlidePartial,
       signal: opts.signal
     }
   )

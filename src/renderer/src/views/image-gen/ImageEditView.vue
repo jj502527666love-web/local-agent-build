@@ -442,6 +442,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, onBeforeUnmount, nextTick, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { isImeEvent } from '@/utils/keyboard'
 import { Canvas, FabricImage, Rect, Ellipse, IText, PencilBrush, filters, Path, Point, Control, util } from 'fabric'
 import type { FabricObject, TMat2D, TPointerEvent, Transform } from 'fabric'
 import { recordUsage, warmHintsCache } from '@/utils/model-usage-hints'
@@ -1067,7 +1068,7 @@ function handleKeyDown(e: KeyboardEvent) {
     redo()
   } else if (e.key === 'Delete' || e.key === 'Backspace') {
     deleteActiveObject()
-  } else if (e.key === 'Escape' && compareMode.value !== 'none') {
+  } else if (e.key === 'Escape' && compareMode.value !== 'none' && !isImeEvent(e)) {
     e.preventDefault()
     cancelCompare()
   }

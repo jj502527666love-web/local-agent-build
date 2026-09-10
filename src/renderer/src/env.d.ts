@@ -15,6 +15,8 @@ interface Window {
       invoke: (channel: string, ...args: unknown[]) => Promise<unknown>
       /** deck:progress 进度回调；payload = { reqId, phase:'outline'|'slide', done, total }。返回 unsubscribe */
       onProgress: (callback: (data: unknown) => void) => () => void
+      /** deck:slideDelta 逐页流式预览；payload = { reqId, index, html }。返回 unsubscribe */
+      onSlideDelta: (callback: (data: { reqId: string; index: number; html: string }) => void) => () => void
     }
     gallery: { invoke: (channel: string, ...args: unknown[]) => Promise<unknown> }
     creativeTemplate: { invoke: (channel: string, ...args: unknown[]) => Promise<unknown> }

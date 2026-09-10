@@ -14,6 +14,12 @@ import {
 import { normalizeApiBase } from './api-base-normalize'
 import { getSetting } from './settings'
 import { uploadDataUriToCloud } from './cloud-image-asset'
+import { StreamingToolInputParser } from './streaming-tool-input'
+
+/** 流式字段登记表：工具名 → 增量解码的参数字段（初版仅 file_ops 的 content，供写文件实时预览） */
+const STREAMING_ARG_FIELDS: Record<string, string> = {
+  file_ops: 'content'
+}
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool'
@@ -42,6 +48,19 @@ export interface LLMRequestOptions {
     /** 后台 LLM 调用的流式增量回调（不经 chat:stream，由调用方自行推送到专用频道，如 AI PPT 大纲流式） */
     onContent?: (piece: string) => void
     onReasoning?: (piece: string) => void
+    /**
+     * 工具参数的流式字段增量（仅命中「流式字段登记表」的工具）：LLM 边吐边解。
+     * delta 为本次新增片段，totalLength 为已解码总长度（渲染端据此校验拼接，不符则丢预览）。
+     * prefixFields 为流式字段之前的完整字段（如 file_ops 的 path），到齐后恒有值。
+     */
+    onToolArgsDelta?: (info: {
+      index: number
+      tool: string
+      field: string
+      delta: string
+      totalLength: number
+      prefixFields: Record<string, unknown>
+    }) => void
   }
   /**
    * 允许「已产出部分内容后断流」的整次重试。默认 false：有 UI 时重发会让用户看到重复内容。
@@ -555,6 +574,8 @@ async function streamLLMOnce(
   let fullContent = ''
   let reasoningContent = ''
   let toolCalls: any[] = []
+  // 流式参数解析器：按 tool_calls index 懒建（name 到齐且命中登记表时创建，并补喂已累积的 arguments）
+  const argParsers: Record<number, StreamingToolInputParser | null> = {}
   let finishReason = 'stop'
   let buffer = ''
   let usage: any = null
@@ -663,7 +684,48 @@ async function streamLLMOnce(
             }
             if (tc.id) toolCalls[idx].id = tc.id
             if (tc.function?.name) toolCalls[idx].function.name += tc.function.name
-            if (tc.function?.arguments) toolCalls[idx].function.arguments += tc.function.arguments
+            if (tc.function?.arguments) {
+              const piece: string = tc.function.arguments
+              toolCalls[idx].function.arguments += piece
+              // 流式字段增量解析（file_ops.content 等）：边收边解，供渲染层实时预览。
+              // 门槛与回调解耦：chat:stream 双发是主通道（chat-engine 只传 conversationId/requestId，
+              // 不传回调）；直连场景（画布 llm:call 经 IPC）才依赖 onToolArgsDelta 回调。
+              const toolName: string = toolCalls[idx].function.name
+              const streamField = STREAMING_ARG_FIELDS[toolName]
+              if (streamField && (streamContext?.onToolArgsDelta || (window && notifyStream))) {
+                if (argParsers[idx] === undefined) {
+                  argParsers[idx] = new StreamingToolInputParser(streamField)
+                  // 补喂解析器创建前已累积的 arguments 前缀（name 到齐晚于首个 arguments delta 时）
+                  const prior = toolCalls[idx].function.arguments.slice(0, -piece.length)
+                  if (prior) argParsers[idx]!.append(prior)
+                }
+                const parser = argParsers[idx]
+                if (parser && !parser.hasError) {
+                  const beforeLen = parser.streamingValue.length
+                  parser.append(piece)
+                  const now = parser.streamingValue
+                  if (now.length > beforeLen) {
+                    const info = {
+                      index: idx,
+                      tool: toolName,
+                      field: streamField,
+                      delta: now.slice(beforeLen),
+                      totalLength: now.length,
+                      prefixFields: parser.prefixFields || {}
+                    }
+                    streamContext?.onToolArgsDelta?.(info)
+                    if (window && notifyStream) {
+                      window.webContents.send('chat:stream', {
+                        type: 'tool_args_delta',
+                        ...info,
+                        conversationId: streamContext?.conversationId,
+                        requestId: streamContext?.requestId
+                      })
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       } catch (e: any) {

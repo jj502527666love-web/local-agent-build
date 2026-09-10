@@ -57,8 +57,8 @@
               ref="titleInputRef"
               v-model="editingTitle"
               @click.stop
-              @keydown.enter="confirmEditTitle(conv.id)"
-              @keydown.escape="cancelEditTitle"
+              @keydown.enter="!isImeEvent($event) && confirmEditTitle(conv.id)"
+              @keydown.escape="!isImeEvent($event) && cancelEditTitle()"
               @blur="confirmEditTitle(conv.id)"
               maxlength="15"
               class="flex-1 min-w-0 text-xs bg-transparent border-b border-primary-400 outline-none py-0"
@@ -303,6 +303,18 @@
                         {{ msg._toolLogs.length }} 步工具调用
                       </button>
                       <div v-if="msg._toolActive || !msg._collapsed" class="mt-1 max-h-32 overflow-y-auto rounded-lg bg-surface-2/50 border border-surface-3 px-3 py-2 text-[11px] font-mono text-text-tertiary leading-relaxed whitespace-pre-wrap">{{ msg._toolLogs.join('\n') }}</div>
+                      <!-- 流式工具参数实时预览（file_ops 写文件等：LLM 边吐参数边展示，消毒后限高） -->
+                      <div
+                        v-for="(arg, aidx) in msg._streamingToolArgs || {}"
+                        :key="aidx"
+                        class="mt-1 rounded-lg border border-surface-3 overflow-hidden"
+                      >
+                        <div class="px-3 py-1 bg-surface-2 text-[10px] text-text-tertiary flex items-center gap-1.5">
+                          <span class="font-medium">{{ arg.prefixFields?.path ? sanitizeText(arg.prefixFields.path, 300) : arg.tool }}</span>
+                          <span class="text-text-tertiary/70">正在生成 {{ arg.field }}（{{ arg.content.length }} 字符）…</span>
+                        </div>
+                        <pre class="px-3 py-2 max-h-40 overflow-y-auto text-[11px] font-mono leading-relaxed whitespace-pre-wrap break-words text-text-secondary">{{ sanitizeText(arg.content, 6000) }}</pre>
+                      </div>
                     </div>
                     <AskUserCard
                       v-if="msg.card && msg.card.type === 'ask_user'"
@@ -620,13 +632,13 @@
         <div class="text-sm font-semibold text-text-primary">调用工具确认</div>
       </div>
       <div class="px-5 py-4 space-y-3 overflow-y-auto">
-        <div class="text-xs text-text-secondary">AI 请求调用工具 <code class="px-1.5 py-0.5 rounded bg-surface-2 text-primary-700 font-mono text-[11px]">{{ pendingApproval.tool }}</code>，是否允许？</div>
+        <div class="text-xs text-text-secondary">AI 请求调用工具 <code class="px-1.5 py-0.5 rounded bg-surface-2 text-primary-700 font-mono text-[11px]">{{ sanitizeText(pendingApproval.tool, 200) }}</code>，是否允许？</div>
 
         <!-- File write/append preview with line diff -->
         <template v-if="approvalPreview && approvalPreview.type === 'file_write'">
           <div class="flex items-center gap-2 text-[11px]">
             <span :class="['px-1.5 py-0.5 rounded font-medium', approvalPreview.exists ? 'bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300' : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300']">{{ approvalPreview.exists ? '修改文件' : '新建文件' }}</span>
-            <code class="font-mono text-text-secondary truncate flex-1" :title="approvalPreview.path">{{ approvalPreview.path }}</code>
+            <code class="font-mono text-text-secondary truncate flex-1" :title="approvalWritePath">{{ approvalWritePath }}</code>
             <span v-if="approvalDiffSummary" class="font-mono"><span class="text-emerald-600 dark:text-emerald-400">+{{ approvalDiffSummary.adds }}</span> <span class="text-red-500 dark:text-red-400">-{{ approvalDiffSummary.dels }}</span></span>
           </div>
           <div v-if="approvalPreview.tooLarge" class="text-[11px] text-text-tertiary">原文件超过 200KB，仅展示新内容预览。允许后原文件将被覆盖（同路径 .bak 会保留备份）。</div>
@@ -640,28 +652,45 @@
         <!-- run_command preview -->
         <template v-else-if="pendingApproval.tool === 'run_command' && pendingApproval.args?.command">
           <div class="text-[11px] text-text-secondary">将执行命令：</div>
-          <pre class="text-[12px] font-mono leading-relaxed bg-surface-2 rounded-lg p-3 max-h-48 overflow-y-auto whitespace-pre-wrap break-words text-amber-700">{{ pendingApproval.args.command }}</pre>
-          <div v-if="pendingApproval.args.cwd" class="text-[11px] text-text-tertiary">工作目录：<code class="font-mono">{{ pendingApproval.args.cwd }}</code></div>
+          <pre class="text-[12px] font-mono leading-relaxed bg-surface-2 rounded-lg p-3 max-h-48 overflow-y-auto whitespace-pre-wrap break-words text-amber-700">{{ approvalCommand }}</pre>
+          <div v-if="approvalCommandCwd" class="text-[11px] text-text-tertiary">工作目录：<code class="font-mono">{{ approvalCommandCwd }}</code></div>
         </template>
 
         <!-- file_ops read preview -->
         <template v-else-if="approvalReadPreview">
           <div class="flex items-center gap-2 text-[11px]">
             <span :class="['px-1.5 py-0.5 rounded font-medium whitespace-nowrap', approvalReadPreview.outsideWorkspace ? 'bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300' : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300']">{{ approvalReadPreview.outsideWorkspace ? '读取工作区外文件' : '读取文件' }}</span>
-            <code class="font-mono text-text-secondary truncate flex-1" :title="approvalReadPreview.path">{{ approvalReadPreview.path }}</code>
+            <code class="font-mono text-text-secondary truncate flex-1" :title="approvalReadPath">{{ approvalReadPath }}</code>
           </div>
           <div v-if="approvalReadPreview.outsideWorkspace" class="text-[11px] text-text-tertiary leading-relaxed">该路径在工作区之外，读取后内容会发送给 AI。请确认其中无敏感信息再允许。可在「设置 → 文件读取安全」将常用目录加入白名单，免去重复确认。</div>
         </template>
 
         <!-- Generic args fallback -->
-        <pre v-else class="text-[11px] font-mono leading-relaxed bg-surface-2 rounded-lg p-3 max-h-48 overflow-y-auto whitespace-pre-wrap break-words text-text-secondary">{{ formattedApprovalArgs }}</pre>
+        <template v-else>
+          <pre class="text-[11px] font-mono leading-relaxed bg-surface-2 rounded-lg p-3 max-h-48 overflow-y-auto whitespace-pre-wrap break-words text-text-secondary">{{ formattedApprovalArgs.text }}</pre>
+          <div v-if="formattedApprovalArgs.truncated" class="text-[11px] text-text-tertiary text-center">… 参数过长，已截断</div>
+        </template>
       </div>
       <div class="px-5 py-3 border-t border-surface-3 flex justify-end gap-2 flex-shrink-0">
+        <button
+          v-if="pendingApproval.always_allowed"
+          @click="askAlwaysApprove"
+          class="px-3 py-1.5 text-xs rounded-lg border border-primary-300 text-primary-700 hover:bg-primary-50 dark:border-primary-700 dark:text-primary-300 dark:hover:bg-primary-900/30 mr-auto"
+        >总是允许此工具</button>
         <button @click="respondApproval(false)" class="px-3 py-1.5 text-xs rounded-lg border border-surface-3 hover:bg-surface-2 text-text-secondary">拒绝</button>
         <button @click="respondApproval(true)" class="px-3 py-1.5 text-xs rounded-lg bg-primary-600 text-white hover:bg-primary-700">允许执行</button>
       </div>
     </div>
   </div>
+  <!-- 「总是允许此工具」二次确认：规则写入后对该工具（MCP 为具体 server:tool）的所有调用不再询问，参数不限 -->
+  <ConfirmDialog
+    :visible="alwaysApproveConfirmOpen"
+    title="总是允许此工具"
+    :message="`今后对工具「${alwaysApproveTarget}」的所有调用将不再询问、直接执行（不限参数）。\n\n请确认你信任该工具的行为边界。可在「设置 → 工具审批」中随时移除该规则。`"
+    confirm-text="总是允许"
+    @confirm="confirmAlwaysApprove"
+    @cancel="alwaysApproveConfirmOpen = false"
+  />
   <GalleryPicker v-model:visible="showGalleryPicker" :multiple="true" @select="onGallerySelectForChat" />
   <LowBalanceModal
     v-model:visible="lowBalanceOpen"
@@ -674,6 +703,8 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { isImeEvent } from '@/utils/keyboard'
+import { sanitizeUntrusted, sanitizeText } from '@/utils/untrusted-text'
 import { useChatStore, isContinuable } from '@/stores/chat'
 import { useHandoffStore } from '@/stores/handoff'
 import { useBotStore } from '@/stores/bots'
@@ -692,6 +723,7 @@ import { stripImageMetadata } from '@shared/strip-image-metadata'
 import { CLOUD_KEY_SEP, stripModelId } from '@shared/model-id'
 import GalleryPicker from '@/components/GalleryPicker.vue'
 import ImageLightbox from '@/components/ImageLightbox.vue'
+import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import ChatComposerToolbar from '@/components/ChatComposerToolbar.vue'
 import LowBalanceModal from '@/components/LowBalanceModal.vue'
 import PromptTextarea from '@/components/PromptTextarea.vue'
@@ -981,15 +1013,23 @@ interface FileReadPreview {
 }
 // 审批卡改由 store 级常驻状态按当前会话派生：切走/回来不丢、跨会话不互相覆盖（见 chat store）。
 const pendingApproval = computed(() => chatStore.getPendingApproval(chatStore.currentConversationId))
+// 审批卡里的一切模型/工具生成文本都过消毒（剥控制字符/bidi/零宽+限长），防视觉伪造与超长撑爆
 const formattedApprovalArgs = computed(() => {
   const args = pendingApproval.value?.args
-  if (args == null) return ''
+  if (args == null) return { text: '', truncated: false }
+  let raw: string
   try {
-    return JSON.stringify(args, null, 2)
+    raw = JSON.stringify(args, null, 2)
   } catch {
-    return String(args)
+    raw = String(args)
   }
+  return sanitizeUntrusted(raw, 8000)
 })
+const approvalCommand = computed(() => sanitizeText(pendingApproval.value?.args?.command, 4000))
+const approvalCommandCwd = computed(() => sanitizeText(pendingApproval.value?.args?.cwd, 500))
+// 路径同样源自模型参数，展示前消毒
+const approvalWritePath = computed(() => sanitizeText(approvalPreview.value?.path, 500))
+const approvalReadPath = computed(() => sanitizeText(approvalReadPreview.value?.path, 500))
 const approvalPreview = computed<FileWritePreview | null>(() => {
   const p = pendingApproval.value?.preview
   return p && p.type === 'file_write' ? (p as FileWritePreview) : null
@@ -1015,12 +1055,12 @@ function lineDiff(a: string, b: string): { sigil: string; text: string; cls: str
   const out: { sigil: string; text: string; cls: string }[] = []
   let i = 0, j = 0
   while (i < m && j < n) {
-    if (aL[i] === bL[j]) { out.push({ sigil: ' ', text: aL[i], cls: '' }); i++; j++ }
-    else if (dp[i + 1][j] >= dp[i][j + 1]) { out.push({ sigil: '-', text: aL[i], cls: 'bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300' }); i++ }
-    else { out.push({ sigil: '+', text: bL[j], cls: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300' }); j++ }
+    if (aL[i] === bL[j]) { out.push({ sigil: ' ', text: sanitizeText(aL[i], 1000), cls: '' }); i++; j++ }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) { out.push({ sigil: '-', text: sanitizeText(aL[i], 1000), cls: 'bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300' }); i++ }
+    else { out.push({ sigil: '+', text: sanitizeText(bL[j], 1000), cls: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300' }); j++ }
   }
-  while (i < m) out.push({ sigil: '-', text: aL[i++], cls: 'bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300' })
-  while (j < n) out.push({ sigil: '+', text: bL[j++], cls: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300' })
+  while (i < m) out.push({ sigil: '-', text: sanitizeText(aL[i++], 1000), cls: 'bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300' })
+  while (j < n) out.push({ sigil: '+', text: sanitizeText(bL[j++], 1000), cls: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300' })
   return out
 }
 
@@ -1029,7 +1069,7 @@ const approvalDiff = computed(() => {
   if (!p) return [] as { sigil: string; text: string; cls: string }[]
   if (typeof p.currentContent !== 'string') {
     // No current content (new file / binary / too large): treat as all-new lines
-    return (p.newContent || '').split('\n').map((text) => ({ sigil: '+', text, cls: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300' }))
+    return (p.newContent || '').split('\n').map((text) => ({ sigil: '+', text: sanitizeText(text, 1000), cls: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300' }))
   }
   return lineDiff(p.currentContent, p.newContent)
 })
@@ -1047,6 +1087,28 @@ async function respondApproval(approved: boolean) {
   if (!ap) return
   // store 内乐观清掉本地卡片后再回传主进程（UI 立即恢复）
   await chatStore.respondApproval(ap.request_id, approved)
+}
+
+// 「总是允许此工具」：二次确认弹窗（明示作用域与风险），确认后连本次批准一起回传 always=true。
+// 点击时快照 request_id+rule_key：确认期间用户可切会话（卡片背板 pointer-events-none），
+// 若现取 pendingApproval 会误把新会话的挂起审批按 always 批准并写错规则。
+const alwaysApproveConfirmOpen = ref(false)
+const alwaysApproveSnapshot = ref<{ requestId: string; ruleKey: string } | null>(null)
+// 展示用：rule_key 是模型给出的原始串（mcp_call 的 server/tool），过消毒防 bidi/零宽视觉伪造授权
+const alwaysApproveTarget = computed(() => sanitizeText(alwaysApproveSnapshot.value?.ruleKey || '', 200))
+function askAlwaysApprove() {
+  const ap = pendingApproval.value
+  if (!ap) return
+  alwaysApproveSnapshot.value = { requestId: ap.request_id, ruleKey: ap.rule_key || ap.tool }
+  alwaysApproveConfirmOpen.value = true
+}
+async function confirmAlwaysApprove() {
+  alwaysApproveConfirmOpen.value = false
+  const snap = alwaysApproveSnapshot.value
+  alwaysApproveSnapshot.value = null
+  if (!snap) return
+  // 主进程按 requestId 定位挂起审批并以 payload 内的 rule_key 写规则（主进程权威），快照只保证不串请求
+  await chatStore.respondApproval(snap.requestId, true, true)
 }
 
 // 对话内交互卡片（ask_user / 生图参数卡）用户选择回传 → 主进程 resolve 挂起的工具执行
@@ -1195,6 +1257,7 @@ const liveMessage = computed(() => {
     _toolLogs: st.toolLogs,
     _toolActive: st.toolActive,
     _collapsed: st.collapsed,
+    _streamingToolArgs: st.streamingToolArgs,
   } as any
 })
 
@@ -1298,10 +1361,16 @@ function prefillToolsFromBot(): boolean {
 }
 
 function loadDraftFor(convId: string) {
-  // 首次为该会话加载草稿（drafts 里尚无条目）时，按 bot 默认 ∩ enabled 预填四类 temp；
-  // 若 drafts 已存在则严格按 draft 还原，避免覆盖用户显式清空后的「本轮不用」语义。
-  const hadDraft = !!chatStore.drafts[convId]
+  // 首次为该会话加载草稿时，按 bot 默认 ∩ enabled 预填四类 temp；
+  // 若 drafts 已存在（含从 localStorage 水合恢复的）则严格按 draft 还原，避免覆盖用户显式清空后的「本轮不用」语义。
+  // 注意 hadDraft 判定必须在 getDraft 之前取 existed——getDraft 会创建条目；
+  // _hydrated 标记表示本条从持久层水合（用户此前编辑过），同样算「已有草稿」。
+  const existed = !!chatStore.drafts[convId]
   const d = chatStore.getDraft(convId)
+  const hadDraft = existed || d._hydrated === true
+  if (d._droppedAttachments && d._droppedAttachments > 0) {
+    console.info(`[chat] 草稿恢复：${d._droppedAttachments} 个附件未随草稿持久化，需要请重新添加`)
+  }
   inputText.value = d.inputText
   pendingAttachments.value = JSON.parse(JSON.stringify(d.attachments))
   tempKbIds.value = [...d.tempKbIds]
@@ -1323,6 +1392,20 @@ watch(() => chatStore.currentConversationId, (newId, oldId) => {
   if (newId) loadDraftFor(newId)
   else clearLocalDraft()
 })
+
+// 输入过程同步草稿：此前草稿只在切换会话/路由离开时落 store，app 直接退出会丢输入中文本。
+// 高频的 inputText 只 patch 文本（避免反复深拷贝大附件），setDraft 内 300ms 防抖落盘；
+// 附件数量与四类 temp 工具选变化时走全量 saveDraftFor（低频操作，深拷贝成本可忽略）。
+watch(inputText, () => {
+  const id = chatStore.currentConversationId
+  if (id) chatStore.setDraft(id, { inputText: inputText.value })
+})
+watch(() => pendingAttachments.value.length, () => {
+  if (chatStore.currentConversationId) saveDraftFor(chatStore.currentConversationId)
+})
+watch([tempKbIds, tempSkillIds, tempMcpIds, tempPromptSkillDirs], () => {
+  if (chatStore.currentConversationId) saveDraftFor(chatStore.currentConversationId)
+}, { deep: true })
 
 // 兜底：loadDraftFor 首次执行时若 bots 异步未就绪（currentBot 还是 undefined），
 // 预填路径会被静默跳过；此后 hadDraft 永远为 true 导致预填永久失效。

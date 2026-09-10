@@ -390,8 +390,8 @@
             class="flex-1 text-sm bg-transparent outline-none text-text-primary placeholder:text-text-tertiary"
             placeholder="搜索功能入口…"
             autofocus
-            @keydown.escape="showNavSearch = false"
-            @keydown.enter.prevent="navSearchResults[0] && goNavSearch(navSearchResults[0].path)"
+            @keydown.escape="!isImeEvent($event) && (showNavSearch = false)"
+            @keydown.enter.prevent="!isImeEvent($event) && navSearchResults[0] && goNavSearch(navSearchResults[0].path)"
           />
         </div>
         <div class="max-h-72 overflow-y-auto py-1">
@@ -414,6 +414,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watchEffect } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { isImeEvent } from '@/utils/keyboard'
 import { useWorkflowEngine } from '@/views/canvas/composables/useWorkflowEngine'
 import LowBalanceModal from '@/components/LowBalanceModal.vue'
 import SettingsView from '@/views/settings/SettingsView.vue'
@@ -815,6 +816,8 @@ const navSearchResults = computed(() => {
 })
 
 function onGlobalHotkey(e: KeyboardEvent) {
+  // IME 组字中的组合键放行（极少见，但避免输入法吞键异常时误触发）
+  if (isImeEvent(e)) return
   const meta = e.metaKey || e.ctrlKey
   if (!meta) return
   const key = e.key.toLowerCase()

@@ -107,7 +107,7 @@
             </button>
             <div v-if="showBotPicker" class="absolute top-full left-0 right-0 mt-1 bg-surface-0 border border-surface-3 rounded-xl shadow-modal z-50 py-1 max-h-60 overflow-y-auto">
               <div v-if="botStore.bots.length > 8" class="sticky top-0 bg-surface-0 px-2 pb-1">
-                <input ref="botSearchRef" v-model="botSearch" class="input-field !py-1.5 text-xs" placeholder="搜索智能体…" @keydown.escape="showBotPicker = false" />
+                <input ref="botSearchRef" v-model="botSearch" class="input-field !py-1.5 text-xs" placeholder="搜索智能体…" @keydown.escape="!isImeEvent($event) && (showBotPicker = false)" />
               </div>
               <div v-if="!filteredBots.length" class="px-3 py-2 text-xs text-text-tertiary">{{ botSearch ? '无匹配的智能体' : '暂无智能体' }}</div>
               <button
@@ -259,6 +259,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import QRCode from 'qrcode'
+import { isImeEvent } from '@/utils/keyboard'
 import { useClawbotStore } from '@/stores/clawbot'
 import { useBotStore } from '@/stores/bots'
 import { useCloudAuthStore } from '@/stores/cloud-auth'

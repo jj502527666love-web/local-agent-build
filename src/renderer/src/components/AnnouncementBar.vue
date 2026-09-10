@@ -65,6 +65,7 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onUnmounted } from 'vue'
 import { storeToRefs } from 'pinia'
+import { isImeEvent } from '@/utils/keyboard'
 import { useCloudAuthStore } from '@/stores/cloud-auth'
 import ImageLightbox from '@/components/ImageLightbox.vue'
 
@@ -99,7 +100,7 @@ function onKeydown(e: KeyboardEvent) {
   // Lightbox 大图打开时 Esc 只关最上层（Lightbox 自身的 keydown 处理），
   // 公告弹窗保持——否则一次 Esc 两层弹窗全关，回不到公告
   if (previewImage.value) return
-  if (e.key === 'Escape' && open.value) {
+  if (e.key === 'Escape' && open.value && !isImeEvent(e)) {
     open.value = false
   }
 }

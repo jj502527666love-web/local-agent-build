@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { translateError } from '@/utils/error-message'
+import { loadDraft as loadStoredDraft, saveDraft as persistDraft, clearStoredDraft } from '@/utils/draft-storage'
 import { useCloudAuthStore } from '@/stores/cloud-auth'
 
 // 工具执行心跳行前缀（带尾部空格）：onStream 据此原地更新「执行中 Ns」而非追加堆积
@@ -105,8 +106,8 @@ export interface Message {
 }
 
 /**
- * 对话输入草稿（per-conversation）。会话级维护，重启 app 后丢失，
- * 切换对话 不丢，切走页面 不丢。
+ * 对话输入草稿（per-conversation）。会话级维护，
+ * 切换对话 不丢，切走页面 不丢；重启 app 后经 localStorage 水合恢复（附件内容不持久化）。
  */
 export interface ChatDraft {
   inputText: string
@@ -115,6 +116,10 @@ export interface ChatDraft {
   tempSkillIds: string[]
   tempMcpIds: string[]
   tempPromptSkillDirs: string[]
+  /** 水合标记：本条草稿是从 localStorage 恢复而来（不持久化，仅内存语义） */
+  _hydrated?: boolean
+  /** 水合时被丢弃的附件数量（>0 表示曾有附件未恢复，供 UI 提示） */
+  _droppedAttachments?: number
 }
 
 /**
@@ -134,6 +139,8 @@ export interface StreamingState {
   pendingContent?: string
   /** 僵尸恢复标记：渲染端 reload 后重建的流式态（requestId 未知，事件匹配放宽） */
   resumed?: boolean
+  /** 流式工具参数预览（按 tool_calls index 索引）：LLM 边吐参数边解码的 file_ops.content 等 */
+  streamingToolArgs?: Record<number, { tool: string; field: string; content: string; prefixFields: Record<string, unknown> }>
 }
 
 /**
@@ -147,6 +154,10 @@ export interface ApprovalRequest {
   tool: string
   args: any
   preview?: any
+  /** 规则键（「总是允许此工具」入规则用，主进程算好下发） */
+  rule_key?: string
+  /** 是否显示「总是允许」按钮（run_command / 脱离沙箱技能等永不允许） */
+  always_allowed?: boolean
 }
 
 function emptyChatDraft(): ChatDraft {
@@ -360,18 +371,52 @@ export const useChatStore = defineStore('chat', () => {
 
   /**
    * 读取某对话的草稿。不存在时实时创建空草稿并写回 map，调用方可直接 mutate 返回值。
+   * 内存无条目时先从 localStorage 水合（重启 app 后恢复），水合结果带 _hydrated 标记，
+   * 供 loadDraftFor 判定「用户显式清空」语义（阻止 bot 默认预填覆盖）。
    */
   function getDraft(convId: string): ChatDraft {
     if (!drafts.value[convId]) {
-      drafts.value[convId] = emptyChatDraft()
+      const stored = loadStoredDraft(convId)
+      if (stored) {
+        drafts.value[convId] = {
+          inputText: stored.inputText,
+          attachments: stored.attachments,
+          tempKbIds: stored.tempKbIds,
+          tempSkillIds: stored.tempSkillIds,
+          tempMcpIds: stored.tempMcpIds,
+          tempPromptSkillDirs: stored.tempPromptSkillDirs,
+          _hydrated: true,
+          _droppedAttachments: stored.droppedAttachments
+        }
+      } else {
+        drafts.value[convId] = emptyChatDraft()
+      }
     }
     return drafts.value[convId]
+  }
+
+  // 草稿落盘防抖（按会话）：输入高频场景合并写入 localStorage
+  const draftPersistTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  function schedulePersistDraft(convId: string): void {
+    const prev = draftPersistTimers.get(convId)
+    if (prev) clearTimeout(prev)
+    draftPersistTimers.set(
+      convId,
+      setTimeout(() => {
+        draftPersistTimers.delete(convId)
+        const d = drafts.value[convId]
+        if (d) persistDraft(convId, d)
+      }, 300)
+    )
   }
 
   /** 批量设置草稿字段。适用于从 view 本地 ref 同步回 store 的场景。 */
   function setDraft(convId: string, patch: Partial<ChatDraft>): void {
     if (!drafts.value[convId]) drafts.value[convId] = emptyChatDraft()
     Object.assign(drafts.value[convId], patch)
+    // 手动 set 视为用户当轮编辑，清除水合标记（避免后续误判「显式清空」语义）
+    delete drafts.value[convId]._hydrated
+    schedulePersistDraft(convId)
   }
 
   /** 清除某对话的草稿。其他场景（如 send 后手动重置）可能需要。 */
@@ -381,6 +426,12 @@ export const useChatStore = defineStore('chat', () => {
       delete next[convId]
       drafts.value = next
     }
+    const timer = draftPersistTimers.get(convId)
+    if (timer) {
+      clearTimeout(timer)
+      draftPersistTimers.delete(convId)
+    }
+    clearStoredDraft(convId)
   }
 
   async function updateTitle(id: string, title: string) {
@@ -524,6 +575,24 @@ export const useChatStore = defineStore('chat', () => {
           }
           st.toolLogs.push(`  ${data.tool}: ${data.summary || 'done'}`)
           break
+        case 'tool_args_delta': {
+          // 流式工具参数（如 file_ops.content）：按 index 累积拼接，totalLength 校验防丢帧；
+          // 校验不符说明中间丢了片段，丢弃该条预览（预览是增强，不影响主流程）
+          const idx = typeof data.index === 'number' ? data.index : 0
+          if (!st.streamingToolArgs) st.streamingToolArgs = {}
+          const slot = st.streamingToolArgs[idx] || { tool: data.tool || '', field: data.field || '', content: '', prefixFields: {} }
+          const expected = slot.content.length + String(data.delta || '').length
+          if (expected === data.totalLength) {
+            slot.content += String(data.delta || '')
+            slot.tool = data.tool || slot.tool
+            slot.field = data.field || slot.field
+            slot.prefixFields = data.prefixFields || slot.prefixFields
+            st.streamingToolArgs[idx] = slot
+          } else {
+            delete st.streamingToolArgs[idx]
+          }
+          break
+        }
         case 'tool_done':
           if (st.toolLogs.length && st.toolLogs[st.toolLogs.length - 1].startsWith(HEARTBEAT_PREFIX)) {
             st.toolLogs.pop()
@@ -603,8 +672,9 @@ export const useChatStore = defineStore('chat', () => {
     return pendingApprovals.value[convId] || null
   }
 
-  /** 回应审批：先乐观清掉本地卡片（UI 立即恢复），再回传主进程 resolve 挂起的工具执行。 */
-  async function respondApproval(requestId: string, approved: boolean) {
+  /** 回应审批：先乐观清掉本地卡片（UI 立即恢复），再回传主进程 resolve 挂起的工具执行。
+   *  always=true 表示「总是允许此工具」：主进程会同时写入持久规则表（渲染层已二次确认）。 */
+  async function respondApproval(requestId: string, approved: boolean, always?: boolean) {
     for (const [cid, ap] of Object.entries(pendingApprovals.value)) {
       if (ap.request_id === requestId) {
         const next = { ...pendingApprovals.value }
@@ -613,7 +683,7 @@ export const useChatStore = defineStore('chat', () => {
         break
       }
     }
-    await window.api.chat.invoke('respondToolApproval', requestId, approved)
+    await window.api.chat.invoke('respondToolApproval', requestId, approved, always === true)
   }
 
   /** 重新进入会话时补投仍挂起的审批（卡片在切走期间可能未送达/被覆盖，靠主进程权威状态恢复）。 */
@@ -882,6 +952,8 @@ export const useChatStore = defineStore('chat', () => {
     canceledRequestIds.value = new Set()
     streamContent.value = ''
     drafts.value = {}
+    // 注意：不清 localStorage 草稿——reset 的唯一调用场景是切换 bot，草稿按 conversationId 索引、
+    // 切回会话时应能水合恢复；登出/切账号后的草稿隔离靠 key 的账号前缀天然达成（读不到即不串号）。
     streamingStates.value = {}
     pendingApprovals.value = {}
   }

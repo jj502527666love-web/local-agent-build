@@ -72,7 +72,7 @@
                     class="flex-1 px-3 py-2 border border-surface-3 rounded-lg bg-surface-0 outline-none focus:ring-2 focus:ring-primary-500"
                     placeholder="输入自定义选项后回车"
                     @input="customMultiInputs[v.key] = ($event.target as HTMLInputElement).value"
-                    @keydown.enter.prevent="addCustomMulti(v.key)"
+                    @keydown.enter.prevent="!isImeEvent($event) && addCustomMulti(v.key)"
                   />
                   <button
                     type="button"
@@ -155,6 +155,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
+import { isImeEvent } from '@/utils/keyboard'
 import { useHandoffStore } from '@/stores/handoff'
 import ImageSourcePickerDialog from '@/components/ImageSourcePickerDialog.vue'
 import PromptTextarea from '@/components/PromptTextarea.vue'

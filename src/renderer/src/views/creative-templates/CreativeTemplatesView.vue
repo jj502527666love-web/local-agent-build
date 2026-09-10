@@ -21,7 +21,7 @@
             v-model="searchInput"
             placeholder="搜索模板..."
             class="pl-9 pr-3 py-2 text-xs border border-surface-3 rounded-lg bg-surface-0 outline-none focus:ring-2 focus:ring-primary-500 w-56"
-            @keydown.enter="commitSearch"
+            @keydown.enter="!isImeEvent($event) && commitSearch()"
           />
         </div>
         <button
@@ -362,6 +362,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import { isImeEvent } from '@/utils/keyboard'
 import {
   useCreativeTemplateStore,
   type CloudCreativeTemplate,

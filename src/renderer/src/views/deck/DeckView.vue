@@ -207,9 +207,12 @@
         <div class="grid grid-cols-2 gap-5">
           <div v-for="(s, i) in deck.slides" :key="i" class="rounded-lg overflow-hidden border border-surface-3 bg-white shadow-sm">
             <div class="relative w-full" :style="{ height: PREVIEW_H + 'px' }">
+              <!-- 预览帧：srcdoc 内容为本应用自产 HTML，但按最小权限沙箱——
+                   不给 allow-same-origin（opaque origin，触达不了父页 DOM/存储）也不给 allow-scripts
+                   （预览页无脚本需求；scale 缩放是纯 CSS transform，不读帧内 DOM） -->
               <iframe
                 :srcdoc="s.html"
-                sandbox="allow-same-origin"
+                sandbox=""
                 class="absolute top-0 left-0 border-0"
                 :style="frameStyle"
               />

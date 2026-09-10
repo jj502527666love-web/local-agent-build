@@ -82,7 +82,9 @@ export function registerDeckIpc(ipcMain: IpcLike): void {
         projectId: args.projectId,
         window: win,
         signal: ac.signal,
-        onProgress: (p) => win?.webContents.send('deck:progress', { reqId: args.reqId, ...p })
+        onProgress: (p) => win?.webContents.send('deck:progress', { reqId: args.reqId, ...p }),
+        // 逐页流式预览：部分 HTML 增量推给渲染层（边生成边看）
+        onSlidePartial: (index, html) => win?.webContents.send('deck:slideDelta', { reqId: args.reqId, index, html })
       })
       // 返回结构化可克隆数据(去掉函数等)
       return {

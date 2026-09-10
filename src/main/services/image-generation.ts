@@ -797,7 +797,7 @@ async function callImageAPI(
 
     // 多米 API：与 OpenAI 协议差异大（裸 token 鉴权 + 强制异步 + 轮询 /tasks/{id}），走专用函数
     if (provider.type === 'duomi') {
-      return await callDuoMiImageAPI(provider, modelId, prompt, size, refImages, tierId, n, signal)
+      return await callDuoMiImageAPI(provider, modelId, prompt, size, quality, refImages, tierId, n, signal)
     }
 
     const apiBase = normalizeApiBase(provider.api_base)
@@ -1105,14 +1105,15 @@ async function callCloudImageAPI(
  * v0.6.6+ 重设：多米实测支持标准 gpt-image-2 规则的任意像素串（上限 3840×2160，
  * 在 capability 表中的 maxTotalPixels=8_294_400），原先反向 snap 到比例 enum 会丢掉用户选的
  * 2K/4K 档位。现在直接用 resolvePixels （与 OpenAI 路径一致），让档位生效。
+ * modelId 传实际选中的多米模型（2.5 双模型与 gpt-image-2 共用同一 capability 上限）。
  *
  * 兑底：解析失败（非法 size）返回 'auto'，多米会用默认尺寸渲染。
  */
-function resolveDuoMiSize(size: string, tierId?: string): string {
+function resolveDuoMiSize(size: string, modelId: string, tierId?: string): string {
   const s = (size || '').toLowerCase().trim()
   if (s === '' || s === 'auto') return 'auto'
   try {
-    return resolvePixels(size, 'gpt-image-2', tierId)
+    return resolvePixels(size, modelId, tierId)
   } catch {
     return 'auto'
   }
@@ -1238,7 +1239,8 @@ async function uploadRefImageToCloud(buffer: Buffer, mimeType: string): Promise<
 /**
  * 多米 API（duomiapi.com）图片生成 — 官方文档 https://duomiapi.com/doc/55。
  *
- * 官方当前**仅支持 gpt-image-2 一个模型**。请求 body 仅 4 个字段：model / prompt / size / image。
+ * 官方支持 3 个生图模型：gpt-image-2 / gpt-image-2.5-flare / gpt-image-2.5-sunburst
+ * （2026-09-09 上架 2.5 双模型）。请求 body 白名单字段：model / prompt / size / image / quality。
  *
  * 与 OpenAI 协议的差异点：
  *   1. 鉴权头是裸 token（`Authorization: <key>`），不带 Bearer 前缀
@@ -1249,17 +1251,26 @@ async function uploadRefImageToCloud(buffer: Buffer, mimeType: string): Promise<
  *   5. 参考图：用单数 `image` 字段（schema 允许 string 或 string[]），元素必须是 https URL。
  *      多米上游不可靠接受 dataUri / 裸 base64（会拒收或静默忽略参考图），故本地参考图先
  *      上传到云控端 /client/images/reference-assets 换成 URL 再提交。仍走 /generations + JSON。
+ *   6. quality：2026-09-09 文档示例新增字段，仅 low/medium/high 透传；auto 不传（让多米用
+ *      默认档），2.5 新增的 xhigh/max 多米未明示支持，UI 层也未注册这两档。
  *
- * model_id 防护：本地 provider.models 如果不是 gpt-image-2（例如老数据 / 手工编辑），
- * submit 前自动覆盖为 gpt-image-2，与 Adapter 层 cleanseDuoMiBody 一致。
+ * model_id 防护：本地 provider.models 如果不在白名单（例如老数据 / 手工编辑），
+ * submit 前自动覆盖为兜底模型 gpt-image-2，与 Adapter 层 cleanseDuoMiBody 一致。
  *
  * 返回形态：[{ url }]，上层 generateImages 会调 downloadImageToFile 下载到本地。
  */
+
+/** 多米 API 支持的生图模型白名单（https://duomiapi.com/doc/55，2026-09-09 上架 2.5 双模型） */
+const DUOMI_SUPPORTED_MODELS = ['gpt-image-2', 'gpt-image-2.5-flare', 'gpt-image-2.5-sunburst'] as const
+/** 多米兜底模型：未传 / 非法 modelId 时改写（保持历史默认） */
+const DUOMI_DEFAULT_MODEL = 'gpt-image-2'
+
 async function callDuoMiImageAPI(
   provider: ModelProvider,
   modelId: string,
   prompt: string,
   size: string,
+  quality: string = 'auto',
   refImages?: string[],
   tierId?: string,
   n: number = 1,
@@ -1273,19 +1284,28 @@ async function callDuoMiImageAPI(
     n = 1
   }
 
+  // 多米官方文档列 3 个模型（DUOMI_SUPPORTED_MODELS）。本地 provider.models 与之不一致时
+  // 自动覆盖为兜底模型，兼容历史不规范数据（UI 层 ModelView.vue 已锁定，此处是异常路径兑底）。
+  let checkedModelId: string = modelId
+  if (!(DUOMI_SUPPORTED_MODELS as readonly string[]).includes(modelId)) {
+    console.warn(`[ImageGen] 多米 API 不支持模型 ${modelId}，自动覆盖 modelId → ${DUOMI_DEFAULT_MODEL}`)
+    checkedModelId = DUOMI_DEFAULT_MODEL
+  }
+
   // v0.6.6+ 多米 size 接受标准 gpt-image-2 规则的真实像素串（如 '3840x2160'），与 OpenAI 路径一致走
   // resolvePixels 计算：UI 档位（1k/2k/4k）、比例、预设、自定义像素都转成代码使用 capability
   // 表 maxTotalPixels=8_294_400 上限兑底。原先反向 snap 到比例 enum 会丢掉用户的 2K/4K 档位。
-  const duomiSize = resolveDuoMiSize(size, tierId)
+  const duomiSize = resolveDuoMiSize(size, checkedModelId, tierId)
 
-  // 多米官方文档仅列 gpt-image-2 一个模型。本地 provider.models 与之不一致时自动覆盖，
-  // 兼容历史不规范数据（UI 层 ModelView.vue 已锁定，此处是异常路径兑底）。
-  if (modelId !== 'gpt-image-2') {
-    console.warn(`[ImageGen] 多米 API 官方仅支持 gpt-image-2，自动覆盖 modelId: ${modelId} → gpt-image-2`)
+  const submitBody: Record<string, any> = { model: checkedModelId, prompt, size: duomiSize }
+
+  // quality：2026-09-09 多米文档示例新增字段。仅 low/medium/high 透传；auto 不传（让多米用默认档）。
+  const duomiQuality = (quality || 'auto').toLowerCase()
+  if (duomiQuality === 'low' || duomiQuality === 'medium' || duomiQuality === 'high') {
+    submitBody.quality = duomiQuality
   }
 
   const submitUrl = `${apiBase}/images/generations?async=true`
-  const submitBody: Record<string, any> = { model: 'gpt-image-2', prompt, size: duomiSize }
 
   // 参考图处理：多米图片 API 只可靠接受图片 URL —— dataUri / 裸 base64 会被上游拒收
   // （fail_to_submit_task）或静默忽略参考图。因此先把参考图（经 shrinkRefImageIfTooLarge
@@ -1317,7 +1337,7 @@ async function callDuoMiImageAPI(
     promptLen: typeof submitBody.prompt === 'string' ? submitBody.prompt.length : 0,
     imageCount: imageSummary.length,
     imageSummary,
-    extraKeys: Object.keys(submitBody).filter(k => !['model', 'prompt', 'size', 'image'].includes(k))
+    extraKeys: Object.keys(submitBody).filter(k => !['model', 'prompt', 'size', 'image', 'quality'].includes(k))
   })
 
   // 失败诊断：在 fetch 前构造脱敏后的请求快照；catch 块挂载到 error.rawRequest，

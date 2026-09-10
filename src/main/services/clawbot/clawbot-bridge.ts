@@ -18,6 +18,8 @@ import * as login from './clawbot-login'
 import type { ClawbotConnection, ClawbotConnectionSummary } from './clawbot-store'
 import { processInboundMessage } from './clawbot-inbound'
 import { sendOutboundReply, sendImagesOnly, sendPlainText, SendCircuitOpenError, isSendCircuitOpen, type OutboundImage } from './clawbot-outbound'
+import { isRuleApproved } from '../approval-store'
+import { listSkills } from '../skill'
 import { ERRCODE_SESSION_TIMEOUT, MESSAGE_ITEM_TYPE, MESSAGE_TYPE, TYPING_STATUS } from './ilink-types'
 import type { WeixinMessage } from './ilink-types'
 import { sendMessage as engineSendMessage, cancelChat as engineCancelChat } from '../chat-engine'
@@ -1463,11 +1465,36 @@ function isWithinDir(child: string, parent: string): boolean {
  * 桥内自动审批决策器（注入 chat-engine；仅 window=null 时生效）。
  * 默认拒绝一切未点名工具（deck_*、非只读 MCP、unsandboxed 技能等全部落在此类），
  * 白名单只放：工作区内文件读写、内置小工具；run_command 永远默认拒。
+ * 前置查「总是允许」持久规则（用户在桌面端显式授权过的工具，微信侧同样放行）；
+ * run_command 不可入规则（NEVER_AUTO_APPROVE），此顺序不改变其默认拒语义。
  */
 function makeApprovalDecider(conversationId: string) {
   const sandboxDir = join(getDataDir(), 'workspaces', conversationId)
   const policy = getApprovalPolicy()
+  // 脱离沙箱的技能不可入「总是允许」规则（与桌面端 always_allowed=false 对齐）：
+  // 它们脱离路径/命令限制，远程触发风险不可接受，每次都必须弹卡给人看。
+  const unsandboxedNames = new Set(
+    listSkills()
+      .filter((s) => s.enabled && !s.is_builtin && s.unsandboxed)
+      .map((s) => s.function_def?.name as string)
+      .filter(Boolean)
+  )
   return ({ name, args }: { name: string; args: any }): boolean => {
+    if (name !== 'run_command' && !unsandboxedNames.has(name)) {
+      const ruleKey =
+        name === 'mcp_call'
+          ? `mcp_call:${String(args?.server || '')}:${String(args?.tool || '')}`
+          : name === 'file_ops'
+            ? (() => {
+                // file_ops 规则键与桌面端同构：按写类 action 细分；读类不入规则（越界读防外泄红线）
+                const action = String(args?.action || '')
+                if (!action || !WRITING_FILE_OPS.has(action)) return ''
+                return `file_ops:${action}`
+              })()
+            : name
+      // file_ops 越界路径永不放行（规则也不行）：规则查询让位给路径红线
+      if (ruleKey && (name !== 'file_ops' || allPathsWithin(args, sandboxDir)) && isRuleApproved(ruleKey)) return true
+    }
     if (name === 'run_command') return policy.allowRunCommand
     if (name === 'mcp_call') return policy.allowMcp
     if (name === 'file_ops') {
